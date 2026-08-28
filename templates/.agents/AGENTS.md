@@ -38,7 +38,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
 - **Delegate Big Searches**: Use the `explore` subagent for broad multi-file exploration.
 - **Prefer Memory over Re-derivation**: Persist non-obvious facts to `.agents/memory/`; read the relevant memory files before starting.
 - **Locations Map**: Read `.agents/memory/locations.md` first — it is the canonical index of sessions, logs, docs, and data. Never re-hunt for a path.
-- **Step Zero — Subagent & Model Routing (non-negotiable)**: Before touching code, satisfy the dispatch gate (`.agents/rules/00-operating.md` §Step Zero). Personas: `planner`, `frontend-engineer`, `mobile-engineer`, `ui-designer`, `qa-architect`, `qa-runner`, `security-engineer`, `product-manager`, `system-architect`, `diagnostics-expert`, `data-engineer`, `devops-engineer`, `handoff`. Dispatch via the `task` tool — each runs its own `model:`. Do NOT inline persona-owned work on the main model. Read `.agents/memory/model-routing.md` at session start. Dispatch independent subagents in parallel.
+- **Step Zero — Subagent & Model Routing (non-negotiable)**: Before touching code, satisfy the dispatch gate (`.agents/rules/00-operating.md` §Step Zero). Personas: `planner`, `frontend-engineer`, `mobile-engineer`, `ui-designer`, `qa-architect`, `qa-runner`, `security-engineer`, `product-manager`, `system-architect`, `diagnostics-expert`, `data-engineer`, `devops-engineer`, `handoff`. Dispatch via the `task` tool — each runs its own `model:`. Do NOT inline persona-owned work on the main model. Read `.agents/memory/model-routing.md` at session start. Dispatch subagents in parallel only when their work is disjoint (see below).
   - **Persona map**:
     | Work area | Persona |
     |---|---|
@@ -57,6 +57,10 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     | Session wrap-up / handoff | `handoff` |
   - **Waivers** (the only way to skip a persona): a persona may be skipped only when (a) the change is fully covered by an automated gate on push or in the QA tiers, AND (b) the skip is pre-audited in `.agents/memory/` with a cited pointer. Log every waiver as `waived: <persona>` with `reason: <gate|pointer>`.
   - **Dispatch failure ladder** (never silent): retry once (resume the same `task_id`); if it still fails, do the work inline and log `degraded: <persona> model: <reason>`; never silently skip.
+  - **Bound every dispatch (task spec)** — never hand a persona a bare metric ("get under N lines", "type everything"). Each dispatch prompt carries: `Objective` (one deliverable) → `Owned files` (exact paths) → `Read-only files` → `Shared contracts (owns|consumes)` → `Done = <gate command + observable metric>` → `Out-of-scope`.
+  - **Parallel = disjoint** — run personas in parallel only when their owned files AND shared contracts are disjoint; otherwise serialize, with the shared-contract owner dispatched first.
+  - **Orchestrator acceptance gate** — after a persona reports done, re-run the gate yourself (`tsc --noEmit`, `npm run lint:hooks`, `npm run test:quick`) and grep the metric before integrating or committing. A subagent's `Evidence` is a claim, not proof.
+  - **No suppression shortcuts** — never accept (or produce) file-level `/* eslint-disable */`, `@ts-nocheck`, or `@ts-ignore` to hit a metric. Suppressions are line-level only and each carries a reason — a file-level disable is a rules violation, not a fix.
 - **Synchronous Terminal Commands**: Prefer sync one-shot commands (build/test/lint) that return inline, over background servers/watchers.
 - **No Output Bloat**: Never paste large files/diffs into chat; apply edits with the edit tool, never print a code block of a change.
 - **Right-Size the QA Tier**: Never run the full regression suite for a CSS/copy tweak.
@@ -88,6 +92,7 @@ Every completed task passes this gate, in order:
    - [ ] RTL traced if layout touched; logical properties used.
    - [ ] Cross-screen audit if a new UX pattern was introduced.
    - [ ] No modified file over ~500 lines without extracting components.
+   - [ ] No blanket file-level `eslint-disable`/`@ts-nocheck`/`@ts-ignore` suppressions (line-level only, each with a reason).
 1. **QA tier** — `qa-architect` picks the tier (and authors progression tests); `qa-runner` executes and makes it pass (§6).
 2. **Security check** — apply `security-engineer` when the change touches data/auth/input/secrets/deps.
 3. **Commit** — concise `feat:` / `fix:` / `refactor:` message.

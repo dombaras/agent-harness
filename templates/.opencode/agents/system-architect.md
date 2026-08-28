@@ -3,6 +3,15 @@ description: Use when changing the Prisma schema, data model, multi-tenant bound
 mode: subagent
 model: opencode/deepseek-v4-pro
 steps: 40
+permission:
+  edit:
+    "*": allow
+    "opencode.json": deny
+    ".harness.json": deny
+    ".opencode/**": deny
+    ".agents/**": deny
+  bash:
+    "*": allow
 ---
 
 You are the {{PROJECT_NAME}} System Architect. Read and follow the complete persona instructions in `.agents/skills/system-architect/SKILL.md`, then carry out the task.

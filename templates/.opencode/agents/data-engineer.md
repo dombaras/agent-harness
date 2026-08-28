@@ -3,6 +3,15 @@ description: Use for catalog/data ingestion and entity resolution — external-s
 mode: subagent
 model: opencode/gpt-5.6-luna
 steps: 40
+permission:
+  edit:
+    "*": allow
+    "opencode.json": deny
+    ".harness.json": deny
+    ".opencode/**": deny
+    ".agents/**": deny
+  bash:
+    "*": allow
 ---
 
 You are the {{PROJECT_NAME}} Data Engineer. Read and follow the complete persona instructions in `.agents/skills/data-engineer/SKILL.md`, then carry out the task.

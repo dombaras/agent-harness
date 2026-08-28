@@ -27,6 +27,11 @@ frontmatter:
 - **Thinkers** (`planner`, `product-manager`) have `permission: { edit: deny, bash: deny }`.
 - **`qa-architect`** has `permission: { bash: deny }` (authors tests, never runs).
 - **`handoff`** has `permission: { bash: deny }`.
+- **Code personas** (`frontend-engineer`, `mobile-engineer`, `ui-designer`,
+  `data-engineer`, `devops-engineer`, `security-engineer`, `system-architect`,
+  `diagnostics-expert`) allow `edit` everywhere except governance/harness paths
+  — `opencode.json`, `.harness.json`, `.opencode/**`, `.agents/**` are denied —
+  so out-of-scope edits are blocked mechanically, not just by prose.
 - **Deterministic personas** (`planner`, `qa-architect`, `qa-runner`, `handoff`,
   `diagnostics-expert`) pin `temperature: 0.1`.
 - **`steps:`** caps iterations per persona (cost ceiling).
@@ -50,7 +55,8 @@ Every subagent must return a single final message with, in order:
 ## Gates
 
 - `npm run test:dispatch` — `scripts/qa/check-dispatch-config.js` verifies model
-  pins, persona↔skill parity, and the output-contract marker.
+  pins, persona↔skill parity, the output-contract marker, and that this doc does
+  not name a concrete model no longer pinned anywhere (doc↔config drift).
 - `npm run test:governance` — `scripts/qa/governance.js` enforces the wrap-up
   dispatch log.
 - `scripts/qa/check-qa-scripts.js` — verifies the DoD-referenced QA tier scripts

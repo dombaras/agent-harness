@@ -3,6 +3,15 @@ description: Use when designing the visual system — design tokens, theming, an
 mode: subagent
 model: opencode/gpt-5.6-luna
 steps: 40
+permission:
+  edit:
+    "*": allow
+    "opencode.json": deny
+    ".harness.json": deny
+    ".opencode/**": deny
+    ".agents/**": deny
+  bash:
+    "*": allow
 ---
 
 You are the {{PROJECT_NAME}} UI Designer. Read and follow the complete persona instructions in `.agents/skills/ui-designer/SKILL.md`, then carry out the task.

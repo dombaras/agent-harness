@@ -38,3 +38,7 @@ You own the native React Native layer and its gotchas — not shared web UI (tha
   config, handoff, other screens) to satisfy a metric.
 - **Verify before done**: run `tsc --noEmit`, `npm run lint:hooks`, `npm run test:quick`
   yourself and report the observed output — never claim success you did not run.
+- **No suppression shortcuts**: never silence the gate with a file-level
+  `/* eslint-disable */`, `@ts-nocheck`, or `@ts-ignore`. Suppressions are
+  line-level only and each carries a reason — a file-level disable to hit a
+  metric is a rules violation, not a fix.

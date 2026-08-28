@@ -66,17 +66,23 @@ hardcoding domain assumptions.
 - Personas also carry mechanical guardrails in frontmatter:
   - thinkers (`planner`, `product-manager`) → `permission: { edit: deny, bash: deny }`
   - `qa-architect`, `handoff` → `permission: { bash: deny }`
+  - code personas (`frontend-engineer`, `mobile-engineer`, `ui-designer`,
+    `data-engineer`, `devops-engineer`, `security-engineer`, `system-architect`,
+    `diagnostics-expert`) → `permission.edit` allows everything EXCEPT
+    `opencode.json`, `.harness.json`, `.opencode/**`, `.agents/**` (governance
+    and harness files are read-only), plus `bash: allow`
   - deterministic personas → `temperature: 0.1`
   - all personas → a `steps:` cap (cost ceiling)
   - `planner`, `handoff` → `hidden: true`
 - `.agents/skills/*/SKILL.md` carries a `model:` label only (informational).
 - `npx @dombaras/agent-harness list` prints the persona → model mapping.
 - `npm run test:dispatch` mechanically verifies model pins against
-  `scripts/qa/models.allowlist.txt`.
+  `scripts/qa/models.allowlist.txt` and that `model-routing.md` does not name a
+  stale model no longer pinned anywhere (doc↔config drift).
 
 ## QA gates
 
-- `npm run test:dispatch` — persona model-pin preflight + persona↔skill parity.
+- `npm run test:dispatch` — persona model-pin preflight + persona↔skill parity + model-routing↔pin drift check.
 - `npm run test:governance` — session wrap-up dispatch-log enforcement.
 - `node scripts/qa/check-qa-scripts.js` — warns (or `--strict` fails) when the
   DoD-referenced runtime QA tiers aren't wired into `package.json`.

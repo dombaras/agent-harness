@@ -57,6 +57,7 @@ Whenever you are writing frontend code or dealing with build errors, you MUST st
 - **500-Line Rule**: No single `.tsx` screen file should exceed ~500 lines. If it does, extract logically distinct sections (modals, list items, action handlers, sub-views) into separate component files in a co-located directory (e.g., `mobile/components/transactions/`). "Extract" means MOVE code into typed modules — never minify/compress JSX onto single lines to dodge the count, never swap real types for `any`, and never add `.d.ts` overrides or inline `require()` to silence tsc.
 - **Before adding code to a file that already exceeds 500 lines**: STOP. Refactor first, then add. Never grow a monolith.
 - **One component = one responsibility**: A screen file should orchestrate layout and state. Rendering logic for individual cards, list items, modals, or drawers should be in dedicated components.
+- **No suppression shortcuts**: never silence lint/type errors with file-level `/* eslint-disable */`, `@ts-nocheck`, or `@ts-ignore` to hit a metric. Suppressions are line-level only, and each must carry a reason.
 
 ## Frontend Quality Exit Checklist
 Before declaring any UI work done, verify:

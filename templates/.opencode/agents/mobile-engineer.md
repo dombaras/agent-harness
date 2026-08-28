@@ -3,6 +3,15 @@ description: Use when writing or fixing Expo / React Native native code — nati
 mode: subagent
 model: opencode/gpt-5.6-luna
 steps: 40
+permission:
+  edit:
+    "*": allow
+    "opencode.json": deny
+    ".harness.json": deny
+    ".opencode/**": deny
+    ".agents/**": deny
+  bash:
+    "*": allow
 ---
 
 You are the {{PROJECT_NAME}} Mobile Engineer. Read and follow the complete persona instructions in `.agents/skills/mobile-engineer/SKILL.md`, then carry out the task.

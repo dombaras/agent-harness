@@ -3,6 +3,15 @@ description: Use when a change touches auth, secrets, input validation, external
 mode: subagent
 model: opencode/deepseek-v4-pro
 steps: 30
+permission:
+  edit:
+    "*": allow
+    "opencode.json": deny
+    ".harness.json": deny
+    ".opencode/**": deny
+    ".agents/**": deny
+  bash:
+    "*": allow
 ---
 
 You are the {{PROJECT_NAME}} Security Engineer. Read and follow the complete persona instructions in `.agents/skills/security-engineer/SKILL.md`, then carry out the task.
