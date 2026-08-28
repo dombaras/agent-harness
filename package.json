@@ -1,0 +1,26 @@
+{
+  "name": "agent-harness",
+  "version": "0.1.0",
+  "description": "Reusable multi-agent harness for AI-assisted development: personas, skills, operating rules, model routing, and QA gates. Deploy into any project with `npx agent-harness init`.",
+  "bin": {
+    "agent-harness": "bin/agent-harness.js"
+  },
+  "files": [
+    "bin/",
+    "templates/",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "agents",
+    "subagents",
+    "personas",
+    "ai-harness",
+    "claude-code",
+    "copilot"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
