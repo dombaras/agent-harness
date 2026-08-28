@@ -1,17 +1,10 @@
-# Operating Rules
+# {{PROJECT_NAME}} — Agent Operating Rules
 
-The canonical operating rulebook for this project lives in [`.agents/AGENTS.md`](.agents/AGENTS.md), with an always-loaded rules summary in [`.agents/rules/00-operating.md`](.agents/rules/00-operating.md).
+The always-loaded rules summary lives in [`.agents/rules/00-operating.md`](.agents/rules/00-operating.md) (wired into `opencode.json` `instructions`). The full, canonical rulebook is [`.agents/AGENTS.md`](.agents/AGENTS.md) — read it before any non-trivial work.
 
-Read and follow it **before starting any task**. It governs:
+It governs: Step Zero subagent dispatch, zero-speculation debugging, data integrity, UI/RTL ergonomics, stack-version discipline, token efficiency, right-sized QA tiers, and the commit-and-push gate.
 
-- Debugging discipline (log-first, zero speculation)
-- Data & business-logic integrity (no hardcoded mocks)
-- UI/UX, mobile ergonomics, and RTL support
-- Framework / backend architecture
-- Token-efficiency discipline
-- The QA tier system (regression + progression)
-- The commit-and-push gate
+- **Dispatch personas** via the `task` tool (see `.agents/rules/00-operating.md` §Step Zero); consult the relevant `.agents/skills/<persona>/SKILL.md`.
+- **At session start**, read `.agents/memory/locations.md` and `.agents/memory/model-routing.md`.
 
-Domain-specific personas live in [`.agents/skills/`](.agents/skills/) — consult the relevant one for security, architecture, frontend, QA, UI, or product work.
-
-> This agent harness is deployed and maintained by `@dombaras/agent-harness` (`npx @dombaras/agent-harness init` / `npx @dombaras/agent-harness update`). Do not hand-edit the persona/skill/rules files in place — regenerate them from the harness and commit the deltas.
+> Deployed and maintained by `@dombaras/agent-harness` (`npx @dombaras/agent-harness init` / `update`). Do not hand-edit harness-owned files — regenerate them and commit the deltas.

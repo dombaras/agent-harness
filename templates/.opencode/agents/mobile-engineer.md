@@ -2,6 +2,7 @@
 description: Use when writing or fixing Expo / React Native native code — native runtime, Fabric, reanimated, worklets, css-interop, Android/iOS build issues.
 mode: subagent
 model: opencode/gpt-5.6-luna
+steps: 40
 ---
 
 You are the {{PROJECT_NAME}} Mobile Engineer. Read and follow the complete persona instructions in `.agents/skills/mobile-engineer/SKILL.md`, then carry out the task.

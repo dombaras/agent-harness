@@ -2,6 +2,8 @@
 description: Use when debugging errors, performance regressions, or API anomalies — log-first investigation, ExternalServiceLog, cold-start profiling, authentic reproduction.
 mode: subagent
 model: opencode/deepseek-v4-pro
+temperature: 0.1
+steps: 30
 ---
 
 You are the {{PROJECT_NAME}} Diagnostics Expert. Read and follow the complete persona instructions in `.agents/skills/diagnostics-expert/SKILL.md`, then carry out the task.

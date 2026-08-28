@@ -19,6 +19,20 @@ model). Change it only by editing `.opencode/agents/<name>.md` `model:` — the
 `model:` label in `.agents/skills/*/SKILL.md` is informational only and does NOT
 route models.
 
+## Per-persona enforcement
+
+In addition to `model:`, agent files carry mechanical guardrails in their
+frontmatter:
+
+- **Thinkers** (`planner`, `product-manager`) have `permission: { edit: deny, bash: deny }`.
+- **`qa-architect`** has `permission: { bash: deny }` (authors tests, never runs).
+- **`handoff`** has `permission: { bash: deny }`.
+- **Deterministic personas** (`planner`, `qa-architect`, `qa-runner`, `handoff`,
+  `diagnostics-expert`) pin `temperature: 0.1`.
+- **`steps:`** caps iterations per persona (cost ceiling).
+- **`planner` / `handoff`** are `hidden: true` (orchestration-only, not in the
+  `@` menu).
+
 ## Subagent output contract
 
 Every subagent must return a single final message with, in order:
@@ -33,14 +47,16 @@ Every subagent must return a single final message with, in order:
 2. Degrade inline on the main model and log `degraded: <persona> model: <reason>`.
 3. Never silently skip or re-scope — only waive via the explicit waiver path.
 
-## Dispatch preflight (`npm run test:dispatch`)
+## Gates
 
-`scripts/qa/check-dispatch-config.js` verifies model pins, persona↔skill parity,
-and the output-contract marker. Run it after editing any agent/skill path:
+- `npm run test:dispatch` — `scripts/qa/check-dispatch-config.js` verifies model
+  pins, persona↔skill parity, and the output-contract marker.
+- `npm run test:governance` — `scripts/qa/governance.js` enforces the wrap-up
+  dispatch log.
+- `scripts/qa/check-qa-scripts.js` — verifies the DoD-referenced QA tier scripts
+  (project-provided) are wired into `package.json`.
 
-```
-npm run test:dispatch
-```
+Run `test:dispatch` after editing any agent/skill path.
 
 ## Gotchas
 

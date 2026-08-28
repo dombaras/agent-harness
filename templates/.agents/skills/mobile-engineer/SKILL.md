@@ -18,8 +18,8 @@ You own the native React Native layer and its gotchas — not shared web UI (tha
 
 - Exact runtime versions live in `.agents/memory/stack-versions.md` (Expo SDK, React Native, React, expo-router, nativewind, reanimated, worklets). Verify before writing.
 - `newArchEnabled` defaults may be `false` for the Expo Go runtime — do not assume Fabric.
-- css-interop can have a JS-thread freeze race on `shadow-*`/`opacity-*`/`#NN` color shorthand in Expo Go — read `.agents/memory/css-interop-freeze.md`; prefer inline styles for animated/opacity properties.
-- Read `.agents/memory/mobile-expo-notes.md` before starting.
+- css-interop can have a JS-thread freeze race on `shadow-*`/`opacity-*`/`#NN` color shorthand in Expo Go — see `.agents/memory/stack-versions.md` (§Mobile gotchas); prefer inline styles for animated/opacity properties.
+- Read `.agents/memory/stack-versions.md` before starting.
 
 ## Rules
 

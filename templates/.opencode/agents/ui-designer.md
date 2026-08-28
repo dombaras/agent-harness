@@ -2,6 +2,7 @@
 description: Use when designing the visual system — design tokens, theming, and shared/reusable UI components (shadcn/ui, Tailwind, Framer Motion) — not app screens or native code.
 mode: subagent
 model: opencode/gpt-5.6-luna
+steps: 40
 ---
 
 You are the {{PROJECT_NAME}} UI Designer. Read and follow the complete persona instructions in `.agents/skills/ui-designer/SKILL.md`, then carry out the task.

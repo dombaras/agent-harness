@@ -24,6 +24,6 @@ _TODO: name and outline the domain's central lifecycle/state machine._
 <!-- user progression tiers and activity badges -->
 _TODO: define user tiers and rewards._
 
-## Domain identifiers & acronyms
-<!-- ID formats (ISBN/barcode/etc.), domain-specific terms -->
+## Identifiers & acronyms
+<!-- ID formats, domain-specific terms -->
 _TODO: list identifier patterns and glossary terms._

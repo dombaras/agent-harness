@@ -28,6 +28,11 @@ You own QA **strategy** — risk assessment, tier selection, and progression tes
 
 Diff-aware planning helper: `npm run qa:plan [-- --json] [-- --base main]`.
 
+> The tier commands above are **project-provided** — the harness ships only
+> `test:dispatch` and `test:governance`. If a referenced script is missing,
+> route that finding to the orchestrator (`scripts/qa/check-qa-scripts.js`
+> verifies wiring mechanically).
+
 ## Progression vs regression
 
 - **Regression** asserts existing capabilities did not break.

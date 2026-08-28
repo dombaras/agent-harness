@@ -19,8 +19,8 @@ You own catalog/data ingestion, entity resolution, and external service integrat
 ## Scope
 
 - Ingest from your project's external sources (see `.agents/memory/domain-map.md` §External sources) and map them into the canonical entity chain (see §Entity model).
-- Entity resolution / dedup heuristics (canonical-vs-edition matching, cross-source reconciliation).
-- External-service telemetry via a structured log (`ExternalServiceLog`): status, latency, rate-limit, auth errors.
+- Entity resolution / dedup heuristics (canonical-vs-derived matching, cross-source reconciliation).
+- External-service telemetry via the project's structured log (`.agents/memory/domain-map.md` §External sources): status, latency, rate-limit, auth errors.
 
 ## Rules
 

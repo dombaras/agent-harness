@@ -24,39 +24,67 @@ npx @dombaras/agent-harness init --target /path/to/project --name "MyApp" --doma
 
 # non-interactive
 npx @dombaras/agent-harness init --target . --yes
+
+# preview what would change, without writing anything
+npx @dombaras/agent-harness init --target . --dry-run
 ```
 
 `init` writes:
 
 | Path | Content | Ownership |
 |---|---|---|
-| `AGENTS.md` | root dispatcher | harness (overwrite) |
-| `.opencode/agents/*.md` | 13 persona subagent defs (with `model:` pins) | harness (overwrite) |
-| `.agents/AGENTS.md` | full operating rulebook | harness (overwrite) |
-| `.agents/rules/00-operating.md` | always-loaded rules summary | harness (overwrite) |
+| `AGENTS.md` | root dispatcher (points to the rulebook) | harness (overwrite) |
+| `.opencode/agents/*.md` | 13 persona subagent defs (with `model:` pins + `permission`/`steps`/`temperature`/`hidden`) | harness (overwrite) |
+| `.agents/AGENTS.md` | full canonical operating rulebook | harness (overwrite) |
+| `.agents/rules/00-operating.md` | always-loaded rules summary (wired into `opencode.json` `instructions`) | harness (overwrite) |
 | `.agents/skills/*/SKILL.md` | persona instruction skills | harness (overwrite) |
-| `opencode.json` | main/small model routing | harness (overwrite) |
-| `scripts/qa/*` | `test:dispatch` / `test:governance` gates | harness (overwrite) |
-| `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing) | **project** (create-if-missing) |
-| `.harness.json` | deployed version + project profile | harness |
+| `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
+| `scripts/qa/*` | `test:dispatch` / `test:governance` gates + QA-script wiring check | harness (overwrite) |
+| `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history) | **project** (create-if-missing) |
+| `.harness.json` | deployed version + project profile + per-file checksums | harness |
+
+### `opencode.json` is merged, not clobbered
+
+The harness owns only `$schema`, `model`, `small_model`, and its own
+`instructions` entry (`.agents/rules/00-operating.md`). Every other key your
+project adds — `permission`, `mcp`, `plugin`, custom `instructions`, etc. — is
+preserved across `init`/`update`.
 
 ## Placeholders
 
 Templates use `{{PROJECT_NAME}}` and `{{PROJECT_DOMAIN}}`; `init` substitutes
 them from `--name` / `--domain` (or prompts, or `.harness.json`). Domain facts
-that are genuinely project-specific (entity model, catalog sources, visibility
+that are genuinely project-specific (entity model, external sources, visibility
 tiers, trust tiers) live in `.agents/memory/domain-map.md`, which `init`
-scaffolds for you to fill in — the skills reference it instead of hardcoding
-domain assumptions.
+scaffolds for you to fill in — the skills and rules reference memory instead of
+hardcoding domain assumptions.
 
-## Model routing
+## Model routing & enforcement
 
 - Concrete models are set in `.opencode/agents/<name>.md` (`model:` field) and
   `opencode.json` (`model` + `small_model`).
+- Personas also carry mechanical guardrails in frontmatter:
+  - thinkers (`planner`, `product-manager`) → `permission: { edit: deny, bash: deny }`
+  - `qa-architect`, `handoff` → `permission: { bash: deny }`
+  - deterministic personas → `temperature: 0.1`
+  - all personas → a `steps:` cap (cost ceiling)
+  - `planner`, `handoff` → `hidden: true`
 - `.agents/skills/*/SKILL.md` carries a `model:` label only (informational).
 - `npx @dombaras/agent-harness list` prints the persona → model mapping.
 - `npm run test:dispatch` mechanically verifies model pins against
   `scripts/qa/models.allowlist.txt`.
+
+## QA gates
+
+- `npm run test:dispatch` — persona model-pin preflight + persona↔skill parity.
+- `npm run test:governance` — session wrap-up dispatch-log enforcement.
+- `node scripts/qa/check-qa-scripts.js` — warns (or `--strict` fails) when the
+  DoD-referenced runtime QA tiers aren't wired into `package.json`.
+
+The harness ships only these gates. The runtime QA tiers (`test:quick`,
+`test:routes`, `test:api`, `test:verify`, `test:security`) and their backing
+scripts are **project-provided** — the rulebook references them, and
+`check-qa-scripts.js` reminds you if they're missing.
 
 ## Update
 
@@ -64,11 +92,18 @@ domain assumptions.
 npx @dombaras/agent-harness update --target /path/to/project
 ```
 
-Overwrites harness-owned files, preserves `.agents/memory/*`.
+- Overwrites harness-owned files, preserves `.agents/memory/*`.
+- **Non-destructive**: if a harness-owned file was modified locally since the
+  last deploy (tracked by checksum in `.harness.json`), it is backed up to
+  `.harness-backup/<timestamp>/` before overwrite.
+- `opencode.json` is merged (project keys preserved).
+- `--dry-run` previews the plan without writing.
 
 ## Develop
 
 ```bash
+npm test          # node --test
+npm run lint      # syntax-check the CLI + QA scripts
 node bin/agent-harness.js list
 node bin/agent-harness.js init --target /tmp/demo --name Demo --yes
 ```

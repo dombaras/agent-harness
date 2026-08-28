@@ -11,8 +11,13 @@
   "files": [
     "bin/",
     "templates/",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "scripts": {
+    "test": "node --test",
+    "lint": "node --check bin/agent-harness.js && node --check templates/scripts/qa/check-dispatch-config.js && node --check templates/scripts/qa/governance.js && node --check templates/scripts/qa/check-qa-scripts.js"
+  },
   "keywords": [
     "opencode",
     "agents",

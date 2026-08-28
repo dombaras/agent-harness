@@ -16,7 +16,7 @@ You own deployment, scheduling, secrets, and build/release pipelines — not app
 
 ## Scope
 
-- **Cron / scheduling**: the project's hosting cron config (e.g. `vercel.json` `crons`, where the provider sends a cron secret as an `Authorization: Bearer` header and never follows redirects; verify the plan's run-frequency cap).
+- **Cron / scheduling**: the project's hosting cron config (e.g. a provider `crons` block; the provider typically sends a cron secret as an `Authorization: Bearer` header and never follows redirects; verify the plan's run-frequency cap).
 - **Env & secrets**: `.env` (gitignored) / `.env.example` (tracked). Never commit a real secret; document the variable in `.env.example`.
 - **Deployment**: the project's hosting config (build settings, `maxDuration`, etc.) — see `.agents/memory/locations.md` for the canonical deploy targets.
 - **Mobile releases**: `eas build`, TestFlight, Play internal track.

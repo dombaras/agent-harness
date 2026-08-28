@@ -15,8 +15,8 @@ You are the session continuity keeper. When the user asks to save progress or wr
    - **Planned**: what was intended.
    - **Shipped**: what was actually implemented/verified (cite files + commit hash).
    - **Deferred**: what was consciously left out, with a one-line reason.
-3. **Record it** in `.agents/memory/handoff.md` (tracked file). Keep the file short (last session only). Move any durable notes into `.agents/memory/` topic files (e.g. `stack-versions.md`, `antigravity-history.md`) rather than growing the handoff.
-4. **Update the locations map** — `.agents/memory/locations.md` is the canonical index of where sessions, logs, docs, and data live. Add/refresh an entry for every external location this session created, discovered, or changed (AI session archives, scratch scripts, log files, DB targets, env files, docs). Each front-end (Antigravity, Continue, Copilot, Claude, Roo, Windsurf) records its own session paths. If nothing changed, leave it as-is.
+3. **Record it** in `.agents/memory/handoff.md` (tracked file). Keep the file short (last session only). Move any durable notes into `.agents/memory/` topic files (e.g. `stack-versions.md`, `history.md`) rather than growing the handoff.
+4. **Update the locations map** — `.agents/memory/locations.md` is the canonical index of where sessions, logs, docs, and data live. Add/refresh an entry for every external location this session created, discovered, or changed (AI session archives, scratch scripts, log files, DB targets, env files, docs). Each agent front-end records its own session paths. If nothing changed, leave it as-is.
 5. **Never invent** — mark anything uncertain as "unverified".
 
 ## Template

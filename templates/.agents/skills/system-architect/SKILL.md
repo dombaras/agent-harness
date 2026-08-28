@@ -23,11 +23,11 @@ You are the Principal System Architect for {{PROJECT_NAME}}. You govern the data
 - Always include `lastSyncTimestamp` in payloads to keep client clocks synchronized.
 
 ### 3. Database Schema Evolution
-- **ORM/DS specifics (this project)**: read `.agents/memory/stack-versions.md` for the exact ORM version and generator/config layout (e.g. Prisma 7 uses the `prisma-client` generator + `prisma.config.ts`, NOT `prisma-client-js` / datasource `url` in `schema.prisma`). Follow the local convention for `.env`/`DATABASE_URL` (never commit secrets).
+- **ORM/DS specifics (this project)**: read `.agents/memory/stack-versions.md` for the exact ORM version and generator/config layout (a recent major renamed the generator and moved config out of `schema.prisma` — see the gotchas). Follow the local convention for `.env`/`DATABASE_URL` (never commit secrets).
 - When altering the schema:
-  1. Inspect relations and indices for query performance (e.g. `@@index([communityId])`, `@@index([userId])`).
-  2. Run the migrate command (`npx prisma migrate dev --name <migration_name>`).
-  3. Regenerate client types (`npx prisma generate`).
+  1. Inspect relations and indices for query performance (e.g. `@@index([ownerId])`, `@@index([userId])`).
+  2. Run the migrate command for the project's ORM (`.agents/memory/stack-versions.md`).
+  3. Regenerate client types (`.agents/memory/stack-versions.md`).
   4. Ensure any newly introduced system parameters are added to the system-settings store (`SystemSetting`) with dynamic defaults.
   5. Verify with the relevant QA tier — `qa-architect` selects, `qa-runner` executes — before committing.
 
