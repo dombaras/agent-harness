@@ -14,4 +14,4 @@ Read and follow it **before starting any task**. It governs:
 
 Domain-specific personas live in [`.agents/skills/`](.agents/skills/) — consult the relevant one for security, architecture, frontend, QA, UI, or product work.
 
-> This agent harness is deployed and maintained by `agent-harness` (`npx agent-harness init` / `npx agent-harness update`). Do not hand-edit the persona/skill/rules files in place — regenerate them from the harness and commit the deltas.
+> This agent harness is deployed and maintained by `@dombaras/agent-harness` (`npx @dombaras/agent-harness init` / `npx @dombaras/agent-harness update`). Do not hand-edit the persona/skill/rules files in place — regenerate them from the harness and commit the deltas.

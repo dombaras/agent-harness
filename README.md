@@ -1,4 +1,4 @@
-# agent-harness
+# @dombaras/agent-harness
 
 A reusable multi-agent harness for AI-assisted development. Ships a persona
 fleet (planner, engine engineer, mobile, QA architect/runner, security,
@@ -7,23 +7,23 @@ and QA gates — then deploys them into any project.
 
 > Extracted from a production project so the "agents / subagents / guardrails /
 > personas" layer is **not** an inherent part of the app codebase. It lives in its
-> own repo and is installed via `npx agent-harness init`.
+> own repo and is installed via `npx @dombaras/agent-harness init`.
 
 ## Why
 
 - The agent harness is tooling, not application code. It should not be committed
   into every app repo.
 - One canonical, versioned source of truth for personas/rules/QA tiers, deployed
-  on demand and updatable via `npx agent-harness update`.
+  on demand and updatable via `npx @dombaras/agent-harness update`.
 
 ## Install & initialize
 
 ```bash
 # from anywhere (uses a target dir or defaults to cwd)
-npx agent-harness init --target /path/to/project --name "MyApp" --domain "a widget catalog"
+npx @dombaras/agent-harness init --target /path/to/project --name "MyApp" --domain "a widget catalog"
 
 # non-interactive
-npx agent-harness init --target . --yes
+npx @dombaras/agent-harness init --target . --yes
 ```
 
 `init` writes:
@@ -54,14 +54,14 @@ domain assumptions.
 - Concrete models are set in `.opencode/agents/<name>.md` (`model:` field) and
   `opencode.json` (`model` + `small_model`).
 - `.agents/skills/*/SKILL.md` carries a `model:` label only (informational).
-- `npx agent-harness list` prints the persona → model mapping.
+- `npx @dombaras/agent-harness list` prints the persona → model mapping.
 - `npm run test:dispatch` mechanically verifies model pins against
   `scripts/qa/models.allowlist.txt`.
 
 ## Update
 
 ```bash
-npx agent-harness update --target /path/to/project
+npx @dombaras/agent-harness update --target /path/to/project
 ```
 
 Overwrites harness-owned files, preserves `.agents/memory/*`.
