@@ -210,9 +210,12 @@ function isGitRepo(target) {
 // project's next session never sees "unexplained" modified harness files. Scoped
 // to this run's changed harness files (never `git add -A`) so unrelated uncommitted
 // work is NEVER swept in. Memory/backup files are excluded (project data / rollback).
-// Returns { committed:boolean, staged:string[], skipped:string[], pushed:boolean|null }.
+// Harness-owned paths are force-added (`-f`): target projects often gitignore
+// .agents/ .opencode/ AGENTS.md (inherited from the harness's own .gitignore), and
+// a plain `git add` would fail on the first ignored path and commit NOTHING.
+// Returns { committed:boolean, staged:string[], skipped:string[], pushed:boolean|null, forceAdded:string[] }.
 function commitHarnessChanges(target, changedRels, opts) {
-  const out = { committed: false, staged: [], skipped: [], pushed: null };
+  const out = { committed: false, staged: [], skipped: [], pushed: null, forceAdded: [] };
   if (!opts.commit) return out;
   if (!isGitRepo(target)) {
     out.skipped.push("not a git repo");
@@ -222,9 +225,13 @@ function commitHarnessChanges(target, changedRels, opts) {
     out.skipped.push("no harness files changed");
     return out;
   }
-  const addR = runGit(target, ["add", "--", ...changedRels]);
+  const ignored = runGit(target, ["check-ignore", ...changedRels]);
+  if (ignored.ok && ignored.out) {
+    out.forceAdded = ignored.out.split(/\r?\n/).filter(Boolean).map(relKey);
+  }
+  const addR = runGit(target, ["add", "-f", "--", ...changedRels]);
   if (!addR.ok) {
-    out.skipped.push("git add failed: " + addR.err);
+    out.skipped.push("git add failed: " + firstGitErrorLine(addR.err));
     return out;
   }
   const diffCached = runGit(target, ["diff", "--cached", "--name-only"]);
@@ -238,7 +245,7 @@ function commitHarnessChanges(target, changedRels, opts) {
   const message = `chore(harness): @dombaras/agent-harness ${prior}${PKG.version}`;
   const commitR = runGit(target, ["commit", "-m", message]);
   if (!commitR.ok) {
-    out.skipped.push("commit failed: " + commitR.err);
+    out.skipped.push("commit failed: " + firstGitErrorLine(commitR.err));
     return out;
   }
   out.committed = true;
@@ -247,12 +254,22 @@ function commitHarnessChanges(target, changedRels, opts) {
     if (hasRemote) {
       const pushR = runGit(target, ["push", "origin", "HEAD"]);
       out.pushed = pushR.ok;
-      if (!pushR.ok) out.skipped.push("push failed: " + pushR.err);
+      if (!pushR.ok) out.skipped.push("push failed: " + firstGitErrorLine(pushR.err));
     } else {
       out.skipped.push("no git remote to push");
     }
   }
   return out;
+}
+
+/* Pull the first real error line out of git's stderr, dropping the LF/CRLF
+ * warnings and `hint:` noise that bury the actual message. */
+function firstGitErrorLine(err) {
+  const line = String(err || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l && !/^warning:/i.test(l) && !/^hint:/i.test(l));
+  return line || "git command failed";
 }
 
 // ---------------------------------------------------------------- deploy
@@ -537,6 +554,12 @@ function printCommitResult(result) {
   console.log("");
   if (c.committed) {
     console.log("  committed harness files: " + c.staged.join(", "));
+    if (c.forceAdded.length) {
+      console.log(
+        "  force-added (gitignored in this project, but harness-owned): " +
+          c.forceAdded.join(", ")
+      );
+    }
     console.log(
       c.pushed === true
         ? "  pushed to origin."

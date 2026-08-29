@@ -123,6 +123,10 @@ npx @dombaras/agent-harness update --target /path/to/project
   modified harness files. Your unrelated uncommitted work is never staged.
   - `--no-commit` to skip commit+push, `--no-push` to commit but not push.
   - `init` never commits.
+  - Harness-owned paths are **force-added**, so a project that gitignores deployment
+    artifacts (an inherited `.agents/` `.opencode/` `AGENTS.md` pattern) still gets the
+    harness commit instead of a raw `git add` failure that silently skips it — force-added
+    files are called out in the summary.
 - **`[Nothing-to-Update]` confirmation**: if the target is already at this CLI's version and no
   harness-owned file changed, `update` says so explicitly, writes nothing, and makes no commit —
   a no-op is never mistaken for a sync and never churns `.harness.json`.

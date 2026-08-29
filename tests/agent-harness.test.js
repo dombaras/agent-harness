@@ -250,6 +250,46 @@ test("update auto-commits only harness files and a no-op update makes no commit"
   assert.strictEqual(committedCount, 2, "no new commit was made on a no-op update");
 });
 
+test("update force-adds harness files the project gitignores and still commits", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  // mimic a project that inherited the harness's own .gitignore pattern, which
+  // ignores deployment artifacts (.agents/ .opencode/ AGENTS.md opencode.json).
+  fs.writeFileSync(
+    path.join(target, ".gitignore"),
+    ".agents/\n.opencode/\nAGENTS.md\nopencode.json\n",
+    "utf8"
+  );
+  git(target, ["add", ".gitignore"]);
+  git(target, ["commit", "-q", "-m", "seed"]);
+
+  const result = await h.deploy(target, {
+    name: "Demo",
+    yes: true,
+    isUpdate: true,
+    commit: true,
+    push: false,
+  });
+
+  assert.strictEqual(
+    result.commitResult.committed,
+    true,
+    "a gitignored harness file must not block the auto-commit"
+  );
+  assert.ok(result.commitResult.forceAdded.length > 0, "gitignored harness files were force-added");
+  assert.ok(
+    result.commitResult.forceAdded.some((p) => p.startsWith(".agents/")),
+    "force-added paths include ignored harness-owned paths"
+  );
+  assert.match(
+    git(target, ["log", "-1", "--pretty=%s"]),
+    /^chore\(harness\):/,
+    "the harness commit was made"
+  );
+});
+
 test("update refuses to downgrade a target deployed with a newer harness", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
