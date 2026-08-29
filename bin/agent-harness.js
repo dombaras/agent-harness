@@ -27,6 +27,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const readline = require("readline");
+const { spawnSync } = require("child_process");
 
 const PKG = require("../package.json");
 const TEMPLATES_DIR = path.resolve(__dirname, "..", "templates");
@@ -34,6 +35,36 @@ const CONFIG_FILE = ".harness.json";
 const BACKUP_DIR = ".harness-backup";
 
 // ---------------------------------------------------------------- helpers
+
+/* Numeric semver compare (major.minor.patch; prerelease tags ignored).
+ * Returns <0 / 0 / >0 like a normal comparator. */
+function compareVersions(a, b) {
+  const pa = String(a || "0").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || "0").split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1;
+  }
+  return 0;
+}
+
+/* Best-effort: the latest `dist-tags.latest` for PKG.name on the configured
+ * registry. Returns null when the registry is unreachable / package unknown,
+ * so the check never blocks a deploy. */
+function publishedLatestVersion() {
+  const npmCli = process.env.npm_execpath
+    ? path.join(path.dirname(process.env.npm_execpath), "npm-cli.js")
+    : null;
+  const args = ["view", PKG.name, "version", "--json", "--fetch-timeout=5000", "--fetch-retries=0"];
+  const r = npmCli
+    ? spawnSync(process.execPath, [npmCli, ...args], { encoding: "utf8", timeout: 10000 })
+    : spawnSync("npm", args, { encoding: "utf8", timeout: 10000 });
+  if (r.status !== 0) return null;
+  try {
+    return JSON.parse(r.stdout.trim());
+  } catch (_) {
+    return r.stdout.trim() || null;
+  }
+}
 
 function listFiles(dir, base = dir) {
   const out = [];
@@ -243,6 +274,17 @@ async function deploy(target, opts) {
   }
   const VARIABLES = { PROJECT_NAME: projectName, PROJECT_DOMAIN: projectDomain };
 
+  // Refuse to downgrade: the target's deployed harness is newer than this CLI.
+  // This is how the "I updated from a local checkout that I never published"
+  // mistake surfaces instead of silently writing older templates over a newer
+  // deployment (and auto-committing that regression).
+  if (isUpdate && existing.version && compareVersions(existing.version, PKG.version) > 0) {
+    throw new Error(
+      `"${projectName}" has harness v${existing.version} — NEWER than this CLI (v${PKG.version}). ` +
+        `Not downgrading. Publish v${existing.version} (or this CLI) so \`update\` can re-sync from the registry.`
+    );
+  }
+
   const previousFiles = existing.files || {};
   const actions = [];
   const manifest = {};
@@ -318,6 +360,16 @@ async function deploy(target, opts) {
     }
   }
 
+  // Nothing-to-update detection: an update that made no effective change to any
+  // harness-owned file and was already running this exact version is a no-op —
+  // report it clearly instead of printing a zero-delta "Updated", and leave the
+  // target byte-for-byte untouched (no .harness.json timestamp churn, no commit).
+  const changedRelsAll = actions
+    .filter((a) => ["create", "overwrite", "overwrite (backup)", "merge"].includes(a.kind))
+    .map((a) => a.rel);
+  const nothingToUpdate =
+    !!isUpdate && changedRelsAll.length === 0 && compareVersions(existing.version || "0", PKG.version) === 0;
+
   const config = {
     version: PKG.version,
     projectName,
@@ -326,19 +378,16 @@ async function deploy(target, opts) {
     updatedAt: new Date().toISOString(),
     files: manifest,
   };
-  if (!dryRun) {
+  if (!dryRun && !nothingToUpdate) {
     fs.writeFileSync(path.join(target, CONFIG_FILE), JSON.stringify(config, null, 2) + "\n", "utf8");
   }
 
   // Auto-commit only this run's changed harness-owned files (update only).
   let commitResult = null;
-  if (isUpdate && !dryRun) {
-    const changedRels = actions
-      .filter((a) =>
-        ["create", "overwrite", "overwrite (backup)", "merge"].includes(a.kind)
-      )
-      .map((a) => a.rel)
-      .filter((r) => !r.startsWith(".agents/memory/") && !r.startsWith(".harness-backup/"));
+  if (isUpdate && !dryRun && !nothingToUpdate) {
+    const changedRels = changedRelsAll.filter(
+      (r) => !r.startsWith(".agents/memory/") && !r.startsWith(".harness-backup/")
+    );
     changedRels.push(CONFIG_FILE); // .harness.json reflects the new deployed version
     commitResult = commitHarnessChanges(target, changedRels, {
       commit,
@@ -354,6 +403,8 @@ async function deploy(target, opts) {
     dryRun: !!dryRun,
     commitResult,
     isUpdate: !!isUpdate,
+    nothingToUpdate,
+    priorVersion: existing.version || null,
   };
 }
 
@@ -365,16 +416,44 @@ function summarize(actions) {
 
 function printSummary(result, isUpdate) {
   const { projectName, actions, dryRun } = result;
+
+  if (isUpdate && result.nothingToUpdate) {
+    console.log(
+      `\n[Nothing-to-Update] agent-harness v${PKG.version}: "${projectName}" is already at ` +
+        `v${result.priorVersion || PKG.version} and no harness-owned file changed.`
+    );
+    return;
+  }
+
   const verb = isUpdate
     ? (dryRun ? "Would update" : "Updated")
     : (dryRun ? "Would initialize" : "Initialized");
   console.log(`\nagent-harness v${PKG.version} ${verb.toLowerCase()} "${projectName}"` + (dryRun ? " (dry run)" : ""));
+  if (isUpdate && result.priorVersion && result.priorVersion !== PKG.version) {
+    console.log(`  harness: v${result.priorVersion} -> v${PKG.version}`);
+  }
   for (const a of actions) console.log(`  [${a.kind}] ${a.rel}`);
   const counts = summarize(actions);
   console.log(
     `\n  ${counts.create || 0} created, ${counts.overwrite || 0} overwritten, ` +
       `${counts["overwrite (backup)"] || 0} backed up (locally modified), ` +
       `${counts.merge || 0} merged, ${counts.preserve || 0} preserved, ${counts.unchanged || 0} unchanged.`
+  );
+}
+
+/* Best-effort warning: when this CLI's version is not the latest published on
+ * the registry, flag it. This catches the "bumped + ran update from a local
+ * checkout, but never published" silent gap. */
+function printUnpublishedWarning() {
+  const published = publishedLatestVersion();
+  if (published == null || published === "" || published === PKG.version) return;
+  const cmp = compareVersions(PKG.version, published);
+  if (cmp <= 0) return;
+  console.log(
+    `\n  WARNING: this CLI is v${PKG.version}, but the latest version published on ` +
+      `npm is v${published}. If you ran this from a local checkout, the changes were ` +
+      `NOT published — Publish first, then \`update\` other projects, or they will ` +
+      `branch off an older harness.`
   );
 }
 
@@ -448,6 +527,7 @@ async function update(target, flags) {
     push: !flags["--no-commit"] && !flags["--no-push"],
   });
   printSummary(result, true);
+  printUnpublishedWarning();
   printCommitResult(result);
 }
 

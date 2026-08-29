@@ -123,6 +123,15 @@ npx @dombaras/agent-harness update --target /path/to/project
   modified harness files. Your unrelated uncommitted work is never staged.
   - `--no-commit` to skip commit+push, `--no-push` to commit but not push.
   - `init` never commits.
+- **`[Nothing-to-Update]` confirmation**: if the target is already at this CLI's version and no
+  harness-owned file changed, `update` says so explicitly, writes nothing, and makes no commit —
+  a no-op is never mistaken for a sync and never churns `.harness.json`.
+- **Downgrade guard**: `update` refuses to run on a target whose deployed harness is NEWER than
+  this CLI (e.g. deployed from a local checkout that was never published) and tells you to publish
+  that version first.
+- **Published-version check**: if this CLI's version is not the latest `dist-tags.latest` on npm,
+  `update` warns you — catches the "bumped the version and updated a project from a local
+  checkout, but never published" gap before it silently forks the projects.
 - **Non-destructive**: if a harness-owned file was modified locally since the
   last deploy (tracked by checksum in `.harness.json`), it is backed up to
   `.harness-backup/<timestamp>/` before overwrite.

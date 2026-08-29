@@ -202,7 +202,7 @@ function git(target, args) {
   return execFileSync("git", args, { cwd: target, encoding: "utf8" }).trim();
 }
 
-test("update auto-commits only harness files and leaves unrelated work untouched", async () => {
+test("update auto-commits only harness files and a no-op update makes no commit", async () => {
   const target = tmpdir();
   git(target, ["init", "-q"]);
   git(target, ["config", "user.email", "t@t.t"]);
@@ -227,6 +227,8 @@ test("update auto-commits only harness files and leaves unrelated work untouched
 
   const before = git(target, ["status", "--porcelain"]).split(/\r?\n/).filter(Boolean);
 
+  const configBefore = read(path.join(target, ".harness.json"));
+
   const result2 = await h.deploy(target, {
     name: "Demo",
     yes: true,
@@ -238,8 +240,31 @@ test("update auto-commits only harness files and leaves unrelated work untouched
   const after = git(target, ["status", "--porcelain"]).split(/\r?\n/).filter(Boolean);
   assert.ok(before.includes("?? my-own-work.js"), "unrelated file starts untracked");
   assert.ok(after.includes("?? my-own-work.js"), "unrelated file still untracked after update");
+
+  // a same-version, no-file-change update is a true no-op: no stray commit, and
+  // the target is left byte-for-byte untouched (no .harness.json timestamp churn)
+  assert.strictEqual(result2.nothingToUpdate, true, "second update detected as no-op");
+  assert.strictEqual(result2.commitResult, null, "no-op update makes no commit attempt");
+  assert.strictEqual(read(path.join(target, ".harness.json")), configBefore, ".harness.json untouched");
   const committedCount = git(target, ["log", "--oneline"]).split(/\r?\n/).filter(Boolean).length;
-  assert.ok(committedCount >= 3, "a new update commit was made");
+  assert.strictEqual(committedCount, 2, "no new commit was made on a no-op update");
+});
+
+test("update refuses to downgrade a target deployed with a newer harness", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  // simulate a target deployed from a local checkout that was never published,
+  // and is therefore ahead of this CLI
+  const cfgPath = path.join(target, ".harness.json");
+  const cfg = JSON.parse(read(cfgPath));
+  cfg.version = "999.0.0";
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+
+  await assert.rejects(
+    h.deploy(target, { name: "Demo", yes: true, isUpdate: true }),
+    /NEWER than this CLI/
+  );
 });
 
 test("update --no-commit skips git", async () => {
