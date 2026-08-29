@@ -27,6 +27,7 @@ frontmatter:
 - **Thinkers** (`planner`, `product-manager`) have `permission: { edit: deny, bash: deny }`.
 - **`qa-architect`** has `permission: { bash: deny }` (authors tests, never runs).
 - **`handoff`** has `permission: { bash: deny }`.
+- **`features`** (Feature Registrar) has `permission: { bash: deny }` — owns `.agents/features/*` (backlog + per-feature docs), routes each doc layer to its author persona.
 - **Code personas** (`frontend-engineer`, `mobile-engineer`, `ui-designer`,
   `data-engineer`, `devops-engineer`, `security-engineer`, `system-architect`,
   `diagnostics-expert`) allow `edit` everywhere except governance/harness paths

@@ -34,10 +34,11 @@ npx @dombaras/agent-harness init --target . --dry-run
 | Path | Content | Ownership |
 |---|---|---|
 | `AGENTS.md` | root dispatcher (points to the rulebook) | harness (overwrite) |
-| `.opencode/agents/*.md` | 13 persona subagent defs (with `model:` pins + `permission`/`steps`/`temperature`/`hidden`) | harness (overwrite) |
+| `.opencode/agents/*.md` | 14 persona subagent defs (with `model:` pins + `permission`/`steps`/`temperature`/`hidden`) | harness (overwrite) |
 | `.agents/AGENTS.md` | full canonical operating rulebook | harness (overwrite) |
 | `.agents/rules/00-operating.md` | always-loaded rules summary (wired into `opencode.json` `instructions`) | harness (overwrite) |
 | `.agents/skills/*/SKILL.md` | persona instruction skills | harness (overwrite) |
+| `.agents/features/INDEX.md` | feature backlog + status board (durable feature doc tree root) | **project** (create-if-missing) |
 | `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
 | `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` gates + QA-script wiring check | harness (overwrite) |
 | `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history, flow-map, qa-plan) | **project** (create-if-missing) |
@@ -58,6 +59,17 @@ that are genuinely project-specific (entity model, external sources, visibility
 tiers, trust tiers) live in `.agents/memory/domain-map.md`, which `init`
 scaffolds for you to fill in — the skills and rules reference memory instead of
 hardcoding domain assumptions.
+
+**Features (`.agents/features/`)** — the durable, feature-centric plan of record. A
+found item is captured as one light row in `.agents/features/INDEX.md` (backlog: what's
+known, priority, context, status). When a feature is picked up, the `features` persona
+authors the per-feature doc chain (`.agents/features/<slug>/`), each layer routed to its
+author persona — `intent.md` (product-manager) → `scope.md` (system-architect, HIGH-risk
+only) → `plan.md` (planner) → `tests.md` (qa-architect, points to `qa-plan.md`). Ceremony
+is right-sized to blast radius: trivial → none, low → single `intent.md`, high (auth/DB/
+public API/flow-siblings) → full chain. Docs live beside the code, are written-back before
+continuing when implementation invalidates them, and are archived on ship. See
+`.agents/skills/features/SKILL.md`.
 
 **Flow map (`.agents/memory/flow-map.md`)** — the project-owned registry powering the
 flow-closure half of `test:qa-plan`. Each user-facing flow lists the code surfaces that

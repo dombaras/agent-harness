@@ -55,6 +55,16 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     | Data ingestion / entity resolution | `data-engineer` |
     | Deployment / cron / secrets / build+release | `devops-engineer` |
     | Session wrap-up / handoff | `handoff` |
+    | Feature backlog + per-feature doc tree (intent/scope/plan/tests) | `features` |
+  - **Feature docs, not ceremony**: capture a found item as one light row in
+    `.agents/features/INDEX.md` (backlog). When a feature is picked up, dispatch
+    `features` to author the doc chain — `intent` (product-manager) → `scope`
+    (system-architect, HIGH-risk only) → `plan` (planner) → `tests` (qa-architect) —
+    each by its author persona. Match ceremony to blast radius: trivial → none,
+    low → single `intent.md`, high (auth/DB/API/flow-siblings) → full chain. Write
+    back first (update the doc before continuing when implementation invalidates it),
+    archive on ship. Feature docs are durable and complementary to the per-session
+    `qa-plan.md`/`handoff.md`; the `tests` doc points to `qa-plan.md`, never duplicates it.
   - **QA planning is never optional (no silent skip)**: every change that touches
     code paths MUST get a QA plan before it is verified. The plan is authored by
     `qa-architect` (thinker). If `qa-architect` is not dispatched — for ANY reason,

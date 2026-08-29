@@ -31,7 +31,7 @@ test("listFiles enumerates the full template tree", () => {
   assert.ok(rels.includes(".opencode/agents/planner.md"));
   assert.ok(rels.includes("opencode.json"));
   const agentCount = rels.filter((r) => r.startsWith(".opencode/agents/") && r.endsWith(".md")).length;
-  assert.strictEqual(agentCount, 13);
+  assert.strictEqual(agentCount, 14);
 });
 
 test("agents carry mechanical enforcement frontmatter", () => {
@@ -159,6 +159,25 @@ test("qa-plan memory scaffold is preserved on re-deploy (project-owned)", async 
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.strictEqual(read(qaPlanPath), "## Coverage map\n- custom path\n");
+});
+
+test("features scaffold + persona parity deploy", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  // INDEX scaffold is created like the memory scaffolds (project-owned)
+  assert.ok(exists(path.join(target, ".agents", "features", "INDEX.md")), "features INDEX scaffold created");
+  assert.ok(read(path.join(target, ".agents", "features", "INDEX.md")).includes("# Features"));
+
+  // features persona ships both halves of the persona↔skill parity gate
+  assert.ok(exists(path.join(target, ".opencode", "agents", "features.md")), "features agent deployed");
+  assert.ok(exists(path.join(target, ".agents", "skills", "features", "SKILL.md")), "features skill deployed");
+
+  // INDEX is preserved on re-deploy (project-owned, like .agents/memory)
+  const indexPath = path.join(target, ".agents", "features", "INDEX.md");
+  fs.writeFileSync(indexPath, "| F-001 | custom row | P3 | x | backlog |\n", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(indexPath), "| F-001 | custom row | P3 | x | backlog |\n", "project INDEX preserved");
 });
 
 test("deploy auto-wires harness gate scripts into package.json, preserving others", async () => {

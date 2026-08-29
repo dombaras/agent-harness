@@ -15,7 +15,7 @@
  * PROJECT_NAME }} / {{ PROJECT_DOMAIN }}.
  *
  * Ownership model:
- *   - `.agents/memory/*` is project data -> create-if-missing (never overwrite).
+ *   - `.agents/memory/*` + `.agents/features/*` is project data -> create-if-missing (never overwrite).
  *   - `opencode.json` is MERGED: harness manages $schema/model/small_model/
  *     instructions; every other key the project adds is preserved.
  *   - all other harness-owned files are overwritten. If a harness-owned file was
@@ -89,9 +89,19 @@ function relKey(rel) {
   return rel.split(path.sep).join("/");
 }
 
-function isMemoryFile(rel) {
+/* `.agents/memory/*` (session memory) and `.agents/features/*` (feature doc
+ * tree) are project data — scaffolded create-if-missing, never overwritten,
+ * and never tracked in the manifest, exactly like the memory files. */
+function isProjectScaffold(rel) {
   const parts = rel.split(path.sep);
-  return parts.includes(".agents") && parts.includes("memory");
+  return (
+    parts.includes(".agents") &&
+    (parts.includes("memory") || parts.includes("features"))
+  );
+}
+/* Back-compat alias (kept for any external caller referencing the old name). */
+function isMemoryFile(rel) {
+  return isProjectScaffold(rel);
 }
 
 function isOpencodeJson(rel) {
@@ -340,7 +350,7 @@ async function deploy(target, opts) {
       continue;
     }
 
-    if (isMemoryFile(rel)) {
+    if (isProjectScaffold(rel)) {
       if (fs.existsSync(targetAbs)) {
         actions.push({ rel: key, kind: "preserve" });
       } else {
@@ -403,7 +413,10 @@ async function deploy(target, opts) {
   let commitResult = null;
   if (isUpdate && !dryRun && !nothingToUpdate) {
     const changedRels = changedRelsAll.filter(
-      (r) => !r.startsWith(".agents/memory/") && !r.startsWith(".harness-backup/")
+      (r) =>
+        !r.startsWith(".agents/memory/") &&
+        !r.startsWith(".agents/features/") &&
+        !r.startsWith(".harness-backup/")
     );
     changedRels.push(CONFIG_FILE); // .harness.json reflects the new deployed version
     commitResult = commitHarnessChanges(target, changedRels, {
@@ -481,7 +494,9 @@ function printNextSteps() {
   console.log("      test:qa-plan enforces their sibling-surface/variant closure).");
   console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`) were");
   console.log('      auto-wired into package.json "scripts".');
-  console.log("   3. Restart your agent CLI (config is read once at startup).\n");
+  console.log("   3. Capture found items as rows in `.agents/features/INDEX.md`; dispatch the `features`");
+  console.log("      persona to author the per-feature doc chain when one is picked up.");
+  console.log("   4. Restart your agent CLI (config is read once at startup).\n");
 }
 
 function printUsage() {
