@@ -55,6 +55,15 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     | Data ingestion / entity resolution | `data-engineer` |
     | Deployment / cron / secrets / build+release | `devops-engineer` |
     | Session wrap-up / handoff | `handoff` |
+  - **QA planning is never optional (no silent skip)**: every change that touches
+    code paths MUST get a QA plan before it is verified. The plan is authored by
+    `qa-architect` (thinker). If `qa-architect` is not dispatched — for ANY reason,
+    including dispatch failure or simply not invoking it — the **main orchestrator
+    performs the qa-architect role itself** and writes the same coverage plan into
+    `.agents/memory/qa-plan.md`. The QA plan/copy escalation ladder NEVER leaves a
+    code change unplanned: `qa-architect` -> orchestrator fallback -> (never a silent
+    skip). `npm run test:qa-plan` enforces that every changed code path has a covering
+    assertion or a waivered reason.
   - **Waivers** (the only way to skip a persona): a persona may be skipped only when (a) the change is fully covered by an automated gate on push or in the QA tiers, AND (b) the skip is pre-audited in `.agents/memory/` with a cited pointer. Log every waiver as `waived: <persona>` with `reason: <gate|pointer>`.
   - **Dispatch failure ladder** (never silent): retry once (resume the same `task_id`); if it still fails, do the work inline and log `degraded: <persona> model: <reason>`; never silently skip.
   - **Bound every dispatch (task spec)** — never hand a persona a bare metric ("get under N lines", "type everything"). Each dispatch prompt carries: `Objective` (one deliverable) → `Owned files` (exact paths) → `Read-only files` → `Shared contracts (owns|consumes)` → `Done = <gate command + observable metric>` → `Out-of-scope`.
@@ -70,7 +79,8 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
 - Never run heavy regression suites blindly for small changes.
 - Split QA personas: `qa-architect` (thinks — inspects the diff, audits gaps, selects the minimal tier, authors progression tests) vs `qa-runner` (does — executes the chosen tier, reports pass/fail verbatim). The thinker never runs; the doer never designs.
 - **Static ≠ Runtime rule**: never declare UI/mobile/API changes verified from static typing alone — execute a real runtime path.
-- **Tiers** (commands are **project-provided** — the target project must define them; the harness ships only `test:dispatch` and `test:governance`):
+- **Coverage ≠ label rule**: a tier command verifies a change ONLY when its backing suite actually exercises the changed path. A suite that touches unrelated code proves nothing about this change. `npm run test:qa-plan` mechanically asserts every changed code path is covered by the QA plan (or waivered) before verification.
+- **Tiers** (commands are **project-provided** — the target project must define them; the harness ships only `test:dispatch`, `test:governance`, and `test:qa-plan`):
   | Tier | Scope | Command |
   |---|---|---|
   | 1 | UI/CSS/mobile/copy | `npm run test:quick` |
@@ -79,7 +89,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
   | 4 | Data ingestion | the project's data E2E script |
   | 5 | Major release / breaking refactor | `npm run test:verify` |
   | 6 | Security / deps | `npm run test:security` |
-- **Progression Workflow**: for new routes/endpoints/states, (1) author a dedicated assertion path, (2) run the targeted progression test, (3) graduate it into the permanent regression suite.
+- **Progression Workflow**: for new routes/endpoints/states, (1) author a dedicated assertion path, (2) run the targeted progression test, (3) graduate it into the permanent regression suite. A change is NOT verified if the executed tier's backing suite never exercised the modified path — author a progression test for that path first (this is the "GAP" rule).
 
 ## 7. Definition of Done & Continuous Backup
 
@@ -93,7 +103,7 @@ Every completed task passes this gate, in order:
    - [ ] Cross-screen audit if a new UX pattern was introduced.
    - [ ] No modified file over ~500 lines without extracting components.
    - [ ] No blanket file-level `eslint-disable`/`@ts-nocheck`/`@ts-ignore` suppressions (line-level only, each with a reason).
-1. **QA tier** — `qa-architect` picks the tier (and authors progression tests); `qa-runner` executes and makes it pass (§6).
+1. **QA tier** — `qa-architect` inspects the diff, picks the tier BY COVERAGE (not path-label), records the coverage map in `.agents/memory/qa-plan.md`, and authors progression tests for any GAP; if `qa-architect` is not dispatched the orchestrator plans in its place. `qa-runner` executes and makes it pass (§6). A change is not verified until `npm run test:qa-plan` passes (every changed code path covered or waivered) AND the executed tier exercised the modified path.
 2. **Security check** — apply `security-engineer` when the change touches data/auth/input/secrets/deps.
 3. **Commit** — concise `feat:` / `fix:` / `refactor:` message.
 4. **Push** — `git push origin main`.

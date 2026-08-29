@@ -59,10 +59,14 @@ Every subagent must return a single final message with, in order:
   not name a concrete model no longer pinned anywhere (doc↔config drift).
 - `npm run test:governance` — `scripts/qa/governance.js` enforces the wrap-up
   dispatch log.
+- `npm run test:qa-plan` — `scripts/qa/check-qa-plan.js` enforces diff coverage:
+  every changed CODE path must have a covering assertion (or a waivered reason)
+  in `.agents/memory/qa-plan.md` before the change is verified.
 - `scripts/qa/check-qa-scripts.js` — verifies the DoD-referenced QA tier scripts
   (project-provided) are wired into `package.json`.
 
-Run `test:dispatch` after editing any agent/skill path.
+Run `test:dispatch` after editing any agent/skill path, and `test:qa-plan` on any
+change that touches code paths.
 
 ## Gotchas
 

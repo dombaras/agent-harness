@@ -135,6 +135,31 @@ function mergeOpencodeJson(target, variables) {
   return JSON.stringify(merged, null, 2) + "\n";
 }
 
+// Harness-shipped npm scripts auto-wired into the target project's package.json
+// scripts (merged, not clobbered). Every other script the project has is preserved.
+// These gates ship with the harness, so a deploy wires them up like opencode.json.
+const HARNESS_SCRIPTS = {
+  "test:dispatch": "node scripts/qa/check-dispatch-config.js",
+  "test:governance": "node scripts/qa/governance.js",
+  "test:qa-plan": "node scripts/qa/check-qa-plan.js",
+};
+
+// Merge harness gate scripts into the project's existing package.json, preserving
+// every other script. ADD-ONLY: an existing script is never overwritten, so a
+// project's deliberate customization of a gate survives re-deploys. Returns
+// { text, hadPkg }.
+function mergePackageJson(target) {
+  const p = path.join(target, "package.json");
+  const hadPkg = fs.existsSync(p);
+  const existing = hadPkg ? safeJson(fs.readFileSync(p, "utf8"), {}) : {};
+  const scripts = Object.assign({}, existing.scripts || {});
+  for (const [name, cmd] of Object.entries(HARNESS_SCRIPTS)) {
+    if (!(name in scripts)) scripts[name] = cmd;
+  }
+  const merged = { ...existing, scripts };
+  return { text: JSON.stringify(merged, null, 2) + "\n", hadPkg };
+}
+
 // ---------------------------------------------------------------- deploy
 
 function backup(target, rel, content) {
@@ -157,6 +182,22 @@ async function deploy(target, opts) {
   const previousFiles = existing.files || {};
   const actions = [];
   const manifest = {};
+
+  // Auto-wire harness gate scripts into the target package.json (merged, add-only).
+  {
+    const { text, hadPkg } = mergePackageJson(target);
+    const key = "package.json";
+    const targetAbs = path.join(target, "package.json");
+    const current = hadPkg ? fs.readFileSync(targetAbs, "utf8") : null;
+    if (!hadPkg) actions.push({ rel: key, kind: "create" });
+    else if (current !== text) actions.push({ rel: key, kind: "merge" });
+    else actions.push({ rel: key, kind: "unchanged" });
+    manifest[key] = sha256(text);
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
+      fs.writeFileSync(targetAbs, text, "utf8");
+    }
+  }
 
   for (const { abs, rel } of listFiles(TEMPLATES_DIR)) {
     const key = relKey(rel);
@@ -252,9 +293,8 @@ function printSummary(result, isUpdate) {
 function printNextSteps() {
   console.log("  Next steps:");
   console.log("   1. Fill in `.agents/memory/domain-map.md` and `.agents/memory/stack-versions.md`.");
-  console.log("   2. Add QA gate scripts to package.json:");
-  console.log('      "test:dispatch": "node scripts/qa/check-dispatch-config.js",');
-  console.log('      "test:governance": "node scripts/qa/governance.js"');
+  console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`) were");
+  console.log('      auto-wired into package.json "scripts" — confirm they merged cleanly.');
   console.log("   3. Restart your agent CLI (config is read once at startup).\n");
 }
 

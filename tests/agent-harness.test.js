@@ -126,3 +126,73 @@ test("update is non-interactive (never prompts)", async () => {
   await h.deploy(target, { name: "Demo", yes: false, isUpdate: true });
   assert.ok(exists(path.join(target, ".harness.json")));
 });
+
+test("qa-plan gate + memory scaffold are deployed", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  assert.ok(
+    exists(path.join(target, "scripts", "qa", "check-qa-plan.js")),
+    "test:qa-plan gate script deployed"
+  );
+  assert.ok(
+    exists(path.join(target, ".agents", "memory", "qa-plan.md")),
+    "qa-plan memory scaffold created (create-if-missing project file)"
+  );
+  const qaPlan = read(path.join(target, ".agents", "memory", "qa-plan.md"));
+  assert.match(qaPlan, /## Coverage map/);
+  assert.match(qaPlan, /## Waivers/);
+});
+
+test("check-qa-scripts expects test:qa-plan", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-qa-scripts.js"));
+  assert.match(src, /test:qa-plan/);
+});
+
+test("qa-plan memory scaffold is preserved on re-deploy (project-owned)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const qaPlanPath = path.join(target, ".agents", "memory", "qa-plan.md");
+  fs.writeFileSync(qaPlanPath, "## Coverage map\n- custom path\n", "utf8");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(qaPlanPath), "## Coverage map\n- custom path\n");
+});
+
+test("deploy auto-wires harness gate scripts into package.json, preserving others", async () => {
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "package.json"),
+    JSON.stringify({ name: "app", scripts: { start: "node .", "test:quick": "vitest run" } }, null, 2) +
+      "\n",
+    "utf8"
+  );
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["start"], "node .", "project script preserved");
+  assert.strictEqual(pkg.scripts["test:quick"], "vitest run", "project tier script preserved");
+  assert.strictEqual(pkg.scripts["test:dispatch"], "node scripts/qa/check-dispatch-config.js");
+  assert.strictEqual(pkg.scripts["test:governance"], "node scripts/qa/governance.js");
+  assert.strictEqual(pkg.scripts["test:qa-plan"], "node scripts/qa/check-qa-plan.js");
+});
+
+test("package.json merge does not downgrade a project-customized harness gate", async () => {
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "package.json"),
+    JSON.stringify(
+      { scripts: { "test:qa-plan": "bash custom-harness-qapl.sh" } },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["test:qa-plan"], "bash custom-harness-qapl.sh");
+});

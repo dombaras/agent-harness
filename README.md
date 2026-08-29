@@ -39,7 +39,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.agents/rules/00-operating.md` | always-loaded rules summary (wired into `opencode.json` `instructions`) | harness (overwrite) |
 | `.agents/skills/*/SKILL.md` | persona instruction skills | harness (overwrite) |
 | `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
-| `scripts/qa/*` | `test:dispatch` / `test:governance` gates + QA-script wiring check | harness (overwrite) |
+| `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` gates + QA-script wiring check | harness (overwrite) |
 | `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
 
@@ -84,6 +84,9 @@ hardcoding domain assumptions.
 
 - `npm run test:dispatch` — persona model-pin preflight + persona↔skill parity + model-routing↔pin drift check.
 - `npm run test:governance` — session wrap-up dispatch-log enforcement.
+- `npm run test:qa-plan` — diff-coverage gate: every changed CODE path must have a covering assertion
+  (or a waivered reason) in `.agents/memory/qa-plan.md` before a change is verified. Kills the
+  "verified by a suite that never touched the change" failure mode: a tier label never proves coverage.
 - `node scripts/qa/check-qa-scripts.js` — warns (or `--strict` fails) when the
   DoD-referenced runtime QA tiers aren't wired into `package.json`.
 

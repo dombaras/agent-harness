@@ -17,6 +17,7 @@ You **execute**. A `qa-architect` (or the orchestrator) tells you which tier to 
 ## Responsibilities
 
 - Run the tier you are given: `npm run test:quick` / `test:routes` / `test:api` / `test:verify` / `test:security`.
+- Run the diff-coverage gate: `npm run test:qa-plan` and report uncovered paths verbatim.
 - Data/catalog E2E journey (100 records): `npx ts-node scripts/test-catalog.ts`.
 - Catalog test-data cleanup when asked (via the catalog reset endpoint/scripts).
 
