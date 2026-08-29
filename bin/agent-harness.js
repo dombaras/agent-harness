@@ -160,6 +160,70 @@ function mergePackageJson(target) {
   return { text: JSON.stringify(merged, null, 2) + "\n", hadPkg };
 }
 
+// ---------------------------------------------------------------- git helpers
+
+function runGit(target, args) {
+  const result = require("child_process").spawnSync("git", args, {
+    cwd: target,
+    encoding: "utf8",
+  });
+  return { ok: result.status === 0, status: result.status, out: (result.stdout || "").trim(), err: (result.stderr || "").trim() };
+}
+
+function isGitRepo(target) {
+  const r = runGit(target, ["rev-parse", "--is-inside-work-tree"]);
+  return r.ok;
+}
+
+// Auto-commit ONLY the harness-owned files an update just changed, so the target
+// project's next session never sees "unexplained" modified harness files. Scoped
+// to this run's changed harness files (never `git add -A`) so unrelated uncommitted
+// work is NEVER swept in. Memory/backup files are excluded (project data / rollback).
+// Returns { committed:boolean, staged:string[], skipped:string[], pushed:boolean|null }.
+function commitHarnessChanges(target, changedRels, opts) {
+  const out = { committed: false, staged: [], skipped: [], pushed: null };
+  if (!opts.commit) return out;
+  if (!isGitRepo(target)) {
+    out.skipped.push("not a git repo");
+    return out;
+  }
+  if (changedRels.length === 0) {
+    out.skipped.push("no harness files changed");
+    return out;
+  }
+  const addR = runGit(target, ["add", "--", ...changedRels]);
+  if (!addR.ok) {
+    out.skipped.push("git add failed: " + addR.err);
+    return out;
+  }
+  const diffCached = runGit(target, ["diff", "--cached", "--name-only"]);
+  const staged = (diffCached.out || "").split(/\r?\n/).filter(Boolean).map(relKey);
+  if (staged.length === 0) {
+    out.skipped.push("no harness changes staged");
+    return out;
+  }
+  out.staged = staged;
+  const prior = opts.priorVersion ? opts.priorVersion + " -> " : "";
+  const message = `chore(harness): @dombaras/agent-harness ${prior}${PKG.version}`;
+  const commitR = runGit(target, ["commit", "-m", message]);
+  if (!commitR.ok) {
+    out.skipped.push("commit failed: " + commitR.err);
+    return out;
+  }
+  out.committed = true;
+  if (opts.push) {
+    const hasRemote = runGit(target, ["remote"]).ok && runGit(target, ["remote"]).out;
+    if (hasRemote) {
+      const pushR = runGit(target, ["push", "origin", "HEAD"]);
+      out.pushed = pushR.ok;
+      if (!pushR.ok) out.skipped.push("push failed: " + pushR.err);
+    } else {
+      out.skipped.push("no git remote to push");
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- deploy
 
 function backup(target, rel, content) {
@@ -170,7 +234,7 @@ function backup(target, rel, content) {
 }
 
 async function deploy(target, opts) {
-  const { name, domain, yes, dryRun, isUpdate } = opts || {};
+  const { name, domain, yes, dryRun, isUpdate, commit, push } = opts || {};
   const existing = readConfig(target);
   const projectName = name || existing.projectName || path.basename(target);
   let projectDomain = domain || existing.projectDomain || "";
@@ -266,7 +330,31 @@ async function deploy(target, opts) {
     fs.writeFileSync(path.join(target, CONFIG_FILE), JSON.stringify(config, null, 2) + "\n", "utf8");
   }
 
-  return { projectName, projectDomain, actions, dryRun: !!dryRun };
+  // Auto-commit only this run's changed harness-owned files (update only).
+  let commitResult = null;
+  if (isUpdate && !dryRun) {
+    const changedRels = actions
+      .filter((a) =>
+        ["create", "overwrite", "overwrite (backup)", "merge"].includes(a.kind)
+      )
+      .map((a) => a.rel)
+      .filter((r) => !r.startsWith(".agents/memory/") && !r.startsWith(".harness-backup/"));
+    changedRels.push(CONFIG_FILE); // .harness.json reflects the new deployed version
+    commitResult = commitHarnessChanges(target, changedRels, {
+      commit,
+      push,
+      priorVersion: existing.version || null,
+    });
+  }
+
+  return {
+    projectName,
+    projectDomain,
+    actions,
+    dryRun: !!dryRun,
+    commitResult,
+    isUpdate: !!isUpdate,
+  };
 }
 
 function summarize(actions) {
@@ -294,7 +382,7 @@ function printNextSteps() {
   console.log("  Next steps:");
   console.log("   1. Fill in `.agents/memory/domain-map.md` and `.agents/memory/stack-versions.md`.");
   console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`) were");
-  console.log('      auto-wired into package.json "scripts" — confirm they merged cleanly.');
+  console.log('      auto-wired into package.json "scripts".');
   console.log("   3. Restart your agent CLI (config is read once at startup).\n");
 }
 
@@ -303,7 +391,12 @@ function printUsage() {
     `agent-harness v${PKG.version}\n\n` +
       `Usage:\n` +
       `  agent-harness init   [--target <dir>] [--name <project>] [--domain <desc>] [--yes] [--dry-run]\n` +
-      `  agent-harness update [--target <dir>] [--dry-run]\n` +
+      `  agent-harness update [--target <dir>] [--dry-run] [--no-commit] [--no-push]\n` +
+      `\n` +
+      `  update auto-commits only the harness files it changes (chore(harness): ...) and\n` +
+      `  pushes to origin by default. Use --no-commit to skip commit+push, or --no-push\n` +
+      `  to commit but not push. Your unrelated uncommitted work is never staged.\n` +
+      `\n` +
       `  agent-harness list\n` +
       `  agent-harness --version | -v\n` +
       `  agent-harness --help | -h\n`
@@ -333,6 +426,8 @@ async function init(target, flags) {
     yes: !!flags["--yes"],
     dryRun: !!flags["--dry-run"],
     isUpdate: false,
+    commit: false,
+    push: false,
   });
   printSummary(result, false);
   if (!result.dryRun) printNextSteps();
@@ -347,8 +442,29 @@ async function update(target, flags) {
     yes: true,
     dryRun: !!flags["--dry-run"],
     isUpdate: true,
+    commit: !flags["--no-commit"],
+    push: !flags["--no-commit"] && !flags["--no-push"],
   });
   printSummary(result, true);
+  printCommitResult(result);
+}
+
+function printCommitResult(result) {
+  const c = result.commitResult;
+  if (!c) return;
+  console.log("");
+  if (c.committed) {
+    console.log("  committed harness files: " + c.staged.join(", "));
+    console.log(
+      c.pushed === true
+        ? "  pushed to origin."
+        : c.pushed === null
+          ? "  push skipped (no --push / no remote)."
+          : "  WARNING: commit made but push FAILED."
+    );
+  } else {
+    console.log("  no harness auto-commit: " + (c.skipped.join("; ") || "no-op"));
+  }
 }
 
 function parseArgs(argv) {
@@ -357,6 +473,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--target" || a === "--name" || a === "--domain") flags[a] = argv[++i];
     else if (a === "--dry-run" || a === "--yes" || a === "-y") flags[a] = true;
+    else if (a === "--no-commit" || a === "--no-push") flags[a] = true;
   }
   return flags;
 }

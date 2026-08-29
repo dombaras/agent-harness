@@ -4,6 +4,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const h = require("../bin/agent-harness.js");
 
@@ -195,4 +196,68 @@ test("package.json merge does not downgrade a project-customized harness gate", 
 
   const pkg = JSON.parse(read(path.join(target, "package.json")));
   assert.strictEqual(pkg.scripts["test:qa-plan"], "bash custom-harness-qapl.sh");
+});
+
+function git(target, args) {
+  return execFileSync("git", args, { cwd: target, encoding: "utf8" }).trim();
+}
+
+test("update auto-commits only harness files and leaves unrelated work untouched", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+
+  const result = await h.deploy(target, {
+    name: "Demo",
+    yes: true,
+    isUpdate: true,
+    commit: true,
+    push: false,
+  });
+
+  assert.strictEqual(result.commitResult.committed, true, "update created a commit");
+  assert.ok(result.commitResult.staged.length > 0, "staged harness files exist");
+  assert.match(git(target, ["log", "-1", "--pretty=%s"]), /^chore\(harness\):/);
+
+  // unrelated uncommitted work must never be swept in by a subsequent update
+  const unrelated = path.join(target, "my-own-work.js");
+  fs.writeFileSync(unrelated, "// mine\n", "utf8");
+
+  const before = git(target, ["status", "--porcelain"]).split(/\r?\n/).filter(Boolean);
+
+  const result2 = await h.deploy(target, {
+    name: "Demo",
+    yes: true,
+    isUpdate: true,
+    commit: true,
+    push: false,
+  });
+
+  const after = git(target, ["status", "--porcelain"]).split(/\r?\n/).filter(Boolean);
+  assert.ok(before.includes("?? my-own-work.js"), "unrelated file starts untracked");
+  assert.ok(after.includes("?? my-own-work.js"), "unrelated file still untracked after update");
+  const committedCount = git(target, ["log", "--oneline"]).split(/\r?\n/).filter(Boolean).length;
+  assert.ok(committedCount >= 3, "a new update commit was made");
+});
+
+test("update --no-commit skips git", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+
+  const result = await h.deploy(target, {
+    name: "Demo",
+    yes: true,
+    isUpdate: true,
+    commit: false,
+    push: false,
+  });
+
+  assert.strictEqual(result.commitResult.committed, false);
+  const log = git(target, ["log", "--oneline"]).split(/\r?\n/).filter(Boolean);
+  assert.ok(!log.some((l) => /chore\(harness\)/.test(l)), "no harness commit was created");
 });

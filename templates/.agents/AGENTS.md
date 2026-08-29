@@ -114,6 +114,7 @@ Every completed task passes this gate, in order:
 ## 8. Session & Traceability Discipline
 
 - **One session = one coherent task**; keep a short checklist as the single source of truth.
+- **Harness-update awareness**: `npx @dombaras/agent-harness update` auto-commits the harness files it changes as `chore(harness): @dombaras/agent-harness <old> -> <new>`. If you see such a commit (or modified `.agents/**`, `scripts/qa/**`, `AGENTS.md`, `opencode.json` you didn't touch), do NOT treat it as unexplained — run `git log -1 --stat` / `git show` to see exactly which harness files changed and why, then read the rulebook. Never guess at the cause.
 - **Planned vs. Shipped**: at session end, record a "planned → shipped → deferred" delta so aspirational docs are never mistaken for reality. Always verify against live code and schema.
 - **Dispatch Log (mandatory)**: every wrap-up opens with `subagent → model → shipped/deferred`. An empty log is non-compliant.
 - **Persist Continuity**: use the `handoff` skill to update `.agents/memory/handoff.md`. Project history lives in `.agents/memory/history.md`; stack facts in `.agents/memory/stack-versions.md`.

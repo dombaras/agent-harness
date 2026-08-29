@@ -102,6 +102,13 @@ npx @dombaras/agent-harness update --target /path/to/project
 ```
 
 - Overwrites harness-owned files, preserves `.agents/memory/*`.
+- Auto-wires the harness gate scripts (`test:dispatch`, `test:governance`,
+  `test:qa-plan`) into the target's `package.json` (merged, add-only).
+- **Auto-commits** only the harness files it changed (`chore(harness): @dombaras/agent-harness
+  <old> -> <new>`) and **pushes** to origin, so the next session never sees unexplained
+  modified harness files. Your unrelated uncommitted work is never staged.
+  - `--no-commit` to skip commit+push, `--no-push` to commit but not push.
+  - `init` never commits.
 - **Non-destructive**: if a harness-owned file was modified locally since the
   last deploy (tracked by checksum in `.harness.json`), it is backed up to
   `.harness-backup/<timestamp>/` before overwrite.
