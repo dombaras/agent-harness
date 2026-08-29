@@ -22,7 +22,7 @@ const strict = process.argv.includes("--strict");
 const EXPECTED = {
   "test:dispatch": "harness — persona model-pin preflight (shipped)",
   "test:governance": "harness — session-governance gate (shipped)",
-  "test:qa-plan": "harness — diff-coverage gate (every changed code path has a QA-plan assertion)",
+  "test:qa-plan": "harness — diff-coverage + flow-closure gate (changed code paths covered; touched flows' sibling surfaces/variants audited)",
   "test:quick": "Tier 1 — types + translations + mobile smoke",
   "test:routes": "Tier 2 — route/page render",
   "test:api": "Tier 3 — API/ORM edge cases",

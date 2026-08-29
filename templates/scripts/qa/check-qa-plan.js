@@ -7,17 +7,32 @@
  * coverage; this gate forces a change's QA plan to actually cover the code it
  * modified — otherwise "verified" is meaningless.
  *
- * It inspects the live git diff and requires every changed CODE path to appear
- * in the QA plan's `## Coverage map` (persisted by qa-architect, or by the main
- * orchestrator as the qa-architect fallback) BEFORE a change may be declared
- * verified. Trivial diffs (copy/docs/non-code) and waivered paths are exempt.
+ * Two stages:
+ *
+ *  1. Coverage map — inspects the live git diff and requires every changed CODE
+ *     path to appear in the QA plan's `## Coverage map` (persisted by
+ *     qa-architect, or by the main orchestrator as the qa-architect fallback)
+ *     BEFORE a change may be declared verified. Trivial diffs (copy/docs/not
+ *     code) and waivered paths are exempt.
+ *
+ *  2. Flow closure — reads `.agents/memory/flow-map.md` (project-owned): a
+ *     registry of user-facing flows, each listing the SURFACES that implement the
+ *     same behavior (web / mobile / API — any codebase/layer) and its optional
+ *     VARIANTS. Any flow whose surfaces intersect this diff must have every
+ *     sibling surface and every declared variant addressed in the plan's
+ *     `## Parallel-surface & variant audit` (covered `->` or `audited:` with a
+ *     reason). This is the gate that makes "Fix One, Fix All" mechanical: a
+ *     web-only diff can no longer silently leave the mobile twin on old behavior.
+ *     If flow-map.md is absent or lists no flows, the stage warns but never fails
+ *     (backward compatible — projects opt into flow closure by filling it in).
  *
  *   node scripts/qa/check-qa-plan.js                 # diff vs HEAD
  *   node scripts/qa/check-qa-plan.js --base main     # diff vs a ref
  *   node scripts/qa/check-qa-plan.js --strict        # non-code changes too
  *
- * Exit 0 on: no code-path changes, full coverage, or valid per-path waivers.
- * Exit 1 on: a changed code path with no covering assertion and no waiver.
+ * Exit 0 on: no code-path changes, full coverage, valid waivers, full flow closure.
+ * Exit 1 on: a changed code path with no covering assertion/waiver, or a flow
+ *            sibling surface / declared variant the QA plan does not address.
  */
 const fs = require("fs");
 const path = require("path");
@@ -100,11 +115,12 @@ function parsePlan(file) {
   let inMap = false;
   for (const raw of lines) {
     const line = raw.trim();
-    if (!line || /^[#;/]/.test(line)) continue;
+    if (!line) continue;
     if (/^#{1,6}\s*Coverage map\s*$/i.test(line)) {
       inMap = true;
       continue;
     }
+    if (/^[#;/]/.test(line)) continue;
     if (inMap && /^#{1,6}\s/.test(line)) inMap = false;
     if (!inMap) continue;
 
@@ -130,6 +146,77 @@ function isCovered(pathi, covered, waivers) {
   return false;
 }
 
+/* Parse `.agents/memory/flow-map.md` into [{ name, surfaces:[], variants:[] }].
+ * Format (one flow per `## flow:` header):
+ *   ## flow: return
+ *   behavior: "Mark as Returned" — optional condition payload (condition selector)
+ *   surfaces: components/LendingActionDrawers.tsx, mobile/features/return/ReturnStatusSheet.tsx, app/api/transactions/[id]/return/route.ts
+ *   variants: condition-selector-present, condition-selector-absent
+ */
+function parseFlowMap(file) {
+  const flows = [];
+  if (!fs.existsSync(file)) return flows;
+  let cur = null;
+  for (const raw of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const h = line.match(/^#{1,6}\s*flow:\s*(.+)$/i);
+    if (h) {
+      cur = { name: h[1].trim(), surfaces: [], variants: [] };
+      flows.push(cur);
+      continue;
+    }
+    if (/^[#;]/.test(line)) continue;
+    if (!cur) continue;
+    const s = line.match(/^surfaces?:\s*(.+)$/i);
+    if (s) cur.surfaces = s[1].split(",").map((x) => norm(x.trim())).filter(Boolean);
+    const v = line.match(/^variants?:\s*(.+)$/i);
+    if (v) cur.variants = v[1].split(",").map((x) => x.trim()).filter(Boolean);
+  }
+  return flows.filter((f) => f.name && f.surfaces.length > 0);
+}
+
+/* Parse the plan's `## Parallel-surface & variant audit` entries.
+ * Entry forms:
+ *   - <surface> -> <assertion>
+ *   - <surface> audited: <reason>
+ *   - flow: <name> variant: <label> -> <assertion>
+ *   - flow: <name> variant: <label> audited: <reason>
+ */
+function parseAudit(file) {
+  const entries = [];
+  if (!fs.existsSync(file)) return entries;
+  let inAudit = false;
+  for (const raw of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^#{1,6}\s*Parallel[ -]surface.{0,40}(?:&\s*|and\s+).{0,40}audit\s*$/i.test(line)) {
+      inAudit = true;
+      continue;
+    }
+    if (/^[#;]/.test(line)) continue;
+    if (inAudit && /^#{1,6}\s/.test(line)) inAudit = false;
+    if (!inAudit) continue;
+
+    const vm = line.match(/^[-*]\s*flow:\s*["']?([^\s"']+)\s+variant:\s*["']?([^\s"']+)\s+(audited:.+|->\s*.+)$/i);
+    if (vm) {
+      entries.push({ flow: vm[1], variant: vm[2], surface: null, disposition: vm[3].trim() });
+      continue;
+    }
+    const pm = line.match(/^[-*]\s*["']?([^\s"'>]+)\s+(audited:.+|->\s*.+)$/);
+    if (pm) entries.push({ surface: norm(pm[1]), disposition: pm[2].trim() });
+  }
+  return entries;
+}
+
+/* True when path a and path b are the same file/dir or one nests under the other
+ * as a directory prefix — lenient matching for surfaces vs coverage/audit paths. */
+function matches(a, b) {
+  const A = norm(a).replace(/\/$/, "");
+  const B = norm(b).replace(/\/$/, "");
+  return A === B || A.startsWith(B + "/") || B.startsWith(A + "/");
+}
+
 const failures = [];
 const pass = (m) => console.log("  \u2713 " + m);
 const fail = (m) => {
@@ -152,11 +239,12 @@ if (changed.length === 0) {
 }
 
 const plan = path.join(root, ".agents", "memory", "qa-plan.md");
+const audit = parseAudit(plan);
 const { covered, waivers } = parsePlan(plan);
 
 console.log(`  checked against: ${path.relative(root, plan)}`);
 
-let codeTouched = false;
+const changedCode = [];
 for (const f of changed) {
   if (isTooling(f)) {
     pass(`${f} (harness/tooling \u2014 self-guarded)`);
@@ -170,7 +258,7 @@ for (const f of changed) {
     pass(`${f} (not a code path)`);
     continue;
   }
-  codeTouched = true;
+  changedCode.push(f);
   if (isCovered(f, covered, waivers)) pass(`${f} covered by QA plan`);
   else
     fail(
@@ -178,13 +266,56 @@ for (const f of changed) {
     );
 }
 
-if (!codeTouched) {
+// ------------------------------------------------------------ flow closure
+const flowMap = parseFlowMap(path.join(root, ".agents", "memory", "flow-map.md"));
+const hitFlows = new Set();
+for (const f of flowMap) {
+  if (changedCode.some((c) => f.surfaces.some((s) => matches(c, s)))) hitFlows.add(f);
+}
+
+if (!flowMap.length) {
+  console.log(
+    "  \u26a0 flow-map.md has no flows \u2014 sibling/variant closure NOT enforced (add flows to secure \"Fix One, Fix All\")"
+  );
+} else if (hitFlows.size) {
+  console.log("flow-closure gate \u2014 every sibling surface & variant of a touched flow is addressed");
+  for (const f of flowMap) {
+    if (!hitFlows.has(f)) {
+      pass(`flow "${f.name}" not touched \u2014 no sibling requirement`);
+      continue;
+    }
+    // Sibling surfaces: every declared surface must be addressed by the diff
+    // (as a changed path) or by a named audit entry, or audited with a reason.
+    for (const s of f.surfaces) {
+      if (changedCode.some((c) => matches(c, s))) {
+        continue; // the changed path itself is required in the Coverage map above
+      }
+      const addressed = audit.some((e) => e.surface && matches(e.surface, s));
+      if (addressed) pass(`flow "${f.name}": sibling \`${s}\` addressed in audit`);
+      else
+        fail(
+          `flow "${f.name}": sibling surface \`${s}\` not addressed \u2014 add it to \`## Parallel-surface & variant audit\` as \`-> <assertion>\` or \`audited: <reason>\``
+        );
+    }
+    // Declared variants: each must be named with a disposition for this flow.
+    for (const v of f.variants) {
+      const addressed = audit.some((e) => e.flow && e.variant && e.flow === f.name && e.variant === v);
+      if (addressed) pass(`flow "${f.name}": variant \`${v}\` addressed`);
+      else
+        fail(
+          `flow "${f.name}": declared variant \`${v}\` not addressed \u2014 add \`flow: ${f.name} variant: ${v} -> <assertion>\` or \`... audited: <reason>\` to \`## Parallel-surface & variant audit\``
+        );
+    }
+  }
+}
+
+if (!changedCode.length) {
   console.log("  \u2713 no application code paths changed");
 }
 console.log(
   "\nRESULT: " +
     (failures.length
-      ? `${failures.length} FAILURE(S) \u2014 every changed code path needs a covering assertion or a waivered reason`
-      : "green \u2014 all changed code paths have a covering QA plan")
+      ? `${failures.length} FAILURE(S) \u2014 every changed code path needs a covering assertion or a waivered reason; every touched flow's sibling surfaces & variants must be addressed in the audit`
+      : "green \u2014 all changed code paths have a covering QA plan and all touched flows are closed")
 );
 process.exit(failures.length ? 1 : 0);

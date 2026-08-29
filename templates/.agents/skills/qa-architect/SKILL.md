@@ -17,6 +17,16 @@ You own QA **strategy** — risk assessment, tier selection, and progression tes
    backing suite ACTUALLY exercises that path/state. Any change with no runtime assertion is a **GAP**
    — you must author a progression test for it (Progression vs regression below). Persist the same map
    into `.agents/memory/qa-plan.md` under `## Coverage map` (this is what `npm run test:qa-plan` gates on).
+3b. **Flow closure audit (MANDATORY — "fix one, fix all")** — read `.agents/memory/flow-map.md`. For
+   every flow whose `surfaces:` intersect this diff, address in the plan's
+   `## Parallel-surface & variant audit` EVERY sibling surface (the same behavior living in another
+   codebase/layer — web vs `mobile/`, API route, another page) and EVERY declared `variant`. Each
+   entry is `- <surface> -> <assertion>` or `- <surface> audited: <reason>`; each variant is
+   `- flow: <name> variant: <label> -> <assertion>` or `... audited: <reason>`. A sibling that is
+   legitimately out of scope is NOT left unnamed — it is `audited: deferred — logged in handoff.md`.
+   `test:qa-plan` fails on any sibling surface or declared variant the plan does not name.
+   If `flow-map.md` has no flows, note it and proceed (the gate warns, does not block; register the
+   flow in flow-map.md when you touch its behavior).
 4. **Progression plan** — any NEW tests to author (and where) before the run, or a statement that no new tests are needed. For every **GAP** you MUST author a progression test that renders/executes the real path (real route/API — never a shell mock) and drives it click-through from the user's perspective.
 5. **Handoff to qa-runner** — exact commands + pass criteria.
 
@@ -53,9 +63,11 @@ Author new assertion pathways in `scripts/verify-all.js` (API), `scripts/qa/rout
 
 Every change that touches code paths MUST have a coverage map persisted in
 `.agents/memory/qa-plan.md` (or a scoped `waived:` entry per path) before the run can be declared
-verified. The mechanical gate checks the live `git diff` against the plan and fails on any uncovered
-code path. If you are not dispatched for a change, the main orchestrator performs your role and
-writes the same plan itself — a change with code-path edits and no QA plan is a rules violation.
+verified — AND a flow-closure audit of every touched flow's sibling surfaces and declared variants
+(`.agents/memory/flow-map.md`). The mechanical gate checks the live `git diff` against both and
+fails on any uncovered code path or unaddressed sibling/variant. If you are not dispatched for a
+change, the main orchestrator performs your role and writes the same plan itself — a change with
+code-path edits and no QA plan is a rules violation.
 
 ## Iron law
 

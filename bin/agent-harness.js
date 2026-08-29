@@ -380,7 +380,9 @@ function printSummary(result, isUpdate) {
 
 function printNextSteps() {
   console.log("  Next steps:");
-  console.log("   1. Fill in `.agents/memory/domain-map.md` and `.agents/memory/stack-versions.md`.");
+  console.log("   1. Fill in `.agents/memory/domain-map.md`, `.agents/memory/stack-versions.md`,");
+  console.log("      and `.agents/memory/flow-map.md` (register cross-surface flows so");
+  console.log("      test:qa-plan enforces their sibling-surface/variant closure).");
   console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`) were");
   console.log('      auto-wired into package.json "scripts".');
   console.log("   3. Restart your agent CLI (config is read once at startup).\n");

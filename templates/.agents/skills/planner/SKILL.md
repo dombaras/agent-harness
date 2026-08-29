@@ -29,6 +29,11 @@ dispatch it broad.
 ## Rules
 
 - Read `.agents/memory/model-routing.md` for the persona → model tiers.
+- Read `.agents/memory/flow-map.md`. If the task's behavior maps to a flow whose `surfaces:` cross
+  codebases/layers (e.g. web + `mobile/` + an API route), the dispatch plan MUST include the sibling
+  surface's persona (e.g. `mobile-engineer`) — or explicitly mark the sibling out-of-scope so
+  `qa-architect` records it as `audited: deferred` in the QA plan's flow-closure audit. A change to
+  one surface that never mentions the twin is a plan defect, not scope.
 - Never dispatch a persona for work the main model should just do (reads, commits, integration).
 - Prefer the most specific persona; if none clearly fits, ask the user rather than guess.
 - Dispatch independent subagents in parallel; serialize only when one depends on another's output.

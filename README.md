@@ -40,7 +40,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.agents/skills/*/SKILL.md` | persona instruction skills | harness (overwrite) |
 | `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
 | `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` gates + QA-script wiring check | harness (overwrite) |
-| `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history) | **project** (create-if-missing) |
+| `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history, flow-map, qa-plan) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
 
 ### `opencode.json` is merged, not clobbered
@@ -58,6 +58,13 @@ that are genuinely project-specific (entity model, external sources, visibility
 tiers, trust tiers) live in `.agents/memory/domain-map.md`, which `init`
 scaffolds for you to fill in — the skills and rules reference memory instead of
 hardcoding domain assumptions.
+
+**Flow map (`.agents/memory/flow-map.md`)** — the project-owned registry powering the
+flow-closure half of `test:qa-plan`. Each user-facing flow lists the code surfaces that
+implement the same behavior across codebases/layers (e.g. web component, `mobile/` sheet,
+API route) plus its optional variants (e.g. `condition-selector-present` vs `-absent`). Fill
+it in so a change to one surface is forced to account for all the others. If empty, the gate
+warns but does not block; the guarantee only applies to registered flows.
 
 ## Model routing & enforcement
 
@@ -84,9 +91,16 @@ hardcoding domain assumptions.
 
 - `npm run test:dispatch` — persona model-pin preflight + persona↔skill parity + model-routing↔pin drift check.
 - `npm run test:governance` — session wrap-up dispatch-log enforcement.
-- `npm run test:qa-plan` — diff-coverage gate: every changed CODE path must have a covering assertion
-  (or a waivered reason) in `.agents/memory/qa-plan.md` before a change is verified. Kills the
-  "verified by a suite that never touched the change" failure mode: a tier label never proves coverage.
+- `npm run test:qa-plan` — **diff-coverage + flow-closure gate**:
+  every changed CODE path must have a covering assertion (or a waivered reason) in
+  `.agents/memory/qa-plan.md` before a change is verified — and every touched flow
+  (`.agents/memory/flow-map.md`) must have every sibling surface and declared optional
+  variant addressed in the plan's `## Parallel-surface & variant audit`. Kills the
+  "verified by a suite that never touched the change" failure mode: a tier label never
+  proves coverage. It also makes **"Fix One, Fix All" mechanical**: a change to one
+  surface (e.g. web) cannot ship while the same flow in another codebase (e.g. `mobile/`)
+  silently keeps old behavior — the plan must name each sibling as covered (`->`) or
+  out-of-scope (`audited: reason`, e.g. `deferred — logged in handoff.md`).
 - `node scripts/qa/check-qa-scripts.js` — warns (or `--strict` fails) when the
   DoD-referenced runtime QA tiers aren't wired into `package.json`.
 

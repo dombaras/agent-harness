@@ -9,7 +9,7 @@ Before reading or editing any file for a task, dispatch the relevant personas vi
 - **Bound every task before dispatching.** No persona gets a bare metric ("get under N lines", "type everything"). Each dispatch prompt carries a task spec: `Objective` (one deliverable) → `Owned files` (exact paths) → `Read-only files` → `Shared contracts (owns|consumes)` → `Done = <gate command + observable metric>` → `Out-of-scope`.
 - **Parallel = disjoint.** Dispatch two personas in parallel only when their owned files AND shared contracts are disjoint; otherwise serialize and put the shared-contract owner first.
 - **Accept, don't trust.** After a code persona reports done, the orchestrator re-runs the gate itself (`tsc --noEmit`, `lint:hooks`, `test:quick`) and greps the metric before integrating — a subagent's `Evidence` is a claim, not proof.
-- **QA planning is never optional.** Every change touching code paths gets a QA plan (coverage map in `.agents/memory/qa-plan.md`) from `qa-architect`; if it isn't dispatched, the main orchestrator plans in its place. `npm run test:qa-plan` fails on any changed code path with no covering assertion or waiver.
+- **QA planning is never optional.** Every change touching code paths gets a QA plan (coverage map in `.agents/memory/qa-plan.md`) from `qa-architect`; if it isn't dispatched, the main orchestrator plans in its place. `npm run test:qa-plan` fails on any changed code path with no covering assertion or waiver, and on any touched flow (`.agents/memory/flow-map.md`) whose sibling surfaces / declared variants the plan doesn't address.
 - Persona map, waivers, and the dispatch-failure ladder: `.agents/AGENTS.md` §5 and `.agents/memory/model-routing.md`.
 - Every subagent returns the output contract (`Result` → `Evidence` → `Deferred & risks`).
 - Wrap up with a **dispatch log** (`subagent → model → shipped/deferred`) in `.agents/memory/handoff.md`.
@@ -21,7 +21,7 @@ Before reading or editing any file for a task, dispatch the relevant personas vi
 3. **5 UI states** (ideal/empty/loading/error/partial), user-visible errors (never `console.warn`-only), and RTL-safe logical props.
 4. **Verify stack versions** before writing framework code (`.agents/memory/stack-versions.md`).
 5. **Token discipline** — search before read, targeted reads, batch reads, don't re-read unchanged files, right-size QA.
-6. **Static ≠ runtime** — never declare verified from `tsc` alone; execute a real runtime/API path that exercises the MODIFIED code — a tier label never proves coverage. `test:qa-plan` gates every changed code path to a covering assertion or waiver.
+6. **Static ≠ runtime** — never declare verified from `tsc` alone; execute a real runtime/API path that exercises the MODIFIED code — a tier label never proves coverage. `test:qa-plan` gates every changed code path to a covering assertion or waiver, and every touched flow's sibling surfaces / variants to an audit entry (`.agents/memory/flow-map.md` — "fix one, fix all").
 7. **Commit** with `feat:`/`fix:`/`refactor:` then push to main.
 
 ## Definition of Done

@@ -4,7 +4,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFileSync } = require("child_process");
+const { execFileSync, spawnSync } = require("child_process");
 
 const h = require("../bin/agent-harness.js");
 
@@ -260,4 +260,122 @@ test("update --no-commit skips git", async () => {
   assert.strictEqual(result.commitResult.committed, false);
   const log = git(target, ["log", "--oneline"]).split(/\r?\n/).filter(Boolean);
   assert.ok(!log.some((l) => /chore\(harness\)/.test(l)), "no harness commit was created");
+});
+
+// ---------------------------------------------------------------- test:qa-plan gate (flow closure)
+
+async function scaffoldGatedTarget() {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "deploy harness"]);
+  return target;
+}
+
+function writeFile(target, rel, content) {
+  const p = path.join(target, rel);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, content, "utf8");
+}
+
+function runQaPlanGate(target) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-qa-plan.js"], { cwd: target, encoding: "utf8" });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+const RETURN_FLOW = `
+## flow: return
+behavior: return POST with an optional condition payload (condition selector)
+surfaces: components/LendingActionDrawers.tsx, mobile/features/return/ReturnStatusSheet.tsx
+variants: condition-selector-present, condition-selector-absent
+`;
+
+test("test:qa-plan fails when a touched flow's sibling surface is not addressed", async () => {
+  const t = await scaffoldGatedTarget();
+  writeFile(t, ".agents/memory/flow-map.md", RETURN_FLOW);
+  writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
+  writeFile(
+    t,
+    ".agents/memory/qa-plan.md",
+    "## Change intent\n- change: remove condition selector from return\n\n" +
+      "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
+  );
+
+  const r = runQaPlanGate(t);
+  assert.strictEqual(r.status, 1, "gate must fail on an unaddressed sibling surface");
+  assert.match(r.out, /sibling surface/);
+  assert.match(r.out, /mobile\/features\/return\/ReturnStatusSheet\.tsx/);
+  assert.match(r.out, /Parallel-surface & variant audit/);
+});
+
+test("test:qa-plan passes when every sibling surface and declared variant is audited", async () => {
+  const t = await scaffoldGatedTarget();
+  writeFile(t, ".agents/memory/flow-map.md", RETURN_FLOW);
+  writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
+  writeFile(
+    t,
+    ".agents/memory/qa-plan.md",
+    "## Change intent\n- change: remove condition selector from return\n\n" +
+      "## Parallel-surface & variant audit\n" +
+      "- mobile/features/return/ReturnStatusSheet.tsx audited: deferred — same simplification pending, logged in handoff.md\n" +
+      "- flow: return variant: condition-selector-present audited: removed by this change\n" +
+      "- flow: return variant: condition-selector-absent -> test:quick::return (no-condition click-through)\n\n" +
+      "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
+  );
+
+  const r = runQaPlanGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /RESULT: green/);
+});
+
+test("test:qa-plan fails when a declared flow variant is not addressed", async () => {
+  const t = await scaffoldGatedTarget();
+  writeFile(t, ".agents/memory/flow-map.md", RETURN_FLOW);
+  writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
+  writeFile(
+    t,
+    ".agents/memory/qa-plan.md",
+    "## Change intent\n- change: remove condition selector from return\n\n" +
+      "## Parallel-surface & variant audit\n" +
+      "- mobile/features/return/ReturnStatusSheet.tsx audited: deferred — logged in handoff.md\n\n" +
+      "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
+  );
+
+  const r = runQaPlanGate(t);
+  assert.strictEqual(r.status, 1, "gate must fail on an unaddressed declared variant");
+  assert.match(r.out, /variant/);
+  assert.match(r.out, /condition-selector-present/);
+});
+
+test("test:qa-plan warns but does not fail when flow-map.md has no flows", async () => {
+  const t = await scaffoldGatedTarget();
+  writeFile(t, ".agents/memory/flow-map.md", "# Flow map\n");
+  writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
+  writeFile(
+    t,
+    ".agents/memory/qa-plan.md",
+    "## Change intent\n- change: remove condition selector from return\n\n" +
+      "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
+  );
+
+  const r = runQaPlanGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /no flows/);
+  assert.match(r.out, /RESULT: green/);
+});
+
+test("flow-map memory scaffold is deployed and preserved on re-deploy", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  assert.ok(exists(path.join(target, ".agents", "memory", "flow-map.md")), "flow-map scaffold created");
+
+  const flowMapPath = path.join(target, ".agents", "memory", "flow-map.md");
+  fs.writeFileSync(flowMapPath, "## flow: custom\nsurfaces: a.ts\n", "utf8");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(flowMapPath), "## flow: custom\nsurfaces: a.ts\n", "project flow-map preserved");
 });
