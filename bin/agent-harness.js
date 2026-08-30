@@ -473,7 +473,9 @@ function printSummary(result, isUpdate) {
 
 /* Best-effort warning: when this CLI's version is not the latest published on
  * the registry, flag it. This catches the "bumped + ran update from a local
- * checkout, but never published" silent gap. */
+ * checkout, but never published" silent gap. Publish guidance stays inline so a
+ * failed `npm publish` (401/404 auth/permission) never leaves the developer
+ * staring at a raw npm error — it points them at `npm login`. */
 function printUnpublishedWarning() {
   const published = publishedLatestVersion();
   if (published == null || published === "" || published === PKG.version) return;
@@ -484,6 +486,12 @@ function printUnpublishedWarning() {
       `npm is v${published}. If you ran this from a local checkout, the changes were ` +
       `NOT published — Publish first, then \`update\` other projects, or they will ` +
       `branch off an older harness.`
+  );
+  console.log(
+    `    To publish: run \`npm publish\` from the harness repo. If it fails with ` +
+      `E401/E404 (auth or permission), you are not logged in as the package owner ` +
+      `(\`npm owner ls ${PKG.name}\` shows who owns it) — run \`npm login\` first, ` +
+      `then publish again. Login: https://www.npmjs.com/login`
   );
 }
 
