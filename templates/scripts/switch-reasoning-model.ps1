@@ -1,4 +1,4 @@
-﻿param(
+param(
   [Parameter(Mandatory = $true)][string]$Target
 )
 
@@ -7,23 +7,29 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
 $aliases = @{
-  "deepseek"        = "opencode/deepseek-v4-pro"
-  "deepseek-v4-pro" = "opencode/deepseek-v4-pro"
-  "pro"             = "opencode/deepseek-v4-pro"
-  "big-pickle"      = "opencode/big-pickle"
-  "pickle"          = "opencode/big-pickle"
-  "bigpickle"       = "opencode/big-pickle"
+  "deepseek"       = "deepseek/deepseek-v4-pro"
+  "deepseek-v4-pro" = "deepseek/deepseek-v4-pro"
+  "direct"         = "deepseek/deepseek-v4-pro"
+  "zen"            = "opencode/deepseek-v4-pro"
+  "opencode"       = "opencode/deepseek-v4-pro"
+  "big-pickle"     = "opencode/big-pickle"
+  "pickle"         = "opencode/big-pickle"
+  "bigpickle"      = "opencode/big-pickle"
 }
 
 $targetModel = $Target
 if ($aliases.ContainsKey($Target.ToLowerInvariant())) {
   $targetModel = $aliases[$Target.ToLowerInvariant()]
 }
-elseif (-not $targetModel.StartsWith("opencode/")) {
-  $targetModel = "opencode/$targetModel"
+elseif (-not ($targetModel -match "^[a-zA-Z0-9._-]+/")) {
+  $targetModel = "deepseek/$targetModel"
 }
 
-$reasoningModels = @("opencode/deepseek-v4-pro", "opencode/big-pickle")
+$reasoningModels = @(
+  "deepseek/deepseek-v4-pro",
+  "opencode/deepseek-v4-pro",
+  "opencode/big-pickle"
+)
 
 $files = @(
   "opencode.json",

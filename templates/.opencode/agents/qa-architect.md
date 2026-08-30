@@ -1,7 +1,7 @@
 ---
 description: Use to design the QA plan for a change — inspects the diff, assesses risk, selects the minimal tier, and authors progression tests (thinker only; does not run suites).
 mode: subagent
-model: opencode/deepseek-v4-pro
+model: deepseek/deepseek-v4-pro
 temperature: 0.1
 steps: 20
 permission:

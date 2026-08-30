@@ -116,7 +116,7 @@ test("opencode.json merge preserves project keys and unions instructions", () =>
   );
 
   const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
-  assert.strictEqual(merged.model, "opencode/deepseek-v4-pro");
+  assert.strictEqual(merged.model, "deepseek/deepseek-v4-pro");
   assert.strictEqual(merged.permission.edit, "deny");
   assert.ok(merged.instructions.includes("docs/my-rules.md"));
   assert.ok(merged.instructions.includes(".agents/rules/00-operating.md"));
@@ -148,6 +148,25 @@ test("qa-plan gate + memory scaffold are deployed", async () => {
 test("check-qa-scripts expects test:qa-plan", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-qa-scripts.js"));
   assert.match(src, /test:qa-plan/);
+});
+
+test("switch-model command + script are deployed to every project", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const cmd = read(path.join(target, ".opencode", "command", "switch-model.md"));
+  assert.match(cmd, /^---/, "switch-model command frontmatter");
+  assert.match(cmd, /deepseek\/deepseek-v4-pro/, "command targets the direct deepseek default");
+  assert.match(cmd, /switch-reasoning-model\.ps1/, "command invokes the deployed script");
+
+  const script = read(path.join(target, "scripts", "switch-reasoning-model.ps1"));
+  assert.match(script, /deepseek\/deepseek-v4-pro/, "script aliases map to the direct deepseek default");
+  assert.match(script, /6 reasoning-tier agents|planner\.md/, "script rewrites the reasoning agents");
+
+  // the command is re-deployed (overwritten) on update, like any harness file
+  fs.writeFileSync(path.join(target, ".opencode", "command", "switch-model.md"), "LOCAL EDIT", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.match(read(path.join(target, ".opencode", "command", "switch-model.md")), /deepseek\/deepseek-v4-pro/, "command restored on update");
 });
 
 test("qa-plan memory scaffold is preserved on re-deploy (project-owned)", async () => {

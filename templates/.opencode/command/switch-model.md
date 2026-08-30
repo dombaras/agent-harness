@@ -1,10 +1,14 @@
-﻿---
-description: Switch the reasoning-tier model between deepseek-v4-pro and big-pickle.
+---
+description: Switch the reasoning-tier model (default deepseek/deepseek-v4-pro direct).
 ---
 
-Switch the reasoning-tier model to $ARGUMENTS. Valid values are `deepseek`
-(or `pro`) for `opencode/deepseek-v4-pro`, or `pickle` (or `big-pickle`) for
-`opencode/big-pickle`.
+Change the reasoning-tier model to `$ARGUMENTS`.
+
+Valid values:
+- `deepseek` / `direct` (default) -> `deepseek/deepseek-v4-pro` (direct API key)
+- `zen` / `opencode` -> `opencode/deepseek-v4-pro` (Zen gateway)
+- `pickle` / `big-pickle` -> `opencode/big-pickle`
+- any other explicit model id (e.g. `opencode/gpt-5.6-luna`)
 
 Run:
 

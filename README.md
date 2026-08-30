@@ -98,6 +98,14 @@ warns but does not block; the guarantee only applies to registered flows.
 - `npm run test:dispatch` mechanically verifies model pins against
   `scripts/qa/models.allowlist.txt` and that `model-routing.md` does not name a
   stale model no longer pinned anywhere (doc↔config drift).
+- **`/switch-model` command** — every deploy ships an opencode command
+  (`.opencode/command/switch-model.md`) plus `scripts/switch-reasoning-model.ps1`
+  that rewrites the main `opencode.json` `model` and the six reasoning-tier
+  agents (planner, system-architect, security-engineer, diagnostics-expert,
+  product-manager, qa-architect) in one step. Aliases: `deepseek`/`direct` →
+  `deepseek/deepseek-v4-pro` (default, direct API key), `zen`/`opencode` →
+  `opencode/deepseek-v4-pro` (gateway), `pickle` → `opencode/big-pickle`, or any
+  explicit `provider/model`. Restart opencode after switching (config reads once).
 
 ## QA gates
 
