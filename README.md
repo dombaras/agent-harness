@@ -43,7 +43,8 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.agents/features/INDEX.md` | pointer to `BACKLOG.md` (per-feature doc tree root) | **project** (create-if-missing) |
 | `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
 | `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` gates + QA-script wiring check | harness (overwrite) |
-| `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history, flow-map, qa-plan, product-principles) | **project** (create-if-missing) |
+| `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history, flow-map, product-principles) | **project** (create-if-missing) |
+| `.agents/qa-plans/*` | project data (one QA plan file per change — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
 | `.gitignore` | harness-managed section (`.harness-backup/`) merged in, project entries preserved | harness (merged) |
 
@@ -69,7 +70,7 @@ single write-path for all open work: what's known, priority, evidence). When a f
 is picked up, the `features` persona authors the per-feature doc chain
 (`.agents/features/<slug>/`), each layer routed to its author persona — `intent.md`
 (product-manager) → `scope.md` (system-architect, HIGH-risk only) → `plan.md` (planner)
-→ `tests.md` (qa-architect, points to `qa-plan.md`). Ceremony is right-sized to blast
+→ `tests.md` (qa-architect, points to the feature's QA plan). Ceremony is right-sized to blast
 radius: trivial → none, low → single `intent.md`, high (auth/DB/public API/flow-siblings)
 → full chain. Docs live beside the code, are written-back before continuing when
 implementation invalidates them, and are archived on ship. `.agents/features/INDEX.md`
@@ -143,7 +144,7 @@ warns but does not block; the guarantee only applies to registered flows.
   docs, gate passes.
 - `npm run test:qa-plan` — **diff-coverage + flow-closure gate**:
   every changed CODE path must have a covering assertion (or a waivered reason) in
-  `.agents/memory/qa-plan.md` before a change is verified — and every touched flow
+  a QA plan (one per-change file under `.agents/qa-plans/`) before a change is verified — and every touched flow
   (`.agents/memory/flow-map.md`) must have every sibling surface and declared optional
   variant addressed in the plan's `## Parallel-surface & variant audit`. Kills the
   "verified by a suite that never touched the change" failure mode: a tier label never

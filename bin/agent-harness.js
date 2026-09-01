@@ -92,14 +92,16 @@ function relKey(rel) {
   return rel.split(path.sep).join("/");
 }
 
-/* `.agents/memory/*` (session memory) and `.agents/features/*` (feature doc
- * tree) are project data — scaffolded create-if-missing, never overwritten,
- * and never tracked in the manifest, exactly like the memory files. */
+/* `.agents/memory/*` (session memory), `.agents/features/*` (feature doc tree)
+ * and `.agents/qa-plans/*` (one QA plan file per change) are project data —
+ * scaffolded create-if-missing, never overwritten, and never tracked in the
+ * manifest. qa-plans is sharded per change so concurrent sessions never collide
+ * on a single shared file. */
 function isProjectScaffold(rel) {
   const parts = rel.split(path.sep);
   return (
     parts.includes(".agents") &&
-    (parts.includes("memory") || parts.includes("features"))
+    (parts.includes("memory") || parts.includes("features") || parts.includes("qa-plans"))
   );
 }
 /* The canonical `BACKLOG.md` at the repo root is also project data (a live task

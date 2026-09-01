@@ -14,8 +14,9 @@ pull the implementation work onto yourself (that is dispatched to the code
 personas).
 
 The doc tree is **complementary** to the session memory (`.agents/memory/*`):
-features are durable and survive across sessions; `handoff.md`/`qa-plan.md` track
-per-session execution. Link between them, never duplicate.
+features are durable and survive across sessions; `handoff.md` and the per-change
+`.agents/qa-plans/<feature-id>.md` track per-session execution. Link between them,
+never duplicate.
 
 ## Two layers — do not cross them
 
@@ -82,7 +83,7 @@ to the correct persona** via the `task` tool (Step Zero dispatch — see
 | `intent.md` | WHAT & WHY, product-first: Actor(s) → Need → Outcome → Acceptance criteria (+ boundaries, open questions) | `product-manager` |
 | `scope.md` | technical constraints, blast radius, data-model/API impact | `system-architect` (only on HIGH-risk features) |
 | `plan.md` | HOW, value-led: Value-first sequence (each step cites actor + outcome), owned files, per-step verification, commit boundaries, Product concepts applied | `planner` |
-| `tests.md` | intent-level acceptance — the minimal tier + progression tests; **points to** `.agents/memory/qa-plan.md`, never duplicates it | `qa-architect` |
+| `tests.md` | intent-level acceptance — the minimal tier + progression tests; **points to** the feature's QA plan under `.agents/qa-plans/`, never duplicates it | `qa-architect` |
 
 ### Right-size the ceremony to blast radius
 

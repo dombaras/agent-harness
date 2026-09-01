@@ -185,7 +185,7 @@ test("update is non-interactive (never prompts)", async () => {
   assert.ok(exists(path.join(target, ".harness.json")));
 });
 
-test("qa-plan gate + memory scaffold are deployed", async () => {
+test("qa-plan gate + sharded plan scaffold are deployed", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
@@ -194,12 +194,16 @@ test("qa-plan gate + memory scaffold are deployed", async () => {
     "test:qa-plan gate script deployed"
   );
   assert.ok(
-    exists(path.join(target, ".agents", "memory", "qa-plan.md")),
-    "qa-plan memory scaffold created (create-if-missing project file)"
+    exists(path.join(target, ".agents", "qa-plans", "README.md")),
+    "sharded qa-plans scaffold created (create-if-missing project file)"
   );
-  const qaPlan = read(path.join(target, ".agents", "memory", "qa-plan.md"));
-  assert.match(qaPlan, /## Coverage map/);
-  assert.match(qaPlan, /## Waivers/);
+  assert.ok(
+    !exists(path.join(target, ".agents", "memory", "qa-plan.md")),
+    "legacy single qa-plan.md is no longer scaffolded"
+  );
+  const qaPlans = read(path.join(target, ".agents", "qa-plans", "README.md"));
+  assert.match(qaPlans, /## Coverage map/);
+  assert.match(qaPlans, /## Waivers/);
 });
 
 test("check-qa-scripts expects test:qa-plan", () => {
@@ -243,11 +247,11 @@ test("board command is deployed to every project (read-only, local)", async () =
   assert.match(read(path.join(target, ".opencode", "command", "board.md")), /BACKLOG\.md/, "board command restored on update");
 });
 
-test("qa-plan memory scaffold is preserved on re-deploy (project-owned)", async () => {
+test("qa-plans scaffold is preserved on re-deploy (project-owned)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
-  const qaPlanPath = path.join(target, ".agents", "memory", "qa-plan.md");
+  const qaPlanPath = path.join(target, ".agents", "qa-plans", "F-001.md");
   fs.writeFileSync(qaPlanPath, "## Coverage map\n- custom path\n", "utf8");
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
@@ -545,7 +549,7 @@ test("test:qa-plan fails when a touched flow's sibling surface is not addressed"
   writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
   writeFile(
     t,
-    ".agents/memory/qa-plan.md",
+    ".agents/qa-plans/return.md",
     "## Change intent\n- change: remove condition selector from return\n\n" +
       "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
   );
@@ -563,7 +567,7 @@ test("test:qa-plan passes when every sibling surface and declared variant is aud
   writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
   writeFile(
     t,
-    ".agents/memory/qa-plan.md",
+    ".agents/qa-plans/return.md",
     "## Change intent\n- change: remove condition selector from return\n\n" +
       "## Parallel-surface & variant audit\n" +
       "- mobile/features/return/ReturnStatusSheet.tsx audited: deferred — same simplification pending, logged in handoff.md\n" +
@@ -583,7 +587,7 @@ test("test:qa-plan fails when a declared flow variant is not addressed", async (
   writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
   writeFile(
     t,
-    ".agents/memory/qa-plan.md",
+    ".agents/qa-plans/return.md",
     "## Change intent\n- change: remove condition selector from return\n\n" +
       "## Parallel-surface & variant audit\n" +
       "- mobile/features/return/ReturnStatusSheet.tsx audited: deferred — logged in handoff.md\n\n" +
@@ -602,7 +606,7 @@ test("test:qa-plan warns but does not fail when flow-map.md has no flows", async
   writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
   writeFile(
     t,
-    ".agents/memory/qa-plan.md",
+    ".agents/qa-plans/return.md",
     "## Change intent\n- change: remove condition selector from return\n\n" +
       "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
   );
@@ -610,6 +614,46 @@ test("test:qa-plan warns but does not fail when flow-map.md has no flows", async
   const r = runQaPlanGate(t);
   assert.strictEqual(r.status, 0, r.out);
   assert.match(r.out, /no flows/);
+  assert.match(r.out, /RESULT: green/);
+});
+
+test("test:qa-plan unions coverage across multiple sharded plan files", async () => {
+  const t = await scaffoldGatedTarget();
+  writeFile(t, ".agents/memory/flow-map.md", "# Flow map\n");
+  writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
+  writeFile(t, "mobile/features/return/ReturnStatusSheet.tsx", "export const y = 2;\n");
+  // two sessions each own a disjoint plan file; coverage is split across them
+  writeFile(
+    t,
+    ".agents/qa-plans/F-003.md",
+    "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
+  );
+  writeFile(
+    t,
+    ".agents/qa-plans/F-035.md",
+    "## Coverage map\n- mobile/features/return/ReturnStatusSheet.tsx -> test:quick::return\n\n## Waivers\n"
+  );
+
+  const r = runQaPlanGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /RESULT: green/);
+  // both files were consulted
+  assert.match(r.out, /F-003\.md/);
+  assert.match(r.out, /F-035\.md/);
+});
+
+test("test:qa-plan still reads the legacy .agents/memory/qa-plan.md (backward compat)", async () => {
+  const t = await scaffoldGatedTarget();
+  writeFile(t, ".agents/memory/flow-map.md", "# Flow map\n");
+  writeFile(t, "components/LendingActionDrawers.tsx", "export const x = 1;\n");
+  writeFile(
+    t,
+    ".agents/memory/qa-plan.md",
+    "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
+  );
+
+  const r = runQaPlanGate(t);
+  assert.strictEqual(r.status, 0, r.out);
   assert.match(r.out, /RESULT: green/);
 });
 

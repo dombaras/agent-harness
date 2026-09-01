@@ -10,16 +10,23 @@
  * Two stages:
  *
  *  1. Coverage map — inspects the live git diff and requires every changed CODE
- *     path to appear in the QA plan's `## Coverage map` (persisted by
+ *     path to appear in some QA plan's `## Coverage map` (persisted by
  *     qa-architect, or by the main orchestrator as the qa-architect fallback)
  *     BEFORE a change may be declared verified. Trivial diffs (copy/docs/not
  *     code) and waivered paths are exempt.
+ *
+ *     QA plans are SHARDED: one file per change under `.agents/qa-plans/`
+ *     (e.g. `F-003.md`, `return-no-condition.md`). The gate reads EVERY `.md`
+ *     under that directory — plus the legacy single-file `.agents/memory/qa-plan.md`
+ *     for backward compatibility — and unions their coverage maps, waivers, and
+ *     audits. A changed path is covered if ANY plan file names it. Each session
+ *     owns its own file, so concurrent sessions never collide on a shared plan.
  *
  *  2. Flow closure — reads `.agents/memory/flow-map.md` (project-owned): a
  *     registry of user-facing flows, each listing the SURFACES that implement the
  *     same behavior (web / mobile / API — any codebase/layer) and its optional
  *     VARIANTS. Any flow whose surfaces intersect this diff must have every
- *     sibling surface and every declared variant addressed in the plan's
+ *     sibling surface and every declared variant addressed in some plan's
  *     `## Parallel-surface & variant audit` (covered `->` or `audited:` with a
  *     reason). This is the gate that makes "Fix One, Fix All" mechanical: a
  *     web-only diff can no longer silently leave the mobile twin on old behavior.
@@ -97,6 +104,30 @@ function gitChangedFiles() {
 function isTooling(p) {
   const n = norm(p);
   return TOOLING.some((t) => n === t || n.startsWith(t));
+}
+
+/* All QA plan files to union: every `.md` under `.agents/qa-plans/` (recursive),
+ * plus the legacy single `.agents/memory/qa-plan.md` if present (backward compat
+ * for projects deployed before sharding). `README.md` files are documentation,
+ * not plans, so they are skipped. Sorted for deterministic output. */
+function planFiles(root) {
+  const files = [];
+  const collect = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) collect(abs);
+      else if (
+        entry.name.toLowerCase().endsWith(".md") &&
+        entry.name.toLowerCase() !== "readme.md"
+      )
+        files.push(abs);
+    }
+  };
+  collect(path.join(root, ".agents", "qa-plans"));
+  const legacy = path.join(root, ".agents", "memory", "qa-plan.md");
+  if (fs.existsSync(legacy)) files.push(legacy);
+  return files.sort();
 }
 
 /* Parse the QA plan file into { covered:Set, waivers:Set } of normalized paths.
@@ -238,11 +269,26 @@ if (changed.length === 0) {
   process.exit(0);
 }
 
-const plan = path.join(root, ".agents", "memory", "qa-plan.md");
-const audit = parseAudit(plan);
-const { covered, waivers } = parsePlan(plan);
+const plans = planFiles(root);
+const covered = new Set();
+const waivers = new Set();
+const audit = [];
+for (const file of plans) {
+  const p = parsePlan(file);
+  for (const c of p.covered) covered.add(c);
+  for (const w of p.waivers) waivers.add(w);
+  audit.push(...parseAudit(file));
+}
 
-console.log(`  checked against: ${path.relative(root, plan)}`);
+if (plans.length === 0) {
+  console.log(
+    "  \u26a0 no QA plan files found \u2014 add one under .agents/qa-plans/<feature-id>.md (or .agents/memory/qa-plan.md)"
+  );
+} else {
+  console.log(
+    "  checked against: " + plans.map((f) => path.relative(root, f)).join(", ")
+  );
+}
 
 const changedCode = [];
 for (const f of changed) {
@@ -262,7 +308,7 @@ for (const f of changed) {
   if (isCovered(f, covered, waivers)) pass(`${f} covered by QA plan`);
   else
     fail(
-      `${f} NOT covered \u2014 add it to the \`## Coverage map\` in qa-plan.md (or a waivered entry with a reason)`
+      `${f} NOT covered \u2014 add it to the \`## Coverage map\` in a .agents/qa-plans/<feature-id>.md plan (or a waivered entry with a reason)`
     );
 }
 

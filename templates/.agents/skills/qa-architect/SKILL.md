@@ -16,7 +16,10 @@ You own QA **strategy** — risk assessment, tier selection, and progression tes
    `Changed path -> executing test/assertion` table. A tier command matches a change only when its
    backing suite ACTUALLY exercises that path/state. Any change with no runtime assertion is a **GAP**
    — you must author a progression test for it (Progression vs regression below). Persist the same map
-   into `.agents/memory/qa-plan.md` under `## Coverage map` (this is what `npm run test:qa-plan` gates on).
+   into a per-change plan under `.agents/qa-plans/` (e.g. `.agents/qa-plans/F-003.md` or a slug like
+   `return-no-condition.md`) under `## Coverage map` (this is what `npm run test:qa-plan` gates on).
+   **Own your file — never edit another change's plan file** (that is the rule that keeps concurrent
+   sessions from colliding on a shared plan).
 3b. **Flow closure audit (MANDATORY — "fix one, fix all")** — read `.agents/memory/flow-map.md`. For
    every flow whose `surfaces:` intersect this diff, address in the plan's
    `## Parallel-surface & variant audit` EVERY sibling surface (the same behavior living in another
@@ -61,11 +64,12 @@ Author new assertion pathways in `scripts/verify-all.js` (API), `scripts/qa/rout
 
 ## Coverage gate (`npm run test:qa-plan`)
 
-Every change that touches code paths MUST have a coverage map persisted in
-`.agents/memory/qa-plan.md` (or a scoped `waived:` entry per path) before the run can be declared
+Every change that touches code paths MUST have a coverage map persisted in a per-change plan under
+`.agents/qa-plans/` (or a scoped `waived:` entry per path) before the run can be declared
 verified — AND a flow-closure audit of every touched flow's sibling surfaces and declared variants
-(`.agents/memory/flow-map.md`). The mechanical gate checks the live `git diff` against both and
-fails on any uncovered code path or unaddressed sibling/variant. If you are not dispatched for a
+(`.agents/memory/flow-map.md`). The mechanical gate checks the live `git diff` against the UNION of
+every `.agents/qa-plans/*.md` (plus the legacy `.agents/memory/qa-plan.md`) and fails on any
+uncovered code path or unaddressed sibling/variant. If you are not dispatched for a
 change, the main orchestrator performs your role and writes the same plan itself — a change with
 code-path edits and no QA plan is a rules violation.
 
