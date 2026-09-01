@@ -28,6 +28,7 @@ frontmatter:
 - **`qa-architect`** has `permission: { bash: deny }` (authors tests, never runs).
 - **`handoff`** has `permission: { bash: deny }`.
 - **`features`** (Feature Registrar) has `permission: { bash: deny }` — owns `BACKLOG.md` (repo root) + `.agents/features/*` (per-feature docs), routes each doc layer to its author persona.
+- **`docs`** (Documentation Keeper) has `permission: { bash: deny }` and `edit` allowing everything except harness/governance paths — owns `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and `docs/**` (human-facing docs); never edits code or `.agents/**` memory.
 - **Code personas** (`frontend-engineer`, `mobile-engineer`, `ui-designer`,
   `data-engineer`, `devops-engineer`, `security-engineer`, `system-architect`,
   `diagnostics-expert`) allow `edit` everywhere except governance/harness paths

@@ -202,6 +202,7 @@ const HARNESS_SCRIPTS = {
   "test:qa-plan": "node scripts/qa/check-qa-plan.js",
   "test:backlog": "node scripts/qa/check-backlog.js",
   "test:product": "node scripts/qa/check-product.js",
+  "test:docs": "node scripts/qa/check-docs.js",
 };
 
 // Merge harness gate scripts into the project's existing package.json, preserving
@@ -558,7 +559,7 @@ function printNextSteps() {
   console.log("      and `.agents/memory/flow-map.md` (register cross-surface flows so");
   console.log("      test:qa-plan enforces their sibling-surface/variant closure).");
   console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`,");
-  console.log("      `test:backlog`, `test:product`) were auto-wired into package.json \"scripts\".");
+  console.log("      `test:backlog`, `test:product`, `test:docs`) were auto-wired into package.json \"scripts\".");
   console.log("   3. Capture found items as one light row in the canonical `BACKLOG.md` (repo root);");
   console.log("      dispatch the `features` persona to author the per-feature doc chain when one is picked up.");
   console.log("   4. Restart your agent CLI (config is read once at startup).\n");

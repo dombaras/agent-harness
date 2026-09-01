@@ -2,7 +2,7 @@
 
 A reusable multi-agent harness for AI-assisted development. Ships a persona
 fleet (planner, engine engineer, mobile, QA architect/runner, security,
-architecture, product, data, devops, handoff), operating rules, model routing,
+architecture, product, data, devops, handoff, docs), operating rules, model routing,
 and QA gates — then deploys them into any project.
 
 > Extracted from a production project so the "agents / subagents / guardrails /
@@ -36,7 +36,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 |---|---|---|
 | `AGENTS.md` | root dispatcher (points to the rulebook) | harness (overwrite) |
 | `BACKLOG.md` | canonical task list (Open / Frozen / Archive / Not tracking) | **project** (create-if-missing) |
-| `.opencode/agents/*.md` | 14 persona subagent defs (with `model:` pins + `permission`/`steps`/`temperature`/`hidden`) | harness (overwrite) |
+| `.opencode/agents/*.md` | 15 persona subagent defs (with `model:` pins + `permission`/`steps`/`temperature`/`hidden`) | harness (overwrite) |
 | `.agents/AGENTS.md` | full canonical operating rulebook | harness (overwrite) |
 | `.agents/rules/00-operating.md` | always-loaded rules summary (wired into `opencode.json` `instructions`) | harness (overwrite) |
 | `.agents/skills/*/SKILL.md` | persona instruction skills | harness (overwrite) |
@@ -101,7 +101,7 @@ warns but does not block; the guarantee only applies to registered flows.
   `opencode.json` (`model` + `small_model`).
 - Personas also carry mechanical guardrails in frontmatter:
   - thinkers (`planner`, `product-manager`) → `permission: { edit: deny, bash: deny }`
-  - `qa-architect`, `handoff` → `permission: { bash: deny }`
+  - `qa-architect`, `handoff`, `docs` → `permission: { bash: deny }`
   - code personas (`frontend-engineer`, `mobile-engineer`, `ui-designer`,
     `data-engineer`, `devops-engineer`, `security-engineer`, `system-architect`,
     `diagnostics-expert`) → `permission.edit` allows everything EXCEPT
@@ -140,8 +140,12 @@ warns but does not block; the guarantee only applies to registered flows.
   `.agents/features/<slug>/` must define its user before planning/implementation.
   `intent.md` must carry Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md`
   a Value-first sequence + Product concepts applied; a `plan.md` with no `intent.md`
-  fails (never plan around an undefined user need). Backward-compatible — no feature
-  docs, gate passes.
+   fails (never plan around an undefined user need). Backward-compatible — no feature
+   docs, gate passes.
+- `npm run test:docs` — **docs-as-code gate**: `README.md` / `docs/**` must have no
+  un-substituted `{{PLACEHOLDER}}` template vars, no dangling relative links, and every
+  ADR (`docs/adr/*.md`) must carry Context → Decision → Consequences + a Status.
+  Backward-compatible — no docs, gate passes.
 - `npm run test:qa-plan` — **diff-coverage + flow-closure gate**:
   every changed CODE path must have a covering assertion (or a waivered reason) in
   a QA plan (one per-change file under `.agents/qa-plans/`) before a change is verified — and every touched flow
@@ -168,7 +172,7 @@ npx @dombaras/agent-harness update --target /path/to/project
 
 - Overwrites harness-owned files, preserves `.agents/memory/*` and `BACKLOG.md`.
 - Auto-wires the harness gate scripts (`test:dispatch`, `test:governance`,
-  `test:qa-plan`, `test:backlog`, `test:product`) into the target's `package.json` (merged, add-only).
+  `test:qa-plan`, `test:backlog`, `test:product`, `test:docs`) into the target's `package.json` (merged, add-only).
 - **Auto-commits** the harness files it changed (`chore(harness): @dombaras/agent-harness
   <old> -> <new>`) and **pushes** to origin, so the next session never sees unexplained
   modified harness files. Your unrelated uncommitted work is never staged.

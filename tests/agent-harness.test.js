@@ -88,7 +88,7 @@ test("listFiles enumerates the full template tree", () => {
   assert.ok(rels.includes(".opencode/agents/planner.md"));
   assert.ok(rels.includes("opencode.json"));
   const agentCount = rels.filter((r) => r.startsWith(".opencode/agents/") && r.endsWith(".md")).length;
-  assert.strictEqual(agentCount, 14);
+  assert.strictEqual(agentCount, 15);
 });
 
 test("agents carry mechanical enforcement frontmatter", () => {
@@ -279,6 +279,68 @@ test("features scaffold + persona parity deploy", async () => {
   fs.writeFileSync(indexPath, "| F-001 | custom row | P3 | x | backlog |\n", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.strictEqual(read(indexPath), "| F-001 | custom row | P3 | x | backlog |\n", "project INDEX preserved");
+});
+
+test("docs persona scaffold + parity deploy", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  // docs persona ships both halves of the persona↔skill parity gate
+  assert.ok(exists(path.join(target, ".opencode", "agents", "docs.md")), "docs agent deployed");
+  assert.ok(exists(path.join(target, ".agents", "skills", "docs", "SKILL.md")), "docs skill deployed");
+
+  // the test:docs gate is wired into package.json scripts
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["test:docs"], "node scripts/qa/check-docs.js");
+});
+
+function scaffoldDocsTarget() {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-docs.js"),
+    path.join(target, "scripts", "qa", "check-docs.js")
+  );
+  return target;
+}
+
+function runDocsGate(target) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-docs.js"], { cwd: target, encoding: "utf8" });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("test:docs passes with clean docs and a well-formed ADR", () => {
+  const t = scaffoldDocsTarget();
+  fs.writeFileSync(path.join(t, "README.md"), "# Demo\n\nSee [ADR](docs/adr/0001-pick.md).\n", "utf8");
+  fs.mkdirSync(path.join(t, "docs", "adr"), { recursive: true });
+  fs.writeFileSync(
+    path.join(t, "docs", "adr", "0001-pick.md"),
+    "# ADR-0001: pick a thing\n\nDate: 2026-09-01\nStatus: accepted\n\n## Context\nWe need a thing.\n\n## Decision\nWe picked the thing.\n\n## Consequences\nIt works.\n",
+    "utf8"
+  );
+  const r = runDocsGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /green/);
+});
+
+test("test:docs fails on placeholder, dangling link, and malformed ADR", () => {
+  const t = scaffoldDocsTarget();
+  fs.writeFileSync(
+    path.join(t, "README.md"),
+    "# Demo\n\nSee [missing](nope.md) and {{PROJECT_NAME}}.\n",
+    "utf8"
+  );
+  fs.mkdirSync(path.join(t, "docs", "adr"), { recursive: true });
+  fs.writeFileSync(
+    path.join(t, "docs", "adr", "0001-bad.md"),
+    "# ADR-0001\n\nStatus: accepted\n\n## Decision\nOnly a decision.\n",
+    "utf8"
+  );
+  const r = runDocsGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /un-substituted placeholder/);
+  assert.match(r.out, /dangling link/);
+  assert.match(r.out, /missing .* Context/);
 });
 
 test("BACKLOG.md is preserved on re-deploy (project-owned, never overwritten)", async () => {

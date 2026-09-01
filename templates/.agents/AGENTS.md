@@ -38,7 +38,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
 - **Delegate Big Searches**: Use the `explore` subagent for broad multi-file exploration.
 - **Prefer Memory over Re-derivation**: Persist non-obvious facts to `.agents/memory/`; read the relevant memory files before starting.
 - **Locations Map**: Read `.agents/memory/locations.md` first — it is the canonical index of sessions, logs, docs, and data. Never re-hunt for a path.
-- **Step Zero — Subagent & Model Routing (non-negotiable)**: Before touching code, satisfy the dispatch gate (`.agents/rules/00-operating.md` §Step Zero). Personas: `planner`, `frontend-engineer`, `mobile-engineer`, `ui-designer`, `qa-architect`, `qa-runner`, `security-engineer`, `product-manager`, `system-architect`, `diagnostics-expert`, `data-engineer`, `devops-engineer`, `handoff`. Dispatch via the `task` tool — each runs its own `model:`. Do NOT inline persona-owned work on the main model. Read `.agents/memory/model-routing.md` at session start. Dispatch subagents in parallel only when their work is disjoint (see below).
+- **Step Zero — Subagent & Model Routing (non-negotiable)**: Before touching code, satisfy the dispatch gate (`.agents/rules/00-operating.md` §Step Zero). Personas: `planner`, `frontend-engineer`, `mobile-engineer`, `ui-designer`, `qa-architect`, `qa-runner`, `security-engineer`, `product-manager`, `system-architect`, `diagnostics-expert`, `data-engineer`, `devops-engineer`, `handoff`, `features`, `docs`. Dispatch via the `task` tool — each runs its own `model:`. Do NOT inline persona-owned work on the main model. Read `.agents/memory/model-routing.md` at session start. Dispatch subagents in parallel only when their work is disjoint (see below).
   - **Persona map**:
     | Work area | Persona |
     |---|---|
@@ -56,6 +56,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     | Deployment / cron / secrets / build+release | `devops-engineer` |
     | Session wrap-up / handoff | `handoff` |
     | Feature backlog + per-feature doc tree (intent/scope/plan/tests) | `features` |
+    | Human-facing docs (README / CHANGELOG / docs / ADRs) | `docs` |
   - **Feature docs, not ceremony**: capture a found item as one light row in
     the canonical `BACKLOG.md` (repo root). When a feature is picked up, dispatch
     `features` to author the doc chain — `intent` (product-manager) → `scope`
