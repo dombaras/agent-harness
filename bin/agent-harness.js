@@ -7,6 +7,7 @@
  * Commands:
  *   init   [--target <dir>] [--name <project>] [--domain <desc>] [--yes] [--dry-run]
  *   update [--target <dir>] [--dry-run]
+ *   migrate-backlog [--target <dir>]
  *   list
  *   --version | -v
  *   --help | -h
@@ -16,6 +17,8 @@
  *
  * Ownership model:
  *   - `.agents/memory/*` + `.agents/features/*` is project data -> create-if-missing (never overwrite).
+ *   - `BACKLOG.md` (repo root) is project data -> create-if-missing (never overwrite); it is the
+ *     canonical task list, and `update` must never clobber the project's live board.
  *   - `opencode.json` is MERGED: harness manages $schema/model/small_model/
  *     instructions; every other key the project adds is preserved.
  *   - all other harness-owned files are overwritten. If a harness-owned file was
@@ -98,6 +101,18 @@ function isProjectScaffold(rel) {
     parts.includes(".agents") &&
     (parts.includes("memory") || parts.includes("features"))
   );
+}
+/* The canonical `BACKLOG.md` at the repo root is also project data (a live task
+ * list the project owns): scaffolded create-if-missing, never overwritten so an
+ * `update` can never clobber the project's board, and never tracked in the
+ * manifest (its content is the project's, not the harness's). */
+function isBacklogFile(rel) {
+  return relKey(rel) === "BACKLOG.md";
+}
+/* Combined: any file that must be scaffolded create-if-missing rather than
+ * overwritten. */
+function isCreateIfMissing(rel) {
+  return isProjectScaffold(rel) || isBacklogFile(rel);
 }
 /* Back-compat alias (kept for any external caller referencing the old name). */
 function isMemoryFile(rel) {
@@ -183,6 +198,8 @@ const HARNESS_SCRIPTS = {
   "test:dispatch": "node scripts/qa/check-dispatch-config.js",
   "test:governance": "node scripts/qa/governance.js",
   "test:qa-plan": "node scripts/qa/check-qa-plan.js",
+  "test:backlog": "node scripts/qa/check-backlog.js",
+  "test:product": "node scripts/qa/check-product.js",
 };
 
 // Merge harness gate scripts into the project's existing package.json, preserving
@@ -199,6 +216,25 @@ function mergePackageJson(target) {
   }
   const merged = { ...existing, scripts };
   return { text: JSON.stringify(merged, null, 2) + "\n", hadPkg };
+}
+
+// Harness-managed .gitignore entries. These are LOCAL-ONLY artifacts (never
+// committed): everything else the harness deploys is tracked by git. Entries
+// live in a marked section so `update` can re-merge them (and pick up new
+// entries) without touching the project's own ignores.
+const GITIGNORE_MARKER = "# agent-harness (managed below)";
+const HARNESS_IGNORE_ENTRIES = [".harness-backup/"];
+
+function mergeGitignore(target) {
+  const p = path.join(target, ".gitignore");
+  const existing = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
+  const lines = existing.split(/\r?\n/);
+  const idx = lines.findIndex((l) => l === GITIGNORE_MARKER);
+  const kept = idx === -1 ? lines : lines.slice(0, idx);
+  while (kept.length && kept[kept.length - 1].trim() === "") kept.pop();
+  const managed = [GITIGNORE_MARKER, ...HARNESS_IGNORE_ENTRIES, ""];
+  const out = kept.length ? [...kept, "", ...managed] : [...managed];
+  return out.join("\n");
 }
 
 // ---------------------------------------------------------------- git helpers
@@ -332,6 +368,23 @@ async function deploy(target, opts) {
     }
   }
 
+  // Merge harness-managed gitignore entries (add-only, marked section).
+  {
+    const text = mergeGitignore(target);
+    const key = ".gitignore";
+    const targetAbs = path.join(target, ".gitignore");
+    const had = fs.existsSync(targetAbs);
+    const current = had ? fs.readFileSync(targetAbs, "utf8") : null;
+    if (!had) actions.push({ rel: key, kind: "create" });
+    else if (current !== text) actions.push({ rel: key, kind: "merge" });
+    else actions.push({ rel: key, kind: "unchanged" });
+    manifest[key] = sha256(text);
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
+      fs.writeFileSync(targetAbs, text, "utf8");
+    }
+  }
+
   for (const { abs, rel } of listFiles(TEMPLATES_DIR)) {
     const key = relKey(rel);
     const targetAbs = path.join(target, rel);
@@ -350,7 +403,7 @@ async function deploy(target, opts) {
       continue;
     }
 
-    if (isProjectScaffold(rel)) {
+    if (isCreateIfMissing(rel)) {
       if (fs.existsSync(targetAbs)) {
         actions.push({ rel: key, kind: "preserve" });
       } else {
@@ -409,15 +462,15 @@ async function deploy(target, opts) {
     fs.writeFileSync(path.join(target, CONFIG_FILE), JSON.stringify(config, null, 2) + "\n", "utf8");
   }
 
-  // Auto-commit only this run's changed harness-owned files (update only).
+  // Auto-commit the files this run created/changed so nothing the harness
+  // deploys is left untracked. Runs for both `init` and `update`. Excludes only
+  // rollback artifacts; freshly-scaffolded project-data files (memory/features/
+  // BACKLOG) are committed so they start tracked, while pre-existing project
+  // data is never touched (a "preserve" never enters `changedRelsAll`).
   let commitResult = null;
-  if (isUpdate && !dryRun && !nothingToUpdate) {
-    const changedRels = changedRelsAll.filter(
-      (r) =>
-        !r.startsWith(".agents/memory/") &&
-        !r.startsWith(".agents/features/") &&
-        !r.startsWith(".harness-backup/")
-    );
+  const shouldCommit = !dryRun && (!isUpdate || !nothingToUpdate);
+  if (shouldCommit) {
+    const changedRels = changedRelsAll.filter((r) => !r.startsWith(".harness-backup/"));
     changedRels.push(CONFIG_FILE); // .harness.json reflects the new deployed version
     commitResult = commitHarnessChanges(target, changedRels, {
       commit,
@@ -498,12 +551,14 @@ function printUnpublishedWarning() {
 function printNextSteps() {
   console.log("  Next steps:");
   console.log("   1. Fill in `.agents/memory/domain-map.md`, `.agents/memory/stack-versions.md`,");
+  console.log("      `.agents/memory/product-principles.md` (actors, product concepts, UX");
+  console.log("      heuristics — the planner reads this to lead planning product-first),");
   console.log("      and `.agents/memory/flow-map.md` (register cross-surface flows so");
   console.log("      test:qa-plan enforces their sibling-surface/variant closure).");
-  console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`) were");
-  console.log('      auto-wired into package.json "scripts".');
-  console.log("   3. Capture found items as rows in `.agents/features/INDEX.md`; dispatch the `features`");
-  console.log("      persona to author the per-feature doc chain when one is picked up.");
+  console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`,");
+  console.log("      `test:backlog`, `test:product`) were auto-wired into package.json \"scripts\".");
+  console.log("   3. Capture found items as one light row in the canonical `BACKLOG.md` (repo root);");
+  console.log("      dispatch the `features` persona to author the per-feature doc chain when one is picked up.");
   console.log("   4. Restart your agent CLI (config is read once at startup).\n");
 }
 
@@ -511,12 +566,19 @@ function printUsage() {
   console.log(
     `agent-harness v${PKG.version}\n\n` +
       `Usage:\n` +
-      `  agent-harness init   [--target <dir>] [--name <project>] [--domain <desc>] [--yes] [--dry-run]\n` +
+      `  agent-harness init   [--target <dir>] [--name <project>] [--domain <desc>] [--yes] [--dry-run] [--no-commit] [--no-push]\n` +
       `  agent-harness update [--target <dir>] [--dry-run] [--no-commit] [--no-push]\n` +
+      `  agent-harness migrate-backlog [--target <dir>]\n` +
       `\n` +
-      `  update auto-commits only the harness files it changes (chore(harness): ...) and\n` +
-      `  pushes to origin by default. Use --no-commit to skip commit+push, or --no-push\n` +
-      `  to commit but not push. Your unrelated uncommitted work is never staged.\n` +
+      `  init and update auto-commit only the harness files they create/change\n` +
+      `  (chore(harness): ...) and push to origin by default. Use --no-commit to\n` +
+      `  skip commit+push, or --no-push to commit but not push. Your unrelated\n` +
+      `  uncommitted work is never staged.\n` +
+      `\n` +
+      `  migrate-backlog consolidates any live \`.agents/features/INDEX.md\` F-rows and\n` +
+      `  \`.agents/memory/todo.md\` into the canonical BACKLOG.md, then rewrites those\n` +
+      `  files as pointers. Idempotent: re-running never duplicates rows or deletes a\n` +
+      `  source before BACKLOG.md is written and verified.\n` +
       `\n` +
       `  agent-harness list\n` +
       `  agent-harness --version | -v\n` +
@@ -534,6 +596,222 @@ function printPersonas(templatesDir) {
   }
 }
 
+// ---------------------------------------------------------------- backlog migration
+
+/* Split a markdown table row on unescaped `|` (respects `\|` inside cells). */
+function splitCells(row) {
+  const cells = [];
+  let cur = "";
+  let esc = false;
+  for (const ch of row) {
+    if (esc) {
+      cur += ch;
+      esc = false;
+    } else if (ch === "\\") {
+      esc = true;
+      cur += ch;
+    } else if (ch === "|") {
+      cells.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+/* Parse markdown table data rows, skipping headers and separator/empty rows. */
+function parseTableRows(src) {
+  const rows = [];
+  for (const raw of String(src || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!/^\|.*\|$/.test(line)) continue;
+    const cells = splitCells(line.slice(1, -1));
+    if (cells.every((c) => /^[-:|\s]*$/.test(c))) continue; // separator
+    if (cells.every((c) => c.trim() === "")) continue; // empty row
+    if (
+      cells.some((c) =>
+        /^(ID|[Ii]d|P|Task|Item|Priority|Context|Status|Evidence|Why frozen|Closed|Why frozen \/ reopen when)$/.test(c)
+      )
+    )
+      continue; // header
+    rows.push(cells);
+  }
+  return rows;
+}
+
+/* Parse markdown list items (bullets / checkboxes), preserving the text. */
+function parseListItems(src) {
+  const items = [];
+  for (const raw of String(src || "").split(/\r?\n/)) {
+    const m = raw.match(/^\s*[-*]\s+(?:\[[ x]\]\s*)?(.+)$/);
+    if (m && m[1].trim()) items.push(m[1].trim());
+  }
+  return items;
+}
+
+/* Map an old INDEX.md F-row (ID | Item | Priority | Context | Status) into the
+ * BACKLOG schema. Returns null for rows that carry no usable identity. */
+function mapIndexRow(cells) {
+  const id = (cells[0] || "").trim();
+  if (!id) return null;
+  const task = (cells[1] || "").trim() || id;
+  const rawPriority = (cells[2] || "").trim();
+  const context = (cells[3] || "").trim();
+  const status = (cells[4] || "").trim().toLowerCase();
+
+  // Reconcile the priority direction: old `P0` (blocking) == new `P1`.
+  let priority = rawPriority;
+  if (priority === "P0") priority = "P1";
+  if (!/^P[1-4]$/.test(priority)) priority = "?";
+
+  const evidence = context || "?";
+  const base = { id, task, priority, evidence };
+
+  if (/^(shipped|archived|done|closed)$/.test(status)) {
+    return { ...base, section: "archive", closed: status };
+  }
+  if (status === "frozen") {
+    return { ...base, section: "frozen", reopen: context || "frozen (migrated); reopen when evidence recurs" };
+  }
+  return { ...base, section: "open" };
+}
+
+/* Ensure the canonical BACKLOG.md exists (create-if-missing from the template),
+ * then — ONLY when it is still empty — consolidate a live INDEX.md F-rows list
+ * and a live todo.md list into it, and rewrite both as pointers. Idempotent:
+ * a re-run finds BACKLOG.md already populated and leaves it untouched. */
+function migrateBacklog(target) {
+  const backlogPath = path.join(target, "BACKLOG.md");
+  const indexPath = path.join(target, ".agents", "features", "INDEX.md");
+  const todoPath = path.join(target, ".agents", "memory", "todo.md");
+  const templatePath = path.join(TEMPLATES_DIR, "BACKLOG.md");
+
+  const summary = { open: 0, frozen: 0, archived: 0, sources: [], createdBacklog: false, rewritten: [] };
+
+  // 1. Scaffold BACKLOG.md if missing (never overwrite an existing board).
+  if (!fs.existsSync(backlogPath)) {
+    if (!fs.existsSync(templatePath)) {
+      throw new Error("templates/BACKLOG.md not found next to this CLI.");
+    }
+    fs.mkdirSync(path.dirname(backlogPath), { recursive: true });
+    fs.writeFileSync(backlogPath, fs.readFileSync(templatePath, "utf8"), "utf8");
+    summary.createdBacklog = true;
+  }
+
+  // 2. Only merge into an empty board — idempotency guard against duplicates.
+  const existing = fs.readFileSync(backlogPath, "utf8");
+  const alreadyHasRows = parseTableRows(existing).length > 0;
+  if (alreadyHasRows) {
+    summary.skipped = "BACKLOG.md already has rows — nothing merged";
+    return summary;
+  }
+
+  // 3. Read the two sources.
+  const open = [];
+  const frozen = [];
+  const archive = [];
+  const seenIds = new Set();
+
+  const push = (row) => {
+    if (!row || seenIds.has(row.id)) return;
+    seenIds.add(row.id);
+    if (row.section === "archive") archive.push(row);
+    else if (row.section === "frozen") frozen.push(row);
+    else open.push(row);
+  };
+
+  if (fs.existsSync(indexPath)) {
+    const indexSrc = fs.readFileSync(indexPath, "utf8");
+    const isPointer = /BACKLOG\.md/.test(indexSrc);
+    if (!isPointer) {
+      summary.sources.push(".agents/features/INDEX.md");
+      for (const row of parseTableRows(indexSrc)) push(mapIndexRow(row));
+    }
+  }
+
+  let tCounter = 0;
+  if (fs.existsSync(todoPath)) {
+    const todoSrc = fs.readFileSync(todoPath, "utf8");
+    const isPointer = /BACKLOG\.md/.test(todoSrc);
+    if (!isPointer) {
+      summary.sources.push(".agents/memory/todo.md");
+      for (const item of parseListItems(todoSrc)) {
+        tCounter += 1;
+        push({
+          id: `T-${String(tCounter).padStart(3, "0")}`,
+          task: item,
+          priority: "?",
+          evidence: ".agents/memory/todo.md",
+          section: "open",
+        });
+      }
+    }
+  }
+
+  // 4. Emit BACKLOG.md only if there was something to migrate.
+  const total = open.length + frozen.length + archive.length;
+  if (total === 0) {
+    summary.skipped = "no live rows found in INDEX.md / todo.md";
+    return summary;
+  }
+
+  const toRow = (r) => `| ${r.id} | ${r.priority} | ${r.task} | ${r.evidence} |`;
+  const frozenRow = (r) => `| ${r.id} | ${r.task} | ${r.reopen} |`;
+  const archiveRow = (r) => `| ${r.id} | ${r.task} | ${r.closed} |`;
+
+  const table = (headers, rows) =>
+    [`| ${headers.join(" | ")} |`, `|${headers.map(() => "---").join("|")}|`, ...rows].join("\n");
+
+  const openBlock =
+    open.length === 0
+      ? ""
+      : `## Open\n\nSorted by priority (P1 → P4).\n\n${table(["ID", "P", "Task", "Evidence"], open.map(toRow))}`;
+  const frozenBlock =
+    frozen.length === 0
+      ? ""
+      : `## Frozen\n\nParked, not deleted. Reopen only when the stated condition recurs.\n\n${table(
+          ["ID", "Task", "Why frozen / reopen when"],
+          frozen.map(frozenRow)
+        )}`;
+  const archiveBlock =
+    archive.length === 0
+      ? ""
+      : `## Archive (shipped · done)\n\n${table(["ID", "Task", "Closed"], archive.map(archiveRow))}`;
+
+  // Rebuild the board: keep the template's usage header, replace the body.
+  const header = existing.split(/^## Active \/ next/m)[0].trim();
+  const body = [header, "## Active / next\n", openBlock, frozenBlock, archiveBlock, "## Not tracking (leave-in-place, no action)\n"]
+    .filter((b) => b.length > 0)
+    .join("\n\n") + "\n";
+
+  fs.writeFileSync(backlogPath, body, "utf8");
+
+  // 5. Verify BACKLOG.md is written and non-empty BEFORE rewriting sources.
+  const verify = fs.readFileSync(backlogPath, "utf8");
+  if (parseTableRows(verify).length === 0) {
+    throw new Error("refusing to rewrite sources: BACKLOG.md was not written with rows");
+  }
+
+  // 6. Rewrite sources as pointers (never before the board is verified).
+  const pointerFor = (name) =>
+    `# ${name}\n\nThe backlog lives in \`BACKLOG.md\` (repo root). Per-feature docs still\nlive in \`.agents/features/<slug>/\`. This file is a pointer, not a list.\n`;
+  if (fs.existsSync(indexPath) && !/BACKLOG\.md/.test(fs.readFileSync(indexPath, "utf8"))) {
+    fs.writeFileSync(indexPath, pointerFor("Features"), "utf8");
+    summary.rewritten.push(".agents/features/INDEX.md");
+  }
+  if (fs.existsSync(todoPath) && !/BACKLOG\.md/.test(fs.readFileSync(todoPath, "utf8"))) {
+    fs.writeFileSync(todoPath, pointerFor("Todo"), "utf8");
+    summary.rewritten.push(".agents/memory/todo.md");
+  }
+
+  summary.open = open.length;
+  summary.frozen = frozen.length;
+  summary.archived = archive.length;
+  return summary;
+}
+
 // ---------------------------------------------------------------- commands
 
 async function init(target, flags) {
@@ -547,10 +825,11 @@ async function init(target, flags) {
     yes: !!flags["--yes"],
     dryRun: !!flags["--dry-run"],
     isUpdate: false,
-    commit: false,
-    push: false,
+    commit: !flags["--no-commit"],
+    push: !flags["--no-commit"] && !flags["--no-push"],
   });
   printSummary(result, false);
+  printCommitResult(result);
   if (!result.dryRun) printNextSteps();
 }
 
@@ -628,6 +907,24 @@ function main() {
         process.exit(1);
       });
       break;
+    case "migrate-backlog":
+      try {
+        const s = migrateBacklog(target);
+        if (s.skipped) {
+          console.log(`\n[migrate-backlog] ${s.skipped}`);
+        } else {
+          console.log(
+            `\n[migrate-backlog] consolidated ${s.open} open · ${s.frozen} frozen · ${s.archived} archived`
+          );
+          if (s.sources.length) console.log(`  read from: ${s.sources.join(", ")}`);
+          if (s.rewritten.length) console.log(`  rewritten as pointers: ${s.rewritten.join(", ")}`);
+          if (s.createdBacklog) console.log("  created BACKLOG.md from the template");
+        }
+      } catch (e) {
+        console.error(e);
+        process.exit(1);
+      }
+      break;
     case "list":
       printPersonas(TEMPLATES_DIR);
       break;
@@ -650,6 +947,11 @@ module.exports = {
   resolveVars,
   mergeOpencodeJson,
   deploy,
+  migrateBacklog,
+  splitCells,
+  parseTableRows,
+  parseListItems,
+  mapIndexRow,
   printPersonas,
   TEMPLATES_DIR,
   CONFIG_FILE,

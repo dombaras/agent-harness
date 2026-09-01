@@ -42,7 +42,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
   - **Persona map**:
     | Work area | Persona |
     |---|---|
-    | Task decomposition → dispatch plan | `planner` |
+    | Task decomposition → value-led dispatch plan (product-first) | `planner` |
     | Web app (React/Next.js/Tailwind/shadcn) | `frontend-engineer` |
     | Mobile native (Expo/React Native) | `mobile-engineer` |
     | Design system / tokens / shared components | `ui-designer` |
@@ -57,7 +57,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     | Session wrap-up / handoff | `handoff` |
     | Feature backlog + per-feature doc tree (intent/scope/plan/tests) | `features` |
   - **Feature docs, not ceremony**: capture a found item as one light row in
-    `.agents/features/INDEX.md` (backlog). When a feature is picked up, dispatch
+    the canonical `BACKLOG.md` (repo root). When a feature is picked up, dispatch
     `features` to author the doc chain — `intent` (product-manager) → `scope`
     (system-architect, HIGH-risk only) → `plan` (planner) → `tests` (qa-architect) —
     each by its author persona. Match ceremony to blast radius: trivial → none,
@@ -65,6 +65,13 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     back first (update the doc before continuing when implementation invalidates it),
     archive on ship. Feature docs are durable and complementary to the per-session
     `qa-plan.md`/`handoff.md`; the `tests` doc points to `qa-plan.md`, never duplicates it.
+  - **Product intent is never optional (no silent skip)**: planning is
+    product-first. `intent.md` must define Actor(s) → Need → Outcome → Acceptance
+    criteria, and `plan.md` a Value-first sequence + Product concepts applied, read
+    against `.agents/memory/product-principles.md`. `npm run test:product` fails any
+    feature doc missing these, or a `plan.md` with no `intent.md` — mirroring the
+    "QA planning is never optional" ladder: `product-manager`/`planner` →
+    orchestrator fallback → (never a silent skip).
   - **QA planning is never optional (no silent skip)**: every change that touches
     code paths MUST get a QA plan before it is verified. The plan is authored by
     `qa-architect` (thinker). If `qa-architect` is not dispatched — for ANY reason,
@@ -90,7 +97,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
 - Split QA personas: `qa-architect` (thinks — inspects the diff, audits gaps, selects the minimal tier, authors progression tests) vs `qa-runner` (does — executes the chosen tier, reports pass/fail verbatim). The thinker never runs; the doer never designs.
 - **Static ≠ Runtime rule**: never declare UI/mobile/API changes verified from static typing alone — execute a real runtime path.
 - **Coverage ≠ label rule**: a tier command verifies a change ONLY when its backing suite actually exercises the changed path. A suite that touches unrelated code proves nothing about this change. `npm run test:qa-plan` mechanically asserts every changed code path is covered by the QA plan (or waivered) before verification — and, via `flow-map.md`, that every touched flow's sibling surfaces and declared optional variants are addressed in the plan's audit (the "fix one, fix all" gate: a web-only diff must still say what the mobile twin does).
-- **Tiers** (commands are **project-provided** — the target project must define them; the harness ships only `test:dispatch`, `test:governance`, and `test:qa-plan`):
+- **Tiers** (commands are **project-provided** — the target project must define them; the harness ships only its own gates: `test:dispatch`, `test:governance`, `test:qa-plan`, `test:backlog`, `test:product`):
   | Tier | Scope | Command |
   |---|---|---|
   | 1 | UI/CSS/mobile/copy | `npm run test:quick` |
@@ -103,9 +110,12 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
 
 ## 7. Definition of Done & Continuous Backup
 
-Every completed task passes this gate, in order:
+Every completed task closes with this gate. **QA gates dev work only:** steps 0-2
+run when the session touched code paths — a backlog-only (or docs-only) change skips
+them. Steps 3-5 are the unconditional session close; they are NOT gated by QA.
 
-0. **Feature Completeness Gate**:
+0. **Feature Completeness Gate** (code changes only):
+   - [ ] Product-first: `intent.md` (actor/need/outcome/acceptance) + value-led `plan.md` present — `npm run test:product` green (feature work only).
    - [ ] 5 UI states handled on every affected screen (list them).
    - [ ] No `catch` blocks that only `console.warn` without user-facing feedback.
    - [ ] Haptic/feedback consistency for every user-initiated action.
@@ -113,10 +123,11 @@ Every completed task passes this gate, in order:
    - [ ] Cross-screen audit if a new UX pattern was introduced.
    - [ ] No modified file over ~500 lines without extracting components.
    - [ ] No blanket file-level `eslint-disable`/`@ts-nocheck`/`@ts-ignore` suppressions (line-level only, each with a reason).
-1. **QA tier** — `qa-architect` inspects the diff, picks the tier BY COVERAGE (not path-label), records the coverage map in `.agents/memory/qa-plan.md`, and authors progression tests for any GAP; if `qa-architect` is not dispatched the orchestrator plans in its place. `qa-runner` executes and makes it pass (§6). A change is not verified until `npm run test:qa-plan` passes: every changed code path covered or waivered, **and** every touched flow (`.agents/memory/flow-map.md`) has every sibling surface and declared variant addressed in the plan's `## Parallel-surface & variant audit`, **AND** the executed tier exercised the modified path.
-2. **Security check** — apply `security-engineer` when the change touches data/auth/input/secrets/deps.
-3. **Commit** — concise `feat:` / `fix:` / `refactor:` message.
-4. **Push** — `git push origin main`.
+1. **QA tier** (code changes only) — `qa-architect` inspects the diff, picks the tier BY COVERAGE (not path-label), records the coverage map in `.agents/memory/qa-plan.md`, and authors progression tests for any GAP; if `qa-architect` is not dispatched the orchestrator plans in its place. `qa-runner` executes and makes it pass (§6). A change is not verified until `npm run test:qa-plan` passes: every changed code path covered or waivered, **and** every touched flow (`.agents/memory/flow-map.md`) has every sibling surface and declared variant addressed in the plan's `## Parallel-surface & variant audit`, **AND** the executed tier exercised the modified path.
+2. **Security check** (code changes only) — apply `security-engineer` when the change touches data/auth/input/secrets/deps.
+3. **Backlog write-back** (always) — move every task this session shipped from `Open` to `Archive (shipped · done)` in `BACKLOG.md` (with date/commit), then stage it explicitly: `git add BACKLOG.md` (it starts untracked — `git commit -am` / `git commit` without `add` will NOT pick it up). The board syncs across sessions only through git, so this delta is committed with the code, never left uncommitted.
+4. **Commit** (always) — concise `feat:` / `fix:` / `refactor:` message, including the `BACKLOG.md` delta.
+5. **Push** (always) — `git push origin main`.
 - **Mechanical floor**: a pre-push hook should run `npm run test:quick` (project-provided; the harness does not install git hooks).
 - **Lean permissions**: grant only the narrowest `git`/`gh` action needed; escalate only after a command has actually failed.
 - Git may not be on PATH in the default shell — use the full path (`.agents/memory/locations.md`).

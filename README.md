@@ -11,8 +11,9 @@ and QA gates — then deploys them into any project.
 
 ## Why
 
-- The agent harness is tooling, not application code. It should not be committed
-  into every app repo.
+- The agent harness is tooling, not application code. Its source lives in the
+  npm package — you deploy it with `init`/`update` rather than hand-copying it
+  into every repo.
 - One canonical, versioned source of truth for personas/rules/QA tiers, deployed
   on demand and updatable via `npx @dombaras/agent-harness update`.
 
@@ -34,15 +35,17 @@ npx @dombaras/agent-harness init --target . --dry-run
 | Path | Content | Ownership |
 |---|---|---|
 | `AGENTS.md` | root dispatcher (points to the rulebook) | harness (overwrite) |
+| `BACKLOG.md` | canonical task list (Open / Frozen / Archive / Not tracking) | **project** (create-if-missing) |
 | `.opencode/agents/*.md` | 14 persona subagent defs (with `model:` pins + `permission`/`steps`/`temperature`/`hidden`) | harness (overwrite) |
 | `.agents/AGENTS.md` | full canonical operating rulebook | harness (overwrite) |
 | `.agents/rules/00-operating.md` | always-loaded rules summary (wired into `opencode.json` `instructions`) | harness (overwrite) |
 | `.agents/skills/*/SKILL.md` | persona instruction skills | harness (overwrite) |
-| `.agents/features/INDEX.md` | feature backlog + status board (durable feature doc tree root) | **project** (create-if-missing) |
+| `.agents/features/INDEX.md` | pointer to `BACKLOG.md` (per-feature doc tree root) | **project** (create-if-missing) |
 | `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
 | `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` gates + QA-script wiring check | harness (overwrite) |
-| `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history, flow-map, qa-plan) | **project** (create-if-missing) |
+| `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history, flow-map, qa-plan, product-principles) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
+| `.gitignore` | harness-managed section (`.harness-backup/`) merged in, project entries preserved | harness (merged) |
 
 ### `opencode.json` is merged, not clobbered
 
@@ -61,14 +64,27 @@ scaffolds for you to fill in — the skills and rules reference memory instead o
 hardcoding domain assumptions.
 
 **Features (`.agents/features/`)** — the durable, feature-centric plan of record. A
-found item is captured as one light row in `.agents/features/INDEX.md` (backlog: what's
-known, priority, context, status). When a feature is picked up, the `features` persona
-authors the per-feature doc chain (`.agents/features/<slug>/`), each layer routed to its
-author persona — `intent.md` (product-manager) → `scope.md` (system-architect, HIGH-risk
-only) → `plan.md` (planner) → `tests.md` (qa-architect, points to `qa-plan.md`). Ceremony
-is right-sized to blast radius: trivial → none, low → single `intent.md`, high (auth/DB/
-public API/flow-siblings) → full chain. Docs live beside the code, are written-back before
-continuing when implementation invalidates them, and are archived on ship. See
+found item is captured as one light row in the canonical `BACKLOG.md` (repo root; the
+single write-path for all open work: what's known, priority, evidence). When a feature
+is picked up, the `features` persona authors the per-feature doc chain
+(`.agents/features/<slug>/`), each layer routed to its author persona — `intent.md`
+(product-manager) → `scope.md` (system-architect, HIGH-risk only) → `plan.md` (planner)
+→ `tests.md` (qa-architect, points to `qa-plan.md`). Ceremony is right-sized to blast
+radius: trivial → none, low → single `intent.md`, high (auth/DB/public API/flow-siblings)
+→ full chain. Docs live beside the code, are written-back before continuing when
+implementation invalidates them, and are archived on ship. `.agents/features/INDEX.md`
+is a pointer to `BACKLOG.md`. See `.agents/skills/features/SKILL.md`.
+
+**Product-first planning (`.agents/memory/product-principles.md`)** — the project-owned
+product concepts (actors, product concepts, UX heuristics, design language, key journeys,
+value-maximization rules) that LEAD planning. The `planner` reads it (plus a feature's
+`intent.md`) before emitting a dispatch plan and sequences work value-first — smallest
+slice that delivers the core outcome first — rather than by tech dependency. `intent.md`
+must define Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md` a Value-first
+sequence + Product concepts applied; `npm run test:product` fails a feature that reaches
+planning/implementation without them (a plan with no intent, or an intent that never
+names a user/need/outcome). Fill `product-principles.md` in at `init`; evolve it as the
+product does — see `.agents/skills/planner/SKILL.md` and
 `.agents/skills/features/SKILL.md`.
 
 **Flow map (`.agents/memory/flow-map.md`)** — the project-owned registry powering the
@@ -106,11 +122,25 @@ warns but does not block; the guarantee only applies to registered flows.
   `deepseek/deepseek-v4-pro` (default, direct API key), `zen`/`opencode` →
   `opencode/deepseek-v4-pro` (gateway), `pickle` → `opencode/big-pickle`, or any
   explicit `provider/model`. Restart opencode after switching (config reads once).
+- **`/board` command** — every deploy ships an opencode command
+  (`.opencode/command/board.md`) that reads the local `BACKLOG.md` and renders a
+  clean task list (Priority · Title · Short description). Read-only, no git — the
+  local file is the source of truth.
 
 ## QA gates
 
 - `npm run test:dispatch` — persona model-pin preflight + persona↔skill parity + model-routing↔pin drift check.
 - `npm run test:governance` — session wrap-up dispatch-log enforcement.
+- `npm run test:backlog` — canonical single-backlog gate: `BACKLOG.md` is the one
+  source of truth; status/priority enums, frozen-reopen conditions, non-empty
+  priority/evidence, no duplicate IDs, and `INDEX.md`/`todo.md` must be pointers (not
+  live lists).
+- `npm run test:product` — **product/UX-first gate**: every feature doc in
+  `.agents/features/<slug>/` must define its user before planning/implementation.
+  `intent.md` must carry Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md`
+  a Value-first sequence + Product concepts applied; a `plan.md` with no `intent.md`
+  fails (never plan around an undefined user need). Backward-compatible — no feature
+  docs, gate passes.
 - `npm run test:qa-plan` — **diff-coverage + flow-closure gate**:
   every changed CODE path must have a covering assertion (or a waivered reason) in
   `.agents/memory/qa-plan.md` before a change is verified — and every touched flow
@@ -135,14 +165,16 @@ scripts are **project-provided** — the rulebook references them, and
 npx @dombaras/agent-harness update --target /path/to/project
 ```
 
-- Overwrites harness-owned files, preserves `.agents/memory/*`.
+- Overwrites harness-owned files, preserves `.agents/memory/*` and `BACKLOG.md`.
 - Auto-wires the harness gate scripts (`test:dispatch`, `test:governance`,
-  `test:qa-plan`) into the target's `package.json` (merged, add-only).
-- **Auto-commits** only the harness files it changed (`chore(harness): @dombaras/agent-harness
+  `test:qa-plan`, `test:backlog`, `test:product`) into the target's `package.json` (merged, add-only).
+- **Auto-commits** the harness files it changed (`chore(harness): @dombaras/agent-harness
   <old> -> <new>`) and **pushes** to origin, so the next session never sees unexplained
   modified harness files. Your unrelated uncommitted work is never staged.
   - `--no-commit` to skip commit+push, `--no-push` to commit but not push.
-  - `init` never commits.
+  - `init` auto-commits + pushes by default too: it commits everything it scaffolds
+    (including `.agents/memory/*`, `.agents/features/*`, and `BACKLOG.md`) so a fresh
+    project starts fully tracked and no harness file is left untracked.
   - Harness-owned paths are **force-added**, so a project that gitignores deployment
     artifacts (an inherited `.agents/` `.opencode/` `AGENTS.md` pattern) still gets the
     harness commit instead of a raw `git add` failure that silently skips it — force-added
@@ -160,7 +192,23 @@ npx @dombaras/agent-harness update --target /path/to/project
   last deploy (tracked by checksum in `.harness.json`), it is backed up to
   `.harness-backup/<timestamp>/` before overwrite.
 - `opencode.json` is merged (project keys preserved).
+- **Managed `.gitignore`**: the harness merges a marked section (`.harness-backup/`, its
+  local rollback artifacts) into the project's `.gitignore`, preserving every project entry.
+  New harness files are tracked (committed), not ignored — so they don't need a gitignore
+  change. If the harness ever adds a new local-only artifact, `update` re-merges the entry.
 - `--dry-run` previews the plan without writing.
+
+### Backlog migration (`migrate-backlog`)
+
+```bash
+npx @dombaras/agent-harness migrate-backlog --target /path/to/project
+```
+
+Consolidates any live `.agents/features/INDEX.md` F-rows and
+`.agents/memory/todo.md` list items into the canonical `BACKLOG.md`, then rewrites
+both as pointers. Idempotent — re-running never duplicates rows (it only merges into
+an empty board) — and never deletes a source before `BACKLOG.md` is written and
+verified. Logs a summary: `N open · M frozen · K archived`.
 
 ## Develop
 

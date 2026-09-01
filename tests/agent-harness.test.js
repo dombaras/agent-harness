@@ -23,9 +23,66 @@ test("substitute replaces placeholders", () => {
   assert.strictEqual(h.substitute("{{A}}/{{B}}", { A: "x", B: "y" }), "x/y");
 });
 
+test("version is bumped whenever harness-owned files change (repo hygiene)", () => {
+  // This guard only has teeth locally (uncommitted harness changes). In CI it
+  // checks out a clean tree and is a no-op. It exists to catch the recurring
+  // "forgot to bump package.json" mistake — including the case where a version
+  // was already PUBLISHED from an uncommitted tree and more changes landed on
+  // top of it (the registry, not git HEAD, is the real "already released" marker).
+  let changed = [];
+  try {
+    changed = execFileSync("git", ["diff", "HEAD", "--name-only"], { encoding: "utf8" })
+      .split(/\r?\n/)
+      .filter(Boolean);
+  } catch {
+    return; // not a git repo or no HEAD — nothing to guard
+  }
+  const harnessOwned = changed.filter(
+    (f) => f.startsWith("bin/") || f.startsWith("templates/")
+  );
+  if (harnessOwned.length === 0) return;
+
+  let released = "";
+  try {
+    released = JSON.parse(
+      execFileSync("git", ["show", "HEAD:package.json"], { encoding: "utf8" })
+    ).version;
+  } catch {
+    return; // can't determine the committed version — skip
+  }
+
+  // Prefer the last PUBLISHED version (what users actually have). If offline or
+  // unpublished, fall back to git HEAD.
+  try {
+    const p = spawnSync(
+      "npm",
+      ["view", "@dombaras/agent-harness", "version", "--json", "--fetch-timeout=5000", "--fetch-retries=0"],
+      { encoding: "utf8", timeout: 10000 }
+    );
+    if (p.status === 0 && p.stdout.trim()) {
+      let v = null;
+      try {
+        v = JSON.parse(p.stdout.trim());
+      } catch {
+        v = p.stdout.trim();
+      }
+      if (v) released = String(v);
+    }
+  } catch {
+    /* offline — fall back to git HEAD */
+  }
+
+  assert.notStrictEqual(
+    h.PKG.version,
+    released,
+    `harness files changed (${harnessOwned.join(", ")}) but package.json version is still "${h.PKG.version}" (last released "${released}") — bump it`
+  );
+});
+
 test("listFiles enumerates the full template tree", () => {
   const rels = h.listFiles(h.TEMPLATES_DIR).map((f) => f.rel.replace(/\\/g, "/"));
   assert.ok(rels.includes("AGENTS.md"));
+  assert.ok(rels.includes("BACKLOG.md"));
   assert.ok(rels.includes(".agents/AGENTS.md"));
   assert.ok(rels.includes(".agents/rules/00-operating.md"));
   assert.ok(rels.includes(".opencode/agents/planner.md"));
@@ -169,6 +226,23 @@ test("switch-model command + script are deployed to every project", async () => 
   assert.match(read(path.join(target, ".opencode", "command", "switch-model.md")), /deepseek\/deepseek-v4-pro/, "command restored on update");
 });
 
+test("board command is deployed to every project (read-only, local)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const cmd = read(path.join(target, ".opencode", "command", "board.md"));
+  assert.match(cmd, /^---/, "board command frontmatter");
+  assert.match(cmd, /BACKLOG\.md/, "command reads the local canonical board");
+  assert.match(cmd, /Priority/, "command renders a priority column");
+  assert.match(cmd, /Short description/, "command renders a short-description column");
+  assert.match(cmd, /do NOT run git/, "command does not pull from git");
+
+  // the command is re-deployed (overwritten) on update, like any harness file
+  fs.writeFileSync(path.join(target, ".opencode", "command", "board.md"), "LOCAL EDIT", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.match(read(path.join(target, ".opencode", "command", "board.md")), /BACKLOG\.md/, "board command restored on update");
+});
+
 test("qa-plan memory scaffold is preserved on re-deploy (project-owned)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
@@ -188,6 +262,10 @@ test("features scaffold + persona parity deploy", async () => {
   assert.ok(exists(path.join(target, ".agents", "features", "INDEX.md")), "features INDEX scaffold created");
   assert.ok(read(path.join(target, ".agents", "features", "INDEX.md")).includes("# Features"));
 
+  // BACKLOG.md is scaffolded create-if-missing at the repo root (project-owned)
+  assert.ok(exists(path.join(target, "BACKLOG.md")), "BACKLOG.md scaffold created");
+  assert.ok(read(path.join(target, "BACKLOG.md")).includes("# BACKLOG"));
+
   // features persona ships both halves of the persona↔skill parity gate
   assert.ok(exists(path.join(target, ".opencode", "agents", "features.md")), "features agent deployed");
   assert.ok(exists(path.join(target, ".agents", "skills", "features", "SKILL.md")), "features skill deployed");
@@ -197,6 +275,23 @@ test("features scaffold + persona parity deploy", async () => {
   fs.writeFileSync(indexPath, "| F-001 | custom row | P3 | x | backlog |\n", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.strictEqual(read(indexPath), "| F-001 | custom row | P3 | x | backlog |\n", "project INDEX preserved");
+});
+
+test("BACKLOG.md is preserved on re-deploy (project-owned, never overwritten)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const backlogPath = path.join(target, "BACKLOG.md");
+  fs.writeFileSync(backlogPath, "# BACKLOG — canonical task list\n\n## Open\n\n| ID | P | Task | Evidence |\n|---|---|---|---|\n| F-099 | P2 | my live row | user report |\n", "utf8");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(backlogPath).includes("F-099"), true, "project BACKLOG.md rows preserved");
+});
+
+test("deploy does not ship a todo.md", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  assert.ok(!exists(path.join(target, ".agents", "memory", "todo.md")), "no todo.md scaffold is created");
 });
 
 test("deploy auto-wires harness gate scripts into package.json, preserving others", async () => {
@@ -216,6 +311,8 @@ test("deploy auto-wires harness gate scripts into package.json, preserving other
   assert.strictEqual(pkg.scripts["test:dispatch"], "node scripts/qa/check-dispatch-config.js");
   assert.strictEqual(pkg.scripts["test:governance"], "node scripts/qa/governance.js");
   assert.strictEqual(pkg.scripts["test:qa-plan"], "node scripts/qa/check-qa-plan.js");
+  assert.strictEqual(pkg.scripts["test:backlog"], "node scripts/qa/check-backlog.js");
+  assert.strictEqual(pkg.scripts["test:product"], "node scripts/qa/check-product.js");
 });
 
 test("package.json merge does not downgrade a project-customized harness gate", async () => {
@@ -365,6 +462,51 @@ test("update --no-commit skips git", async () => {
   assert.ok(!log.some((l) => /chore\(harness\)/.test(l)), "no harness commit was created");
 });
 
+test("init auto-commits everything it deploys (scaffolds + BACKLOG.md tracked)", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+
+  const result = await h.deploy(target, {
+    name: "Demo",
+    yes: true,
+    isUpdate: false,
+    commit: true,
+    push: false,
+  });
+
+  assert.strictEqual(result.commitResult.committed, true, "init created a commit");
+  assert.match(git(target, ["log", "-1", "--pretty=%s"]), /^chore\(harness\):/);
+  const tracked = git(target, ["ls-files"]).split(/\r?\n/).filter(Boolean);
+  assert.ok(tracked.includes("BACKLOG.md"), "BACKLOG.md tracked after init");
+  assert.ok(tracked.includes(".agents/memory/handoff.md"), "memory scaffold tracked after init");
+  assert.ok(tracked.includes(".agents/features/INDEX.md"), "features scaffold tracked after init");
+  assert.ok(tracked.includes(".opencode/command/board.md"), "command tracked after init");
+  assert.ok(tracked.includes("AGENTS.md"), "AGENTS.md tracked after init");
+  assert.ok(tracked.includes(".gitignore"), ".gitignore tracked after init");
+  assert.strictEqual(git(target, ["status", "--porcelain"]), "", "working tree clean after init");
+});
+
+test("init merges the harness-managed gitignore section without clobbering project entries", async () => {
+  const target = tmpdir();
+  fs.writeFileSync(path.join(target, ".gitignore"), "node_modules/\n.env\n", "utf8");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const gi = read(path.join(target, ".gitignore"));
+  assert.ok(gi.includes("node_modules/"), "project entry preserved");
+  assert.ok(gi.includes(".env"), "project entry preserved");
+  assert.match(gi, /# agent-harness \(managed below\)/);
+  assert.ok(gi.includes(".harness-backup/"), "harness local artifact ignored");
+
+  // idempotent: a re-deploy must not duplicate the marker/entries
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  const gi2 = read(path.join(target, ".gitignore"));
+  const markers = (gi2.match(/# agent-harness \(managed below\)/g) || []).length;
+  assert.strictEqual(markers, 1, "marker is not duplicated on re-deploy");
+});
+
 // ---------------------------------------------------------------- test:qa-plan gate (flow closure)
 
 async function scaffoldGatedTarget() {
@@ -481,4 +623,302 @@ test("flow-map memory scaffold is deployed and preserved on re-deploy", async ()
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.strictEqual(read(flowMapPath), "## flow: custom\nsurfaces: a.ts\n", "project flow-map preserved");
+});
+
+// ---------------------------------------------------------------- test:backlog gate + migration
+
+function scaffoldBacklogTarget(backlogContent) {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-backlog.js"),
+    path.join(target, "scripts", "qa", "check-backlog.js")
+  );
+  fs.writeFileSync(path.join(target, "BACKLOG.md"), backlogContent, "utf8");
+  return target;
+}
+
+function runBacklogGate(target) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-backlog.js"], { cwd: target, encoding: "utf8" });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+const VALID_BACKLOG = `# BACKLOG — canonical task list
+
+## Active / next
+
+- Next picks: **F-003** (P2).
+
+## Open
+
+Sorted by priority (P1 → P4).
+
+| ID | P | Task | Evidence |
+|----|---|------|----------|
+| F-001 | P1 | block something | user report |
+| F-003 | P2 | do a thing | file.ts |
+
+## Frozen
+
+Parked, not deleted.
+
+| ID | Task | Why frozen / reopen when |
+|----|------|--------------------------|
+| F-002 | parked task | superseded; reopen if it recurs |
+
+## Archive (shipped · done)
+
+| ID | Task | Closed |
+|----|------|--------|
+| F-004 | done task | shipped 2026-08-30 |
+
+## Not tracking (leave-in-place, no action)
+
+Nothing noted.
+`;
+
+test("test:backlog passes a well-formed board", () => {
+  const t = scaffoldBacklogTarget(VALID_BACKLOG);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /RESULT: backlog green/);
+});
+
+test("test:backlog fails on illegal priority, blank evidence, frozen-without-reopen, duplicate ID", () => {
+  const t = scaffoldBacklogTarget(`# BACKLOG — canonical task list
+
+## Open
+
+| ID | P | Task | Evidence |
+|----|---|------|----------|
+| F-001 | P9 | bad priority | ev |
+| F-002 | P3 | no evidence | |
+| F-003 |  | blank priority | ev |
+
+## Frozen
+
+| ID | Task | Why frozen / reopen when |
+|----|------|--------------------------|
+| F-004 | no reopen | |
+
+## Archive (shipped · done)
+
+| ID | Task | Closed |
+|----|------|--------|
+| F-001 | duplicate of F-001 | x |
+`);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 1, "gate must fail on malformed board");
+  assert.match(r.out, /not in \{P1,P2,P3,P4\}/);
+  assert.match(r.out, /evidence must not be blank/);
+  assert.match(r.out, /priority must not be blank/);
+  assert.match(r.out, /frozen row F-004.*reopen/i);
+  assert.match(r.out, /duplicate ID/);
+});
+
+test("test:backlog fails when INDEX.md is a live list instead of a pointer", () => {
+  const t = scaffoldBacklogTarget(VALID_BACKLOG);
+  fs.mkdirSync(path.join(t, ".agents", "features"), { recursive: true });
+  fs.writeFileSync(path.join(t, ".agents", "features", "INDEX.md"), "| F-001 | live row | P1 | ev | backlog |\n", "utf8");
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /looks like a live list/);
+});
+
+test("test:backlog fails when BACKLOG.md is untracked in a git repo", () => {
+  const t = scaffoldBacklogTarget(VALID_BACKLOG);
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  // BACKLOG.md deliberately left untracked — the board can't sync across sessions
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /git-tracked/);
+});
+
+test("test:backlog passes when BACKLOG.md is committed", () => {
+  const t = scaffoldBacklogTarget(VALID_BACKLOG);
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "BACKLOG.md"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /RESULT: backlog green/);
+});
+
+test("migrate-backlog consolidates INDEX.md F-rows and todo.md items into BACKLOG.md", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, ".agents", "features"), { recursive: true });
+  fs.mkdirSync(path.join(target, ".agents", "memory"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".agents", "features", "INDEX.md"),
+    [
+      "# Features — backlog",
+      "",
+      "| ID | Item | Priority | Context | Status |",
+      "|----|------|----------|---------|--------|",
+      "| F-001 | block something | P1 | user report | backlog |",
+      "| F-002 | parked task | P3 | superseeded note | frozen |",
+      "| F-003 | done task | P2 | commit abc | shipped |",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(target, ".agents", "memory", "todo.md"),
+    "- Sprint 1: onboarding polish\n- follow-up: verify NLI timeout\n",
+    "utf8"
+  );
+
+  const summary = h.migrateBacklog(target);
+
+  assert.strictEqual(summary.open, 3, "F-001 + 2 todo items land in Open");
+  assert.strictEqual(summary.frozen, 1, "frozen row preserved");
+  assert.strictEqual(summary.archived, 1, "shipped row archived");
+
+  const backlog = read(path.join(target, "BACKLOG.md"));
+  assert.ok(backlog.includes("F-001"), "F-001 migrated");
+  assert.ok(backlog.includes("F-002"), "F-002 (frozen) migrated");
+  assert.ok(backlog.includes("F-003"), "F-003 (shipped) archived");
+  assert.ok(backlog.includes("T-001"), "todo list item migrated as a stable T-xxx row");
+
+  assert.match(read(path.join(target, ".agents", "features", "INDEX.md")), /BACKLOG\.md/, "INDEX rewritten as pointer");
+  assert.match(read(path.join(target, ".agents", "memory", "todo.md")), /BACKLOG\.md/, "todo.md rewritten as pointer");
+});
+
+test("migrate-backlog is idempotent and never merges into a populated board", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, ".agents", "features"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".agents", "features", "INDEX.md"),
+    "| ID | Item | Priority | Context | Status |\n|---|---|---|---|---|\n| F-009 | stray row | P3 | ev | backlog |\n",
+    "utf8"
+  );
+
+  h.migrateBacklog(target);
+  const first = read(path.join(target, "BACKLOG.md"));
+
+  // re-run: board is populated, so nothing is merged again
+  const summary2 = h.migrateBacklog(target);
+  assert.ok(summary2.skipped, "second run is a no-op");
+  assert.strictEqual(read(path.join(target, "BACKLOG.md")), first, "BACKLOG.md unchanged on re-run");
+});
+
+// ---------------------------------------------------------------- test:product gate
+
+function scaffoldProductTarget() {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-product.js"),
+    path.join(target, "scripts", "qa", "check-product.js")
+  );
+  return target;
+}
+
+function runProductGate(target) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-product.js"], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+function writeFeature(target, slug, files) {
+  for (const [name, content] of Object.entries(files)) {
+    const p = path.join(target, ".agents", "features", slug, name);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content, "utf8");
+  }
+}
+
+const VALID_INTENT = `status: proposed
+## Actor(s)
+- community member
+## Need
+- wants to return an item with one tap
+## Outcome
+- item is returned without friction
+## Acceptance criteria
+- a Return CTA is visible on the item and completing it marks the item returned
+`;
+
+const VALID_PLAN = `status: planned
+## Value-first sequence
+- 1. ship the Return CTA (serves the community member's one-tap return outcome)
+- 2. wire the return API (serves the same outcome)
+## Product concepts applied
+- one-tap primary actions
+- the 5 UI states
+`;
+
+test("test:product passes when there are no feature docs", () => {
+  const t = scaffoldProductTarget();
+  const r = runProductGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /green \(no feature docs\)/);
+});
+
+test("test:product fails a plan with no intent (tech-first)", () => {
+  const t = scaffoldProductTarget();
+  writeFeature(t, "return", { "plan.md": VALID_PLAN });
+  const r = runProductGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /plan\.md but no intent\.md/);
+});
+
+test("test:product fails an intent missing a product section", () => {
+  const t = scaffoldProductTarget();
+  writeFeature(t, "return", {
+    "intent.md": VALID_INTENT.replace(/## Outcome[\s\S]*$/, ""),
+  });
+  const r = runProductGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /missing product section/);
+  assert.match(r.out, /## Outcome/);
+});
+
+test("test:product fails a plan missing value-led sections", () => {
+  const t = scaffoldProductTarget();
+  writeFeature(t, "return", { "intent.md": VALID_INTENT, "plan.md": "## Value-first sequence\n- step one\n" });
+  const r = runProductGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /## Product concepts applied/);
+});
+
+test("test:product passes a complete intent + value-led plan", () => {
+  const t = scaffoldProductTarget();
+  writeFeature(t, "return", { "intent.md": VALID_INTENT, "plan.md": VALID_PLAN });
+  const r = runProductGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /RESULT: green/);
+});
+
+test("product-principles memory scaffold is deployed and preserved on re-deploy", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const p = path.join(target, ".agents", "memory", "product-principles.md");
+  assert.ok(exists(p), "product-principles scaffold created");
+
+  fs.writeFileSync(p, "## Actors\n- my custom actor\n", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(p), "## Actors\n- my custom actor\n", "project product-principles preserved");
+});
+
+test("planner is product-first: reads product-principles and sequences value-first", () => {
+  const skill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "planner", "SKILL.md"));
+  assert.match(skill, /product-principles\.md/);
+  assert.match(skill, /Value-first sequence/);
+  assert.match(skill, /Product concepts applied/);
+  assert.match(skill, /smallest slice/);
+  const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", "planner.md"));
+  assert.match(agent, /product-first/);
+});
+
+test("check-product.js is deployed to every project", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  assert.ok(exists(path.join(target, "scripts", "qa", "check-product.js")), "test:product gate deployed");
 });

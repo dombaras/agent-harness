@@ -48,3 +48,4 @@ Date: <YYYY-MM-DD>
 - Update this at session end even if the user doesn't ask, per the DoD in `.agents/AGENTS.md` §8.
 - Keep it under ~40 lines. Code is the source of truth; the handoff is a pointer, not a spec.
 - Keeping `.agents/memory/locations.md` current is part of this skill. Read it first, update it last.
+- **You only touch handoff memory.** The board write-back — moving shipped `BACKLOG.md` rows to `Archive (shipped · done)` and committing them — is the orchestrator's DoD §7 step, not yours. If it hasn't been done, call it out in your output; never edit `BACKLOG.md` or run git yourself.
