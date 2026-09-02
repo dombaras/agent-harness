@@ -46,6 +46,43 @@ non-redundant.
 - `docs/` topic docs — architecture, runbooks, API, data model — only what the
   project actually needs; never create empty scaffolds.
 
+## Docs reconstruction (mid-project back-fill)
+
+When documentation is being written late in a project's life (an under-documented
+codebase), you are **reconstructing** docs from the project's own history — not
+inventing. This is the one mode where the source material is not just live code
+but the recorded past, and it is still bounded by **Never fabricate**: every
+claim must trace to the input bundle below or to live code; anything else is
+marked `unverified` or deferred.
+
+The orchestrator assembles an **input bundle** and passes it in the dispatch
+prompt — you stay `bash: deny`, so you never run git yourself:
+
+```
+## Input bundle
+- Git history: `git log --oneline --all` (+ `git show --stat <hash>` for key commits)
+- Session transcripts: excerpts from opencode / antigravity / vscode histories
+  (the "why" behind decisions — cite session + date, never paraphrase)
+- Memory pointers: `.agents/memory/history.md`, `locations.md`, `domain-map.md`,
+  `stack-versions.md`
+```
+
+Reconstruct in this order, each grounded in the bundle:
+
+1. **CHANGELOG.md** — one line per shipped commit from `git log` (feat/fix/refactor,
+   matching the commit message), newest first.
+2. **README.md** — what the project is + quickstart + pointers, from verified facts only.
+3. **`docs/adr/`** — ADRs only for decisions the history actually records (a commit
+   or transcript shows the decision was made); carry the real `Date:` and `Status:`.
+4. **`docs/INDEX.md`** — rebuild the pointer map to match what you actually wrote.
+
+Reconstruction rules:
+
+- Cite the bundle (`commit <hash>`, `session <date>`) the way you cite `file:line`.
+- A gap in the bundle is a gap in the docs — mark it `unverified` or list it in
+  `Deferred & risks`; never paper over it.
+- Do not reconstruct a `CONTRIBUTING.md` or an ADR the history does not support.
+
 ## ADR format (`docs/adr/NNNN-<slug>.md`)
 
 Each ADR carries, in order and non-empty (enforced by `npm run test:docs`):

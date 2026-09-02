@@ -121,11 +121,11 @@ test("deploy init materializes files, substitutes placeholders, writes config", 
   assert.ok(cfg.files && typeof cfg.files === "object");
 });
 
-test("deploy preserves project-owned memory on re-deploy", async () => {
+test("deploy preserves project-owned handoff files on re-deploy", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
-  const handoffPath = path.join(target, ".agents", "memory", "handoff.md");
+  const handoffPath = path.join(target, ".agents", "handoffs", "F-026.md");
   fs.writeFileSync(handoffPath, "custom project data", "utf8");
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
@@ -204,6 +204,23 @@ test("qa-plan gate + sharded plan scaffold are deployed", async () => {
   const qaPlans = read(path.join(target, ".agents", "qa-plans", "README.md"));
   assert.match(qaPlans, /## Coverage map/);
   assert.match(qaPlans, /## Waivers/);
+});
+
+test("handoffs scaffold is deployed sharded (no legacy single handoff.md)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  assert.ok(
+    exists(path.join(target, ".agents", "handoffs", "README.md")),
+    "sharded handoffs scaffold created (create-if-missing project file)"
+  );
+  assert.ok(
+    !exists(path.join(target, ".agents", "memory", "handoff.md")),
+    "legacy single handoff.md is no longer scaffolded"
+  );
+  const readme = read(path.join(target, ".agents", "handoffs", "README.md"));
+  assert.match(readme, /## Dispatch log/);
+  assert.match(readme, /own your file/i);
 });
 
 test("check-qa-scripts expects test:qa-plan", () => {
@@ -292,6 +309,17 @@ test("docs persona scaffold + parity deploy", async () => {
   // the test:docs gate is wired into package.json scripts
   const pkg = JSON.parse(read(path.join(target, "package.json")));
   assert.strictEqual(pkg.scripts["test:docs"], "node scripts/qa/check-docs.js");
+});
+
+test("docs persona supports mid-project reconstruction from history inputs", () => {
+  const skill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "docs", "SKILL.md"));
+  assert.match(skill, /Docs reconstruction/);
+  assert.match(skill, /input bundle/i);
+  assert.match(skill, /never run git yourself/i);
+  assert.match(skill, /Never fabricate/);
+  const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", "docs.md"));
+  assert.match(agent, /bash:\s*deny/);
+  assert.match(agent, /Reconstruction mode/);
 });
 
 function scaffoldDocsTarget() {
@@ -546,7 +574,7 @@ test("init auto-commits everything it deploys (scaffolds + BACKLOG.md tracked)",
   assert.match(git(target, ["log", "-1", "--pretty=%s"]), /^chore\(harness\):/);
   const tracked = git(target, ["ls-files"]).split(/\r?\n/).filter(Boolean);
   assert.ok(tracked.includes("BACKLOG.md"), "BACKLOG.md tracked after init");
-  assert.ok(tracked.includes(".agents/memory/handoff.md"), "memory scaffold tracked after init");
+  assert.ok(tracked.includes(".agents/handoffs/README.md"), "handoffs scaffold tracked after init");
   assert.ok(tracked.includes(".agents/features/INDEX.md"), "features scaffold tracked after init");
   assert.ok(tracked.includes(".opencode/command/board.md"), "command tracked after init");
   assert.ok(tracked.includes("AGENTS.md"), "AGENTS.md tracked after init");
@@ -632,7 +660,7 @@ test("test:qa-plan passes when every sibling surface and declared variant is aud
     ".agents/qa-plans/return.md",
     "## Change intent\n- change: remove condition selector from return\n\n" +
       "## Parallel-surface & variant audit\n" +
-      "- mobile/features/return/ReturnStatusSheet.tsx audited: deferred — same simplification pending, logged in handoff.md\n" +
+      "- mobile/features/return/ReturnStatusSheet.tsx audited: deferred — same simplification pending, logged in handoffs/\n" +
       "- flow: return variant: condition-selector-present audited: removed by this change\n" +
       "- flow: return variant: condition-selector-absent -> test:quick::return (no-condition click-through)\n\n" +
       "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
@@ -652,7 +680,7 @@ test("test:qa-plan fails when a declared flow variant is not addressed", async (
     ".agents/qa-plans/return.md",
     "## Change intent\n- change: remove condition selector from return\n\n" +
       "## Parallel-surface & variant audit\n" +
-      "- mobile/features/return/ReturnStatusSheet.tsx audited: deferred — logged in handoff.md\n\n" +
+      "- mobile/features/return/ReturnStatusSheet.tsx audited: deferred — logged in handoffs/\n\n" +
       "## Coverage map\n- components/LendingActionDrawers.tsx -> test:quick::return\n\n## Waivers\n"
   );
 
@@ -1027,4 +1055,78 @@ test("check-product.js is deployed to every project", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
   assert.ok(exists(path.join(target, "scripts", "qa", "check-product.js")), "test:product gate deployed");
+});
+
+// ---------------------------------------------------------------- test:governance gate (sharded handoffs)
+
+function scaffoldGovernanceTarget() {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "governance.js"),
+    path.join(target, "scripts", "qa", "governance.js")
+  );
+  fs.mkdirSync(path.join(target, ".agents", "handoffs"), { recursive: true });
+  return target;
+}
+
+function runGovernanceGate(target) {
+  const res = spawnSync(process.execPath, ["scripts/qa/governance.js"], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("test:governance passes a valid sharded handoff", () => {
+  const t = scaffoldGovernanceTarget();
+  writeFile(
+    t,
+    ".agents/handoffs/F-003.md",
+    "# Where we stopped — F-003\n\n## Dispatch log\n- qa-architect -> opencode/gpt-5-nano -> shipped\n\n## Done this session\n- x\n"
+  );
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /governance green/);
+});
+
+test("test:governance is fatal when no handoff files exist", () => {
+  const t = scaffoldGovernanceTarget();
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 2, r.out);
+  assert.match(r.out, /missing session handoff/);
+});
+
+test("test:governance requires every sharded handoff to open with a dispatch-log entry", () => {
+  const t = scaffoldGovernanceTarget();
+  writeFile(t, ".agents/handoffs/F-003.md", "# x\n\n## Dispatch log\n- qa-architect -> m -> shipped\n");
+  writeFile(t, ".agents/handoffs/F-035.md", "# y\n\n## Dispatch log\n\n## Done\n- z\n");
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /F-035\.md/);
+  assert.match(r.out, /at least one entry/);
+});
+
+test("test:governance fails a waiver without a reason", () => {
+  const t = scaffoldGovernanceTarget();
+  writeFile(
+    t,
+    ".agents/handoffs/F-003.md",
+    "# x\n\n## Dispatch log\n- qa-architect -> m -> shipped\n\n## Waivers\n- waived: src/foo.ts\n"
+  );
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /reason/);
+});
+
+test("test:governance unions multiple sharded handoffs and still reads the legacy file", () => {
+  const t = scaffoldGovernanceTarget();
+  writeFile(t, ".agents/handoffs/F-003.md", "# a\n\n## Dispatch log\n- x -> y -> shipped\n");
+  writeFile(t, ".agents/handoffs/F-035.md", "# b\n\n## Dispatch log\n- p -> q -> shipped\n");
+  writeFile(t, ".agents/memory/handoff.md", "# legacy\n\n## Dispatch log\n- old -> model -> shipped\n");
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /F-003\.md/);
+  assert.match(r.out, /F-035\.md/);
+  assert.match(r.out, /memory[\\/]handoff\.md/);
 });

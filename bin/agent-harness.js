@@ -92,16 +92,20 @@ function relKey(rel) {
   return rel.split(path.sep).join("/");
 }
 
-/* `.agents/memory/*` (session memory), `.agents/features/*` (feature doc tree)
- * and `.agents/qa-plans/*` (one QA plan file per change) are project data —
- * scaffolded create-if-missing, never overwritten, and never tracked in the
- * manifest. qa-plans is sharded per change so concurrent sessions never collide
- * on a single shared file. */
+/* `.agents/memory/*` (session memory), `.agents/features/*` (feature doc tree),
+ * `.agents/qa-plans/*` (one QA plan file per change) and `.agents/handoffs/*`
+ * (one session handoff file per session) are project data — scaffolded
+ * create-if-missing, never overwritten, and never tracked in the manifest.
+ * qa-plans and handoffs are sharded per change/session so concurrent sessions
+ * never collide on a single shared file. */
 function isProjectScaffold(rel) {
   const parts = rel.split(path.sep);
   return (
     parts.includes(".agents") &&
-    (parts.includes("memory") || parts.includes("features") || parts.includes("qa-plans"))
+    (parts.includes("memory") ||
+      parts.includes("features") ||
+      parts.includes("qa-plans") ||
+      parts.includes("handoffs"))
   );
 }
 /* The canonical `BACKLOG.md` at the repo root is also project data (a live task

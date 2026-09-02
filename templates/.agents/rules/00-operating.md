@@ -11,11 +11,11 @@ Before reading or editing any file for a task, dispatch the relevant personas vi
 - **Accept, don't trust.** After a code persona reports done, the orchestrator re-runs the gate itself (`tsc --noEmit`, `lint:hooks`, `test:quick`) and greps the metric before integrating — a subagent's `Evidence` is a claim, not proof.
 - **QA planning is never optional.** Every change touching code paths gets a QA plan (coverage map in a per-change file under `.agents/qa-plans/`) from `qa-architect`; if it isn't dispatched, the main orchestrator plans in its place. `npm run test:qa-plan` fails on any changed code path with no covering assertion or waiver, and on any touched flow (`.agents/memory/flow-map.md`) whose sibling surfaces / declared variants the plan doesn't address.
 - Persona map, waivers, and the dispatch-failure ladder: `.agents/AGENTS.md` §5 and `.agents/memory/model-routing.md`.
-- **Features**: capture a found item as one light row in the canonical `BACKLOG.md` (repo root); on pickup dispatch `features` to author the per-feature doc chain (`.agents/skills/features/SKILL.md`). Right-size ceremony to risk.
+- **Features**: capture a found item as one light row in the canonical `BACKLOG.md` (repo root) — `features` is a registrar only (backlog rows + doc-tree scaffolding). On pickup, author the per-feature doc chain by dispatching each author persona **directly** (`product-manager`/`system-architect`/`planner`/`qa-architect`) — never via `features`. Right-size ceremony to risk.
 - **Docs**: human-facing docs (`README.md`, `CHANGELOG.md`, `docs/**`) are owned by the `docs` persona (`.agents/skills/docs/SKILL.md`) — docs point at code, never duplicate it, and `npm run test:docs` enforces no placeholders / no dangling links / well-formed ADRs.
 - **Product intent is never optional.** A feature never reaches planning/implementation without defining its user. `intent.md` must carry Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md` a Value-first sequence + Product concepts applied — `npm run test:product` fails otherwise. Planning reads `.agents/memory/product-principles.md` and is value-led, not tech-led.
 - Every subagent returns the output contract (`Result` → `Evidence` → `Deferred & risks`).
-- Wrap up with a **dispatch log** (`subagent → model → shipped/deferred`) in `.agents/memory/handoff.md`.
+- Wrap up with a **dispatch log** (`subagent → model → shipped/deferred`) in your session's `.agents/handoffs/<feature-id>.md`.
 
 ## Non-negotiable laws
 

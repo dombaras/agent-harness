@@ -7,4 +7,4 @@ session creates, discovers, or changes an important location.
 - **Logs / telemetry**: 
 - **DB / env**: 
 - **Docs**: 
-- **AI session archives**: (each agent front-end records its own paths)
+- **AI session archives**: opencode: <path>; antigravity: <path>; vscode: <path> (record each front-end's session/history path — the docs reconstruction bundle reads these)

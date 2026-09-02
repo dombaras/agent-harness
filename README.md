@@ -43,7 +43,8 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.agents/features/INDEX.md` | pointer to `BACKLOG.md` (per-feature doc tree root) | **project** (create-if-missing) |
 | `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
 | `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` gates + QA-script wiring check | harness (overwrite) |
-| `.agents/memory/*` | project data (domain-map, stack-versions, handoff, locations, model-routing, history, flow-map, product-principles) | **project** (create-if-missing) |
+| `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, history, flow-map, product-principles) | **project** (create-if-missing) |
+| `.agents/handoffs/*` | project data (one session handoff file per session — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.agents/qa-plans/*` | project data (one QA plan file per change — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
 | `.gitignore` | harness-managed section (`.harness-backup/`) merged in, project entries preserved | harness (merged) |
@@ -155,7 +156,7 @@ warns but does not block; the guarantee only applies to registered flows.
   proves coverage. It also makes **"Fix One, Fix All" mechanical**: a change to one
   surface (e.g. web) cannot ship while the same flow in another codebase (e.g. `mobile/`)
   silently keeps old behavior — the plan must name each sibling as covered (`->`) or
-  out-of-scope (`audited: reason`, e.g. `deferred — logged in handoff.md`).
+  out-of-scope (`audited: reason`, e.g. `deferred — logged in handoffs/`).
 - `node scripts/qa/check-qa-scripts.js` — warns (or `--strict` fails) when the
   DoD-referenced runtime QA tiers aren't wired into `package.json`.
 
@@ -170,7 +171,7 @@ scripts are **project-provided** — the rulebook references them, and
 npx @dombaras/agent-harness update --target /path/to/project
 ```
 
-- Overwrites harness-owned files, preserves `.agents/memory/*` and `BACKLOG.md`.
+- Overwrites harness-owned files, preserves `.agents/memory/*`, `.agents/handoffs/*`, `.agents/qa-plans/*`, and `BACKLOG.md`.
 - Auto-wires the harness gate scripts (`test:dispatch`, `test:governance`,
   `test:qa-plan`, `test:backlog`, `test:product`, `test:docs`) into the target's `package.json` (merged, add-only).
 - **Auto-commits** the harness files it changed (`chore(harness): @dombaras/agent-harness
@@ -178,7 +179,7 @@ npx @dombaras/agent-harness update --target /path/to/project
   modified harness files. Your unrelated uncommitted work is never staged.
   - `--no-commit` to skip commit+push, `--no-push` to commit but not push.
   - `init` auto-commits + pushes by default too: it commits everything it scaffolds
-    (including `.agents/memory/*`, `.agents/features/*`, and `BACKLOG.md`) so a fresh
+    (including `.agents/memory/*`, `.agents/features/*`, `.agents/handoffs/*`, and `BACKLOG.md`) so a fresh
     project starts fully tracked and no harness file is left untracked.
   - Harness-owned paths are **force-added**, so a project that gitignores deployment
     artifacts (an inherited `.agents/` `.opencode/` `AGENTS.md` pattern) still gets the

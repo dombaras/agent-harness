@@ -55,17 +55,21 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     | Data ingestion / entity resolution | `data-engineer` |
     | Deployment / cron / secrets / build+release | `devops-engineer` |
     | Session wrap-up / handoff | `handoff` |
-    | Feature backlog + per-feature doc tree (intent/scope/plan/tests) | `features` |
+    | Feature backlog registration + doc-tree scaffolding (registrar only — not authoring) | `features` |
     | Human-facing docs (README / CHANGELOG / docs / ADRs) | `docs` |
   - **Feature docs, not ceremony**: capture a found item as one light row in
-    the canonical `BACKLOG.md` (repo root). When a feature is picked up, dispatch
-    `features` to author the doc chain — `intent` (product-manager) → `scope`
-    (system-architect, HIGH-risk only) → `plan` (planner) → `tests` (qa-architect) —
-    each by its author persona. Match ceremony to blast radius: trivial → none,
-    low → single `intent.md`, high (auth/DB/API/flow-siblings) → full chain. Write
-    back first (update the doc before continuing when implementation invalidates it),
-    archive on ship. Feature docs are durable and complementary to the per-session
-    `.agents/qa-plans/<feature-id>.md`/`handoff.md`; the `tests` doc points to the
+    the canonical `BACKLOG.md` (repo root). `features` is a registrar only — it
+    registers rows and scaffolds the `.agents/features/<slug>/` tree, never authors
+    content. When a feature is picked up, author the doc chain by dispatching each
+    author persona **directly** — `intent` (product-manager) → `scope`
+    (system-architect, HIGH-risk only) → `plan` (planner) → `tests` (qa-architect).
+    For an "investigate + plan" request (no code), dispatch `planner` and/or
+    `product-manager` directly — never `features`. Match ceremony to blast radius:
+    trivial → none, low → single `intent.md`, high (auth/DB/API/flow-siblings) →
+    full chain. Write back first (update the doc before continuing when
+    implementation invalidates it), archive on ship. Feature docs are durable and
+    complementary to the per-session
+    `.agents/qa-plans/<feature-id>.md`/`.agents/handoffs/<feature-id>.md`; the `tests` doc points to the
     feature's QA plan, never duplicates it.
   - **Product intent is never optional (no silent skip)**: planning is
     product-first. `intent.md` must define Actor(s) → Need → Outcome → Acceptance
@@ -141,5 +145,5 @@ them. Steps 3-5 are the unconditional session close; they are NOT gated by QA.
 - **Harness-update awareness**: `npx @dombaras/agent-harness update` auto-commits the harness files it changes as `chore(harness): @dombaras/agent-harness <old> -> <new>`. If you see such a commit (or modified `.agents/**`, `scripts/qa/**`, `AGENTS.md`, `opencode.json` you didn't touch), do NOT treat it as unexplained — run `git log -1 --stat` / `git show` to see exactly which harness files changed and why, then read the rulebook. Never guess at the cause.
 - **Planned vs. Shipped**: at session end, record a "planned → shipped → deferred" delta so aspirational docs are never mistaken for reality. Always verify against live code and schema.
 - **Dispatch Log (mandatory)**: every wrap-up opens with `subagent → model → shipped/deferred`. An empty log is non-compliant.
-- **Persist Continuity**: use the `handoff` skill to update `.agents/memory/handoff.md`. Project history lives in `.agents/memory/history.md`; stack facts in `.agents/memory/stack-versions.md`.
+- **Persist Continuity**: use the `handoff` skill to write your session's file under `.agents/handoffs/` (one per session — never edit another session's). Project history lives in `.agents/memory/history.md`; stack facts in `.agents/memory/stack-versions.md`.
 - **Pointers Map Hygiene**: record every created/discovered/changed important location (session archives, scratch scripts, logs, docs, DB targets, env files) in `.agents/memory/locations.md`.

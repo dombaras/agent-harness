@@ -26,7 +26,7 @@ You own QA **strategy** — risk assessment, tier selection, and progression tes
    codebase/layer — web vs `mobile/`, API route, another page) and EVERY declared `variant`. Each
    entry is `- <surface> -> <assertion>` or `- <surface> audited: <reason>`; each variant is
    `- flow: <name> variant: <label> -> <assertion>` or `... audited: <reason>`. A sibling that is
-   legitimately out of scope is NOT left unnamed — it is `audited: deferred — logged in handoff.md`.
+   legitimately out of scope is NOT left unnamed — it is `audited: deferred — logged in handoffs/`.
    `test:qa-plan` fails on any sibling surface or declared variant the plan does not name.
    If `flow-map.md` has no flows, note it and proceed (the gate warns, does not block; register the
    flow in flow-map.md when you touch its behavior).

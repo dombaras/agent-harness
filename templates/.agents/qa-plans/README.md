@@ -34,7 +34,7 @@ covered if ANY plan file names it.
 
     ## Parallel-surface & variant audit
     - components/LendingActionDrawers.tsx -> test:quick::return (click-through: Mark as Returned, no condition selector)
-    - mobile/features/return/ReturnStatusSheet.tsx audited: deferred — mobile still renders the selector; same simplification pending, logged in handoff.md
+    - mobile/features/return/ReturnStatusSheet.tsx audited: deferred — mobile still renders the selector; same simplification pending, logged in handoffs/
     - app/api/transactions/[id]/return/route.ts -> test:api::return (POST without condition payload succeeds)
     - flow: return variant: condition-selector-present audited: removed by this change — asserting absence only
     - flow: return variant: condition-selector-absent -> test:quick::return (no-selector click-through renders no condition UI)

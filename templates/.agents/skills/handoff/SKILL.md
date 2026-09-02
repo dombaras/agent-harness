@@ -15,18 +15,21 @@ You are the session continuity keeper. When the user asks to save progress or wr
    - **Planned**: what was intended.
    - **Shipped**: what was actually implemented/verified (cite files + commit hash).
    - **Deferred**: what was consciously left out, with a one-line reason.
-3. **Record it** in `.agents/memory/handoff.md` (tracked file). Keep the file short (last session only). Move any durable notes into `.agents/memory/` topic files (e.g. `stack-versions.md`, `history.md`) rather than growing the handoff.
+3. **Record it** in a per-session handoff file under `.agents/handoffs/` (tracked dir, sharded like QA plans). Name it after the `BACKLOG.md` feature ID (`F-026.md`) or a hyphenated slug of the change. **Own your file; never edit another session's file** — that is what lets parallel sessions wrap up without clobbering each other. Move any durable notes into `.agents/memory/` topic files (e.g. `stack-versions.md`, `history.md`) rather than growing the handoff.
 4. **Update the locations map** — `.agents/memory/locations.md` is the canonical index of where sessions, logs, docs, and data live. Add/refresh an entry for every external location this session created, discovered, or changed (AI session archives, scratch scripts, log files, DB targets, env files, docs). Each agent front-end records its own session paths. If nothing changed, leave it as-is.
 5. **Never invent** — mark anything uncertain as "unverified".
 
 ## Template
 
 ```markdown
-# Where we stopped (handoff)
+# Where we stopped (handoff) — <feature-id or slug>
 
 Date: <YYYY-MM-DD>
 
-## Done this session
+## Dispatch log
+- <subagent → model → shipped/deferred> (empty log = non-compliant session)
+
+## Done this session (planned → shipped → deferred)
 - <planned → shipped → deferred, one line each, with file + commit refs>
 
 ## Status
@@ -47,5 +50,6 @@ Date: <YYYY-MM-DD>
 ## Rules
 - Update this at session end even if the user doesn't ask, per the DoD in `.agents/AGENTS.md` §8.
 - Keep it under ~40 lines. Code is the source of truth; the handoff is a pointer, not a spec.
+- The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this.
 - Keeping `.agents/memory/locations.md` current is part of this skill. Read it first, update it last.
 - **You only touch handoff memory.** The board write-back — moving shipped `BACKLOG.md` rows to `Archive (shipped · done)` and committing them — is the orchestrator's DoD §7 step, not yours. If it hasn't been done, call it out in your output; never edit `BACKLOG.md` or run git yourself.
