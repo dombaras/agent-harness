@@ -15,6 +15,9 @@ $aliases = @{
   "big-pickle"     = "opencode/big-pickle"
   "pickle"         = "opencode/big-pickle"
   "bigpickle"      = "opencode/big-pickle"
+  "nvidia"         = "nvidia/moonshotai/kimi-k3"
+  "kimi"           = "nvidia/moonshotai/kimi-k3"
+  "kimi-k3"        = "nvidia/moonshotai/kimi-k3"
 }
 
 $targetModel = $Target
@@ -28,7 +31,8 @@ elseif (-not ($targetModel -match "^[a-zA-Z0-9._-]+/")) {
 $reasoningModels = @(
   "deepseek/deepseek-v4-pro",
   "opencode/deepseek-v4-pro",
-  "opencode/big-pickle"
+  "opencode/big-pickle",
+  "nvidia/moonshotai/kimi-k3"
 )
 
 $files = @(

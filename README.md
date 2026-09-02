@@ -122,7 +122,8 @@ warns but does not block; the guarantee only applies to registered flows.
   agents (planner, system-architect, security-engineer, diagnostics-expert,
   product-manager, qa-architect) in one step. Aliases: `deepseek`/`direct` →
   `deepseek/deepseek-v4-pro` (default, direct API key), `zen`/`opencode` →
-  `opencode/deepseek-v4-pro` (gateway), `pickle` → `opencode/big-pickle`, or any
+  `opencode/deepseek-v4-pro` (gateway), `pickle` → `opencode/big-pickle`,
+  `nvidia`/`kimi`/`kimi-k3` → `nvidia/moonshotai/kimi-k3` (NVIDIA NIM), or any
   explicit `provider/model`. Restart opencode after switching (config reads once).
 - **`/board` command** — every deploy ships an opencode command
   (`.opencode/command/board.md`) that reads the local `BACKLOG.md` and renders a

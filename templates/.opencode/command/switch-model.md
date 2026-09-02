@@ -8,6 +8,7 @@ Valid values:
 - `deepseek` / `direct` (default) -> `deepseek/deepseek-v4-pro` (direct API key)
 - `zen` / `opencode` -> `opencode/deepseek-v4-pro` (Zen gateway)
 - `pickle` / `big-pickle` -> `opencode/big-pickle`
+- `nvidia` / `kimi` / `kimi-k3` -> `nvidia/moonshotai/kimi-k3` (NVIDIA NIM)
 - any other explicit model id (e.g. `opencode/gpt-5.6-luna`)
 
 Run:
