@@ -13,10 +13,12 @@
  *   3. Every `frozen` row has a non-empty "why / reopen" condition.
  *   4. Every `open` row has non-empty priority and evidence cells. `?` is
  *      allowed but must be explicit — a blank cell is a failure.
- *   5. No duplicate IDs across the whole file.
- *   6. `INDEX.md` / `todo.md`, if present, are pointers (content referencing
+ *   5. Every `in progress` row has non-empty task and handoff cells (`?` allowed
+ *      for handoff, but not blank).
+ *   6. No duplicate IDs across the whole file.
+ *   7. `INDEX.md` / `todo.md`, if present, are pointers (content referencing
  *      BACKLOG.md), not live row lists.
- *   7. `BACKLOG.md` is git-tracked (committed), not untracked — the board syncs
+ *   8. `BACKLOG.md` is git-tracked (committed), not untracked — the board syncs
  *      across sessions only through git. Skipped outside a git repo.
  */
 const fs = require("fs");
@@ -128,7 +130,7 @@ function parseSectionRows(lines) {
     const joined = cells.join("|").trim();
     if (/^([-:|\s]*)$/.test(joined)) continue;
     // skip header rows named ID/P/Task/...
-    if (cells.some((c) => /^(ID|[Ii]d|P|Task|Evidence|Why frozen \/ reopen when|Closed)$/.test(c))) continue;
+    if (cells.some((c) => /^(ID|[Ii]d|P|Task|Evidence|Handoff|Why frozen \/ reopen when|Closed)$/.test(c))) continue;
     buckets[current].push(cells);
     rowCount++;
   }
@@ -140,6 +142,7 @@ const { buckets, rowCount } = parseSectionRows(lines);
 // Column indexes per section (from the BACKLOG template schema).
 const COLS = {
   open: { id: 0, priority: 1, evidence: 3 },
+  "in progress": { id: 0, task: 1, handoff: 2 },
   frozen: { id: 0, reopen: 2 },
   "archive (shipped · done)": { id: 0 },
 };
@@ -150,8 +153,21 @@ function bucketRows(key) {
 }
 
 const openRows = bucketRows("Open");
+const inProgressRows = bucketRows("In progress");
 const frozenRows = bucketRows("Frozen");
 const archiveRows = bucketRows("Archive (shipped · done)") || bucketRows("Archive");
+
+// ---- In progress rows: non-empty task + handoff ----------------------------
+for (const r of inProgressRows) {
+  const id = r[COLS["in progress"].id] || "?";
+  const task = (r[COLS["in progress"].task] || "").trim();
+  const handoff = (r[COLS["in progress"].handoff] || "").trim();
+  check(task.length > 0, `in-progress row ${id}: task must not be blank`);
+  check(
+    handoff.length > 0,
+    `in-progress row ${id}: handoff must not be blank (session handoff file, or \`?\` if unknown)`
+  );
+}
 
 // ---- 3. Frozen requires a reopen condition ---------------------------------
 for (const r of frozenRows) {
@@ -182,11 +198,12 @@ for (const r of openRows) {
 
 // ---- 5. No duplicate IDs across the whole file -----------------------------
 const allRows = [...openRows.map((r, i) => ({ cells: r, tag: "Open" })),
+  ...inProgressRows.map((r, i) => ({ cells: r, tag: "In progress" })),
   ...frozenRows.map((r, i) => ({ cells: r, tag: "Frozen" })),
   ...archiveRows.map((r, i) => ({ cells: r, tag: "Archive" }))];
 const totalRows = allRows.length;
 if (totalRows > 0) {
-  check(true, `parsed ${totalRows} row(s) across Open/Frozen/Archive`);
+  check(true, `parsed ${totalRows} row(s) across Open/In progress/Frozen/Archive`);
   const seen = new Map();
   for (const { cells, tag } of allRows) {
     const id = (cells[0] || "").trim();
@@ -198,7 +215,7 @@ if (totalRows > 0) {
     else seen.set(id, tag);
   }
 } else {
-  check(true, "empty board (no Open/Frozen/Archive rows yet) — valid for a fresh project");
+  check(true, "empty board (no Open/In progress/Frozen/Archive rows yet) — valid for a fresh project");
 }
 
 // ---- 6. INDEX.md / todo.md are pointers, not live lists --------------------

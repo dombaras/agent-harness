@@ -56,6 +56,9 @@ that is not yet being worked. One write-path only: capture → `BACKLOG.md`, upd
 it in the same session the work happens. Sections (see the `BACKLOG.md` header):
 
 - **Active / next** (optional) — the next few picks, cited as `ID (P)`.
+- **In progress** — `| ID | Task | Handoff |`, active work. Move a row here from
+  `Open` the moment a session starts dealing with it, and point `Handoff` at the
+  session's `.agents/handoffs/<id>.md` (or `?` until it's written).
 - **Open** — `| ID | P | Task | Evidence |`, sorted by priority.
 - **Frozen** — parked, don't-do-but-don't-delete; MUST carry a *why* and a *reopen condition*.
 - **Archive (shipped · done)** — completed rows, never deleted.
@@ -67,7 +70,11 @@ Fields (keep each terse):
 - **Priority** — `P1` (blocking) / `P2` (important) / `P3` (nice-to-have) / `P4` (later).
   Applies to open rows only.
 - **Evidence** — a pointer to evidence (file, log, ticket, the user's words), never a re-derivation.
-- **Status ladder** — `backlog → ready → in-progress → testing → shipped → archived`, plus `frozen`.
+- **Handoff** — the `.agents/handoffs/<id>.md` session working this row (In progress only).
+- **Status ladder** — `backlog → ready → in-progress → testing → shipped → archived`, plus
+  `frozen`. Section = status: `backlog`/`ready` → `Open`, `in-progress`/`testing` →
+  `In progress`, `shipped`/`archived` → `Archive`, `frozen` → `Frozen`. Pick up a row by
+  moving it `Open` → `In progress` in the same session the work starts.
 
 Never invent status or priority. If a field is unknown, write `?` — an explicit
 unknown, never a blank cell. `npm run test:backlog` fails on a blank priority or
@@ -135,9 +142,9 @@ so the project's durable product concepts lead the plan, not ad-hoc taste.
 - **Write back first, then continue.** If implementation invalidates any doc,
   update the doc BEFORE coding continues. A stale spec is worse than none.
 - **Archive when it ships.** Move `.agents/features/<slug>/` to `archive/` and
-  move the `BACKLOG.md` row to `Archive (shipped · done)` (or mark it
-  `shipped`/`archived`). Do not leave a pile of completed designs cluttering the
-  live tree.
+  move the `BACKLOG.md` row from `In progress` to `Archive (shipped · done)` (or
+  mark it `shipped`/`archived`). Do not leave a pile of completed designs
+  cluttering the live tree.
 - Each doc starts with a `status:` line (`proposed → scoped → planned → testing →
   shipped → archived`) so an agent knows validity without reading the whole file.
 - Docs carry **only** the `status:` line as metadata — never an `Author:` /

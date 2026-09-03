@@ -70,7 +70,9 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     implementation invalidates it), archive on ship. Feature docs are durable and
     complementary to the per-session
     `.agents/qa-plans/<feature-id>.md`/`.agents/handoffs/<feature-id>.md`; the `tests` doc points to the
-    feature's QA plan, never duplicates it.
+    feature's QA plan, never duplicates it. The moment a session starts dealing
+    with a backlog item, move its `BACKLOG.md` row `Open` → `In progress` (point
+    `Handoff` at the session's handoff file) so active work is visible on the board.
   - **Product intent is never optional (no silent skip)**: planning is
     product-first. `intent.md` must define Actor(s) → Need → Outcome → Acceptance
     criteria, and `plan.md` a Value-first sequence + Product concepts applied, read
@@ -132,7 +134,7 @@ them. Steps 3-5 are the unconditional session close; they are NOT gated by QA.
    - [ ] No blanket file-level `eslint-disable`/`@ts-nocheck`/`@ts-ignore` suppressions (line-level only, each with a reason).
 1. **QA tier** (code changes only) — `qa-architect` inspects the diff, picks the tier BY COVERAGE (not path-label), records the coverage map in a per-change plan under `.agents/qa-plans/` (one file per change — never edit another change's plan), and authors progression tests for any GAP; if `qa-architect` is not dispatched the orchestrator plans in its place. `qa-runner` executes and makes it pass (§6). A change is not verified until `npm run test:qa-plan` passes: every changed code path covered or waivered, **and** every touched flow (`.agents/memory/flow-map.md`) has every sibling surface and declared variant addressed in the plan's `## Parallel-surface & variant audit`, **AND** the executed tier exercised the modified path.
 2. **Security check** (code changes only) — apply `security-engineer` when the change touches data/auth/input/secrets/deps.
-3. **Backlog write-back** (always) — move every task this session shipped from `Open` to `Archive (shipped · done)` in `BACKLOG.md` (with date/commit), then stage it explicitly: `git add BACKLOG.md` (it starts untracked — `git commit -am` / `git commit` without `add` will NOT pick it up). The board syncs across sessions only through git, so this delta is committed with the code, never left uncommitted.
+3. **Backlog write-back** (always) — move every task this session shipped from `In progress` to `Archive (shipped · done)` in `BACKLOG.md` (with date/commit), then stage it explicitly: `git add BACKLOG.md` (it starts untracked — `git commit -am` / `git commit` without `add` will NOT pick it up). The board syncs across sessions only through git, so this delta is committed with the code, never left uncommitted. (At session start, the inverse: move the picked-up row `Open` → `In progress`, pointing `Handoff` at the session's `.agents/handoffs/<id>.md`, so the board always shows what is actively being worked.)
 4. **Commit** (always) — concise `feat:` / `fix:` / `refactor:` message, including the `BACKLOG.md` delta.
 5. **Push** (always) — `git push origin main`.
 - **Mechanical floor**: a pre-push hook should run `npm run test:quick` (project-provided; the harness does not install git hooks).

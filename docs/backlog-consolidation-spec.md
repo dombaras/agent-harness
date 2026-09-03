@@ -42,6 +42,7 @@ Schema (see `C:\develop\PublicVirtualLibrary\BACKLOG.md` for the working referen
 ```
 # BACKLOG — canonical task list
   ## Active / next        (optional; the next few picks)
+  ## In progress          | ID | Task | Handoff |   (active work — a session picked it up)
   ## Open                 | ID | P | Task | Evidence |   (sorted by priority)
   ## Frozen               | ID | Task | Why frozen / reopen |
   ## Archive (shipped·done) | ID | Task | Closed |
@@ -58,6 +59,9 @@ Rules the board must encode:
   everywhere — see §5 open decisions). Priority applies to open rows only.
 - **Evidence** is a pointer (file/log/ticket/words), never a re-derivation. Unknown
   fields are `?`, never invented.
+- **Active work is visible**: a session that starts dealing with an item moves its
+  row `Open` → `In progress` (pointing `Handoff` at the session's handoff file), so
+  the board always shows what is actively being worked, not just what's queued.
 - **One write-path**: capture → `BACKLOG.md`; archive `shipped` rows; freeze
   don't-delete; update in the same session the work happens.
 - Per-feature spec docs (`.agents/features/<slug>/` intent · scope · plan · tests)

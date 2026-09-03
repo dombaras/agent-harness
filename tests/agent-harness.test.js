@@ -254,8 +254,7 @@ test("board command is deployed to every project (read-only, local)", async () =
   const cmd = read(path.join(target, ".opencode", "command", "board.md"));
   assert.match(cmd, /^---/, "board command frontmatter");
   assert.match(cmd, /BACKLOG\.md/, "command reads the local canonical board");
-  assert.match(cmd, /Priority/, "command renders a priority column");
-  assert.match(cmd, /Short description/, "command renders a short-description column");
+  assert.match(cmd, /verbatim/, "command displays the board as-is, no transformation");
   assert.match(cmd, /do NOT run git/, "command does not pull from git");
 
   // the command is re-deployed (overwritten) on update, like any harness file
@@ -783,6 +782,14 @@ const VALID_BACKLOG = `# BACKLOG — canonical task list
 
 - Next picks: **F-003** (P2).
 
+## In progress
+
+Active work.
+
+| ID | Task | Handoff |
+|----|------|---------|
+| F-005 | being worked | .agents/handoffs/F-005.md |
+
 ## Open
 
 Sorted by priority (P1 → P4).
@@ -848,6 +855,56 @@ test("test:backlog fails on illegal priority, blank evidence, frozen-without-reo
   assert.match(r.out, /priority must not be blank/);
   assert.match(r.out, /frozen row F-004.*reopen/i);
   assert.match(r.out, /duplicate ID/);
+});
+
+test("test:backlog fails on a blank in-progress task or handoff", () => {
+  const t = scaffoldBacklogTarget(`# BACKLOG — canonical task list
+
+## In progress
+
+| ID | Task | Handoff |
+|----|------|---------|
+| F-010 | | .agents/handoffs/F-010.md |
+| F-011 | doing it | |
+`);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 1, "gate must fail on blank in-progress cells");
+  assert.match(r.out, /in-progress row F-010: task must not be blank/);
+  assert.match(r.out, /in-progress row F-011: handoff must not be blank/);
+});
+
+test("test:backlog fails on a duplicate ID spanning In progress and Open", () => {
+  const t = scaffoldBacklogTarget(`# BACKLOG — canonical task list
+
+## In progress
+
+| ID | Task | Handoff |
+|----|------|---------|
+| F-020 | being worked | .agents/handoffs/F-020.md |
+
+## Open
+
+| ID | P | Task | Evidence |
+|----|---|------|----------|
+| F-020 | P2 | also open | ev |
+`);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /duplicate ID `F-020`/);
+});
+
+test("test:backlog passes a board with only an In progress section", () => {
+  const t = scaffoldBacklogTarget(`# BACKLOG — canonical task list
+
+## In progress
+
+| ID | Task | Handoff |
+|----|------|---------|
+| F-030 | being worked | ? |
+`);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /RESULT: backlog green/);
 });
 
 test("test:backlog fails when INDEX.md is a live list instead of a pointer", () => {
@@ -938,6 +995,32 @@ test("migrate-backlog is idempotent and never merges into a populated board", ()
   const summary2 = h.migrateBacklog(target);
   assert.ok(summary2.skipped, "second run is a no-op");
   assert.strictEqual(read(path.join(target, "BACKLOG.md")), first, "BACKLOG.md unchanged on re-run");
+});
+
+test("migrate-backlog maps in-progress/testing INDEX rows into the In progress section", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, ".agents", "features"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".agents", "features", "INDEX.md"),
+    [
+      "# Features — backlog",
+      "",
+      "| ID | Item | Priority | Context | Status |",
+      "|----|------|----------|---------|--------|",
+      "| F-010 | mid-flight work | P2 | .agents/handoffs/F-010.md | in-progress |",
+      "| F-011 | under test | P3 | ev | testing |",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+
+  const summary = h.migrateBacklog(target);
+  assert.strictEqual(summary.inprogress, 2, "two in-progress rows migrated");
+
+  const backlog = read(path.join(target, "BACKLOG.md"));
+  assert.match(backlog, /## In progress/);
+  assert.match(backlog, /\| F-010 \| mid-flight work \| \.agents\/handoffs\/F-010\.md \|/);
+  assert.match(backlog, /\| F-011 \| under test \| ev \|/);
 });
 
 // ---------------------------------------------------------------- test:product gate

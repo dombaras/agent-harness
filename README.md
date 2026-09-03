@@ -35,7 +35,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 | Path | Content | Ownership |
 |---|---|---|
 | `AGENTS.md` | root dispatcher (points to the rulebook) | harness (overwrite) |
-| `BACKLOG.md` | canonical task list (Open / Frozen / Archive / Not tracking) | **project** (create-if-missing) |
+| `BACKLOG.md` | canonical task list (Open / In progress / Frozen / Archive / Not tracking) | **project** (create-if-missing) |
 | `.opencode/agents/*.md` | 15 persona subagent defs (with `model:` pins + `permission`/`steps`/`temperature`/`hidden`) | harness (overwrite) |
 | `.agents/AGENTS.md` | full canonical operating rulebook | harness (overwrite) |
 | `.agents/rules/00-operating.md` | always-loaded rules summary (wired into `opencode.json` `instructions`) | harness (overwrite) |
@@ -126,9 +126,9 @@ warns but does not block; the guarantee only applies to registered flows.
   `nvidia`/`kimi`/`kimi-k3` → `nvidia/moonshotai/kimi-k3` (NVIDIA NIM), or any
   explicit `provider/model`. Restart opencode after switching (config reads once).
 - **`/board` command** — every deploy ships an opencode command
-  (`.opencode/command/board.md`) that reads the local `BACKLOG.md` and renders a
-  clean task list (Priority · Title · Short description). Read-only, no git — the
-  local file is the source of truth.
+  (`.opencode/command/board.md`) that reads the local `BACKLOG.md` and displays it
+  verbatim — no filtering, no re-ordering, no transformation. Read-only, no git —
+  the local file is the source of truth.
 
 ## QA gates
 
@@ -136,8 +136,8 @@ warns but does not block; the guarantee only applies to registered flows.
 - `npm run test:governance` — session wrap-up dispatch-log enforcement.
 - `npm run test:backlog` — canonical single-backlog gate: `BACKLOG.md` is the one
   source of truth; status/priority enums, frozen-reopen conditions, non-empty
-  priority/evidence, no duplicate IDs, and `INDEX.md`/`todo.md` must be pointers (not
-  live lists).
+  priority/evidence (and non-empty task/handoff on `In progress` rows), no
+  duplicate IDs, and `INDEX.md`/`todo.md` must be pointers (not live lists).
 - `npm run test:product` — **product/UX-first gate**: every feature doc in
   `.agents/features/<slug>/` must define its user before planning/implementation.
   `intent.md` must carry Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md`

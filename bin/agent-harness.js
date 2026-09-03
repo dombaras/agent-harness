@@ -682,6 +682,9 @@ function mapIndexRow(cells) {
   if (status === "frozen") {
     return { ...base, section: "frozen", reopen: context || "frozen (migrated); reopen when evidence recurs" };
   }
+  if (/^(in-progress|in progress|testing)$/.test(status)) {
+    return { ...base, section: "inprogress", handoff: context || "?" };
+  }
   return { ...base, section: "open" };
 }
 
@@ -695,7 +698,7 @@ function migrateBacklog(target) {
   const todoPath = path.join(target, ".agents", "memory", "todo.md");
   const templatePath = path.join(TEMPLATES_DIR, "BACKLOG.md");
 
-  const summary = { open: 0, frozen: 0, archived: 0, sources: [], createdBacklog: false, rewritten: [] };
+  const summary = { open: 0, inprogress: 0, frozen: 0, archived: 0, sources: [], createdBacklog: false, rewritten: [] };
 
   // 1. Scaffold BACKLOG.md if missing (never overwrite an existing board).
   if (!fs.existsSync(backlogPath)) {
@@ -717,6 +720,7 @@ function migrateBacklog(target) {
 
   // 3. Read the two sources.
   const open = [];
+  const inProgress = [];
   const frozen = [];
   const archive = [];
   const seenIds = new Set();
@@ -725,6 +729,7 @@ function migrateBacklog(target) {
     if (!row || seenIds.has(row.id)) return;
     seenIds.add(row.id);
     if (row.section === "archive") archive.push(row);
+    else if (row.section === "inprogress") inProgress.push(row);
     else if (row.section === "frozen") frozen.push(row);
     else open.push(row);
   };
@@ -758,13 +763,14 @@ function migrateBacklog(target) {
   }
 
   // 4. Emit BACKLOG.md only if there was something to migrate.
-  const total = open.length + frozen.length + archive.length;
+  const total = open.length + inProgress.length + frozen.length + archive.length;
   if (total === 0) {
     summary.skipped = "no live rows found in INDEX.md / todo.md";
     return summary;
   }
 
   const toRow = (r) => `| ${r.id} | ${r.priority} | ${r.task} | ${r.evidence} |`;
+  const inProgressRow = (r) => `| ${r.id} | ${r.task} | ${r.handoff || "?"} |`;
   const frozenRow = (r) => `| ${r.id} | ${r.task} | ${r.reopen} |`;
   const archiveRow = (r) => `| ${r.id} | ${r.task} | ${r.closed} |`;
 
@@ -775,6 +781,13 @@ function migrateBacklog(target) {
     open.length === 0
       ? ""
       : `## Open\n\nSorted by priority (P1 → P4).\n\n${table(["ID", "P", "Task", "Evidence"], open.map(toRow))}`;
+  const inProgressBlock =
+    inProgress.length === 0
+      ? ""
+      : `## In progress\n\nActive work — picked up, not yet shipped.\n\n${table(
+          ["ID", "Task", "Handoff"],
+          inProgress.map(inProgressRow)
+        )}`;
   const frozenBlock =
     frozen.length === 0
       ? ""
@@ -789,7 +802,7 @@ function migrateBacklog(target) {
 
   // Rebuild the board: keep the template's usage header, replace the body.
   const header = existing.split(/^## Active \/ next/m)[0].trim();
-  const body = [header, "## Active / next\n", openBlock, frozenBlock, archiveBlock, "## Not tracking (leave-in-place, no action)\n"]
+  const body = [header, "## Active / next\n", inProgressBlock, openBlock, frozenBlock, archiveBlock, "## Not tracking (leave-in-place, no action)\n"]
     .filter((b) => b.length > 0)
     .join("\n\n") + "\n";
 
@@ -814,6 +827,7 @@ function migrateBacklog(target) {
   }
 
   summary.open = open.length;
+  summary.inprogress = inProgress.length;
   summary.frozen = frozen.length;
   summary.archived = archive.length;
   return summary;
@@ -921,7 +935,7 @@ function main() {
           console.log(`\n[migrate-backlog] ${s.skipped}`);
         } else {
           console.log(
-            `\n[migrate-backlog] consolidated ${s.open} open · ${s.frozen} frozen · ${s.archived} archived`
+            `\n[migrate-backlog] consolidated ${s.open} open · ${s.inprogress} in progress · ${s.frozen} frozen · ${s.archived} archived`
           );
           if (s.sources.length) console.log(`  read from: ${s.sources.join(", ")}`);
           if (s.rewritten.length) console.log(`  rewritten as pointers: ${s.rewritten.join(", ")}`);
