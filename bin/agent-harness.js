@@ -97,15 +97,19 @@ function relKey(rel) {
  * (one session handoff file per session) are project data — scaffolded
  * create-if-missing, never overwritten, and never tracked in the manifest.
  * qa-plans and handoffs are sharded per change/session so concurrent sessions
- * never collide on a single shared file. */
+ * never collide on a single shared file.
+ * Note: the check matches the directory DIRECTLY under `.agents` (not any
+ * segment), so `.agents/skills/features/SKILL.md` stays harness-owned. */
 function isProjectScaffold(rel) {
   const parts = rel.split(path.sep);
+  const idx = parts.indexOf(".agents");
+  if (idx === -1) return false;
+  const sub = parts[idx + 1];
   return (
-    parts.includes(".agents") &&
-    (parts.includes("memory") ||
-      parts.includes("features") ||
-      parts.includes("qa-plans") ||
-      parts.includes("handoffs"))
+    sub === "memory" ||
+    sub === "features" ||
+    sub === "qa-plans" ||
+    sub === "handoffs"
   );
 }
 /* The canonical `BACKLOG.md` at the repo root is also project data (a live task

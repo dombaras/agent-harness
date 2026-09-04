@@ -1838,3 +1838,15 @@ test("test:integrate is wired into package.json scripts", async () => {
   const pkg = JSON.parse(read(path.join(target, "package.json")));
   assert.strictEqual(pkg.scripts["test:integrate"], "node scripts/qa/check-integrate.js");
 });
+
+test("skills/features SKILL.md is harness-owned (overwritten), not project scaffold", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const skill = path.join(target, ".agents", "skills", "features", "SKILL.md");
+  assert.ok(exists(skill), "features skill deployed");
+  fs.writeFileSync(skill, "LOCAL EDIT", "utf8");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.match(read(skill), /registrar only/, "features skill restored on update (harness-owned)");
+});
