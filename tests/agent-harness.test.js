@@ -1657,14 +1657,40 @@ test("deploy merges .gitattributes + registers the row-aware merge driver", asyn
   const ga = read(path.join(target, ".gitattributes"));
   assert.ok(ga.includes("* text=auto"), "project .gitattributes entry preserved");
   assert.match(ga, /# agent-harness \(managed below\)/);
-  assert.ok(ga.includes("BACKLOG.md merge=backlog"), "merge attribute merged in");
+  assert.ok(ga.includes("BACKLOG.md merge=backlog-demo"), "merge attribute merged with a per-project driver name");
 
-  const driver = git(target, ["config", "--get", "merge.backlog.driver"]);
+  const driver = git(target, ["config", "--get", "merge.backlog-demo.driver"]);
   assert.ok(driver && driver.includes("merge-backlog.js"), "merge driver registered in local git config: " + driver);
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   const ga2 = read(path.join(target, ".gitattributes"));
   assert.strictEqual((ga2.match(/# agent-harness \(managed below\)/g) || []).length, 1, "marker not duplicated");
+});
+
+test("nested harness projects get distinct merge-driver names that don't clobber each other", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+
+  const nested = path.join(target, "mobile");
+  fs.mkdirSync(nested);
+
+  await h.deploy(target, { name: "RootApp", yes: true, isUpdate: false });
+  await h.deploy(nested, { name: "MobileApp", yes: true, isUpdate: false });
+
+  const rootGa = read(path.join(target, ".gitattributes"));
+  const nestedGa = read(path.join(nested, ".gitattributes"));
+  assert.ok(rootGa.includes("BACKLOG.md merge=backlog-rootapp"), "root driver name is project-scoped");
+  assert.ok(nestedGa.includes("BACKLOG.md merge=backlog-mobileapp"), "nested driver name is project-scoped");
+
+  // both driver registrations survive side-by-side in the one shared git config
+  const rootDriver = git(target, ["config", "--get", "merge.backlog-rootapp.driver"]);
+  const nestedDriver = git(target, ["config", "--get", "merge.backlog-mobileapp.driver"]);
+  assert.ok(rootDriver && rootDriver.includes("merge-backlog.js"), "root driver registered");
+  assert.ok(nestedDriver && nestedDriver.includes("merge-backlog.js"), "nested driver registered");
+  assert.notStrictEqual(rootDriver, nestedDriver, "each project's driver points at its own script");
 });
 
 // ---------------------------------------------------------------- depends-on

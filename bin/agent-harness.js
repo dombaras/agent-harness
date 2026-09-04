@@ -254,18 +254,32 @@ function mergeGitignore(target) {
 /* Harness-managed .gitattributes entries: route BACKLOG.md through the row-aware
  * merge driver (scripts/qa/merge-backlog.js) so concurrent board edits merge by
  * row ID instead of conflicting. Merged into the project's own .gitattributes,
- * preserving every project entry. */
+ * preserving every project entry.
+ *
+ * The driver name is PER-PROJECT (`backlog-<project-slug>`), not a shared
+ * `backlog`. Two harness projects can live in one git repo (e.g. a repo root +
+ * a nested `mobile/` project); each carries a distinct `.gitattributes` driver
+ * name and registers its own `merge.<driver>.driver`, so one project's `update`
+ * can never clobber the other's driver registration. */
 const GITATTRIBUTES_MARKER = "# agent-harness (managed below)";
-const GITATTRIBUTES_ENTRY = "BACKLOG.md merge=backlog";
 
-function mergeGitattributes(target) {
+function slugify(s) {
+  const slug = String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug || "project";
+}
+
+function backlogDriverName(projectName) {
+  return `backlog-${slugify(projectName)}`;
+}
+
+function mergeGitattributes(target, driverName) {
   const p = path.join(target, ".gitattributes");
   const existing = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
   const lines = existing.split(/\r?\n/);
   const idx = lines.findIndex((l) => l === GITATTRIBUTES_MARKER);
   const kept = idx === -1 ? lines : lines.slice(0, idx);
   while (kept.length && kept[kept.length - 1].trim() === "") kept.pop();
-  const managed = [GITATTRIBUTES_MARKER, GITATTRIBUTES_ENTRY, ""];
+  const managed = [GITATTRIBUTES_MARKER, `BACKLOG.md merge=${driverName}`, ""];
   const out = kept.length ? [...kept, "", ...managed] : [...managed];
   return out.join("\n");
 }
@@ -273,13 +287,14 @@ function mergeGitattributes(target) {
 /* Register the row-aware merge driver in the target's LOCAL git config (never
  * committed — merge drivers are per-clone). Git runs it as
  * `node <abs>/scripts/qa/merge-backlog.js %O %A %B`. The driver script is
- * committed; only the config pointer is local. */
-function registerBacklogMergeDriver(target) {
+ * committed; only the config pointer is local. The driver name is per-project,
+ * so nested projects in one repo each keep their own registration. */
+function registerBacklogMergeDriver(target, driverName) {
   if (!isGitRepo(target)) return;
   const driverScript = path.join(target, "scripts", "qa", "merge-backlog.js").split(path.sep).join("/");
   const driver = `node "${driverScript}" %O %A %B`;
-  runGit(target, ["config", "merge.backlog.name", "BACKLOG.md row merge"]);
-  runGit(target, ["config", "merge.backlog.driver", driver]);
+  runGit(target, ["config", `merge.${driverName}.name`, "BACKLOG.md row merge"]);
+  runGit(target, ["config", `merge.${driverName}.driver`, driver]);
 }
 
 // ---------------------------------------------------------------- git helpers
@@ -376,6 +391,7 @@ async function deploy(target, opts) {
   const { name, domain, yes, dryRun, isUpdate, commit, push } = opts || {};
   const existing = readConfig(target);
   const projectName = name || existing.projectName || path.basename(target);
+  const driverName = backlogDriverName(projectName);
   let projectDomain = domain || existing.projectDomain || "";
   if (!projectDomain && !isUpdate && !yes && process.stdin.isTTY) {
     projectDomain = await ask(`Project domain (one line) for "${projectName}": `, "");
@@ -432,7 +448,7 @@ async function deploy(target, opts) {
 
   // Merge harness-managed .gitattributes (BACKLOG.md row-aware merge driver).
   {
-    const text = mergeGitattributes(target);
+    const text = mergeGitattributes(target, driverName);
     const key = ".gitattributes";
     const targetAbs = path.join(target, ".gitattributes");
     const had = fs.existsSync(targetAbs);
@@ -449,7 +465,7 @@ async function deploy(target, opts) {
 
   // Register the row-aware BACKLOG.md merge driver in the target's local git
   // config (the script is committed; the driver pointer is per-clone).
-  if (!dryRun) registerBacklogMergeDriver(target);
+  if (!dryRun) registerBacklogMergeDriver(target, driverName);
 
   for (const { abs, rel } of listFiles(TEMPLATES_DIR)) {
     const key = relKey(rel);
