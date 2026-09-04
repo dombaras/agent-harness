@@ -247,20 +247,124 @@ test("switch-model command + script are deployed to every project", async () => 
   assert.match(read(path.join(target, ".opencode", "command", "switch-model.md")), /deepseek\/deepseek-v4-pro/, "command restored on update");
 });
 
-test("board command is deployed to every project (read-only, local)", async () => {
+test("board command is deployed to every project (delegates to the deterministic CLI)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
   const cmd = read(path.join(target, ".opencode", "command", "board.md"));
   assert.match(cmd, /^---/, "board command frontmatter");
   assert.match(cmd, /BACKLOG\.md/, "command reads the local canonical board");
-  assert.match(cmd, /verbatim/, "command displays the board as-is, no transformation");
-  assert.match(cmd, /do NOT run git/, "command does not pull from git");
+  assert.match(cmd, /node scripts\/backlog\.js list/, "command runs the deterministic CLI");
+  assert.match(cmd, /Do NOT run git/, "command does not pull from git");
+  assert.match(cmd, /Do NOT .* edit `BACKLOG\.md`/, "command forbids hand-editing the board");
 
   // the command is re-deployed (overwritten) on update, like any harness file
   fs.writeFileSync(path.join(target, ".opencode", "command", "board.md"), "LOCAL EDIT", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.match(read(path.join(target, ".opencode", "command", "board.md")), /BACKLOG\.md/, "board command restored on update");
+});
+
+test("backlog CLI + custom tools + notify plugin are deployed to every project", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  assert.ok(exists(path.join(target, "scripts", "backlog.js")), "deterministic backlog CLI deployed");
+
+  const tools = read(path.join(target, ".opencode", "tools", "backlog.ts"));
+  // file "backlog.ts" + these exports become tools backlog_list/add/take/archive/freeze
+  assert.match(tools, /export const list\b/);
+  assert.match(tools, /export const add\b/);
+  assert.match(tools, /export const take\b/);
+  assert.match(tools, /export const archive\b/);
+  assert.match(tools, /export const freeze\b/);
+  assert.match(tools, /scripts[\\/]backlog\.js/, "tools shell out to the CLI");
+
+  const plugin = read(path.join(target, ".opencode", "plugins", "backlog-notify.ts"));
+  assert.match(plugin, /tool\.execute\.after/, "plugin hooks tool execution");
+  assert.match(plugin, /showToast/, "plugin pushes a toast");
+
+  // the `backlog` npm script is wired so `npm run backlog -- list` works
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["backlog"], "node scripts/backlog.js");
+});
+
+function scaffoldBacklogCliTarget() {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"),
+    path.join(target, "scripts", "backlog.js")
+  );
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(target, "BACKLOG.md"));
+  return target;
+}
+
+function runBacklogCli(target, args) {
+  const res = spawnSync(process.execPath, ["scripts/backlog.js", ...args], { cwd: target, encoding: "utf8" });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("backlog CLI accumulates, sorts, and delegates deterministically (no LLM)", () => {
+  const t = scaffoldBacklogCliTarget();
+
+  // accumulate: add three items with different priorities
+  assert.strictEqual(runBacklogCli(t, ["add", "block something", "--p", "P1", "--evidence", "user report"]).status, 0);
+  assert.strictEqual(runBacklogCli(t, ["add", "do a thing", "--p", "P2"]).status, 0);
+  assert.strictEqual(runBacklogCli(t, ["add", "polish later"]).status, 0); // default P3
+
+  // IDs are generated uniquely, and Open rows are sorted by priority (P1 -> P3)
+  const backlog = read(path.join(t, "BACKLOG.md"));
+  const openSection = backlog.split("## Frozen")[0];
+  const order = ["F-001", "F-002", "F-003"];
+  for (let i = 0; i < order.length; i++) {
+    assert.ok(backlog.includes(order[i]), `${order[i]} written`);
+    if (i > 0) {
+      assert.ok(
+        openSection.indexOf(order[i - 1]) < openSection.indexOf(order[i]),
+        `${order[i - 1]} precedes ${order[i]} (priority sort)`
+      );
+    }
+  }
+  assert.match(backlog, /\| F-001 \| P1 \| block something \| user report \|/);
+
+  // review: list prints In progress + Open, hiding Frozen/Archive by default
+  const list = runBacklogCli(t, ["list"]);
+  assert.strictEqual(list.status, 0, list.out);
+  assert.match(list.out, /Open/);
+  assert.match(list.out, /F-001/);
+
+  // delegate: pick up F-001
+  assert.match(runBacklogCli(t, ["take", "F-001", "--handoff", ".agents/handoffs/F-001.md"]).out, /took F-001/);
+  let b = read(path.join(t, "BACKLOG.md"));
+  assert.match(b.split("## Open")[1], /F-002/, "F-001 no longer in Open");
+  assert.match(b.split("## In progress")[1].split("## Open")[0], /\| F-001 \| block something \| \.agents\/handoffs\/F-001\.md \|/);
+
+  // freeze F-002
+  assert.match(runBacklogCli(t, ["freeze", "F-002", "--why", "not now", "--reopen", "customer asks"]).out, /froze F-002/);
+  b = read(path.join(t, "BACKLOG.md"));
+  assert.match(b.split("## Frozen")[1], /\| F-002 \| do a thing \| not now — reopen when customer asks \|/);
+
+  // ship F-001
+  assert.match(runBacklogCli(t, ["archive", "F-001", "--closed", "shipped 2026-09-04"]).out, /archived F-001/);
+  b = read(path.join(t, "BACKLOG.md"));
+  assert.match(b.split("## Archive")[1], /\| F-001 \| block something \| shipped 2026-09-04 \|/);
+  assert.doesNotMatch(b.split("## In progress")[1].split("## Open")[0], /F-001/, "F-001 left In progress");
+
+  // every mutation stays valid per the canonical gate
+  fs.mkdirSync(path.join(t, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-backlog.js"),
+    path.join(t, "scripts", "qa", "check-backlog.js")
+  );
+  const gate = runBacklogGate(t);
+  assert.strictEqual(gate.status, 0, gate.out);
+  assert.match(gate.out, /RESULT: backlog green/);
+});
+
+test("backlog CLI rejects a non-P1..P4 priority and a blank add", () => {
+  const t = scaffoldBacklogCliTarget();
+  assert.strictEqual(runBacklogCli(t, ["add", "x", "--p", "P9"]).status, 1, "bad priority fails");
+  assert.strictEqual(runBacklogCli(t, ["add"]).status, 1, "missing task fails");
 });
 
 test("qa-plans scaffold is preserved on re-deploy (project-owned)", async () => {

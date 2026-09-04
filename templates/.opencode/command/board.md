@@ -1,7 +1,15 @@
 ---
-description: Show the local BACKLOG.md verbatim. Read-only — no git, no editing.
+description: Show the active BACKLOG.md rows (In Progress + Pending) via the deterministic CLI — no filtering, no editing.
 ---
 
-Read `BACKLOG.md` at the repo root and display it verbatim. The local file is the
-source of truth — do NOT run git, do NOT pull, do NOT edit, filter, summarize, or
-re-order anything. Show the whole file exactly as it is.
+Run the deterministic board command and show its output verbatim:
+
+```
+node scripts/backlog.js list
+```
+
+This prints the active `BACKLOG.md` rows (In Progress + Open) with no LLM
+filtering or re-ordering. Do NOT summarize or transform the output — copy it
+exactly. Do NOT run git, do NOT pull, and do NOT edit `BACKLOG.md` yourself:
+the local file is the source of truth, and all board mutations go through the
+`backlog_*` tools / `node scripts/backlog.js`.

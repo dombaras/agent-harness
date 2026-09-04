@@ -2,10 +2,12 @@ node_modules/
 *.log
 .DS_Store
 
-# deployed harness artifacts (never commit a target deployment into this repo)
-.harness.json
-.harness-backup/
-.agents/
-.opencode/
-opencode.json
-AGENTS.md
+# deployed harness artifacts (never commit a target deployment into this repo).
+# Root-anchored so the TEMPLATE source (templates/.agents/, templates/.opencode/)
+# stays tracked; only a root-level `init --target .` deployment is ignored.
+/.harness.json
+/.harness-backup/
+/.agents/
+/.opencode/
+/opencode.json
+/AGENTS.md

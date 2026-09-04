@@ -53,7 +53,13 @@ code that implements them so a feature's intent and its delivery cannot drift.
 
 One row per found item. Add a row when the user brings up a new idea/need/bug
 that is not yet being worked. One write-path only: capture → `BACKLOG.md`, update
-it in the same session the work happens. Sections (see the `BACKLOG.md` header):
+it in the same session the work happens.
+
+**Use the deterministic tools, not hand-editing.** Update the board with the
+`backlog_*` tools (`backlog_add` / `backlog_take` / `backlog_archive` /
+`backlog_freeze`) or `node scripts/backlog.js` — they validate the schema, generate
+IDs, and sort Open by priority. Never rewrite `BACKLOG.md` with a text edit; a
+hand-edited row is exactly what `test:backlog` catches. Sections (see the `BACKLOG.md` header):
 
 - **Active / next** (optional) — the next few picks, cited as `ID (P)`.
 - **In progress** — `| ID | Task | Handoff |`, active work. Move a row here from

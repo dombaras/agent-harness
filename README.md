@@ -43,6 +43,9 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.agents/features/INDEX.md` | pointer to `BACKLOG.md` (per-feature doc tree root) | **project** (create-if-missing) |
 | `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
 | `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` gates + QA-script wiring check | harness (overwrite) |
+| `scripts/backlog.js` | deterministic `BACKLOG.md` editor (list/add/take/archive/freeze) | harness (overwrite) |
+| `.opencode/tools/backlog.ts` | `backlog_*` custom tools the LLM calls (shell out to the CLI) | harness (overwrite) |
+| `.opencode/plugins/backlog-notify.ts` | toast/log whenever an agent mutates the board | harness (overwrite) |
 | `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, history, flow-map, product-principles) | **project** (create-if-missing) |
 | `.agents/handoffs/*` | project data (one session handoff file per session — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.agents/qa-plans/*` | project data (one QA plan file per change — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
@@ -126,9 +129,32 @@ warns but does not block; the guarantee only applies to registered flows.
   `nvidia`/`kimi`/`kimi-k3` → `nvidia/moonshotai/kimi-k3` (NVIDIA NIM), or any
   explicit `provider/model`. Restart opencode after switching (config reads once).
 - **`/board` command** — every deploy ships an opencode command
-  (`.opencode/command/board.md`) that reads the local `BACKLOG.md` and displays it
-  verbatim — no filtering, no re-ordering, no transformation. Read-only, no git —
-  the local file is the source of truth.
+  (`.opencode/command/board.md`) that runs the deterministic `scripts/backlog.js
+  list` and shows the active rows verbatim — no LLM filtering, no re-ordering, no
+  transformation. Read-only, no git — the local file is the source of truth.
+
+### Backlog management — fast, deterministic, no LLM in the loop
+
+`BACKLOG.md` is the single source of truth; it is managed by a **deterministic
+Node CLI** (no model round-trip) that both humans and agents share:
+
+```bash
+npm run backlog -- list              # In progress + Open (add --all for Frozen/Archive)
+npm run backlog -- add "NLI search times out" --p P2 --evidence docs/issues.md
+npm run backlog -- take F-001 --handoff .agents/handoffs/F-001.md
+npm run backlog -- archive F-001 --closed "shipped 2026-09-04"
+npm run backlog -- freeze F-002 --why "not now" --reopen "customer asks"
+```
+
+- The CLI validates the schema (`P1..P4`, non-empty evidence/handoff/reopen),
+  generates unique IDs, and sorts `Open` by priority — every write stays
+  `npm run test:backlog`-green.
+- **Agents use the same path** via opencode custom tools (`backlog_add`,
+  `backlog_take`, `backlog_archive`, `backlog_freeze`, `backlog_list`) that shell
+  out to the CLI — never hand-edit `BACKLOG.md`.
+- A **notify plugin** (`.opencode/plugins/backlog-notify.ts`) pushes a toast +
+  structured log the moment an agent mutates the board, so "an agent finished an
+  item" reaches you as a notification instead of a manual refresh.
 
 ## QA gates
 

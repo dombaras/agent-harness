@@ -52,4 +52,4 @@ Date: <YYYY-MM-DD>
 - Keep it under ~40 lines. Code is the source of truth; the handoff is a pointer, not a spec.
 - The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this.
 - Keeping `.agents/memory/locations.md` current is part of this skill. Read it first, update it last.
-- **You only touch handoff memory.** The board write-back — moving shipped `BACKLOG.md` rows to `Archive (shipped · done)` and committing them — is the orchestrator's DoD §7 step, not yours. If it hasn't been done, call it out in your output; never edit `BACKLOG.md` or run git yourself.
+- **You only touch handoff memory.** The board write-back — moving shipped `BACKLOG.md` rows to `Archive (shipped · done)` (via the `backlog_*` tools) and committing them — is the orchestrator's DoD §7 step, not yours. If it hasn't been done, call it out in your output; never edit `BACKLOG.md` or run git yourself.
