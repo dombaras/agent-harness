@@ -79,7 +79,7 @@ export const queue = tool({
 
 export const next = tool({
   description:
-    "Pick the next item off the Queue: report the top-priority Queued row, or (with take) move it Queued -> In progress and link the session handoff. This is the primitive behind /next.",
+    "Pick the next item off the Queue: report the top-priority unblocked Queued row, or (with take) atomically claim it — move it Queued -> In progress in a locked write and link the session handoff, so two sessions can never pick the same row. This is the primitive behind /next; always take to claim before working.",
   args: {
     take: tool.schema.boolean().describe("when true, move the top Queued row to In progress (default: dry-run, just report it)"),
     handoff: tool.schema.string().describe("session handoff path when taking, e.g. .agents/handoffs/F-001.md"),

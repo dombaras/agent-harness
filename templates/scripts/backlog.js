@@ -270,6 +270,63 @@ function findRow(lines, id) {
   return null;
 }
 
+// ---------------------------------------------------------------- locking
+/* The board write path (take / next --take / queue / archive / worktree / ...)
+ * is a read-modify-write of BACKLOG.md. Two concurrent sessions could otherwise
+ * both read the same Queued row and both claim it. `withLock` serializes that
+ * write path across processes via an exclusive `.backlog.lock` file (O_EXCL).
+ * The holder's PID is written inside so a crashed session's lock is detected and
+ * broken by PID liveness — never by age alone, since a slow `git worktree add`
+ * under the lock must not be mistaken for a stale lock. */
+const LOCK_RETRY_MS = 25;
+const LOCK_TIMEOUT_MS = 15000;
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function pidAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM"; // exists but not signalable — still alive
+  }
+}
+
+function withLock(root, fn) {
+  const lockPath = path.join(root, ".backlog.lock");
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      fs.writeFileSync(lockPath, String(process.pid), { flag: "wx" });
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      let holderPid = NaN;
+      try {
+        holderPid = parseInt(fs.readFileSync(lockPath, "utf8"), 10);
+      } catch {
+        /* lock vanished between attempts — retry */
+      }
+      if (!pidAlive(holderPid)) {
+        try { fs.unlinkSync(lockPath); } catch { /* vanished — retry */ }
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error("backlog: timed out waiting for the board lock (another session is mid-write).");
+      }
+      sleep(LOCK_RETRY_MS);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try { fs.unlinkSync(lockPath); } catch { /* already removed */ }
+  }
+}
+
 // ---------------------------------------------------------------- epics
 
 /* The top-level ## Epics registry table → [{ key, label, goal }]. */
@@ -844,39 +901,53 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  const state = readBacklog(root);
 
+  // Read-only commands never touch the board — no lock, no write.
+  if (cmd === "list") {
+    const state = readBacklog(root);
+    if (args.json) {
+      console.log(JSON.stringify(toBoardJson(state), null, 2));
+    } else {
+      cmdList(state, args);
+    }
+    return;
+  }
+  if (cmd === "next" && !args.take) {
+    const state = readBacklog(root);
+    console.log(formatResult("next", cmdNext(state, args)));
+    return;
+  }
+
+  // Mutating commands read-modify-write BACKLOG.md (or owned-files.md) under an
+  // exclusive lock, so two concurrent sessions can't both claim the same row.
   try {
-    let out;
-    if (cmd === "list") {
-      if (args.json) {
-        console.log(JSON.stringify(toBoardJson(state), null, 2));
+    withLock(root, () => {
+      const state = readBacklog(root);
+      let out;
+      if (cmd === "add") out = cmdAdd(state, args);
+      else if (cmd === "take") out = cmdTake(state, args);
+      else if (cmd === "queue") out = cmdQueue(state, args);
+      else if (cmd === "next") out = cmdNext(state, args);
+      else if (cmd === "archive") out = cmdArchive(state, args);
+      else if (cmd === "freeze") out = cmdFreeze(state, args);
+      else if (cmd === "priority") out = cmdPriority(state, args);
+      else if (cmd === "depends") out = cmdDepends(state, args);
+      else if (cmd === "owns") out = cmdOwns(state, args);
+      else if (cmd === "worktree") out = cmdWorktree(state, args);
+      else if (cmd === "epic-add") out = cmdEpicAdd(state, args);
+      else if (cmd === "epic") out = cmdEpic(state, args);
+      else {
+        usage();
+        process.exitCode = 1;
         return;
       }
-      out = cmdList(state, args);
-    } else if (cmd === "add") out = cmdAdd(state, args);
-    else if (cmd === "take") out = cmdTake(state, args);
-    else if (cmd === "queue") out = cmdQueue(state, args);
-    else if (cmd === "next") out = cmdNext(state, args);
-    else if (cmd === "archive") out = cmdArchive(state, args);
-    else if (cmd === "freeze") out = cmdFreeze(state, args);
-    else if (cmd === "priority") out = cmdPriority(state, args);
-    else if (cmd === "depends") out = cmdDepends(state, args);
-    else if (cmd === "owns") out = cmdOwns(state, args);
-    else if (cmd === "worktree") out = cmdWorktree(state, args);
-    else if (cmd === "epic-add") out = cmdEpicAdd(state, args);
-    else if (cmd === "epic") out = cmdEpic(state, args);
-    else {
-      usage();
-      process.exitCode = 1;
-      return;
-    }
-    if (cmd !== "list" && cmd !== "owns") {
-      fs.writeFileSync(state.p, state.lines.join(state.eol) + state.eol, "utf8");
-      console.log(formatResult(cmd, out));
-    } else if (cmd === "owns") {
-      console.log(formatResult(cmd, out));
-    }
+      if (cmd === "owns") {
+        console.log(formatResult(cmd, out));
+      } else {
+        fs.writeFileSync(state.p, state.lines.join(state.eol) + state.eol, "utf8");
+        console.log(formatResult(cmd, out));
+      }
+    });
   } catch (e) {
     console.error(`backlog: ${e.message}`);
     process.exitCode = 1;
@@ -909,4 +980,5 @@ module.exports = {
   cmdEpic,
   readEpics,
   toBoardJson,
+  withLock,
 };

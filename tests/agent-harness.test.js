@@ -4,7 +4,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFileSync, spawnSync } = require("child_process");
+const { execFileSync, spawn, spawnSync } = require("child_process");
 
 const h = require("../bin/agent-harness.js");
 
@@ -371,6 +371,81 @@ test("backlog CLI rejects a non-P1..P4 priority and a blank add", () => {
   assert.strictEqual(runBacklogCli(t, ["add", "x", "--p", "P9"]).status, 1, "bad priority fails");
   assert.strictEqual(runBacklogCli(t, ["add"]).status, 1, "missing task fails");
 });
+
+test("/next command claims atomically (next --take) before anything else", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const cmd = read(path.join(target, ".opencode", "command", "next.md"));
+  assert.match(cmd, /^---/, "next command frontmatter");
+  assert.match(cmd, /next --take/, "next command runs the atomic claim");
+  assert.match(cmd, /claim it first/i, "claim is the first step");
+  // the atomic claim must precede the worktree isolation (which no longer auto-takes)
+  const claimIdx = cmd.indexOf("next --take");
+  const worktreeIdx = cmd.indexOf("worktree <id>");
+  assert.ok(claimIdx !== -1 && worktreeIdx !== -1 && claimIdx < worktreeIdx, "claim precedes isolation");
+  assert.match(cmd, /no other\s+session can pick the same row/i, "command explains the anti-double-pick guarantee");
+});
+
+test("next --take claims are atomic — concurrent sessions pick distinct rows", async () => {
+  const t = scaffoldBacklogCliTarget();
+  const n = 6;
+  const ids = [];
+  for (let i = 1; i <= n; i++) {
+    assert.strictEqual(runBacklogCli(t, ["add", `task ${i}`, "--p", "P2"]).status, 0);
+  }
+  for (let i = 1; i <= n; i++) {
+    const id = "F-" + String(i).padStart(3, "0");
+    ids.push(id);
+    assert.strictEqual(runBacklogCli(t, ["queue", id]).status, 0);
+  }
+
+  const script = path.join(t, "scripts", "backlog.js");
+  const codes = await Promise.all(
+    ids.map(
+      () =>
+        new Promise((resolve) => {
+          const c = spawn(process.execPath, [script, "next", "--take"], {
+            cwd: t,
+            stdio: ["ignore", "ignore", "pipe"],
+          });
+          let err = "";
+          c.stderr.on("data", (d) => (err += d));
+          c.on("close", (code) => resolve({ code, err }));
+        })
+    )
+  );
+  assert.ok(
+    codes.every((r) => r.code === 0),
+    `all claims exit 0: ${codes.map((r) => `${r.code}:${r.err.trim()}`).join(" | ")}`
+  );
+
+  const b = read(path.join(t, "BACKLOG.md"));
+  const idsInSection = (heading) =>
+    b
+      .split(heading)[1]
+      .split("## ")[0]
+      .split(/\r?\n/)
+      .filter((l) => /^\s*\|/.test(l))
+      .map((l) => (l.split("|")[1] || "").trim())
+      .filter((id) => /^F-\d{3}$/.test(id));
+
+  const inprogIds = idsInSection("## In progress");
+  const queuedIds = idsInSection("## Queued");
+  for (const id of ids) {
+    assert.ok(inprogIds.includes(id), `${id} claimed In progress (no double-pick)`);
+  }
+  assert.strictEqual(inprogIds.length, n, "exactly n rows In progress — no row double-claimed");
+  assert.strictEqual(queuedIds.length, 0, "Queued drained — no row left unclaimed");
+});
+
+test("deploy gitignores the transient board lock", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const gi = read(path.join(target, ".gitignore"));
+  assert.match(gi, /\.backlog\.lock/, "transient .backlog.lock is ignored");
+});
+
 
 test("qa-plans scaffold is preserved on re-deploy (project-owned)", async () => {
   const target = tmpdir();
