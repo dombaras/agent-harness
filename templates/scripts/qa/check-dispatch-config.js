@@ -14,6 +14,9 @@
  *   4. `opencode.json` main `model` + `small_model` are also real provider IDs.
  *   5. `.agents/memory/model-routing.md` does not name a concrete model that is
  *      no longer pinned by any agent or opencode.json (doc↔config drift).
+ *   6. Every bash-enabled editor carries the working-tree gate (verify
+ *      `git rev-parse --show-toplevel` + branch before editing) so a subagent
+ *      can never silently edit the wrong checkout/worktree.
  *
  * Allowlist refresh (only when the provider adds/removes models):
  *   npx opencode models > scripts/qa/models.allowlist.txt
@@ -88,6 +91,9 @@ for (const f of agentNames) {
   if (!fs.existsSync(skillMd)) fail(`agent ${name}: referenced skill missing \`${path.relative(root, skillMd)}\``);
   if (!/return your final message in this exact order[\s\S]*Deferred & risks/i.test(body))
     fail(`agent ${name}: missing output-contract marker (Result -> Evidence -> Deferred & risks)`);
+  const canBash = /^\s*bash:\s*"\*":\s*allow\s*$/m.test(body);
+  if (canBash && !/git rev-parse --show-toplevel/.test(body))
+    fail(`agent ${name}: bash-enabled editor missing the working-tree gate (verify \`git rev-parse --show-toplevel\` + branch before editing)`);
 }
 
 // 2. bidirectional parity: every skill dir has a matching agent file
