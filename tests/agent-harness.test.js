@@ -1318,6 +1318,35 @@ test("test:governance unions multiple sharded handoffs and still reads the legac
   assert.match(r.out, /memory[\\/]handoff\.md/);
 });
 
+test("test:governance accepts a table-format dispatch log (data rows, not the header)", () => {
+  const t = scaffoldGovernanceTarget();
+  writeFile(
+    t,
+    ".agents/handoffs/F-060.md",
+    "# Where we stopped — F-060\n\n## Dispatch log\n\n" +
+      "| Subagent | Model | Shipped / deferred |\n" +
+      "|---|---|---|\n" +
+      "| product-manager | deepseek/deepseek-v4-pro | shipped intent.md |\n" +
+      "| qa-architect | deepseek/deepseek-v4-pro | shipped tests.md |\n\n" +
+      "## Done\n- x\n"
+  );
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /governance green/);
+});
+
+test("test:governance still fails a table dispatch log with a header but no data rows", () => {
+  const t = scaffoldGovernanceTarget();
+  writeFile(
+    t,
+    ".agents/handoffs/F-060.md",
+    "# x\n\n## Dispatch log\n\n| Subagent | Model | Shipped / deferred |\n|---|---|---|\n\n## Done\n- z\n"
+  );
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /at least one entry/);
+});
+
 // ---------------------------------------------------------------- test:concurrency gate (working-tree isolation)
 
 function scaffoldConcurrencyTarget() {

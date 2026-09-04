@@ -53,6 +53,29 @@ function handoffFiles(root) {
   return files.sort();
 }
 
+/* A dispatch-log entry is either a bullet item (`- subagent -> model -> shipped`)
+ * or a markdown table data row (`| subagent | model | shipped ... |`). The gate
+ * accepts both so a session that renders its log as a table is not falsely
+ * flagged as "empty". Table rows are recognized only AFTER a separator row
+ * (`|---|---|`) so the header is never mistaken for an entry. */
+function hasDispatchEntry(section) {
+  const lines = section.split(/\r?\n/);
+  let seenSeparator = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^[-*]\s+\S/.test(line)) return true; // bullet entry
+    if (/^\|.*\|$/.test(line)) {
+      if (/^\|(\s*:?-+:?\s*\|)+\s*$/.test(line)) {
+        seenSeparator = true;
+        continue;
+      }
+      if (seenSeparator) return true; // data row after the separator
+    }
+  }
+  return false;
+}
+
 const files = handoffFiles(root);
 
 if (files.length === 0) {
@@ -77,10 +100,9 @@ for (const file of files) {
     const after = src.slice(heading.index + heading[0].length);
     const sectionTail = after.match(/^#{1,6}\s/m);
     const section = (sectionTail ? after.slice(0, sectionTail.index) : after).trim();
-    const entry = section.match(/^\s*[-*]\s*\S/m);
     check(
-      !!entry,
-      `${rel} dispatch log contains at least one entry line (subagent result, waived:, or degraded:)`
+      hasDispatchEntry(section),
+      `${rel} dispatch log contains at least one entry (subagent result, waived:, or degraded: — bullet or table row)`
     );
   }
 

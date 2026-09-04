@@ -10,7 +10,9 @@ silently lost.
 `npm run test:governance` reads EVERY `.md` file under this directory (plus the
 legacy `.agents/memory/handoff.md` if it exists) and requires each to open with a
 `## Dispatch log` section containing at least one entry — so a session's dispatch
-log is enforced without a shared file.
+log is enforced without a shared file. An entry is a bullet line
+(`- <subagent> -> <model> -> <shipped/deferred>`) **or** a markdown table data row
+(`| subagent | model | shipped/deferred |`); both are accepted, so pick one.
 
 ## Naming & ownership
 
