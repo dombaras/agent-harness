@@ -11,18 +11,21 @@
  *
  * Commands:
  *   list [--all]                        show active rows (In progress + Open)
- *   add <task> [--p P1..P4] [--evidence x] [--id F-xxx]
+ *   add <task> [--p P1..P4] [--evidence x] [--id F-xxx] [--depends-on ids]
  *   take <id> [--handoff path]          Open/Queued -> In progress (pick it up)
  *   queue <id>                          Open -> Queued (allocate to a worker)
- *   next [--take] [--handoff path]      pick the top Queued row (--take -> In progress)
+ *   next [--take] [--handoff path]      pick the top unblocked Queued row
  *   archive <id> [--closed note]        -> Archive (shipped · done)
  *   freeze <id> [--why x] [--reopen x]  -> Frozen (parked)
+ *   depends <id> --on <ids|?>           set a row's "Depends on" cell (Open/Queued)
+ *   owns <id> --files "glob, glob"      record the files/globs a row owns
  *   worktree <id> [--branch b] [--dir d] [--handoff path]
  *                                       create a git worktree + branch for <id>
  *                                       and record it in the row's Handoff cell
  *
  * Every mutation writes well-formed rows that `npm run test:backlog` accepts:
- * priority P1..P4, non-empty evidence/handoff/reopen, unique IDs.
+ * priority P1..P4, non-empty evidence/handoff/reopen, unique IDs, and
+ * `Depends on` cells that reference existing rows.
  *
  * `worktree` is the harness's isolation primitive: concurrent sessions should
  * each claim a separate `git worktree` + branch so one session's uncommitted
@@ -39,8 +42,8 @@ const SECTIONS = {
   active: { heading: "## Active / next" },
   epics: { heading: "## Epics", header: ["Key", "Label", "Goal"] },
   inprogress: { heading: "## In progress", header: ["ID", "Epic", "Task", "Handoff"] },
-  queued: { heading: "## Queued", header: ["ID", "P", "Epic", "Task", "Evidence"] },
-  open: { heading: "## Open", header: ["ID", "P", "Epic", "Task", "Evidence"] },
+  queued: { heading: "## Queued", header: ["ID", "P", "Epic", "Task", "Evidence", "Depends on"] },
+  open: { heading: "## Open", header: ["ID", "P", "Epic", "Task", "Evidence", "Depends on"] },
   frozen: { heading: "## Frozen", header: ["ID", "Epic", "Task", "Why frozen / reopen when"] },
   archive: { heading: "## Archive (shipped · done)", header: ["ID", "Epic", "Task", "Closed"] },
 };
@@ -183,18 +186,36 @@ function requireSection(lines, key) {
   return s;
 }
 
-/* Replace a section's data rows with `newCellsList`, preserving header + prose. */
+/* Canonical header / separator lines for a section's table. */
+function headerLine(key) {
+  return "| " + SECTIONS[key].header.join(" | ") + " |";
+}
+function sepLine(key) {
+  return "|" + SECTIONS[key].header.map(() => "---").join("|") + "|";
+}
+
+/* Replace a section's table (header + separator + data rows) with the canonical
+ * header and `newCellsList`, preserving the section's prose. Short cells are
+ * padded to the section's column count so a legacy row (e.g. an Open row written
+ * before the `Depends on` column existed) normalizes to the current schema. */
 function setRows(lines, key, newCellsList) {
   const s = requireSection(lines, key);
   const block = tableBlock(lines, s.headingIdx, s.endIdx);
   const out = lines.slice();
-  const newLines = newCellsList.map(formatRow);
-  if (block.dataStart === -1 || block.dataEnd < block.dataStart) {
-    const insertAt = block.sepIdx !== -1 ? block.sepIdx + 1 : block.headerIdx + 1;
-    out.splice(insertAt, 0, ...newLines);
+  const width = SECTIONS[key].header.length;
+  const dataLines = newCellsList.map((cells) => {
+    const padded = cells.slice();
+    while (padded.length < width) padded.push("?");
+    return formatRow(padded.slice(0, width));
+  });
+  if (block.headerIdx === -1) {
+    const insertAt = s.headingIdx + 1;
+    out.splice(insertAt, 0, headerLine(key), sepLine(key), ...dataLines);
     return out;
   }
-  out.splice(block.dataStart, block.dataEnd - block.dataStart + 1, ...newLines);
+  const start = block.headerIdx;
+  const end = block.dataEnd >= block.dataStart ? block.dataEnd : block.sepIdx;
+  out.splice(start, end - start + 1, headerLine(key), sepLine(key), ...dataLines);
   return out;
 }
 
@@ -288,6 +309,61 @@ function epicOf(cells, key) {
   return i === -1 ? "?" : (cells[i] || "?");
 }
 
+/* "Depends on" cell (Open/Queued only): a comma/space-separated list of row IDs,
+ * or `?`/empty for none. */
+function dependsOf(cells, key) {
+  return key === "open" || key === "queued" ? (cells[5] || "").trim() : "";
+}
+
+function isArchived(lines, id) {
+  return getRows(lines, "archive").some((r) => (r.cells[0] || "").trim() === id);
+}
+
+/* The IDs this row depends on that are NOT yet archived (its blockers). */
+function blockedBy(lines, cells, key) {
+  const dep = dependsOf(cells, key);
+  if (!dep || dep === "?") return [];
+  return dep.split(/[\s,]+/).filter(Boolean).filter((d) => !isArchived(lines, d));
+}
+
+/* ---------------------------------------------------------------- owned-files registry */
+/* `.agents/memory/owned-files.md` maps an active row -> the files/globs it owns,
+ * powering the cross-session overlap check in `test:concurrency`. */
+
+function ownedFilesPath(root) {
+  return path.join(root, ".agents", "memory", "owned-files.md");
+}
+
+function readOwnedRegistry(root) {
+  const p = ownedFilesPath(root);
+  const map = new Map();
+  if (!fs.existsSync(p)) return { map, eol: "\n" };
+  const src = fs.readFileSync(p, "utf8");
+  const eol = src.includes("\r\n") ? "\r\n" : "\n";
+  for (const raw of src.split(/\r?\n/)) {
+    const m = raw.match(/^\s*[-*]\s+([A-Za-z]+-\d+)\s*:\s*(.+)$/);
+    if (m) map.set(m[1].toUpperCase(), m[2].trim());
+  }
+  return { map, eol };
+}
+
+function writeOwnedRegistry(root, map) {
+  const p = ownedFilesPath(root);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const header = [
+    "# Owned files per active row",
+    "",
+    "One row per in-progress feature: the files/globs it owns. Drives the",
+    "cross-session overlap check in `test:concurrency` (two In-progress rows must",
+    "not own the same file). Format: `- <ID>: <glob>[, <glob>...]`.",
+    "",
+  ];
+  const body = [...map.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([id, globs]) => `- ${id}: ${globs}`);
+  fs.writeFileSync(p, header.concat(body).join("\n") + "\n", "utf8");
+}
+
 // ---------------------------------------------------------------- commands
 
 function truncate(s, n) {
@@ -359,10 +435,10 @@ function toBoardJson(state) {
 
   const epics = readEpics(state.lines);
   const open = getRows(state.lines, "open")
-    .map((r) => ({ id: r.cells[0], priority: r.cells[1], epic: r.cells[2] || "?", task: r.cells[3] || "", evidence: r.cells[4] || "" }))
+    .map((r) => ({ id: r.cells[0], priority: r.cells[1], epic: r.cells[2] || "?", task: r.cells[3] || "", evidence: r.cells[4] || "", dependsOn: r.cells[5] || "" }))
     .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority));
   const queued = getRows(state.lines, "queued")
-    .map((r) => ({ id: r.cells[0], priority: r.cells[1], epic: r.cells[2] || "?", task: r.cells[3] || "", evidence: r.cells[4] || "" }))
+    .map((r) => ({ id: r.cells[0], priority: r.cells[1], epic: r.cells[2] || "?", task: r.cells[3] || "", evidence: r.cells[4] || "", dependsOn: r.cells[5] || "" }))
     .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority));
   const inprogress = getRows(state.lines, "inprogress")
     .map((r) => ({ id: r.cells[0], epic: r.cells[1] || "?", task: r.cells[2] || "", handoff: r.cells[3] || "" }));
@@ -384,13 +460,18 @@ function cmdAdd(state, argv) {
   if (!isEpicKey(epic, state.lines)) {
     throw new Error(`add: unknown epic "${epic}" (not in ## Epics) — use ? or epic-add first`);
   }
+  const dependsOn = argv["depends-on"] || "?";
+  const known = getAllIds(state.lines);
+  for (const d of dependsOn.split(/[\s,]+/).filter(Boolean)) {
+    if (d !== "?" && !known.has(d)) throw new Error(`add: depends on unknown row ${d}.`);
+  }
   const id = argv.id || nextId(state.lines);
   if (getAllIds(state.lines).has(id)) throw new Error(`add: duplicate ID ${id}.`);
 
   const openRows = getRows(state.lines, "open").map((r) => r.cells);
-  const merged = insertOpen(openRows, [id, priority, epic, task, evidence]);
+  const merged = insertOpen(openRows, [id, priority, epic, task, evidence, dependsOn]);
   state.lines = setRows(state.lines, "open", merged);
-  return { id, priority, epic, task, evidence };
+  return { id, priority, epic, task, evidence, dependsOn };
 }
 
 /* epic-add <key> --label <x> [--goal <y>] — append a row to the ## Epics registry. */
@@ -438,6 +519,11 @@ function cmdTake(state, argv) {
   if (found.key === "frozen") throw new Error(`take: ${id} is Frozen — unfreeze it first.`);
   if (found.key === "archive") throw new Error(`take: ${id} is archived.`);
 
+  const blockers = blockedBy(state.lines, found.cells, found.key);
+  if (blockers.length) {
+    throw new Error(`take: ${id} is blocked — depends on ${blockers.join(", ")} (not yet archived).`);
+  }
+
   const task = taskOf(found.cells, found.key) || id;
   const epic = epicOf(found.cells, found.key);
   const handoff = argv.handoff || "?";
@@ -471,14 +557,26 @@ function cmdQueue(state, argv) {
   return { id, epic: cells[2], task: cells[3] };
 }
 
-/* next [--take] — report the top-priority Queued row; with --take, move it to
- * In progress (the pick-then-go primitive behind /next). */
+/* next [--take] — report the top-priority UNBLOCKED Queued row; with --take,
+ * move it to In progress (the pick-then-go primitive behind /next). A queued row
+ * whose "Depends on" IDs are not all archived is skipped (blocked). */
 function cmdNext(state, argv) {
   const queued = getRows(state.lines, "queued").map((r) => r.cells);
   if (queued.length === 0) return { empty: true };
 
   const sorted = queued.slice().sort((a, b) => priorityRank(a[1]) - priorityRank(b[1]));
-  const row = sorted[0];
+  let row = null;
+  const blocked = [];
+  for (const r of sorted) {
+    if (blockedBy(state.lines, r, "queued").length) {
+      blocked.push(r[0]);
+      continue;
+    }
+    row = r;
+    break;
+  }
+  if (!row) return { empty: true, blocked };
+
   const id = row[0];
   const priority = row[1];
   const epic = row[2] || "?";
@@ -561,6 +659,46 @@ function cmdPriority(state, argv) {
   return { id, priority };
 }
 
+/* depends <id> --on <ids|?> — set/clear a row's "Depends on" cell (Open/Queued). */
+function cmdDepends(state, argv) {
+  const id = argv._[0];
+  if (!id) throw new Error("depends: missing <id>.");
+  const on = (argv.on || "").trim();
+  const found = findRow(state.lines, id);
+  if (!found) throw new Error(`depends: no row ${id} in BACKLOG.md.`);
+  if (found.key !== "open" && found.key !== "queued") {
+    const where = found.key === "inprogress" ? "In progress" : found.key === "frozen" ? "Frozen" : "Archive";
+    throw new Error(`depends: ${id} is ${where} — only Open/Queued rows carry dependencies.`);
+  }
+  const deps = on === "" || on === "?" ? [] : on.split(/[\s,]+/).filter(Boolean);
+  const known = getAllIds(state.lines);
+  for (const d of deps) {
+    if (!known.has(d)) throw new Error(`depends: ${id} references unknown row ${d}.`);
+  }
+  const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
+  const newRow = found.cells.slice();
+  newRow[5] = on || "?";
+  state.lines = setRows(state.lines, found.key, insertOpen(srcRows, newRow));
+  return { id, dependsOn: on || "?" };
+}
+
+/* owns <id> --files "glob, glob" — record the files/globs a row owns in the
+ * `.agents/memory/owned-files.md` registry (feeds `test:concurrency` overlap). */
+function cmdOwns(state, argv) {
+  const id = (argv._[0] || "").toUpperCase();
+  if (!id) throw new Error("owns: missing <id>.");
+  const files = (argv.files || "").trim();
+  if (files === "") throw new Error('owns: provide --files "glob1, glob2" (or --files "?" to clear).');
+  const found = findRow(state.lines, id);
+  if (!found) throw new Error(`owns: no row ${id} in BACKLOG.md.`);
+  const root = path.dirname(state.p);
+  const reg = readOwnedRegistry(root);
+  if (files === "?") reg.map.delete(id);
+  else reg.map.set(id, files);
+  writeOwnedRegistry(root, reg.map);
+  return { id, files };
+}
+
 /* Create an isolated `git worktree` + branch for a feature, then record the
  * worktree path + branch in the row's Handoff cell so the board shows WHERE the
  * work happens (and `test:concurrency` can see active sessions are isolated).
@@ -577,6 +715,13 @@ function cmdWorktree(state, argv) {
   if (!found) throw new Error(`worktree: no row ${id} in BACKLOG.md.`);
   if (found.key === "archive") throw new Error(`worktree: ${id} is archived.`);
   if (found.key === "frozen") throw new Error(`worktree: ${id} is Frozen — unfreeze it first.`);
+
+  if (found.key === "open" || found.key === "queued") {
+    const blockers = blockedBy(state.lines, found.cells, found.key);
+    if (blockers.length) {
+      throw new Error(`worktree: ${id} is blocked — depends on ${blockers.join(", ")} (not yet archived).`);
+    }
+  }
 
   // Ensure the row is In progress (auto-take if Open/Queued).
   let handoff = argv.handoff || `.agents/handoffs/${id}.md`;
@@ -619,10 +764,16 @@ function formatResult(cmd, out) {
   if (cmd === "add") return `added ${out.id} [${out.priority}] ${out.task}`;
   if (cmd === "take") return out.note ? `${out.id}: ${out.note}` : `took ${out.id} -> In progress (${out.handoff})`;
   if (cmd === "queue") return out.note ? `${out.id}: ${out.note}` : `queued ${out.id} (${out.task})`;
-  if (cmd === "next") return out.empty ? "no queued rows" : out.handoff ? `next -> took ${out.id} (${out.handoff})` : `next: ${out.id} [${out.priority}] ${out.task}`;
+  if (cmd === "next") {
+    if (out.empty && out.blocked) return `next: all queued rows are blocked (${out.blocked.join(", ")})`;
+    if (out.empty) return "no queued rows";
+    return out.handoff ? `next -> took ${out.id} (${out.handoff})` : `next: ${out.id} [${out.priority}] ${out.task}`;
+  }
   if (cmd === "archive") return out.note ? `${out.id}: ${out.note}` : `archived ${out.id} (${out.closed})`;
   if (cmd === "freeze") return out.note ? `${out.id}: ${out.note}` : `froze ${out.id} (${out.cond})`;
   if (cmd === "priority") return `set ${out.id} -> ${out.priority}`;
+  if (cmd === "depends") return `set ${out.id} -> depends on ${out.dependsOn}`;
+  if (cmd === "owns") return `recorded ${out.id} owns: ${out.files}`;
   if (cmd === "worktree") return `isolated ${out.id} -> worktree: ${out.dir} (branch: ${out.branch})`;
   if (cmd === "epic-add") return `added epic ${out.key} (${out.label})`;
   if (cmd === "epic") return `set ${out.id} -> ${out.epic}`;
@@ -646,6 +797,9 @@ function parseArgs(argv) {
     else if (a === "--to") args.to = argv[++i];
     else if (a === "--label") args.label = argv[++i];
     else if (a === "--goal") args.goal = argv[++i];
+    else if (a === "--depends-on" || a === "--depends") args["depends-on"] = argv[++i];
+    else if (a === "--on") args.on = argv[++i];
+    else if (a === "--files") args.files = argv[++i];
     else if (a === "--take") args.take = true;
     else if (a === "--all") args.all = true;
     else if (a === "--full") args.full = true;
@@ -660,13 +814,15 @@ function usage() {
   console.log(
     "backlog — deterministic BACKLOG.md editor (no LLM)\n\n" +
       "  node scripts/backlog.js list [--all] [--full] [--json]\n" +
-      "  node scripts/backlog.js add <task> [--p P1..P4] [--epic key] [--evidence x] [--id F-xxx]\n" +
+      "  node scripts/backlog.js add <task> [--p P1..P4] [--epic key] [--evidence x] [--id F-xxx] [--depends-on ids]\n" +
       "  node scripts/backlog.js take <id> [--handoff path]\n" +
       "  node scripts/backlog.js queue <id>\n" +
       "  node scripts/backlog.js next [--take] [--handoff path]\n" +
       "  node scripts/backlog.js archive <id> [--closed note]\n" +
       "  node scripts/backlog.js freeze <id> [--why x] [--reopen x]\n" +
       "  node scripts/backlog.js priority <id> --p P1..P4\n" +
+      "  node scripts/backlog.js depends <id> --on <ids|?>\n" +
+      "  node scripts/backlog.js owns <id> --files \"glob, glob\"\n" +
       "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path]\n" +
       "  node scripts/backlog.js epic-add <key> --label <x> [--goal <y>]\n" +
       "  node scripts/backlog.js epic <id> --to <key>\n"
@@ -705,6 +861,8 @@ function main() {
     else if (cmd === "archive") out = cmdArchive(state, args);
     else if (cmd === "freeze") out = cmdFreeze(state, args);
     else if (cmd === "priority") out = cmdPriority(state, args);
+    else if (cmd === "depends") out = cmdDepends(state, args);
+    else if (cmd === "owns") out = cmdOwns(state, args);
     else if (cmd === "worktree") out = cmdWorktree(state, args);
     else if (cmd === "epic-add") out = cmdEpicAdd(state, args);
     else if (cmd === "epic") out = cmdEpic(state, args);
@@ -713,8 +871,10 @@ function main() {
       process.exitCode = 1;
       return;
     }
-    if (cmd !== "list") {
+    if (cmd !== "list" && cmd !== "owns") {
       fs.writeFileSync(state.p, state.lines.join(state.eol) + state.eol, "utf8");
+      console.log(formatResult(cmd, out));
+    } else if (cmd === "owns") {
       console.log(formatResult(cmd, out));
     }
   } catch (e) {
@@ -742,6 +902,8 @@ module.exports = {
   cmdArchive,
   cmdFreeze,
   cmdPriority,
+  cmdDepends,
+  cmdOwns,
   cmdWorktree,
   cmdEpicAdd,
   cmdEpic,

@@ -1549,3 +1549,292 @@ test("test:concurrency + run-clean are deployed and auto-wired", async () => {
   assert.match(tools, /export const worktree\b/, "backlog_worktree tool deployed");
   assert.match(tools, /worktree/, "worktree tool shells out to the CLI");
 });
+
+// ---------------------------------------------------------------- row-aware merge driver
+
+const MB = path.join(h.TEMPLATES_DIR, "scripts", "qa", "merge-backlog.js");
+const mb = require(MB);
+
+function board({ open = [], queued = [], inprogress = [], frozen = [], archive = [] }) {
+  const t = (hdr, rows) =>
+    "| " + hdr.join(" | ") + " |\n|" + hdr.map(() => "---").join("|") + "|\n" +
+    (rows.length ? rows.join("\n") : "");
+  return [
+    "# BACKLOG — canonical task list",
+    "",
+    "## Epics",
+    "",
+    t(["Key", "Label", "Goal"], []),
+    "",
+    "## In progress",
+    "",
+    t(["ID", "Epic", "Task", "Handoff"], inprogress),
+    "",
+    "## Queued",
+    "",
+    t(["ID", "P", "Epic", "Task", "Evidence", "Depends on"], queued),
+    "",
+    "## Open",
+    "",
+    t(["ID", "P", "Epic", "Task", "Evidence", "Depends on"], open),
+    "",
+    "## Frozen",
+    "",
+    t(["ID", "Epic", "Task", "Why frozen / reopen when"], frozen),
+    "",
+    "## Archive (shipped · done)",
+    "",
+    t(["ID", "Epic", "Task", "Closed"], archive),
+    "",
+    "## Not tracking (leave-in-place, no action)",
+    "",
+  ].join("\n");
+}
+
+function runMergeDriver(dir, base, ours, theirs) {
+  const baseP = path.join(dir, "base.md");
+  const oursP = path.join(dir, "ours.md");
+  const theirsP = path.join(dir, "theirs.md");
+  fs.writeFileSync(baseP, base, "utf8");
+  fs.writeFileSync(oursP, ours, "utf8");
+  fs.writeFileSync(theirsP, theirs, "utf8");
+  const res = spawnSync(process.execPath, [MB, baseP, oursP, theirsP], { encoding: "utf8" });
+  return { status: res.status, out: read(oursP), err: (res.stderr || "") + (res.stdout || "") };
+}
+
+test("merge-backlog resolves disjoint row moves (take + archive) by ID", () => {
+  const base = board({ open: ["| F-001 | P1 | ? | a | ev | ? |", "| F-002 | P2 | ? | b | ev | ? |"] });
+  const ours = board({ open: ["| F-002 | P2 | ? | b | ev | ? |"], inprogress: ["| F-001 | ? | a | .agents/handoffs/F-001.md |"] });
+  const theirs = board({ open: ["| F-001 | P1 | ? | a | ev | ? |"], archive: ["| F-002 | ? | b | shipped |"] });
+
+  const { resolved, conflicts } = mb.merge(base, ours, theirs);
+  assert.strictEqual(conflicts.length, 0);
+  assert.strictEqual(resolved.get("F-001").section, "inprogress");
+  assert.strictEqual(resolved.get("F-002").section, "archive");
+
+  const out = mb.rebuild(ours, resolved);
+  assert.strictEqual((out.match(/\| F-001 \|/g) || []).length, 1, "F-001 appears exactly once");
+  assert.strictEqual((out.match(/\| F-002 \|/g) || []).length, 1, "F-002 appears exactly once");
+  assert.match(out.split("## In progress")[1].split("## Queued")[0], /\| F-001 \| \? \| a \| \.agents\/handoffs\/F-001\.md \|/);
+  assert.match(out.split("## Archive")[1], /\| F-002 \| \? \| b \| shipped \|/);
+});
+
+test("merge-backlog keeps a row once when only one side moved it (no union duplicate)", () => {
+  const base = board({ open: ["| F-001 | P1 | ? | a | ev | ? |"] });
+  const ours = board({ open: [], inprogress: ["| F-001 | ? | a | .agents/handoffs/F-001.md |"] });
+  const theirs = board({ open: ["| F-001 | P1 | ? | a | ev | ? |"] }); // unchanged
+
+  const { resolved, conflicts } = mb.merge(base, ours, theirs);
+  assert.strictEqual(conflicts.length, 0);
+  assert.strictEqual(resolved.get("F-001").section, "inprogress");
+  const out = mb.rebuild(ours, resolved);
+  assert.strictEqual((out.match(/\| F-001 \|/g) || []).length, 1, "no duplicate row");
+});
+
+test("merge-backlog exits 1 with conflict markers when both sides change the same row", () => {
+  const base = board({ open: ["| F-001 | P3 | ? | a | ev | ? |"] });
+  const ours = board({ open: ["| F-001 | P1 | ? | a | ev | ? |"] });
+  const theirs = board({ open: ["| F-001 | P2 | ? | a | ev | ? |"] });
+
+  const r = runMergeDriver(tmpdir(), base, ours, theirs);
+  assert.strictEqual(r.status, 1, r.err);
+  assert.match(r.out, /<<<<<<< ours/);
+  assert.match(r.out, /=======/);
+  assert.match(r.out, /P1/);
+  assert.match(r.out, /P2/);
+});
+
+test("deploy merges .gitattributes + registers the row-aware merge driver", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+  fs.writeFileSync(path.join(target, ".gitattributes"), "* text=auto\n", "utf8");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const ga = read(path.join(target, ".gitattributes"));
+  assert.ok(ga.includes("* text=auto"), "project .gitattributes entry preserved");
+  assert.match(ga, /# agent-harness \(managed below\)/);
+  assert.ok(ga.includes("BACKLOG.md merge=backlog"), "merge attribute merged in");
+
+  const driver = git(target, ["config", "--get", "merge.backlog.driver"]);
+  assert.ok(driver && driver.includes("merge-backlog.js"), "merge driver registered in local git config: " + driver);
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  const ga2 = read(path.join(target, ".gitattributes"));
+  assert.strictEqual((ga2.match(/# agent-harness \(managed below\)/g) || []).length, 1, "marker not duplicated");
+});
+
+// ---------------------------------------------------------------- depends-on
+
+test("backlog next skips a queued row whose dependency is not archived, then unblocks once it is", () => {
+  const t = scaffoldBacklogCliTarget();
+  assert.strictEqual(runBacklogCli(t, ["add", "prereq", "--p", "P1"]).status, 0); // F-001
+  assert.strictEqual(runBacklogCli(t, ["add", "blocked task", "--p", "P2", "--depends-on", "F-001"]).status, 0); // F-002
+  assert.strictEqual(runBacklogCli(t, ["queue", "F-002"]).status, 0);
+
+  const r = runBacklogCli(t, ["next"]);
+  assert.match(r.out, /all queued rows are blocked \(F-002\)/);
+
+  const tk = runBacklogCli(t, ["take", "F-002"]);
+  assert.strictEqual(tk.status, 1);
+  assert.match(tk.out, /blocked/);
+
+  // archive the dependency -> the row becomes pullable
+  assert.strictEqual(runBacklogCli(t, ["archive", "F-001", "--closed", "done"]).status, 0);
+  assert.match(runBacklogCli(t, ["next"]).out, /next: F-002/);
+});
+
+test("backlog add rejects a depends-on reference to an unknown row", () => {
+  const t = scaffoldBacklogCliTarget();
+  assert.strictEqual(runBacklogCli(t, ["add", "x", "--p", "P2", "--depends-on", "F-999"]).status, 1);
+});
+
+test("backlog depends sets and validates a row's dependency", () => {
+  const t = scaffoldBacklogCliTarget();
+  runBacklogCli(t, ["add", "a", "--p", "P2"]); // F-001
+  runBacklogCli(t, ["add", "b", "--p", "P3"]); // F-002
+  assert.match(runBacklogCli(t, ["depends", "F-002", "--on", "F-001"]).out, /depends on F-001/);
+  const b = read(path.join(t, "BACKLOG.md"));
+  assert.match(b.split("## Open")[1], /\| F-002 \| P3 \| \? \| b \| \? \| F-001 \|/);
+  assert.strictEqual(runBacklogCli(t, ["depends", "F-002", "--on", "F-999"]).status, 1, "unknown ref rejected");
+});
+
+test("test:backlog fails on a Depends-on reference to an unknown row", () => {
+  const t = scaffoldBacklogTarget(`# BACKLOG — canonical task list
+
+## Open
+
+| ID | P | Epic | Task | Evidence | Depends on |
+|----|---|------|------|----------|------------|
+| F-001 | P1 | ? | a | ev | F-999 |
+`);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /depends on unknown row `F-999`/);
+});
+
+test("test:backlog passes a valid Depends-on reference to an in-progress row", () => {
+  const t = scaffoldBacklogTarget(`# BACKLOG — canonical task list
+
+## In progress
+
+| ID | Epic | Task | Handoff |
+|----|------|------|---------|
+| F-002 | ? | prereq | .agents/handoffs/F-002.md |
+
+## Open
+
+| ID | P | Epic | Task | Evidence | Depends on |
+|----|---|------|------|----------|------------|
+| F-001 | P1 | ? | a | ev | F-002 |
+`);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /RESULT: backlog green/);
+});
+
+// ---------------------------------------------------------------- owned files + concurrency
+
+test("backlog owns writes and clears the owned-files registry", () => {
+  const t = scaffoldBacklogCliTarget();
+  runBacklogCli(t, ["add", "x", "--p", "P2"]); // F-001
+  assert.match(runBacklogCli(t, ["owns", "F-001", "--files", "lib/wikidata.ts, scripts/*.ts"]).out, /owns/);
+  assert.match(read(path.join(t, ".agents", "memory", "owned-files.md")), /F-001: lib\/wikidata\.ts, scripts\/\*\.ts/);
+  runBacklogCli(t, ["owns", "F-001", "--files", "?"]);
+  assert.doesNotMatch(read(path.join(t, ".agents", "memory", "owned-files.md")), /F-001/);
+});
+
+test("test:concurrency fails precisely when two In-progress rows own the same file", () => {
+  const t = scaffoldConcurrencyTarget();
+  writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044", "F-060"]));
+  writeFile(t, ".agents/memory/owned-files.md", "- F-044: app/foo.tsx\n- F-060: app/foo.tsx, app/bar.tsx\n");
+  writeFile(t, "app/foo.tsx", "// committed\n");
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  writeFile(t, "app/foo.tsx", "// wip\n");
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /owned by 2 In-progress rows/);
+  assert.match(r.out, /app\/foo\.tsx/);
+});
+
+test("test:concurrency passes when dirty files are cleanly owned by one session", () => {
+  const t = scaffoldConcurrencyTarget();
+  writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044", "F-060"]));
+  writeFile(t, ".agents/memory/owned-files.md", "- F-044: app/foo.tsx\n- F-060: lib/bar.ts\n");
+  writeFile(t, "app/foo.tsx", "// committed\n");
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  writeFile(t, "app/foo.tsx", "// wip\n");
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /no cross-session overlap detected/);
+});
+
+test("test:concurrency fails when a tree mixes two sessions' WIP", () => {
+  const t = scaffoldConcurrencyTarget();
+  writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044", "F-060"]));
+  writeFile(t, ".agents/memory/owned-files.md", "- F-044: app/foo.tsx\n- F-060: lib/bar.ts\n");
+  writeFile(t, "app/foo.tsx", "// a\n");
+  writeFile(t, "lib/bar.ts", "// b\n");
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  writeFile(t, "app/foo.tsx", "// a wip\n");
+  writeFile(t, "lib/bar.ts", "// b wip\n");
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /mixes two sessions/);
+});
+
+// ---------------------------------------------------------------- test:integrate
+
+function runIntegrateGate(target) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-integrate.js"], { cwd: target, encoding: "utf8" });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("test:integrate fails behind upstream and passes when up to date", () => {
+  const dir = tmpdir();
+  const remote = path.join(dir, "remote.git");
+  execFileSync("git", ["init", "--bare", "-q", "-b", "main", remote]);
+
+  const work = path.join(dir, "work");
+  fs.mkdirSync(work);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: work });
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: work });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: work });
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd: work });
+  fs.mkdirSync(path.join(work, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-integrate.js"), path.join(work, "scripts", "qa", "check-integrate.js"));
+  writeFile(work, "f.txt", "v1\n");
+  execFileSync("git", ["add", "-A"], { cwd: work });
+  execFileSync("git", ["commit", "-q", "-m", "one"], { cwd: work });
+  execFileSync("git", ["push", "-q", "-u", "origin", "main"], { cwd: work });
+
+  let r = runIntegrateGate(work);
+  assert.strictEqual(r.status, 0, r.out);
+
+  const work2 = path.join(dir, "work2");
+  execFileSync("git", ["clone", "-q", remote, work2]);
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: work2 });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: work2 });
+  writeFile(work2, "f.txt", "v2\n");
+  execFileSync("git", ["add", "-A"], { cwd: work2 });
+  execFileSync("git", ["commit", "-q", "-m", "two"], { cwd: work2 });
+  execFileSync("git", ["push", "-q", "origin", "main"], { cwd: work2 });
+
+  r = runIntegrateGate(work);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /behind/);
+  assert.match(r.out, /git rebase/);
+});
+
+test("test:integrate is wired into package.json scripts", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["test:integrate"], "node scripts/qa/check-integrate.js");
+});

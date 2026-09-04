@@ -34,18 +34,20 @@ export const list = tool({
 
 export const add = tool({
   description:
-    "Add one row to BACKLOG.md (Open section) — capture a found item / todo / bug. Validates priority and generates a unique ID.",
+    "Add one row to BACKLOG.md (Open section) — capture a found item / todo / bug. Validates priority, generates a unique ID, and (optionally) records its dependencies.",
   args: {
     task: tool.schema.string().describe("short task description (what's known)"),
     priority: tool.schema.string().describe("P1..P4, optional (defaults P3)"),
     evidence: tool.schema.string().describe("pointer to evidence (file/log/ticket/words), optional"),
     epic: tool.schema.string().describe("epic key from the ## Epics registry, or ? for unassigned (optional, defaults ?)"),
+    dependsOn: tool.schema.string().describe("comma-separated row IDs that must be archived first, optional (defaults ?)"),
   },
   async execute(args, context) {
     const argv = ["add", args.task]
     if (args.priority) argv.push("--p", args.priority)
     if (args.evidence) argv.push("--evidence", args.evidence)
     if (args.epic) argv.push("--epic", args.epic)
+    if (args.dependsOn) argv.push("--depends-on", args.dependsOn)
     return run(context, argv)
   },
 })
@@ -150,7 +152,7 @@ export const epicAdd = tool({
 
 export const worktree = tool({
   description:
-    "Create an isolated git worktree + feature branch for a backlog item so concurrent sessions don't collide on one working tree. Run it from the MAIN tree before starting a second concurrent feature.",
+    "Create an isolated git worktree + feature branch for a backlog item so concurrent sessions don't collide on one working tree. Run it from the MAIN tree before starting ANY feature — main stays board + shippable code only, every feature works in its own worktree.",
   args: {
     id: tool.schema.string().describe("row ID, e.g. F-060"),
     branch: tool.schema.string().describe("branch name (defaults to the lowercased id)"),
@@ -159,5 +161,29 @@ export const worktree = tool({
     const argv = ["worktree", args.id]
     if (args.branch) argv.push("--branch", args.branch)
     return run(context, argv)
+  },
+})
+
+export const depends = tool({
+  description:
+    "Set/clear a BACKLOG.md row's \"Depends on\" cell (Open/Queued only) — a comma-separated list of row IDs that must be archived before this row is picked up. next/take/worktree skip or refuse a row whose dependencies aren't archived.",
+  args: {
+    id: tool.schema.string().describe("row ID, e.g. F-052"),
+    on: tool.schema.string().describe("comma-separated row IDs it depends on, or ? to clear"),
+  },
+  async execute(args, context) {
+    return run(context, ["depends", args.id, "--on", args.on])
+  },
+})
+
+export const owns = tool({
+  description:
+    "Record the files/globs a backlog row owns in .agents/memory/owned-files.md — feeds the cross-session overlap check in test:concurrency (two In-progress rows must not own the same file).",
+  args: {
+    id: tool.schema.string().describe("row ID, e.g. F-052"),
+    files: tool.schema.string().describe('comma-separated globs/paths, e.g. "scripts/test-*.ts, scripts/qa/routes.js", or ? to clear'),
+  },
+  async execute(args, context) {
+    return run(context, ["owns", args.id, "--files", args.files])
   },
 })

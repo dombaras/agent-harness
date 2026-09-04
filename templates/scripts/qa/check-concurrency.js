@@ -19,8 +19,15 @@
  *   - dirty tree + 1 "In progress" row  -> warn (could be your own WIP), pass.
  *   - dirty tree + 0 "In progress" rows -> warn (unowned WIP), pass.
  *
- * The fix the message points at is either isolation (`backlog worktree <id>`) or
- * committing/stashing the foreign work. Exit 0 unless the collision is provable.
+ * When a project declares owned files (`.agents/memory/owned-files.md`), the
+ * "2+ In progress" case is sharpened: each dirty file is attributed to the
+ * in-progress row(s) whose globs match it, so the gate fails *exactly* when
+ * files are contended (owned by 2+ rows, or a mix of different sessions) and
+ * passes when every dirty file is cleanly owned by a single session.
+ *
+ * The fix the message points at is either isolation (`backlog worktree <id>`),
+ * ownership declaration (`backlog owns <id> --files ...`), or committing/stashing
+ * the foreign work. Exit 0 unless the collision is provable.
  */
 const fs = require("fs");
 const path = require("path");
@@ -104,6 +111,46 @@ function inProgressIds() {
   return ids;
 }
 
+/* `.agents/memory/owned-files.md` -> Map<ID, glob[]> (upper-cased IDs). */
+function ownedFilesMap() {
+  const map = new Map();
+  const p = path.join(root, ".agents", "memory", "owned-files.md");
+  if (!fs.existsSync(p)) return map;
+  const src = fs.readFileSync(p, "utf8");
+  for (const raw of src.split(/\r?\n/)) {
+    const m = raw.match(/^\s*[-*]\s+([A-Za-z]+-\d+)\s*:\s*(.+)$/);
+    if (m) map.set(m[1].toUpperCase(), m[2].split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean));
+  }
+  return map;
+}
+
+/* Minimal glob -> regex: `**` (any depth), `*` (within a segment), `?` (one char). */
+function globToRegExp(g) {
+  let s = "";
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i];
+    if (c === "*") {
+      if (g[i + 1] === "*") {
+        s += ".*";
+        i++;
+      } else {
+        s += "[^/]*";
+      }
+    } else if (c === "?") {
+      s += "[^/]";
+    } else {
+      s += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp("^" + s + "$");
+}
+
+function matchesGlob(glob, file) {
+  const g = glob.replace(/\\/g, "/").replace(/^\.\//, "");
+  const f = file.replace(/\\/g, "/").replace(/^\.\//, "");
+  return globToRegExp(g).test(f);
+}
+
 const failures = [];
 const warnings = [];
 
@@ -128,12 +175,58 @@ const ids = inProgressIds();
 const active = ids.length;
 
 if (active > 1) {
-  failures.push(
-    `${active} sessions are In progress (${ids.join(", ")}) while the working tree has ${dirty.length} uncommitted change(s) ` +
-      `\u2014 a session other than the one pushing owns uncommitted work that will leak into pre-push gates. ` +
-      `Isolate per feature (backlog worktree <id>) or stash/commit before push.`
-  );
-  console.log("  \u2717 " + failures[failures.length - 1]);
+  // Ownership-aware attribution: if the project declared owned files
+  // (`.agents/memory/owned-files.md`), attribute each dirty file to the
+  // in-progress row(s) whose globs match it. This makes the collision check
+  // precise instead of coarse: fail exactly when dirty files are contended
+  // (owned by 2+ rows, or a mix of different rows), pass when they are cleanly
+  // attributable to a single session.
+  const owns = ownedFilesMap();
+  const overlaps = [];
+  const ownerOf = new Map();
+  const distinctOwners = new Set();
+  for (const d of dirty) {
+    const owners = [];
+    for (const id of ids) {
+      const globs = owns.get(id);
+      if (globs && globs.some((g) => matchesGlob(g, d.file))) owners.push(id);
+    }
+    if (owners.length >= 2) overlaps.push({ file: d.file, rows: owners });
+    else if (owners.length === 1) {
+      ownerOf.set(d.file, owners[0]);
+      distinctOwners.add(owners[0]);
+    }
+  }
+
+  if (overlaps.length) {
+    for (const o of overlaps) {
+      failures.push(
+        `"${o.file}" is owned by ${o.rows.length} In-progress rows (${o.rows.join(", ")}) ` +
+          `\u2014 two sessions contend on the same file. Reassign ownership (backlog owns <id> --files ...) ` +
+          `or isolate (backlog worktree <id>) before push.`
+      );
+      console.log("  \u2717 " + failures[failures.length - 1]);
+    }
+  } else if (ownerOf.size === dirty.length && distinctOwners.size >= 2) {
+    failures.push(
+      `uncommitted files are owned by ${distinctOwners.size} DIFFERENT In-progress sessions (${[...distinctOwners].join(", ")}) ` +
+        `\u2014 this tree mixes two sessions' WIP. Isolate per feature (backlog worktree <id>) before push.`
+    );
+    console.log("  \u2717 " + failures[failures.length - 1]);
+  } else if (ownerOf.size === dirty.length) {
+    warnings.push(
+      `dirty tree with ${active} In-progress rows, but every uncommitted file is owned by a single session ` +
+        `(${[...distinctOwners].join(", ")}) \u2014 no cross-session overlap detected. Commit before push.`
+    );
+    console.log("  \u26a0 " + warnings[warnings.length - 1]);
+  } else {
+    failures.push(
+      `${active} sessions are In progress (${ids.join(", ")}) while the working tree has ${dirty.length} uncommitted change(s) ` +
+        `\u2014 a session other than the one pushing owns uncommitted work that will leak into pre-push gates. ` +
+        `Isolate per feature (backlog worktree <id>), declare ownership (backlog owns <id> --files ...), or stash/commit before push.`
+    );
+    console.log("  \u2717 " + failures[failures.length - 1]);
+  }
 } else if (active === 1) {
   warnings.push(
     `working tree is dirty with 1 session In progress (${ids[0]}) \u2014 if these uncommitted files belong to a ` +

@@ -15,7 +15,10 @@ The board maps status to section: `backlog`/`ready` → **Open**,
 **Priority (`P`):** `P1` blocking · `P2` important · `P3` nice-to-have · `P4` later.
 Priority applies to open/queued rows only. **Evidence** = a pointer
 (file/log/ticket/words), never a re-derivation. **Epic** = a declared `## Epics`
-key (or `?` when unassigned). Leave `?` where unknown — don't invent.
+key (or `?` when unassigned). **Depends on** = comma-separated row IDs that must
+be archived before this row is picked up (`?` when none); `/next`/`take`/`worktree`
+skip or refuse a row whose dependencies aren't archived. Leave `?` where unknown —
+don't invent.
 
 > Updated in the same session the work happens. Pick up a row by moving it
 > `Open`/`Queued` → `In progress`; archive `shipped` rows; freeze don't-delete.
@@ -52,21 +55,21 @@ _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |
 
 Sorted by priority (P1 → P4). Ready-to-pull work allocated to a worker.
 
-| ID | P | Epic | Task | Evidence |
-|----|---|------|------|----------|
-| | | | | |
+| ID | P | Epic | Task | Evidence | Depends on |
+|----|---|------|------|----------|------------|
+| | | | | | |
 
-_Rows: `| F-005 | P2 | epic-key | short desc | pointer, never a re-derivation |`_
+_Rows: `| F-005 | P2 | epic-key | short desc | pointer, never a re-derivation | F-004 |`_
 
 ## Open
 
 Sorted by priority (P1 → P4).
 
-| ID | P | Epic | Task | Evidence |
-|----|---|------|------|----------|
-| | | | | |
+| ID | P | Epic | Task | Evidence | Depends on |
+|----|---|------|------|----------|------------|
+| | | | | | |
 
-_Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer |`_
+_Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
 ## Frozen
 

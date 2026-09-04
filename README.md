@@ -51,6 +51,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.agents/qa-plans/*` | project data (one QA plan file per change — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
 | `.gitignore` | harness-managed section (`.harness-backup/`) merged in, project entries preserved | harness (merged) |
+| `.gitattributes` | harness-managed section (`BACKLOG.md merge=backlog` — the row-aware merge driver) merged in, project entries preserved | harness (merged) |
 
 ### `opencode.json` is merged, not clobbered
 
@@ -151,11 +152,27 @@ labeled line below) and truncates long cells by default for scannability — pas
 `--full` for the untruncated text. The `backlog_list` tool always uses `--full`
 so agents see complete descriptions.
 
-- The CLI validates the schema (`P1..P4`, non-empty evidence/handoff/reopen),
-  generates unique IDs, and sorts `Open` by priority — every write stays
-  `npm run test:backlog`-green.
+- The CLI validates the schema (`P1..P4`, non-empty evidence/handoff/reopen, `Depends on`
+  references naming real rows), generates unique IDs, and sorts `Open` by priority — every
+  write stays `npm run test:backlog`-green.
+- **Dependencies are machine-readable**: a row's `Depends on` cell (`backlog depends <id>
+  --on F-039,F-041` / `backlog add ... --depends-on ...`) lists IDs that must be archived
+  first. `/next`, `take`, and `worktree` skip or refuse a row whose dependencies aren't
+  archived — no more "until F-041" living in prose.
+- **Isolation is a worktree per feature**: `backlog worktree <id>` (from the MAIN tree)
+  creates a `git worktree` + branch and auto-takes the row. Every feature works in its own
+  checkout — `main` stays board + shippable code only — so one session's uncommitted work
+  can't leak into another's pre-push gate.
+- **Row-aware merge driver**: `.gitattributes` routes `BACKLOG.md` through
+  `scripts/qa/merge-backlog.js` (wired by `init`/`update`), so two sessions editing
+  *disjoint* rows merge by ID instead of conflicting — concurrent take/archive no longer
+  produces a `BACKLOG.md` merge conflict.
+- **Owned files**: `backlog owns <id> --files "scripts/test-*.ts, scripts/qa/routes.js"`
+  records the files a row owns in `.agents/memory/owned-files.md`, sharpening
+  `test:concurrency` to fail *exactly* when two In-progress rows own the same file.
 - **Agents use the same path** via opencode custom tools (`backlog_add`,
-  `backlog_take`, `backlog_archive`, `backlog_freeze`, `backlog_list`) that shell
+  `backlog_take`, `backlog_archive`, `backlog_freeze`, `backlog_depends`, `backlog_owns`,
+  `backlog_worktree`, `backlog_list`) that shell
   out to the CLI — never hand-edit `BACKLOG.md`.
 - A **notify plugin** (`.opencode/plugins/backlog-notify.ts`) pushes a toast +
   structured log the moment an agent mutates the board, so "an agent finished an
@@ -168,7 +185,16 @@ so agents see complete descriptions.
 - `npm run test:backlog` — canonical single-backlog gate: `BACKLOG.md` is the one
   source of truth; status/priority enums, frozen-reopen conditions, non-empty
   priority/evidence (and non-empty task/handoff on `In progress` rows), no
-  duplicate IDs, and `INDEX.md`/`todo.md` must be pointers (not live lists).
+  duplicate IDs, `Depends on` cells that name real rows, and `INDEX.md`/`todo.md`
+  must be pointers (not live lists).
+- `npm run test:concurrency` — cross-session working-tree guard. Fails when the
+  board shows 2+ `In progress` rows while the tree has uncommitted changes; with
+  owned files declared (`.agents/memory/owned-files.md`), it fails *exactly* when
+  a dirty file is owned by two In-progress rows (or a tree mixes two sessions'
+  WIP).
+- `npm run test:integrate` — pre-push rebase check: fails when the current branch
+  is behind `origin/main`, reminding you to `git rebase` and re-run the board +
+  concurrency gates before pushing, so conflicts surface early.
 - `npm run test:product` — **product/UX-first gate**: every feature doc in
   `.agents/features/<slug>/` must define its user before planning/implementation.
   `intent.md` must carry Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md`
@@ -234,6 +260,11 @@ npx @dombaras/agent-harness update --target /path/to/project
   local rollback artifacts) into the project's `.gitignore`, preserving every project entry.
   New harness files are tracked (committed), not ignored — so they don't need a gitignore
   change. If the harness ever adds a new local-only artifact, `update` re-merges the entry.
+- **Managed `.gitattributes` + merge driver**: the harness merges a marked section
+  (`BACKLOG.md merge=backlog`) into the project's `.gitattributes` and registers the
+  row-aware driver in the local `.git/config` (`merge.backlog.driver`). The driver script is
+  committed; the config pointer is per-clone, so `init`/`update` (re)register it on every
+  deploy.
 - `--dry-run` previews the plan without writing.
 
 ### Backlog migration (`migrate-backlog`)

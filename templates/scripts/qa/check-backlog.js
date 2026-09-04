@@ -130,7 +130,7 @@ function parseSectionRows(lines) {
     const joined = cells.join("|").trim();
     if (/^([-:|\s]*)$/.test(joined)) continue;
     // skip header rows named ID/P/Epic/Task/... and the Epics registry header (Key/Label/Goal)
-    if (cells.some((c) => /^(ID|[Ii]d|P|Epic|Task|Evidence|Handoff|Why frozen \/ reopen when|Closed|Key|Label|Goal)$/.test(c))) continue;
+    if (cells.some((c) => /^(ID|[Ii]d|P|Epic|Task|Evidence|Handoff|Why frozen \/ reopen when|Closed|Key|Label|Goal|Depends on)$/.test(c))) continue;
     buckets[current].push(cells);
     rowCount++;
   }
@@ -141,8 +141,8 @@ const { buckets, rowCount } = parseSectionRows(lines);
 
 // Column indexes per section (from the BACKLOG template schema).
 const COLS = {
-  open: { id: 0, priority: 1, epic: 2, evidence: 4 },
-  queued: { id: 0, priority: 1, epic: 2, evidence: 4 },
+  open: { id: 0, priority: 1, epic: 2, evidence: 4, dependsOn: 5 },
+  queued: { id: 0, priority: 1, epic: 2, evidence: 4, dependsOn: 5 },
   "in progress": { id: 0, epic: 1, task: 2, handoff: 3 },
   frozen: { id: 0, epic: 1, reopen: 3 },
   "archive (shipped · done)": { id: 0, epic: 1 },
@@ -266,6 +266,7 @@ const totalRows = allRows.length;
 if (totalRows > 0) {
   check(true, `parsed ${totalRows} row(s) across Open/Queued/In progress/Frozen/Archive`);
   const seen = new Map();
+  const allIds = new Set();
   for (const { cells, tag } of allRows) {
     const id = (cells[0] || "").trim();
     if (!id) {
@@ -274,6 +275,24 @@ if (totalRows > 0) {
     }
     if (seen.has(id)) check(false, `duplicate ID \`${id}\` (${seen.get(id)} and ${tag})`);
     else seen.set(id, tag);
+    allIds.add(id);
+  }
+
+  // ---- Depends-on references must name existing rows ---------------------
+  const dependsRows = [
+    ...openRows.map((r) => ({ id: (r[COLS.open.id] || "").trim(), dep: r[COLS.open.dependsOn] || "", tag: "Open" })),
+    ...queuedRows.map((r) => ({ id: (r[COLS.queued.id] || "").trim(), dep: r[COLS.queued.dependsOn] || "", tag: "Queued" })),
+  ];
+  for (const { id, dep, tag } of dependsRows) {
+    const raw = (dep || "").trim();
+    if (!raw || raw === "?") continue;
+    for (const ref of raw.split(/[\s,]+/).filter(Boolean)) {
+      if (!allIds.has(ref)) {
+        check(false, `${tag} row ${id}: depends on unknown row \`${ref}\` (no such ID in BACKLOG.md)`);
+      } else {
+        check(true, `${tag} row ${id}: depends on \`${ref}\` (valid reference)`);
+      }
+    }
   }
 } else {
   check(true, "empty board (no Open/In progress/Frozen/Archive rows yet) — valid for a fresh project");

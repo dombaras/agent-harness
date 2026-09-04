@@ -209,6 +209,7 @@ const HARNESS_SCRIPTS = {
   "test:product": "node scripts/qa/check-product.js",
   "test:docs": "node scripts/qa/check-docs.js",
   "test:concurrency": "node scripts/qa/check-concurrency.js",
+  "test:integrate": "node scripts/qa/check-integrate.js",
 };
 
 // Merge harness gate scripts into the project's existing package.json, preserving
@@ -244,6 +245,37 @@ function mergeGitignore(target) {
   const managed = [GITIGNORE_MARKER, ...HARNESS_IGNORE_ENTRIES, ""];
   const out = kept.length ? [...kept, "", ...managed] : [...managed];
   return out.join("\n");
+}
+
+/* Harness-managed .gitattributes entries: route BACKLOG.md through the row-aware
+ * merge driver (scripts/qa/merge-backlog.js) so concurrent board edits merge by
+ * row ID instead of conflicting. Merged into the project's own .gitattributes,
+ * preserving every project entry. */
+const GITATTRIBUTES_MARKER = "# agent-harness (managed below)";
+const GITATTRIBUTES_ENTRY = "BACKLOG.md merge=backlog";
+
+function mergeGitattributes(target) {
+  const p = path.join(target, ".gitattributes");
+  const existing = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
+  const lines = existing.split(/\r?\n/);
+  const idx = lines.findIndex((l) => l === GITATTRIBUTES_MARKER);
+  const kept = idx === -1 ? lines : lines.slice(0, idx);
+  while (kept.length && kept[kept.length - 1].trim() === "") kept.pop();
+  const managed = [GITATTRIBUTES_MARKER, GITATTRIBUTES_ENTRY, ""];
+  const out = kept.length ? [...kept, "", ...managed] : [...managed];
+  return out.join("\n");
+}
+
+/* Register the row-aware merge driver in the target's LOCAL git config (never
+ * committed — merge drivers are per-clone). Git runs it as
+ * `node <abs>/scripts/qa/merge-backlog.js %O %A %B`. The driver script is
+ * committed; only the config pointer is local. */
+function registerBacklogMergeDriver(target) {
+  if (!isGitRepo(target)) return;
+  const driverScript = path.join(target, "scripts", "qa", "merge-backlog.js").split(path.sep).join("/");
+  const driver = `node "${driverScript}" %O %A %B`;
+  runGit(target, ["config", "merge.backlog.name", "BACKLOG.md row merge"]);
+  runGit(target, ["config", "merge.backlog.driver", driver]);
 }
 
 // ---------------------------------------------------------------- git helpers
@@ -393,6 +425,27 @@ async function deploy(target, opts) {
       fs.writeFileSync(targetAbs, text, "utf8");
     }
   }
+
+  // Merge harness-managed .gitattributes (BACKLOG.md row-aware merge driver).
+  {
+    const text = mergeGitattributes(target);
+    const key = ".gitattributes";
+    const targetAbs = path.join(target, ".gitattributes");
+    const had = fs.existsSync(targetAbs);
+    const current = had ? fs.readFileSync(targetAbs, "utf8") : null;
+    if (!had) actions.push({ rel: key, kind: "create" });
+    else if (current !== text) actions.push({ rel: key, kind: "merge" });
+    else actions.push({ rel: key, kind: "unchanged" });
+    manifest[key] = sha256(text);
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
+      fs.writeFileSync(targetAbs, text, "utf8");
+    }
+  }
+
+  // Register the row-aware BACKLOG.md merge driver in the target's local git
+  // config (the script is committed; the driver pointer is per-clone).
+  if (!dryRun) registerBacklogMergeDriver(target);
 
   for (const { abs, rel } of listFiles(TEMPLATES_DIR)) {
     const key = relKey(rel);

@@ -65,7 +65,8 @@ hand-edited row is exactly what `test:backlog` catches. Sections (see the `BACKL
 - **In progress** — `| ID | Task | Handoff |`, active work. Move a row here from
   `Open` the moment a session starts dealing with it, and point `Handoff` at the
   session's `.agents/handoffs/<id>.md` (or `?` until it's written).
-- **Open** — `| ID | P | Task | Evidence |`, sorted by priority.
+- **Open** — `| ID | P | Epic | Task | Evidence | Depends on |`, sorted by priority.
+- **Queued** — same columns as Open; the ready-to-pull lane `/next` pulls from.
 - **Frozen** — parked, don't-do-but-don't-delete; MUST carry a *why* and a *reopen condition*.
 - **Archive (shipped · done)** — completed rows, never deleted.
 - **Not tracking** — leave-in-place features, one prose note.
@@ -76,6 +77,9 @@ Fields (keep each terse):
 - **Priority** — `P1` (blocking) / `P2` (important) / `P3` (nice-to-have) / `P4` (later).
   Applies to open rows only.
 - **Evidence** — a pointer to evidence (file, log, ticket, the user's words), never a re-derivation.
+- **Depends on** — comma-separated row IDs that must be archived before this row is picked up
+  (`?` when none). `/next`/`take`/`worktree` skip or refuse a row whose dependencies aren't
+  archived — set it with `backlog depends <id> --on <ids>`.
 - **Handoff** — the `.agents/handoffs/<id>.md` session working this row (In progress only).
 - **Status ladder** — `backlog → ready → in-progress → testing → shipped → archived`, plus
   `frozen`. Section = status: `backlog`/`ready` → `Open`, `in-progress`/`testing` →
