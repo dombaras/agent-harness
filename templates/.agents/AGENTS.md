@@ -75,6 +75,9 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     feature's QA plan, never duplicates it. The moment a session starts dealing
     with a backlog item, move its `BACKLOG.md` row `Open` → `In progress` (`backlog_take`, pointing
     `Handoff` at the session's handoff file) so active work is visible on the board.
+    A `Queued` row is a ready-to-pull lane: `backlog queue <id>` allocates an `Open` row
+    into it, and `/next` (or `backlog next --take`) pulls the top-priority `Queued` row
+    into `In progress` to start a session (empty queue = stop, never invent work).
   - **Product intent is never optional (no silent skip)**: planning is
     product-first. `intent.md` must define Actor(s) → Need → Outcome → Acceptance
     criteria, and `plan.md` a Value-first sequence + Product concepts applied, read

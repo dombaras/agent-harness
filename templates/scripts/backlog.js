@@ -12,7 +12,9 @@
  * Commands:
  *   list [--all]                        show active rows (In progress + Open)
  *   add <task> [--p P1..P4] [--evidence x] [--id F-xxx]
- *   take <id> [--handoff path]          Open -> In progress (pick it up)
+ *   take <id> [--handoff path]          Open/Queued -> In progress (pick it up)
+ *   queue <id>                          Open -> Queued (allocate to a worker)
+ *   next [--take] [--handoff path]      pick the top Queued row (--take -> In progress)
  *   archive <id> [--closed note]        -> Archive (shipped · done)
  *   freeze <id> [--why x] [--reopen x]  -> Frozen (parked)
  *   worktree <id> [--branch b] [--dir d] [--handoff path]
@@ -35,10 +37,12 @@ const PRIORITIES = { P1: 0, P2: 1, P3: 2, P4: 3 };
 
 const SECTIONS = {
   active: { heading: "## Active / next" },
-  inprogress: { heading: "## In progress", header: ["ID", "Task", "Handoff"] },
-  open: { heading: "## Open", header: ["ID", "P", "Task", "Evidence"] },
-  frozen: { heading: "## Frozen", header: ["ID", "Task", "Why frozen / reopen when"] },
-  archive: { heading: "## Archive (shipped · done)", header: ["ID", "Task", "Closed"] },
+  epics: { heading: "## Epics", header: ["Key", "Label", "Goal"] },
+  inprogress: { heading: "## In progress", header: ["ID", "Epic", "Task", "Handoff"] },
+  queued: { heading: "## Queued", header: ["ID", "P", "Epic", "Task", "Evidence"] },
+  open: { heading: "## Open", header: ["ID", "P", "Epic", "Task", "Evidence"] },
+  frozen: { heading: "## Frozen", header: ["ID", "Epic", "Task", "Why frozen / reopen when"] },
+  archive: { heading: "## Archive (shipped · done)", header: ["ID", "Epic", "Task", "Closed"] },
 };
 
 // ---------------------------------------------------------------- helpers
@@ -78,9 +82,11 @@ function normalizeHeading(text) {
 function canonKey(heading) {
   const h = normalizeHeading(heading);
   if (h === "open") return "open";
+  if (h === "queued") return "queued";
   if (h === "in progress") return "inprogress";
   if (h === "frozen") return "frozen";
   if (h === "active / next") return "active";
+  if (h === "epics") return "epics";
   if (h.startsWith("archive")) return "archive";
   return null;
 }
@@ -198,7 +204,7 @@ function formatRow(cells) {
 
 function nextId(lines) {
   let max = 0;
-  for (const key of ["open", "inprogress", "frozen", "archive"]) {
+  for (const key of ["open", "queued", "inprogress", "frozen", "archive"]) {
     for (const r of getRows(lines, key)) {
       const m = /^(?:F|T)-(\d+)$/i.exec((r.cells[0] || "").trim());
       if (m) max = Math.max(max, parseInt(m[1], 10));
@@ -209,7 +215,7 @@ function nextId(lines) {
 
 function getAllIds(lines) {
   const ids = new Set();
-  for (const key of ["open", "inprogress", "frozen", "archive"]) {
+  for (const key of ["open", "queued", "inprogress", "frozen", "archive"]) {
     for (const r of getRows(lines, key)) if (r.cells[0]) ids.add(r.cells[0]);
   }
   return ids;
@@ -235,12 +241,51 @@ function insertOpen(rows, newRow) {
 }
 
 function findRow(lines, id) {
-  for (const key of ["open", "inprogress", "frozen", "archive"]) {
+  for (const key of ["open", "queued", "inprogress", "frozen", "archive"]) {
     for (const r of getRows(lines, key)) {
       if ((r.cells[0] || "").trim() === id) return { key, cells: r.cells };
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------- epics
+
+/* The top-level ## Epics registry table → [{ key, label, goal }]. */
+function readEpics(lines) {
+  return getRows(lines, "epics").map((r) => ({
+    key: (r.cells[0] || "").trim(),
+    label: (r.cells[1] || "").trim(),
+    goal: (r.cells[2] || "").trim(),
+  }));
+}
+
+function getEpicKeys(lines) {
+  return new Set(readEpics(lines).map((e) => e.key));
+}
+
+/* A valid epic cell is the literal `?` or a registered ## Epics key. */
+function isEpicKey(key, lines) {
+  return key === "?" || getEpicKeys(lines).has(key);
+}
+
+/* Row shapes differ per section — read the right cell by section key.
+ * open/queued: [id, p, epic, task, evidence];
+ * inprogress/frozen/archive: [id, epic, task, ...]. */
+function taskOf(cells, key) {
+  return key === "open" || key === "queued" ? cells[3] : cells[2];
+}
+
+/* Index of the epic cell within a section's row. */
+function epicIndex(key) {
+  if (key === "open" || key === "queued") return 2;
+  if (key === "inprogress" || key === "frozen" || key === "archive") return 1;
+  return -1;
+}
+
+function epicOf(cells, key) {
+  const i = epicIndex(key);
+  return i === -1 ? "?" : (cells[i] || "?");
 }
 
 // ---------------------------------------------------------------- commands
@@ -272,29 +317,61 @@ function cmdList(state, argv) {
     if (printed) console.log("");
   }
 
-  const groups = [["inprogress", "In progress"], ["open", "Open"]];
+  const groups = [["inprogress", "In progress"], ["queued", "Queued"], ["open", "Open"]];
   if (argv.all) groups.push(["frozen", "Frozen"], ["archive", "Archive"]);
 
   for (const [key, label] of groups) {
     const rows = getRows(state.lines, key).map((r) => r.cells);
     console.log(`${label} (${rows.length})`);
     for (const c of rows) {
-      if (key === "open") {
-        console.log(`  ${c[0]}  [${c[1]}]  ${truncate(c[2] || "", TASK_W)}`);
-        if (c[3] && c[3] !== "?") console.log(`             evidence: ${truncate(c[3], SUB_W)}`);
+      if (key === "open" || key === "queued") {
+        console.log(`  ${c[0]}  [${c[1]}]  [${c[2]}]  ${truncate(c[3] || "", TASK_W)}`);
+        if (c[4] && c[4] !== "?") console.log(`             evidence: ${truncate(c[4], SUB_W)}`);
       } else if (key === "inprogress") {
-        console.log(`  ${c[0]}  ${truncate(c[1] || "", TASK_W)}`);
-        if (c[2] && c[2] !== "?") console.log(`             handoff: ${truncate(c[2], SUB_W)}`);
+        console.log(`  ${c[0]}  [${c[1]}]  ${truncate(c[2] || "", TASK_W)}`);
+        if (c[3] && c[3] !== "?") console.log(`             handoff: ${truncate(c[3], SUB_W)}`);
       } else if (key === "frozen") {
-        console.log(`  ${c[0]}  ${truncate(c[1] || "", TASK_W)}`);
-        if (c[2]) console.log(`             reopen: ${truncate(c[2], SUB_W)}`);
+        console.log(`  ${c[0]}  [${c[1]}]  ${truncate(c[2] || "", TASK_W)}`);
+        if (c[3]) console.log(`             reopen: ${truncate(c[3], SUB_W)}`);
       } else {
-        console.log(`  ${c[0]}  ${truncate(c[1] || "", TASK_W)}`);
-        if (c[2]) console.log(`             closed: ${truncate(c[2], SUB_W)}`);
+        console.log(`  ${c[0]}  [${c[1]}]  ${truncate(c[2] || "", TASK_W)}`);
+        if (c[3]) console.log(`             closed: ${truncate(c[3], SUB_W)}`);
       }
     }
     console.log("");
   }
+}
+
+/* Build the board's machine-readable snapshot (consumed by the superadmin API).
+ * Shape is the JSON contract documented in `.agents/features/superadmin-backlog/scope.md`.
+ * `open` rows are returned priority-sorted (P1 -> P4). */
+function toBoardJson(state) {
+  const active = [];
+  const act = findSection(state.lines, "active");
+  if (act) {
+    for (let i = act.headingIdx + 1; i < act.endIdx; i++) {
+      const t = state.lines[i].trim();
+      if (/^\s*[-*]\s+/.test(t) && !/^\s*[-*]\s+_.*_\s*$/.test(t)) {
+        active.push(stripEmphasis(t).replace(/^\s*[-*]\s+/, "").trim());
+      }
+    }
+  }
+
+  const epics = readEpics(state.lines);
+  const open = getRows(state.lines, "open")
+    .map((r) => ({ id: r.cells[0], priority: r.cells[1], epic: r.cells[2] || "?", task: r.cells[3] || "", evidence: r.cells[4] || "" }))
+    .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority));
+  const queued = getRows(state.lines, "queued")
+    .map((r) => ({ id: r.cells[0], priority: r.cells[1], epic: r.cells[2] || "?", task: r.cells[3] || "", evidence: r.cells[4] || "" }))
+    .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority));
+  const inprogress = getRows(state.lines, "inprogress")
+    .map((r) => ({ id: r.cells[0], epic: r.cells[1] || "?", task: r.cells[2] || "", handoff: r.cells[3] || "" }));
+  const frozen = getRows(state.lines, "frozen")
+    .map((r) => ({ id: r.cells[0], epic: r.cells[1] || "?", task: r.cells[2] || "", condition: r.cells[3] || "" }));
+  const archive = getRows(state.lines, "archive")
+    .map((r) => ({ id: r.cells[0], epic: r.cells[1] || "?", task: r.cells[2] || "", closed: r.cells[3] || "" }));
+
+  return { epics, active, inprogress, queued, open, frozen, archive };
 }
 
 function cmdAdd(state, argv) {
@@ -303,13 +380,53 @@ function cmdAdd(state, argv) {
   const priority = (argv.p || "P3").toUpperCase();
   if (!(priority in PRIORITIES)) throw new Error(`add: priority must be P1..P4 (got "${priority}").`);
   const evidence = argv.evidence || "?";
+  const epic = argv.epic || "?";
+  if (!isEpicKey(epic, state.lines)) {
+    throw new Error(`add: unknown epic "${epic}" (not in ## Epics) — use ? or epic-add first`);
+  }
   const id = argv.id || nextId(state.lines);
   if (getAllIds(state.lines).has(id)) throw new Error(`add: duplicate ID ${id}.`);
 
   const openRows = getRows(state.lines, "open").map((r) => r.cells);
-  const merged = insertOpen(openRows, [id, priority, task, evidence]);
+  const merged = insertOpen(openRows, [id, priority, epic, task, evidence]);
   state.lines = setRows(state.lines, "open", merged);
-  return { id, priority, task, evidence };
+  return { id, priority, epic, task, evidence };
+}
+
+/* epic-add <key> --label <x> [--goal <y>] — append a row to the ## Epics registry. */
+function cmdEpicAdd(state, argv) {
+  const key = argv._[0];
+  if (!key) throw new Error("epic-add: missing <key>.");
+  const label = argv.label;
+  if (!label) throw new Error("epic-add: missing --label.");
+  const goal = argv.goal || "";
+  if (getEpicKeys(state.lines).has(key)) throw new Error(`epic-add: duplicate epic "${key}"`);
+
+  const epics = getRows(state.lines, "epics").map((r) => r.cells);
+  epics.push([key, label, goal]);
+  state.lines = setRows(state.lines, "epics", epics);
+  return { key, label, goal };
+}
+
+/* epic <id> --to <key> — rewrite a row's epic cell in place (any section). */
+function cmdEpic(state, argv) {
+  const id = argv._[0];
+  if (!id) throw new Error("epic: missing <id>.");
+  const to = argv.to;
+  if (!isEpicKey(to, state.lines)) throw new Error(`epic: unknown epic "${to}"`);
+  const found = findRow(state.lines, id);
+  if (!found) throw new Error(`epic: no row ${id}`);
+
+  const i = epicIndex(found.key);
+  if (i === -1) throw new Error(`epic: ${id} is ${found.key} — rows there carry no epic column.`);
+
+  const srcRows = getRows(state.lines, found.key).map((r) => r.cells);
+  const idx = srcRows.findIndex((c) => (c[0] || "").trim() === id);
+  const newRow = srcRows[idx].slice();
+  newRow[i] = to;
+  srcRows[idx] = newRow;
+  state.lines = setRows(state.lines, found.key, srcRows);
+  return { id, epic: to };
 }
 
 function cmdTake(state, argv) {
@@ -321,16 +438,62 @@ function cmdTake(state, argv) {
   if (found.key === "frozen") throw new Error(`take: ${id} is Frozen — unfreeze it first.`);
   if (found.key === "archive") throw new Error(`take: ${id} is archived.`);
 
-  const task = found.cells[2] || id; // open cells: [id, p, task, evidence]
+  const task = taskOf(found.cells, found.key) || id;
+  const epic = epicOf(found.cells, found.key);
   const handoff = argv.handoff || "?";
 
-  const openRows = getRows(state.lines, "open").map((r) => r.cells).filter((c) => c[0].trim() !== id);
-  state.lines = setRows(state.lines, "open", openRows);
+  const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
+  state.lines = setRows(state.lines, found.key, srcRows);
 
   const inprog = getRows(state.lines, "inprogress").map((r) => r.cells);
-  inprog.push([id, task, handoff]);
+  inprog.push([id, epic, task, handoff]);
   state.lines = setRows(state.lines, "inprogress", inprog);
-  return { id, task, handoff };
+  return { id, epic, task, handoff };
+}
+
+function cmdQueue(state, argv) {
+  const id = argv._[0];
+  if (!id) throw new Error("queue: missing <id>.");
+  const found = findRow(state.lines, id);
+  if (!found) throw new Error(`queue: no row ${id} in BACKLOG.md.`);
+  if (found.key === "queued") return { id, note: "already queued" };
+  if (found.key !== "open") {
+    const where = found.key === "inprogress" ? "In progress" : found.key === "frozen" ? "Frozen" : "Archived";
+    throw new Error(`queue: ${id} is ${where} — only Open rows can be queued.`);
+  }
+
+  const cells = found.cells.slice(); // open cells: [id, p, epic, task, evidence]
+  const srcRows = getRows(state.lines, "open").map((r) => r.cells).filter((c) => c[0].trim() !== id);
+  state.lines = setRows(state.lines, "open", srcRows);
+
+  const queuedRows = getRows(state.lines, "queued").map((r) => r.cells);
+  state.lines = setRows(state.lines, "queued", insertOpen(queuedRows, cells));
+  return { id, epic: cells[2], task: cells[3] };
+}
+
+/* next [--take] — report the top-priority Queued row; with --take, move it to
+ * In progress (the pick-then-go primitive behind /next). */
+function cmdNext(state, argv) {
+  const queued = getRows(state.lines, "queued").map((r) => r.cells);
+  if (queued.length === 0) return { empty: true };
+
+  const sorted = queued.slice().sort((a, b) => priorityRank(a[1]) - priorityRank(b[1]));
+  const row = sorted[0];
+  const id = row[0];
+  const priority = row[1];
+  const epic = row[2] || "?";
+  const task = row[3] || id;
+  const evidence = row[4] || "?";
+  if (!argv.take) return { id, priority, epic, task, evidence };
+
+  const srcRows = queued.filter((c) => (c[0] || "").trim() !== id);
+  state.lines = setRows(state.lines, "queued", srcRows);
+
+  const handoff = argv.handoff || `.agents/handoffs/${id}.md`;
+  const inprog = getRows(state.lines, "inprogress").map((r) => r.cells);
+  inprog.push([id, epic, task, handoff]);
+  state.lines = setRows(state.lines, "inprogress", inprog);
+  return { id, epic, task, handoff };
 }
 
 function cmdArchive(state, argv) {
@@ -340,16 +503,17 @@ function cmdArchive(state, argv) {
   if (!found) throw new Error(`archive: no row ${id} in BACKLOG.md.`);
   if (found.key === "archive") return { id, note: "already archived" };
 
-  const task = found.key === "open" ? found.cells[2] : found.cells[1];
+  const task = taskOf(found.cells, found.key);
+  const epic = epicOf(found.cells, found.key);
   const closed = argv.closed || "shipped";
 
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
   state.lines = setRows(state.lines, found.key, srcRows);
 
   const archiveRows = getRows(state.lines, "archive").map((r) => r.cells);
-  archiveRows.push([id, task, closed]);
+  archiveRows.push([id, epic, task, closed]);
   state.lines = setRows(state.lines, "archive", archiveRows);
-  return { id, task, closed };
+  return { id, epic, task, closed };
 }
 
 function cmdFreeze(state, argv) {
@@ -364,16 +528,37 @@ function cmdFreeze(state, argv) {
   if (!found) throw new Error(`freeze: no row ${id} in BACKLOG.md.`);
   if (found.key === "frozen") return { id, note: "already frozen" };
 
-  const task = found.key === "open" ? found.cells[2] : found.cells[1];
+  const task = taskOf(found.cells, found.key);
+  const epic = epicOf(found.cells, found.key);
   const cond = [why, reopen ? `reopen when ${reopen}` : ""].filter(Boolean).join(" — ");
 
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
   state.lines = setRows(state.lines, found.key, srcRows);
 
   const frozenRows = getRows(state.lines, "frozen").map((r) => r.cells);
-  frozenRows.push([id, task, cond]);
+  frozenRows.push([id, epic, task, cond]);
   state.lines = setRows(state.lines, "frozen", frozenRows);
-  return { id, task, cond };
+  return { id, epic, task, cond };
+}
+
+function cmdPriority(state, argv) {
+  const id = argv._[0];
+  if (!id) throw new Error("priority: missing <id>.");
+  const priority = (argv.p || "").toUpperCase();
+  if (!(priority in PRIORITIES)) throw new Error(`priority: priority must be P1..P4 (got "${priority || "none"}").`);
+
+  const found = findRow(state.lines, id);
+  if (!found) throw new Error(`priority: no row ${id} in BACKLOG.md.`);
+  if (found.key !== "open" && found.key !== "queued") {
+    const where = found.key === "inprogress" ? "In progress" : found.key === "frozen" ? "Frozen" : "Archive";
+    throw new Error(`priority: ${id} is ${where} — only Open/Queued rows have a priority.`);
+  }
+
+  const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
+  const newRow = found.cells.slice();
+  newRow[1] = priority;
+  state.lines = setRows(state.lines, found.key, insertOpen(srcRows, newRow));
+  return { id, priority };
 }
 
 /* Create an isolated `git worktree` + branch for a feature, then record the
@@ -393,17 +578,18 @@ function cmdWorktree(state, argv) {
   if (found.key === "archive") throw new Error(`worktree: ${id} is archived.`);
   if (found.key === "frozen") throw new Error(`worktree: ${id} is Frozen — unfreeze it first.`);
 
-  // Ensure the row is In progress (auto-take if Open).
+  // Ensure the row is In progress (auto-take if Open/Queued).
   let handoff = argv.handoff || `.agents/handoffs/${id}.md`;
-  if (found.key === "open") {
-    const task = found.cells[2] || id;
-    const openRows = getRows(state.lines, "open").map((r) => r.cells).filter((c) => c[0].trim() !== id);
-    state.lines = setRows(state.lines, "open", openRows);
+  if (found.key === "open" || found.key === "queued") {
+    const task = taskOf(found.cells, found.key) || id;
+    const epic = epicOf(found.cells, found.key);
+    const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
+    state.lines = setRows(state.lines, found.key, srcRows);
     const inprog = getRows(state.lines, "inprogress").map((r) => r.cells);
-    inprog.push([id, task, handoff]);
+    inprog.push([id, epic, task, handoff]);
     state.lines = setRows(state.lines, "inprogress", inprog);
   } else {
-    const existing = (found.cells[2] || "").split(/\s*[|(]/)[0].trim();
+    const existing = found.key === "inprogress" ? (found.cells[3] || "").split(/\s*[|(]/)[0].trim() : "";
     handoff = argv.handoff || existing || `.agents/handoffs/${id}.md`;
   }
 
@@ -420,7 +606,7 @@ function cmdWorktree(state, argv) {
   const inprog = getRows(state.lines, "inprogress").map((r) => r.cells);
   const idx = inprog.findIndex((c) => (c[0] || "").trim() === id);
   if (idx !== -1) {
-    inprog[idx] = [id, inprog[idx][1], handoffCell];
+    inprog[idx] = [id, inprog[idx][1], inprog[idx][2], handoffCell];
     state.lines = setRows(state.lines, "inprogress", inprog);
   }
 
@@ -432,9 +618,14 @@ function cmdWorktree(state, argv) {
 function formatResult(cmd, out) {
   if (cmd === "add") return `added ${out.id} [${out.priority}] ${out.task}`;
   if (cmd === "take") return out.note ? `${out.id}: ${out.note}` : `took ${out.id} -> In progress (${out.handoff})`;
+  if (cmd === "queue") return out.note ? `${out.id}: ${out.note}` : `queued ${out.id} (${out.task})`;
+  if (cmd === "next") return out.empty ? "no queued rows" : out.handoff ? `next -> took ${out.id} (${out.handoff})` : `next: ${out.id} [${out.priority}] ${out.task}`;
   if (cmd === "archive") return out.note ? `${out.id}: ${out.note}` : `archived ${out.id} (${out.closed})`;
   if (cmd === "freeze") return out.note ? `${out.id}: ${out.note}` : `froze ${out.id} (${out.cond})`;
+  if (cmd === "priority") return `set ${out.id} -> ${out.priority}`;
   if (cmd === "worktree") return `isolated ${out.id} -> worktree: ${out.dir} (branch: ${out.branch})`;
+  if (cmd === "epic-add") return `added epic ${out.key} (${out.label})`;
+  if (cmd === "epic") return `set ${out.id} -> ${out.epic}`;
   return "";
 }
 
@@ -451,8 +642,14 @@ function parseArgs(argv) {
     else if (a === "--id") args.id = argv[++i];
     else if (a === "--branch") args.branch = argv[++i];
     else if (a === "--dir") args.dir = argv[++i];
+    else if (a === "--epic") args.epic = argv[++i];
+    else if (a === "--to") args.to = argv[++i];
+    else if (a === "--label") args.label = argv[++i];
+    else if (a === "--goal") args.goal = argv[++i];
+    else if (a === "--take") args.take = true;
     else if (a === "--all") args.all = true;
     else if (a === "--full") args.full = true;
+    else if (a === "--json") args.json = true;
     else if (a === "--root") args.root = argv[++i];
     else args._.push(a);
   }
@@ -462,12 +659,17 @@ function parseArgs(argv) {
 function usage() {
   console.log(
     "backlog — deterministic BACKLOG.md editor (no LLM)\n\n" +
-      "  node scripts/backlog.js list [--all] [--full]\n" +
-      "  node scripts/backlog.js add <task> [--p P1..P4] [--evidence x] [--id F-xxx]\n" +
+      "  node scripts/backlog.js list [--all] [--full] [--json]\n" +
+      "  node scripts/backlog.js add <task> [--p P1..P4] [--epic key] [--evidence x] [--id F-xxx]\n" +
       "  node scripts/backlog.js take <id> [--handoff path]\n" +
+      "  node scripts/backlog.js queue <id>\n" +
+      "  node scripts/backlog.js next [--take] [--handoff path]\n" +
       "  node scripts/backlog.js archive <id> [--closed note]\n" +
       "  node scripts/backlog.js freeze <id> [--why x] [--reopen x]\n" +
-      "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path]\n"
+      "  node scripts/backlog.js priority <id> --p P1..P4\n" +
+      "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path]\n" +
+      "  node scripts/backlog.js epic-add <key> --label <x> [--goal <y>]\n" +
+      "  node scripts/backlog.js epic <id> --to <key>\n"
   );
 }
 
@@ -490,12 +692,22 @@ function main() {
 
   try {
     let out;
-    if (cmd === "list") out = cmdList(state, args);
-    else if (cmd === "add") out = cmdAdd(state, args);
+    if (cmd === "list") {
+      if (args.json) {
+        console.log(JSON.stringify(toBoardJson(state), null, 2));
+        return;
+      }
+      out = cmdList(state, args);
+    } else if (cmd === "add") out = cmdAdd(state, args);
     else if (cmd === "take") out = cmdTake(state, args);
+    else if (cmd === "queue") out = cmdQueue(state, args);
+    else if (cmd === "next") out = cmdNext(state, args);
     else if (cmd === "archive") out = cmdArchive(state, args);
     else if (cmd === "freeze") out = cmdFreeze(state, args);
+    else if (cmd === "priority") out = cmdPriority(state, args);
     else if (cmd === "worktree") out = cmdWorktree(state, args);
+    else if (cmd === "epic-add") out = cmdEpicAdd(state, args);
+    else if (cmd === "epic") out = cmdEpic(state, args);
     else {
       usage();
       process.exitCode = 1;
@@ -525,7 +737,14 @@ module.exports = {
   nextId,
   cmdAdd,
   cmdTake,
+  cmdQueue,
+  cmdNext,
   cmdArchive,
   cmdFreeze,
+  cmdPriority,
   cmdWorktree,
+  cmdEpicAdd,
+  cmdEpic,
+  readEpics,
+  toBoardJson,
 };

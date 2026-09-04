@@ -9,14 +9,27 @@ not a row, it doesn't exist.
 plus `frozen` (parked — keep a *why* and a *reopen condition*, never delete).
 The board maps status to section: `backlog`/`ready` → **Open**,
 `in-progress`/`testing` → **In progress** (active work), `shipped`/`archived` →
-**Archive**, `frozen` → **Frozen**.
+**Archive**, `frozen` → **Frozen**. A **Queued** row is a ready-to-pull lane:
+`backlog queue <id>` allocates an `Open` row into it, and `/next` (or
+`backlog next --take`) pulls the top-priority Queued row into `In progress`.
 **Priority (`P`):** `P1` blocking · `P2` important · `P3` nice-to-have · `P4` later.
-Priority applies to open rows only. **Evidence** = a pointer (file/log/ticket/words),
-never a re-derivation. Leave `?` where unknown — don't invent.
+Priority applies to open/queued rows only. **Evidence** = a pointer
+(file/log/ticket/words), never a re-derivation. **Epic** = a declared `## Epics`
+key (or `?` when unassigned). Leave `?` where unknown — don't invent.
 
 > Updated in the same session the work happens. Pick up a row by moving it
-> `Open` → `In progress`; archive `shipped` rows; freeze don't-delete. Historical
-> design docs are aspirational — verify against live code.
+> `Open`/`Queued` → `In progress`; archive `shipped` rows; freeze don't-delete.
+> Historical design docs are aspirational — verify against live code.
+
+## Epics
+
+Group work into logical containers. Declare an epic here (`Key` / `Label` / `Goal`),
+then set a row's `Epic` cell to the key — or leave `?` when unassigned. Editable
+in-file; no code change needed.
+
+| Key | Label | Goal |
+|-----|-------|------|
+| | | |
 
 ## Active / next
 
@@ -25,43 +38,53 @@ never a re-derivation. Leave `?` where unknown — don't invent.
 ## In progress
 
 Active work — rows a session has picked up and is working on right now. Move a row
-here from `Open` the moment a session starts dealing with it (cite the session's
-handoff), and move it to `Archive (shipped · done)` when it ships — or back to
-`Open` if it stalls.
+here from `Open`/`Queued` the moment a session starts dealing with it (cite the
+session's handoff), and move it to `Archive (shipped · done)` when it ships — or
+back to `Open` if it stalls.
 
-| ID | Task | Handoff |
-|----|------|---------|
-| | | |
+| ID | Epic | Task | Handoff |
+|----|------|------|---------|
+| | | | |
 
-_Rows: `| F-004 | short desc | .agents/handoffs/F-004.md (or `?` if not yet written) |`_
+_Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
+
+## Queued
+
+Sorted by priority (P1 → P4). Ready-to-pull work allocated to a worker.
+
+| ID | P | Epic | Task | Evidence |
+|----|---|------|------|----------|
+| | | | | |
+
+_Rows: `| F-005 | P2 | epic-key | short desc | pointer, never a re-derivation |`_
 
 ## Open
 
 Sorted by priority (P1 → P4).
 
-| ID | P | Task | Evidence |
-|----|---|------|----------|
-| | | | |
+| ID | P | Epic | Task | Evidence |
+|----|---|------|------|----------|
+| | | | | |
 
-_Rows: `| F-001 | P3 | short desc; open questions with \`?\` | pointer, never a re-derivation |`_
+_Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer |`_
 
 ## Frozen
 
 Parked, not deleted. Reopen only when the stated condition recurs.
 
-| ID | Task | Why frozen / reopen when |
-|----|------|--------------------------|
-| | | |
+| ID | Epic | Task | Why frozen / reopen when |
+|----|------|------|--------------------------|
+| | | | |
 
-_Rows: `| F-002 | short desc | why + reopen condition (required) |`_
+_Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 
 ## Archive (shipped · done)
 
-| ID | Task | Closed |
-|----|------|--------|
-| | | |
+| ID | Epic | Task | Closed |
+|----|------|------|--------|
+| | | | |
 
-_Rows: `| F-003 | short desc | shipped/done + date/commit |`_
+_Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
 ## Not tracking (leave-in-place, no action)
 

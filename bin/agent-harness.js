@@ -641,7 +641,7 @@ function parseTableRows(src) {
     if (cells.every((c) => c.trim() === "")) continue; // empty row
     if (
       cells.some((c) =>
-        /^(ID|[Ii]d|P|Task|Item|Priority|Context|Status|Evidence|Why frozen|Closed|Why frozen \/ reopen when)$/.test(c)
+        /^(ID|[Ii]d|P|Task|Item|Priority|Context|Status|Evidence|Why frozen|Closed|Why frozen \/ reopen when|Epic|Handoff|Key|Label|Goal)$/.test(c)
       )
     )
       continue; // header
@@ -771,10 +771,10 @@ function migrateBacklog(target) {
     return summary;
   }
 
-  const toRow = (r) => `| ${r.id} | ${r.priority} | ${r.task} | ${r.evidence} |`;
-  const inProgressRow = (r) => `| ${r.id} | ${r.task} | ${r.handoff || "?"} |`;
-  const frozenRow = (r) => `| ${r.id} | ${r.task} | ${r.reopen} |`;
-  const archiveRow = (r) => `| ${r.id} | ${r.task} | ${r.closed} |`;
+  const toRow = (r) => `| ${r.id} | ${r.priority} | ? | ${r.task} | ${r.evidence} |`;
+  const inProgressRow = (r) => `| ${r.id} | ? | ${r.task} | ${r.handoff || "?"} |`;
+  const frozenRow = (r) => `| ${r.id} | ? | ${r.task} | ${r.reopen} |`;
+  const archiveRow = (r) => `| ${r.id} | ? | ${r.task} | ${r.closed} |`;
 
   const table = (headers, rows) =>
     [`| ${headers.join(" | ")} |`, `|${headers.map(() => "---").join("|")}|`, ...rows].join("\n");
@@ -782,29 +782,31 @@ function migrateBacklog(target) {
   const openBlock =
     open.length === 0
       ? ""
-      : `## Open\n\nSorted by priority (P1 → P4).\n\n${table(["ID", "P", "Task", "Evidence"], open.map(toRow))}`;
+      : `## Open\n\nSorted by priority (P1 → P4).\n\n${table(["ID", "P", "Epic", "Task", "Evidence"], open.map(toRow))}`;
   const inProgressBlock =
     inProgress.length === 0
       ? ""
       : `## In progress\n\nActive work — picked up, not yet shipped.\n\n${table(
-          ["ID", "Task", "Handoff"],
+          ["ID", "Epic", "Task", "Handoff"],
           inProgress.map(inProgressRow)
         )}`;
+  const queuedBlock =
+    "## Queued\n\nSorted by priority (P1 → P4).\n\n| ID | P | Epic | Task | Evidence |\n|----|---|------|------|----------|";
   const frozenBlock =
     frozen.length === 0
       ? ""
       : `## Frozen\n\nParked, not deleted. Reopen only when the stated condition recurs.\n\n${table(
-          ["ID", "Task", "Why frozen / reopen when"],
+          ["ID", "Epic", "Task", "Why frozen / reopen when"],
           frozen.map(frozenRow)
         )}`;
   const archiveBlock =
     archive.length === 0
       ? ""
-      : `## Archive (shipped · done)\n\n${table(["ID", "Task", "Closed"], archive.map(archiveRow))}`;
+      : `## Archive (shipped · done)\n\n${table(["ID", "Epic", "Task", "Closed"], archive.map(archiveRow))}`;
 
   // Rebuild the board: keep the template's usage header, replace the body.
   const header = existing.split(/^## Active \/ next/m)[0].trim();
-  const body = [header, "## Active / next\n", inProgressBlock, openBlock, frozenBlock, archiveBlock, "## Not tracking (leave-in-place, no action)\n"]
+  const body = [header, "## Active / next\n", inProgressBlock, queuedBlock, openBlock, frozenBlock, archiveBlock, "## Not tracking (leave-in-place, no action)\n"]
     .filter((b) => b.length > 0)
     .join("\n\n") + "\n";
 

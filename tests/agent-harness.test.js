@@ -325,7 +325,7 @@ test("backlog CLI accumulates, sorts, and delegates deterministically (no LLM)",
       );
     }
   }
-  assert.match(backlog, /\| F-001 \| P1 \| block something \| user report \|/);
+  assert.match(backlog, /\| F-001 \| P1 \| \? \| block something \| user report \|/);
 
   // review: list prints In progress + Open, hiding Frozen/Archive by default
   const list = runBacklogCli(t, ["list"]);
@@ -337,18 +337,23 @@ test("backlog CLI accumulates, sorts, and delegates deterministically (no LLM)",
   assert.match(runBacklogCli(t, ["take", "F-001", "--handoff", ".agents/handoffs/F-001.md"]).out, /took F-001/);
   let b = read(path.join(t, "BACKLOG.md"));
   assert.match(b.split("## Open")[1], /F-002/, "F-001 no longer in Open");
-  assert.match(b.split("## In progress")[1].split("## Open")[0], /\| F-001 \| block something \| \.agents\/handoffs\/F-001\.md \|/);
+  assert.match(b.split("## In progress")[1].split("## Queued")[0], /\| F-001 \| \? \| block something \| \.agents\/handoffs\/F-001\.md \|/);
 
   // freeze F-002
   assert.match(runBacklogCli(t, ["freeze", "F-002", "--why", "not now", "--reopen", "customer asks"]).out, /froze F-002/);
   b = read(path.join(t, "BACKLOG.md"));
-  assert.match(b.split("## Frozen")[1], /\| F-002 \| do a thing \| not now — reopen when customer asks \|/);
+  assert.match(b.split("## Frozen")[1], /\| F-002 \| \? \| do a thing \| not now — reopen when customer asks \|/);
+
+  // queue F-003, then pull it back with `next`
+  assert.match(runBacklogCli(t, ["queue", "F-003"]).out, /queued F-003/);
+  assert.match(runBacklogCli(t, ["next"]).out, /next: F-003/);
+  assert.match(runBacklogCli(t, ["next", "--take", "--handoff", ".agents/handoffs/F-003.md"]).out, /next -> took F-003/);
 
   // ship F-001
   assert.match(runBacklogCli(t, ["archive", "F-001", "--closed", "shipped 2026-09-04"]).out, /archived F-001/);
   b = read(path.join(t, "BACKLOG.md"));
-  assert.match(b.split("## Archive")[1], /\| F-001 \| block something \| shipped 2026-09-04 \|/);
-  assert.doesNotMatch(b.split("## In progress")[1].split("## Open")[0], /F-001/, "F-001 left In progress");
+  assert.match(b.split("## Archive")[1], /\| F-001 \| \? \| block something \| shipped 2026-09-04 \|/);
+  assert.doesNotMatch(b.split("## In progress")[1].split("## Queued")[0], /F-001/, "F-001 left In progress");
 
   // every mutation stays valid per the canonical gate
   fs.mkdirSync(path.join(t, "scripts", "qa"), { recursive: true });
@@ -882,6 +887,12 @@ function runBacklogGate(target) {
 
 const VALID_BACKLOG = `# BACKLOG — canonical task list
 
+## Epics
+
+| Key | Label | Goal |
+|-----|-------|------|
+| flow | Flow | Flow work |
+
 ## Active / next
 
 - Next picks: **F-003** (P2).
@@ -890,32 +901,39 @@ const VALID_BACKLOG = `# BACKLOG — canonical task list
 
 Active work.
 
-| ID | Task | Handoff |
-|----|------|---------|
-| F-005 | being worked | .agents/handoffs/F-005.md |
+| ID | Epic | Task | Handoff |
+|----|------|------|---------|
+| F-005 | flow | being worked | .agents/handoffs/F-005.md |
+
+## Queued
+
+Sorted by priority (P1 → P4).
+
+| ID | P | Epic | Task | Evidence |
+|----|---|------|------|----------|
 
 ## Open
 
 Sorted by priority (P1 → P4).
 
-| ID | P | Task | Evidence |
-|----|---|------|----------|
-| F-001 | P1 | block something | user report |
-| F-003 | P2 | do a thing | file.ts |
+| ID | P | Epic | Task | Evidence |
+|----|---|------|------|----------|
+| F-001 | P1 | flow | block something | user report |
+| F-003 | P2 | flow | do a thing | file.ts |
 
 ## Frozen
 
 Parked, not deleted.
 
-| ID | Task | Why frozen / reopen when |
-|----|------|--------------------------|
-| F-002 | parked task | superseded; reopen if it recurs |
+| ID | Epic | Task | Why frozen / reopen when |
+|----|------|------|--------------------------|
+| F-002 | flow | parked task | superseded; reopen if it recurs |
 
 ## Archive (shipped · done)
 
-| ID | Task | Closed |
-|----|------|--------|
-| F-004 | done task | shipped 2026-08-30 |
+| ID | Epic | Task | Closed |
+|----|------|------|--------|
+| F-004 | flow | done task | shipped 2026-08-30 |
 
 ## Not tracking (leave-in-place, no action)
 
@@ -932,25 +950,31 @@ test("test:backlog passes a well-formed board", () => {
 test("test:backlog fails on illegal priority, blank evidence, frozen-without-reopen, duplicate ID", () => {
   const t = scaffoldBacklogTarget(`# BACKLOG — canonical task list
 
+## Epics
+
+| Key | Label | Goal |
+|-----|-------|------|
+| flow | Flow | Flow work |
+
 ## Open
 
-| ID | P | Task | Evidence |
-|----|---|------|----------|
-| F-001 | P9 | bad priority | ev |
-| F-002 | P3 | no evidence | |
-| F-003 |  | blank priority | ev |
+| ID | P | Epic | Task | Evidence |
+|----|---|------|------|----------|
+| F-001 | P9 | flow | bad priority | ev |
+| F-002 | P3 | flow | no evidence | |
+| F-003 |  | flow | blank priority | ev |
 
 ## Frozen
 
-| ID | Task | Why frozen / reopen when |
-|----|------|--------------------------|
-| F-004 | no reopen | |
+| ID | Epic | Task | Why frozen / reopen when |
+|----|------|------|--------------------------|
+| F-004 | flow | no reopen | |
 
 ## Archive (shipped · done)
 
-| ID | Task | Closed |
-|----|------|--------|
-| F-001 | duplicate of F-001 | x |
+| ID | Epic | Task | Closed |
+|----|------|------|--------|
+| F-001 | flow | duplicate of F-001 | x |
 `);
   const r = runBacklogGate(t);
   assert.strictEqual(r.status, 1, "gate must fail on malformed board");
@@ -966,10 +990,10 @@ test("test:backlog fails on a blank in-progress task or handoff", () => {
 
 ## In progress
 
-| ID | Task | Handoff |
-|----|------|---------|
-| F-010 | | .agents/handoffs/F-010.md |
-| F-011 | doing it | |
+| ID | Epic | Task | Handoff |
+|----|------|------|---------|
+| F-010 | ? | | .agents/handoffs/F-010.md |
+| F-011 | ? | doing it | |
 `);
   const r = runBacklogGate(t);
   assert.strictEqual(r.status, 1, "gate must fail on blank in-progress cells");
@@ -982,15 +1006,15 @@ test("test:backlog fails on a duplicate ID spanning In progress and Open", () =>
 
 ## In progress
 
-| ID | Task | Handoff |
-|----|------|---------|
-| F-020 | being worked | .agents/handoffs/F-020.md |
+| ID | Epic | Task | Handoff |
+|----|------|------|---------|
+| F-020 | ? | being worked | .agents/handoffs/F-020.md |
 
 ## Open
 
-| ID | P | Task | Evidence |
-|----|---|------|----------|
-| F-020 | P2 | also open | ev |
+| ID | P | Epic | Task | Evidence |
+|----|---|------|------|----------|
+| F-020 | P2 | ? | also open | ev |
 `);
   const r = runBacklogGate(t);
   assert.strictEqual(r.status, 1, r.out);
@@ -1002,9 +1026,9 @@ test("test:backlog passes a board with only an In progress section", () => {
 
 ## In progress
 
-| ID | Task | Handoff |
-|----|------|---------|
-| F-030 | being worked | ? |
+| ID | Epic | Task | Handoff |
+|----|------|------|---------|
+| F-030 | ? | being worked | ? |
 `);
   const r = runBacklogGate(t);
   assert.strictEqual(r.status, 0, r.out);
@@ -1123,8 +1147,8 @@ test("migrate-backlog maps in-progress/testing INDEX rows into the In progress s
 
   const backlog = read(path.join(target, "BACKLOG.md"));
   assert.match(backlog, /## In progress/);
-  assert.match(backlog, /\| F-010 \| mid-flight work \| \.agents\/handoffs\/F-010\.md \|/);
-  assert.match(backlog, /\| F-011 \| under test \| ev \|/);
+  assert.match(backlog, /\| F-010 \| \? \| mid-flight work \| \.agents\/handoffs\/F-010\.md \|/);
+  assert.match(backlog, /\| F-011 \| \? \| under test \| ev \|/);
 });
 
 // ---------------------------------------------------------------- test:product gate

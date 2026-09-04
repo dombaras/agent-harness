@@ -39,24 +39,52 @@ export const add = tool({
     task: tool.schema.string().describe("short task description (what's known)"),
     priority: tool.schema.string().describe("P1..P4, optional (defaults P3)"),
     evidence: tool.schema.string().describe("pointer to evidence (file/log/ticket/words), optional"),
+    epic: tool.schema.string().describe("epic key from the ## Epics registry, or ? for unassigned (optional, defaults ?)"),
   },
   async execute(args, context) {
     const argv = ["add", args.task]
     if (args.priority) argv.push("--p", args.priority)
     if (args.evidence) argv.push("--evidence", args.evidence)
+    if (args.epic) argv.push("--epic", args.epic)
     return run(context, argv)
   },
 })
 
 export const take = tool({
   description:
-    "Move a BACKLOG.md row Open -> In progress (pick it up), optionally linking the session handoff file.",
+    "Move a BACKLOG.md row Open/Queued -> In progress (pick it up), optionally linking the session handoff file.",
   args: {
     id: tool.schema.string().describe("row ID, e.g. F-001"),
     handoff: tool.schema.string().describe("session handoff path, e.g. .agents/handoffs/F-001.md"),
   },
   async execute(args, context) {
     const argv = ["take", args.id]
+    if (args.handoff) argv.push("--handoff", args.handoff)
+    return run(context, argv)
+  },
+})
+
+export const queue = tool({
+  description:
+    "Move a BACKLOG.md row Open -> Queued (allocate it to a worker / ready-to-pull lane). Pull it back later with backlog_next.",
+  args: {
+    id: tool.schema.string().describe("row ID, e.g. F-001"),
+  },
+  async execute(args, context) {
+    return run(context, ["queue", args.id])
+  },
+})
+
+export const next = tool({
+  description:
+    "Pick the next item off the Queue: report the top-priority Queued row, or (with take) move it Queued -> In progress and link the session handoff. This is the primitive behind /next.",
+  args: {
+    take: tool.schema.boolean().describe("when true, move the top Queued row to In progress (default: dry-run, just report it)"),
+    handoff: tool.schema.string().describe("session handoff path when taking, e.g. .agents/handoffs/F-001.md"),
+  },
+  async execute(args, context) {
+    const argv = ["next"]
+    if (args.take) argv.push("--take")
     if (args.handoff) argv.push("--handoff", args.handoff)
     return run(context, argv)
   },
@@ -88,6 +116,34 @@ export const freeze = tool({
     const argv = ["freeze", args.id]
     if (args.why) argv.push("--why", args.why)
     if (args.reopen) argv.push("--reopen", args.reopen)
+    return run(context, argv)
+  },
+})
+
+export const epic = tool({
+  description:
+    "Assign/reassign the epic of a BACKLOG.md row in place (any section). <to> must be a key in the ## Epics registry or ? (unassigned).",
+  args: {
+    id: tool.schema.string().describe("row ID, e.g. F-001"),
+    to: tool.schema.string().describe("epic key (from ## Epics) or ? for unassigned"),
+  },
+  async execute(args, context) {
+    const argv = ["epic", args.id, "--to", args.to]
+    return run(context, argv)
+  },
+})
+
+export const epicAdd = tool({
+  description:
+    "Add an epic to the ## Epics registry in BACKLOG.md — a logical container (key/label/goal) that work rows group under. No code change required.",
+  args: {
+    key: tool.schema.string().describe("stable slug key, e.g. metrics"),
+    label: tool.schema.string().describe("human label, e.g. Metrics & observability"),
+    goal: tool.schema.string().describe("one-line goal/scope of the epic, optional"),
+  },
+  async execute(args, context) {
+    const argv = ["epic-add", args.key, "--label", args.label]
+    if (args.goal) argv.push("--goal", args.goal)
     return run(context, argv)
   },
 })

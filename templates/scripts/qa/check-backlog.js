@@ -129,8 +129,8 @@ function parseSectionRows(lines) {
     if (cells.every((c) => /^[-:|\s]*$/.test(c))) continue;
     const joined = cells.join("|").trim();
     if (/^([-:|\s]*)$/.test(joined)) continue;
-    // skip header rows named ID/P/Task/...
-    if (cells.some((c) => /^(ID|[Ii]d|P|Task|Evidence|Handoff|Why frozen \/ reopen when|Closed)$/.test(c))) continue;
+    // skip header rows named ID/P/Epic/Task/... and the Epics registry header (Key/Label/Goal)
+    if (cells.some((c) => /^(ID|[Ii]d|P|Epic|Task|Evidence|Handoff|Why frozen \/ reopen when|Closed|Key|Label|Goal)$/.test(c))) continue;
     buckets[current].push(cells);
     rowCount++;
   }
@@ -141,10 +141,11 @@ const { buckets, rowCount } = parseSectionRows(lines);
 
 // Column indexes per section (from the BACKLOG template schema).
 const COLS = {
-  open: { id: 0, priority: 1, evidence: 3 },
-  "in progress": { id: 0, task: 1, handoff: 2 },
-  frozen: { id: 0, reopen: 2 },
-  "archive (shipped · done)": { id: 0 },
+  open: { id: 0, priority: 1, epic: 2, evidence: 4 },
+  queued: { id: 0, priority: 1, epic: 2, evidence: 4 },
+  "in progress": { id: 0, epic: 1, task: 2, handoff: 3 },
+  frozen: { id: 0, epic: 1, reopen: 3 },
+  "archive (shipped · done)": { id: 0, epic: 1 },
 };
 
 function bucketRows(key) {
@@ -153,9 +154,41 @@ function bucketRows(key) {
 }
 
 const openRows = bucketRows("Open");
+const queuedRows = bucketRows("Queued");
 const inProgressRows = bucketRows("In progress");
 const frozenRows = bucketRows("Frozen");
 const archiveRows = bucketRows("Archive (shipped · done)") || bucketRows("Archive");
+
+// ---- Epics registry: parse + validate -------------------------------------
+const epicRows = buckets["Epics"] || [];
+const epicKeys = new Set();
+for (const r of epicRows) {
+  const key = (r[0] || "").trim();
+  const label = (r[1] || "").trim();
+  if (!key) {
+    check(false, `epics entry: key must not be blank`);
+    continue;
+  }
+  if (epicKeys.has(key)) check(false, `epics entry "${key}": duplicate key`);
+  epicKeys.add(key);
+  check(label.length > 0, `epics entry "${key}": label must not be blank`);
+}
+if (epicRows.length > 0) {
+  check(true, `parsed ${epicRows.length} epic(s) from ## Epics`);
+}
+
+function checkEpic(id, raw) {
+  const epic = (raw || "").trim();
+  if (epic.length === 0) {
+    check(false, `row ${id}: epic must not be blank (use a declared epic key or \`?\`)`);
+    return;
+  }
+  if (epic !== "?" && !epicKeys.has(epic)) {
+    check(false, `row ${id}: epic "${epic}" is not a declared epic (add it to ## Epics or use ?)`);
+  } else {
+    check(true, `row ${id}: epic \`${epic}\` is valid`);
+  }
+}
 
 // ---- In progress rows: non-empty task + handoff ----------------------------
 for (const r of inProgressRows) {
@@ -167,6 +200,7 @@ for (const r of inProgressRows) {
     handoff.length > 0,
     `in-progress row ${id}: handoff must not be blank (session handoff file, or \`?\` if unknown)`
   );
+  checkEpic(id, r[COLS["in progress"].epic]);
 }
 
 // ---- 3. Frozen requires a reopen condition ---------------------------------
@@ -176,6 +210,7 @@ for (const r of frozenRows) {
     reopen.length > 0,
     `frozen row ${r[COLS.frozen.id]}: must carry a "why frozen / reopen when" condition`
   );
+  checkEpic(r[COLS.frozen.id], r[COLS.frozen.epic]);
 }
 
 // ---- 2 + 4. Open rows: valid priority + non-empty evidence -----------------
@@ -194,16 +229,42 @@ for (const r of openRows) {
     evidence.length > 0,
     `open row ${id}: evidence must not be blank (pointer, or \`?\` if unknown)`
   );
+  checkEpic(id, r[COLS.open.epic]);
+}
+
+// ---- 2 + 4 (queued). Queued rows: valid priority + evidence + epic ---------
+for (const r of queuedRows) {
+  const id = r[COLS.queued.id] || "?";
+  const priority = (r[COLS.queued.priority] || "").trim();
+  const evidence = (r[COLS.queued.evidence] || "").trim();
+  if (priority.length === 0) {
+    check(false, `queued row ${id}: priority must not be blank (use P1..P4, or \`?\` if unknown)`);
+  } else if (!PRIORITY.has(priority)) {
+    check(false, `queued row ${id}: priority \`${priority}\` not in {P1,P2,P3,P4}`);
+  } else {
+    check(true, `queued row ${id}: priority \`${priority}\` is valid`);
+  }
+  check(
+    evidence.length > 0,
+    `queued row ${id}: evidence must not be blank (pointer, or \`?\` if unknown)`
+  );
+  checkEpic(id, r[COLS.queued.epic]);
+}
+
+// ---- Archive rows: epic must be declared (or `?`) --------------------------
+for (const r of archiveRows) {
+  checkEpic(r[COLS["archive (shipped · done)"].id], r[COLS["archive (shipped · done)"].epic]);
 }
 
 // ---- 5. No duplicate IDs across the whole file -----------------------------
 const allRows = [...openRows.map((r, i) => ({ cells: r, tag: "Open" })),
+  ...queuedRows.map((r, i) => ({ cells: r, tag: "Queued" })),
   ...inProgressRows.map((r, i) => ({ cells: r, tag: "In progress" })),
   ...frozenRows.map((r, i) => ({ cells: r, tag: "Frozen" })),
   ...archiveRows.map((r, i) => ({ cells: r, tag: "Archive" }))];
 const totalRows = allRows.length;
 if (totalRows > 0) {
-  check(true, `parsed ${totalRows} row(s) across Open/In progress/Frozen/Archive`);
+  check(true, `parsed ${totalRows} row(s) across Open/Queued/In progress/Frozen/Archive`);
   const seen = new Map();
   for (const { cells, tag } of allRows) {
     const id = (cells[0] || "").trim();
