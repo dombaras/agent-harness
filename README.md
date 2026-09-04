@@ -139,12 +139,17 @@ warns but does not block; the guarantee only applies to registered flows.
 Node CLI** (no model round-trip) that both humans and agents share:
 
 ```bash
-npm run backlog -- list              # In progress + Open (add --all for Frozen/Archive)
+npm run backlog -- list              # In progress + Open, evidence on its own line (add --all for Frozen/Archive, --full to skip truncation)
 npm run backlog -- add "NLI search times out" --p P2 --evidence docs/issues.md
 npm run backlog -- take F-001 --handoff .agents/handoffs/F-001.md
 npm run backlog -- archive F-001 --closed "shipped 2026-09-04"
 npm run backlog -- freeze F-002 --why "not now" --reopen "customer asks"
 ```
+
+`list` renders each row on two lines (task on top, evidence/handoff/reopen on a
+labeled line below) and truncates long cells by default for scannability — pass
+`--full` for the untruncated text. The `backlog_list` tool always uses `--full`
+so agents see complete descriptions.
 
 - The CLI validates the schema (`P1..P4`, non-empty evidence/handoff/reopen),
   generates unique IDs, and sorts `Open` by priority — every write stays

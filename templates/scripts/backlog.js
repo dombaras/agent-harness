@@ -236,42 +236,55 @@ function findRow(lines, id) {
 
 // ---------------------------------------------------------------- commands
 
+function truncate(s, n) {
+  if (s.length <= n) return s;
+  return s.slice(0, n).trimEnd() + "…";
+}
+
+function stripEmphasis(s) {
+  return s.replace(/[*_]+/g, "").trim();
+}
+
 function cmdList(state, argv) {
+  const full = !!argv.full;
+  const TASK_W = full ? Infinity : 120;
+  const SUB_W = full ? Infinity : 90;
+
   const active = findSection(state.lines, "active");
   if (active) {
+    let printed = 0;
     for (let i = active.headingIdx + 1; i < active.endIdx; i++) {
       const t = state.lines[i].trim();
-      if (/^\s*[-*]\s+/.test(t) && !/^\s*[-*]\s+_.*_\s*$/.test(t)) console.log(t);
+      if (/^\s*[-*]\s+/.test(t) && !/^\s*[-*]\s+_.*_\s*$/.test(t)) {
+        console.log(stripEmphasis(t));
+        printed++;
+      }
     }
-    console.log("");
+    if (printed) console.log("");
   }
-  for (const key of ["inprogress", "open"]) {
+
+  const groups = [["inprogress", "In progress"], ["open", "Open"]];
+  if (argv.all) groups.push(["frozen", "Frozen"], ["archive", "Archive"]);
+
+  for (const [key, label] of groups) {
     const rows = getRows(state.lines, key).map((r) => r.cells);
-    console.log(SECTIONS[key].heading.replace(/^##\s*/, ""));
-    if (rows.length === 0) {
-      console.log("  (none)");
-    } else {
-      for (const c of rows) {
-        if (key === "open") console.log(`  ${c[0]}  [${c[1]}] ${c[2]}  (${c[3]})`);
-        else console.log(`  ${c[0]}  ${c[1]}  (${c[2]})`);
+    console.log(`${label} (${rows.length})`);
+    for (const c of rows) {
+      if (key === "open") {
+        console.log(`  ${c[0]}  [${c[1]}]  ${truncate(c[2] || "", TASK_W)}`);
+        if (c[3] && c[3] !== "?") console.log(`             evidence: ${truncate(c[3], SUB_W)}`);
+      } else if (key === "inprogress") {
+        console.log(`  ${c[0]}  ${truncate(c[1] || "", TASK_W)}`);
+        if (c[2] && c[2] !== "?") console.log(`             handoff: ${truncate(c[2], SUB_W)}`);
+      } else if (key === "frozen") {
+        console.log(`  ${c[0]}  ${truncate(c[1] || "", TASK_W)}`);
+        if (c[2]) console.log(`             reopen: ${truncate(c[2], SUB_W)}`);
+      } else {
+        console.log(`  ${c[0]}  ${truncate(c[1] || "", TASK_W)}`);
+        if (c[2]) console.log(`             closed: ${truncate(c[2], SUB_W)}`);
       }
     }
     console.log("");
-  }
-  if (argv.all) {
-    for (const key of ["frozen", "archive"]) {
-      const rows = getRows(state.lines, key).map((r) => r.cells);
-      console.log(SECTIONS[key].heading.replace(/^##\s*/, ""));
-      if (rows.length === 0) {
-        console.log("  (none)");
-      } else {
-        for (const c of rows) {
-          if (key === "frozen") console.log(`  ${c[0]}  ${c[1]}  — ${c[2]}`);
-          else console.log(`  ${c[0]}  ${c[1]}  (${c[2]})`);
-        }
-      }
-      console.log("");
-    }
   }
 }
 
@@ -376,6 +389,7 @@ function parseArgs(argv) {
     else if (a === "--reopen") args.reopen = argv[++i];
     else if (a === "--id") args.id = argv[++i];
     else if (a === "--all") args.all = true;
+    else if (a === "--full") args.full = true;
     else if (a === "--root") args.root = argv[++i];
     else args._.push(a);
   }
@@ -385,7 +399,7 @@ function parseArgs(argv) {
 function usage() {
   console.log(
     "backlog — deterministic BACKLOG.md editor (no LLM)\n\n" +
-      "  node scripts/backlog.js list [--all]\n" +
+      "  node scripts/backlog.js list [--all] [--full]\n" +
       "  node scripts/backlog.js add <task> [--p P1..P4] [--evidence x] [--id F-xxx]\n" +
       "  node scripts/backlog.js take <id> [--handoff path]\n" +
       "  node scripts/backlog.js archive <id> [--closed note]\n" +

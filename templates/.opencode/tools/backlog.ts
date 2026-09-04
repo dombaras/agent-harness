@@ -28,7 +28,7 @@ export const list = tool({
     "List the active BACKLOG.md rows (In progress + Open) — deterministic, no filtering. Use instead of reading BACKLOG.md directly.",
   args: {},
   async execute(_args, context) {
-    return run(context, ["list"])
+    return run(context, ["list", "--full"])
   },
 })
 
