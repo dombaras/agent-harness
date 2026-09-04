@@ -1317,3 +1317,182 @@ test("test:governance unions multiple sharded handoffs and still reads the legac
   assert.match(r.out, /F-035\.md/);
   assert.match(r.out, /memory[\\/]handoff\.md/);
 });
+
+// ---------------------------------------------------------------- test:concurrency gate (working-tree isolation)
+
+function scaffoldConcurrencyTarget() {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-concurrency.js"),
+    path.join(target, "scripts", "qa", "check-concurrency.js")
+  );
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  return target;
+}
+
+function runConcurrencyGate(target) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-concurrency.js"], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+function backlogWithInProgress(ids) {
+  const rows = ids.map((id) => `| ${id} | task | .agents/handoffs/${id}.md |`).join("\n");
+  return `# BACKLOG\n\n## In progress\n\n| ID | Task | Handoff |\n|----|------|---------|\n${rows}\n`;
+}
+
+test("test:concurrency passes a clean working tree", () => {
+  const t = scaffoldConcurrencyTarget();
+  writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044", "F-060"]));
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /working tree clean/);
+});
+
+test("test:concurrency fails when 2+ sessions are In progress with a dirty tree", () => {
+  const t = scaffoldConcurrencyTarget();
+  writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044", "F-060"]));
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  writeFile(t, "app/foo.tsx", "t('development.loadFailed')\n"); // concurrent session's WIP
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /sessions are In progress/);
+  assert.match(r.out, /uncommitted/);
+  assert.match(r.out, /F-044/);
+  assert.match(r.out, /F-060/);
+});
+
+test("test:concurrency warns (exit 0) when a single session is In progress with a dirty tree", () => {
+  const t = scaffoldConcurrencyTarget();
+  writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044"]));
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  writeFile(t, "app/foo.tsx", "// my own WIP\n");
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /1 session In progress/);
+});
+
+test("test:concurrency warns (exit 0) on a dirty tree with no In progress rows", () => {
+  const t = scaffoldConcurrencyTarget();
+  writeFile(t, "BACKLOG.md", "# BACKLOG\n\n## In progress\n\n| ID | Task | Handoff |\n|----|------|---------|\n\n");
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  writeFile(t, "stray.js", "// unowned\n");
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /no In progress rows/);
+});
+
+// ---------------------------------------------------------------- run-clean snapshot wrapper
+
+function scaffoldRunCleanTarget() {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "run-clean.js"),
+    path.join(target, "scripts", "qa", "run-clean.js")
+  );
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  writeFile(target, "tracked.txt", "committed\n");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed"]);
+  return target;
+}
+
+function commitGate(target, gateContent) {
+  writeFile(target, "gate.js", gateContent);
+  git(target, ["add", "gate.js"]);
+  git(target, ["commit", "-q", "-m", "add gate"]);
+}
+
+function runClean(target, args) {
+  const res = spawnSync(process.execPath, ["scripts/qa/run-clean.js", ...args], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("run-clean stashes a dirty tree so the gate verifies committed state, then restores", () => {
+  const t = scaffoldRunCleanTarget();
+  commitGate(t, "process.exit(require('fs').existsSync('dirty.txt') ? 7 : 0);\n");
+  writeFile(t, "dirty.txt", "uncommitted\n");
+  const r = runClean(t, ["--", "node", "gate.js"]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.ok(exists(path.join(t, "dirty.txt")), "dirty file restored after the run");
+});
+
+test("run-clean propagates the gate's exit code and still restores the tree", () => {
+  const t = scaffoldRunCleanTarget();
+  commitGate(t, "process.exit(5);\n");
+  writeFile(t, "dirty.txt", "uncommitted\n");
+  const r = runClean(t, ["--", "node", "gate.js"]);
+  assert.strictEqual(r.status, 5, r.out);
+  assert.ok(exists(path.join(t, "dirty.txt")), "dirty file restored even when the gate fails");
+});
+
+test("run-clean runs in place when the tree is already clean", () => {
+  const t = scaffoldRunCleanTarget();
+  commitGate(t, "process.exit(0);\n");
+  const r = runClean(t, ["--", "node", "gate.js"]);
+  assert.strictEqual(r.status, 0, r.out);
+});
+
+// ---------------------------------------------------------------- backlog worktree isolation
+
+test("backlog worktree isolates a feature into a git worktree + branch and records it", () => {
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+
+  const suffix = path.basename(t);
+  const branch = `b-${suffix}`;
+  const dir = path.join(os.tmpdir(), `wt-${suffix}`);
+  const r = runBacklogCli(t, ["worktree", "F-001", "--branch", branch, "--dir", dir]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /isolated F-001/);
+
+  assert.ok(exists(dir), "worktree directory created");
+  assert.match(git(t, ["branch", "--list", branch]), new RegExp(branch), "feature branch created");
+
+  const b = read(path.join(t, "BACKLOG.md"));
+  assert.match(b.split("## In progress")[1].split("## Open")[0], new RegExp(`worktree: .*; branch: ${branch}`));
+});
+
+test("backlog worktree fails cleanly on an unknown row", () => {
+  const t = scaffoldBacklogCliTarget();
+  const r = runBacklogCli(t, ["worktree", "F-999"]);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /no row F-999/);
+});
+
+test("test:concurrency + run-clean are deployed and auto-wired", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  assert.ok(exists(path.join(target, "scripts", "qa", "check-concurrency.js")), "check-concurrency.js deployed");
+  assert.ok(exists(path.join(target, "scripts", "qa", "run-clean.js")), "run-clean.js deployed");
+
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["test:concurrency"], "node scripts/qa/check-concurrency.js");
+
+  const tools = read(path.join(target, ".opencode", "tools", "backlog.ts"));
+  assert.match(tools, /export const worktree\b/, "backlog_worktree tool deployed");
+  assert.match(tools, /worktree/, "worktree tool shells out to the CLI");
+});

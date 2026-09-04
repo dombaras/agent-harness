@@ -208,6 +208,7 @@ const HARNESS_SCRIPTS = {
   "test:backlog": "node scripts/qa/check-backlog.js",
   "test:product": "node scripts/qa/check-product.js",
   "test:docs": "node scripts/qa/check-docs.js",
+  "test:concurrency": "node scripts/qa/check-concurrency.js",
 };
 
 // Merge harness gate scripts into the project's existing package.json, preserving

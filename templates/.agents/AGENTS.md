@@ -140,6 +140,10 @@ them. Steps 3-5 are the unconditional session close; they are NOT gated by QA.
 4. **Commit** (always) — concise `feat:` / `fix:` / `refactor:` message, including the `BACKLOG.md` delta.
 5. **Push** (always) — `git push origin main`.
 - **Mechanical floor**: a pre-push hook should run `npm run test:quick` (project-provided; the harness does not install git hooks).
+- **Concurrency isolation (never let a concurrent session's WIP block yours)**: the board + a shared working tree means one session's half-done files (e.g. a page referencing translation keys not yet in `messages/*.json`) can fail *another* session's push for no fault of its own. The harness ships two mechanical counters:
+  - `test:concurrency` (`node scripts/qa/check-concurrency.js`) fails a push when the board shows 2+ `In progress` rows while the working tree has uncommitted changes — the collision is *provable*, so it fails fast instead of surfacing as a random `check-translations`/`tsc` error.
+  - **Isolate per feature** with `backlog worktree <id>` (or the `backlog_worktree` tool): it creates a `git worktree` + branch for the feature and records the path in the row's `Handoff` cell. Run it from the **main** tree before starting a second concurrent feature — then each session's files live in a separate checkout and the other's WIP can't leak into your gates.
+  - **Snapshot gating**: `node scripts/qa/run-clean.js -- npm run test:quick` runs a project gate against the *committed* state (stashes + restores any dirty files), so a pre-push gate verifies *your* committed work, not the tree. Prefer this wrapper in the pre-push hook for tree-scoped gates.
 - **Lean permissions**: grant only the narrowest `git`/`gh` action needed; escalate only after a command has actually failed.
 - Git may not be on PATH in the default shell — use the full path (`.agents/memory/locations.md`).
 

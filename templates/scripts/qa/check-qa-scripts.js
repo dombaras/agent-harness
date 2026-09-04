@@ -23,6 +23,7 @@ const EXPECTED = {
   "test:dispatch": "harness — persona model-pin preflight (shipped)",
   "test:governance": "harness — session-governance gate (shipped)",
   "test:qa-plan": "harness — diff-coverage + flow-closure gate (changed code paths covered; touched flows' sibling surfaces/variants audited)",
+  "test:concurrency": "harness — cross-session working-tree guard (a concurrent session's uncommitted work must not leak into your push)",
   "test:quick": "Tier 1 — types + translations + mobile smoke",
   "test:routes": "Tier 2 — route/page render",
   "test:api": "Tier 3 — API/ORM edge cases",

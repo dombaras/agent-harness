@@ -15,12 +15,21 @@
  *   take <id> [--handoff path]          Open -> In progress (pick it up)
  *   archive <id> [--closed note]        -> Archive (shipped · done)
  *   freeze <id> [--why x] [--reopen x]  -> Frozen (parked)
+ *   worktree <id> [--branch b] [--dir d] [--handoff path]
+ *                                       create a git worktree + branch for <id>
+ *                                       and record it in the row's Handoff cell
  *
  * Every mutation writes well-formed rows that `npm run test:backlog` accepts:
  * priority P1..P4, non-empty evidence/handoff/reopen, unique IDs.
+ *
+ * `worktree` is the harness's isolation primitive: concurrent sessions should
+ * each claim a separate `git worktree` + branch so one session's uncommitted
+ * work can never leak into another's pre-push gate (`test:concurrency` fails a
+ * push when that collision is provable). Run it from the MAIN tree.
  */
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
 const PRIORITIES = { P1: 0, P2: 1, P3: 2, P4: 3 };
 
@@ -367,6 +376,57 @@ function cmdFreeze(state, argv) {
   return { id, task, cond };
 }
 
+/* Create an isolated `git worktree` + branch for a feature, then record the
+ * worktree path + branch in the row's Handoff cell so the board shows WHERE the
+ * work happens (and `test:concurrency` can see active sessions are isolated).
+ * Run from the MAIN tree: a worktree's BACKLOG.md is only a snapshot. */
+function cmdWorktree(state, argv) {
+  const id = argv._[0];
+  if (!id) throw new Error("worktree: missing <id>.");
+  const root = path.dirname(state.p);
+  const slug = id.toLowerCase();
+  const branch = argv.branch || slug;
+  const dir = argv.dir ? path.resolve(argv.dir) : path.resolve(root, "..", slug);
+
+  const found = findRow(state.lines, id);
+  if (!found) throw new Error(`worktree: no row ${id} in BACKLOG.md.`);
+  if (found.key === "archive") throw new Error(`worktree: ${id} is archived.`);
+  if (found.key === "frozen") throw new Error(`worktree: ${id} is Frozen — unfreeze it first.`);
+
+  // Ensure the row is In progress (auto-take if Open).
+  let handoff = argv.handoff || `.agents/handoffs/${id}.md`;
+  if (found.key === "open") {
+    const task = found.cells[2] || id;
+    const openRows = getRows(state.lines, "open").map((r) => r.cells).filter((c) => c[0].trim() !== id);
+    state.lines = setRows(state.lines, "open", openRows);
+    const inprog = getRows(state.lines, "inprogress").map((r) => r.cells);
+    inprog.push([id, task, handoff]);
+    state.lines = setRows(state.lines, "inprogress", inprog);
+  } else {
+    const existing = (found.cells[2] || "").split(/\s*[|(]/)[0].trim();
+    handoff = argv.handoff || existing || `.agents/handoffs/${id}.md`;
+  }
+
+  // Create the worktree + branch.
+  const res = spawnSync("git", ["-C", root, "worktree", "add", dir, "-b", branch], { encoding: "utf8" });
+  if (res.status !== 0) {
+    const err = (res.stderr || res.stdout || "").trim();
+    throw new Error(`worktree: git worktree add failed: ${err}`);
+  }
+
+  // Record the isolation target in the Handoff cell.
+  const rel = path.relative(root, dir) || dir;
+  const handoffCell = `${handoff} (worktree: ${rel}; branch: ${branch})`;
+  const inprog = getRows(state.lines, "inprogress").map((r) => r.cells);
+  const idx = inprog.findIndex((c) => (c[0] || "").trim() === id);
+  if (idx !== -1) {
+    inprog[idx] = [id, inprog[idx][1], handoffCell];
+    state.lines = setRows(state.lines, "inprogress", inprog);
+  }
+
+  return { id, branch, dir: rel };
+}
+
 // ---------------------------------------------------------------- dispatch
 
 function formatResult(cmd, out) {
@@ -374,6 +434,7 @@ function formatResult(cmd, out) {
   if (cmd === "take") return out.note ? `${out.id}: ${out.note}` : `took ${out.id} -> In progress (${out.handoff})`;
   if (cmd === "archive") return out.note ? `${out.id}: ${out.note}` : `archived ${out.id} (${out.closed})`;
   if (cmd === "freeze") return out.note ? `${out.id}: ${out.note}` : `froze ${out.id} (${out.cond})`;
+  if (cmd === "worktree") return `isolated ${out.id} -> worktree: ${out.dir} (branch: ${out.branch})`;
   return "";
 }
 
@@ -388,6 +449,8 @@ function parseArgs(argv) {
     else if (a === "--why") args.why = argv[++i];
     else if (a === "--reopen") args.reopen = argv[++i];
     else if (a === "--id") args.id = argv[++i];
+    else if (a === "--branch") args.branch = argv[++i];
+    else if (a === "--dir") args.dir = argv[++i];
     else if (a === "--all") args.all = true;
     else if (a === "--full") args.full = true;
     else if (a === "--root") args.root = argv[++i];
@@ -403,7 +466,8 @@ function usage() {
       "  node scripts/backlog.js add <task> [--p P1..P4] [--evidence x] [--id F-xxx]\n" +
       "  node scripts/backlog.js take <id> [--handoff path]\n" +
       "  node scripts/backlog.js archive <id> [--closed note]\n" +
-      "  node scripts/backlog.js freeze <id> [--why x] [--reopen x]\n"
+      "  node scripts/backlog.js freeze <id> [--why x] [--reopen x]\n" +
+      "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path]\n"
   );
 }
 
@@ -431,6 +495,7 @@ function main() {
     else if (cmd === "take") out = cmdTake(state, args);
     else if (cmd === "archive") out = cmdArchive(state, args);
     else if (cmd === "freeze") out = cmdFreeze(state, args);
+    else if (cmd === "worktree") out = cmdWorktree(state, args);
     else {
       usage();
       process.exitCode = 1;
@@ -462,4 +527,5 @@ module.exports = {
   cmdTake,
   cmdArchive,
   cmdFreeze,
+  cmdWorktree,
 };

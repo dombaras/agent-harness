@@ -91,3 +91,17 @@ export const freeze = tool({
     return run(context, argv)
   },
 })
+
+export const worktree = tool({
+  description:
+    "Create an isolated git worktree + feature branch for a backlog item so concurrent sessions don't collide on one working tree. Run it from the MAIN tree before starting a second concurrent feature.",
+  args: {
+    id: tool.schema.string().describe("row ID, e.g. F-060"),
+    branch: tool.schema.string().describe("branch name (defaults to the lowercased id)"),
+  },
+  async execute(args, context) {
+    const argv = ["worktree", args.id]
+    if (args.branch) argv.push("--branch", args.branch)
+    return run(context, argv)
+  },
+})
