@@ -18,6 +18,7 @@ Before reading or editing any file for a task, dispatch the relevant personas vi
 - **Product intent is never optional.** A feature never reaches planning/implementation without defining its user. `intent.md` must carry Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md` a Value-first sequence + Product concepts applied — `npm run test:product` fails otherwise. Planning reads `.agents/memory/product-principles.md` and is value-led, not tech-led.
 - Every subagent returns the output contract (`Result` → `Evidence` → `Deferred & risks`).
 - Wrap up with a **dispatch log** (`subagent → model → shipped/deferred`) in your session's `.agents/handoffs/<feature-id>.md`.
+- **Report value-first.** The completion message to the user opens with **Value shipped** — a plain-language sentence on what the user now gets and why it matters — then **How** (the main approach, a sentence or two). Technical file/test/commit detail follows; it is never the headline. The handoff file carries the same summary in its `## Value shipped` + `## How` sections.
 
 ## Non-negotiable laws
 

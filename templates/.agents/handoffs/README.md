@@ -33,6 +33,12 @@ log is enforced without a shared file. An entry is a bullet line
     ## Dispatch log
     - <subagent → model → shipped/deferred> (empty log = non-compliant session)
 
+    ## Value shipped
+    - <1-2 plain sentences: what the user now gets and why it matters — no file paths, no tech jargon>
+
+    ## How (main points)
+    - <the key approach in a sentence or two — the "how", not a file manifest>
+
     ## Done this session (planned → shipped → deferred)
     - <planned → shipped → deferred, one line each, with file + commit refs>
 

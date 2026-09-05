@@ -29,6 +29,12 @@ Date: <YYYY-MM-DD>
 ## Dispatch log
 - <subagent → model → shipped/deferred> (empty log = non-compliant session)
 
+## Value shipped
+- <1-2 plain sentences: what the user now gets and why it matters — no file paths, no tech jargon>
+
+## How (main points)
+- <the key approach in a sentence or two — the "how", not a file manifest>
+
 ## Done this session (planned → shipped → deferred)
 - <planned → shipped → deferred, one line each, with file + commit refs>
 
@@ -50,6 +56,7 @@ Date: <YYYY-MM-DD>
 ## Rules
 - Update this at session end even if the user doesn't ask, per the DoD in `.agents/AGENTS.md` §8.
 - Keep it under ~40 lines. Code is the source of truth; the handoff is a pointer, not a spec.
+- **Lead with value, not tech.** After the dispatch log, the file opens with `## Value shipped` (plain language — what the user now gets, why it matters) then `## How` (the main approach). File/test/commit detail lives below and is never the headline.
 - The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this.
 - Keeping `.agents/memory/locations.md` current is part of this skill. Read it first, update it last.
 - **You only touch handoff memory.** The board write-back — moving shipped `BACKLOG.md` rows to `Archive (shipped · done)` (via the `backlog_*` tools) and committing them — is the orchestrator's DoD §7 step, not yours. If it hasn't been done, call it out in your output; never edit `BACKLOG.md` or run git yourself.
