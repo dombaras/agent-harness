@@ -12,10 +12,16 @@
  *   3. Every ADR (docs/adr/*.md) carries the required sections, each non-empty:
  *        ## Context  ·  ## Decision  ·  ## Consequences
  *      plus a Status line (proposed | accepted | superseded).
+ *   4. Changelog completeness: every shipped commit (`feat`/`fix`/`refactor`/
+ *      `perf`) since CHANGELOG.md first appeared must be cited in it by short
+ *      hash (`abc1234` — backticked or parenthesized). This is the mechanical
+ *      backstop that keeps the changelog from silently drifting.
  *
  * Backward compatible: with no README.md and no docs/ tree the gate warns and
  * passes — projects opt in by keeping docs. Links are checked only against the
  * local filesystem; http(s)/mailto/`#anchor`/reference-style links are skipped.
+ * A missing CHANGELOG.md (or a git-less checkout) only warns — changelog
+ * completeness is enforced once a committed CHANGELOG.md exists.
  *
  *   node scripts/qa/check-docs.js
  *
@@ -24,6 +30,7 @@
  */
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..", "..");
 
@@ -35,7 +42,7 @@ const fail = (m) => {
 };
 const warn = (m) => console.log("  \u26a0 " + m);
 
-console.log("docs gate \u2014 docs-as-code: no placeholders, no dangling links, well-formed ADRs");
+console.log("docs gate \u2014 docs-as-code: no placeholders, no dangling links, well-formed ADRs, complete changelog");
 
 // ---- collect doc files -------------------------------------------------------
 const docFiles = [];
@@ -154,10 +161,61 @@ if (!fs.existsSync(adrDir)) {
   }
 }
 
+// ---- 4. changelog completeness (every shipped commit is recorded) ----------
+const changelogPath = path.join(root, "CHANGELOG.md");
+function gitLog(args) {
+  try {
+    return execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+}
+if (!fs.existsSync(changelogPath)) {
+  warn("no CHANGELOG.md \u2014 changelog completeness not enforced");
+} else {
+  const baseline = gitLog(["log", "--diff-filter=A", "--format=%H", "-1", "--", "CHANGELOG.md"]);
+  if (!baseline || !baseline.trim()) {
+    warn("CHANGELOG.md has no git history \u2014 changelog completeness skipped");
+  } else {
+    const changelog = fs.readFileSync(changelogPath, "utf8");
+    const cited = new Set();
+    const hashRe = /(?:`|[(])([0-9a-f]{7,40})(?:`|[)]|\s)/gi;
+    let m;
+    while ((m = hashRe.exec(changelog)) !== null) cited.add(m[1].slice(0, 7).toLowerCase());
+
+    const log = gitLog(["log", "--no-merges", "--format=%h%x09%s", `${baseline.trim()}..HEAD`]);
+    if (log === null) {
+      warn("git unavailable \u2014 changelog completeness skipped");
+    } else {
+      const missing = [];
+      for (const line of log.split(/\r?\n/)) {
+        if (!line) continue;
+        const sep = line.indexOf("\t");
+        if (sep < 0) continue;
+        const hash = line.slice(0, sep);
+        const subject = line.slice(sep + 1);
+        if (!/^(feat|fix|refactor|perf)(\([^)]*\))?:/.test(subject)) continue;
+        if (!cited.has(hash.toLowerCase())) missing.push({ hash, subject });
+      }
+      if (missing.length === 0) {
+        pass(`CHANGELOG.md: every shipped commit since ${baseline.trim().slice(0, 7)} is recorded`);
+      } else {
+        for (const { hash, subject } of missing) {
+          fail(`CHANGELOG.md: missing entry for ${hash} \u2014 ${subject}`);
+        }
+      }
+    }
+  }
+}
+
 console.log(
   "\nRESULT: " +
     (failures.length
-      ? `${failures.length} FAILURE(S) \u2014 docs must have no placeholders, no dangling links, and well-formed ADRs`
+      ? `${failures.length} FAILURE(S) \u2014 docs must have no placeholders, no dangling links, well-formed ADRs, and a complete changelog`
       : "green \u2014 docs are in sync")
 );
 process.exit(failures.length ? 1 : 0);

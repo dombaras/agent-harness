@@ -38,7 +38,9 @@ non-redundant.
 
 - `README.md` — what the project is, quickstart, pointers. THE entry point.
 - `CHANGELOG.md` — one line per shipped change (feat/fix/refactor), newest first,
-  matching the commit message. Append on ship, never rewrite history.
+  matching the commit message. **Each line MUST cite the commit short hash**
+  (`` `abc1234` ``), because `npm run test:docs` enforces completeness by matching
+  every shipped commit to a cited hash. Append on ship, never rewrite history.
 - `docs/INDEX.md` — a pointer index of every doc under `docs/` (canonical map).
   Update it whenever you add/move/delete a doc.
 - `docs/adr/` — Architecture Decision Records. One file per significant,
@@ -70,7 +72,7 @@ prompt — you stay `bash: deny`, so you never run git yourself:
 Reconstruct in this order, each grounded in the bundle:
 
 1. **CHANGELOG.md** — one line per shipped commit from `git log` (feat/fix/refactor,
-   matching the commit message), newest first.
+   matching the commit message), newest first, each citing its commit short hash.
 2. **README.md** — what the project is + quickstart + pointers, from verified facts only.
 3. **`docs/adr/`** — ADRs only for decisions the history actually records (a commit
    or transcript shows the decision was made); carry the real `Date:` and `Status:`.
@@ -116,7 +118,9 @@ Status: <proposed | accepted | superseded>
 ## Rules
 
 - Keep `README.md` concise: what + quickstart + pointers, not a spec.
-- CHANGELOG entries are one line, newest-first, matching the commit message.
+- CHANGELOG entries are one line, newest-first, matching the commit message, and
+  each cites its commit short hash (`` `abc1234` ``) so the changelog can't drift
+  silently — `test:docs` fails on any shipped commit with no cited hash.
 - Never delete a doc's history; supersede/archive instead.
 - Update `docs/INDEX.md` and `.agents/memory/locations.md` in the same commit.
 - Every doc statement must be verifiable — `file:line` or an observed fact.

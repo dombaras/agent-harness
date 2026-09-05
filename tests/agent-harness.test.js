@@ -554,6 +554,54 @@ test("test:docs fails on placeholder, dangling link, and malformed ADR", () => {
   assert.match(r.out, /missing .* Context/);
 });
 
+test("test:docs fails when a shipped commit is missing from CHANGELOG.md", () => {
+  const t = scaffoldDocsTarget();
+  fs.writeFileSync(path.join(t, "README.md"), "# Demo\n", "utf8");
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  fs.writeFileSync(path.join(t, "CHANGELOG.md"), "# Changelog\n", "utf8");
+  git(t, ["add", "README.md", "CHANGELOG.md"]);
+  git(t, ["commit", "-q", "-m", "docs: seed changelog"]);
+
+  // a shipped feat commit with no changelog entry
+  fs.writeFileSync(path.join(t, "lib.js"), "x\n", "utf8");
+  git(t, ["add", "lib.js"]);
+  git(t, ["commit", "-q", "-m", "feat: add thing (F-001)"]);
+
+  const r = runDocsGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /missing entry/);
+});
+
+test("test:docs passes when every shipped commit is cited in CHANGELOG.md", () => {
+  const t = scaffoldDocsTarget();
+  fs.writeFileSync(path.join(t, "README.md"), "# Demo\n", "utf8");
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  fs.writeFileSync(path.join(t, "CHANGELOG.md"), "# Changelog\n", "utf8");
+  git(t, ["add", "README.md", "CHANGELOG.md"]);
+  git(t, ["commit", "-q", "-m", "docs: seed changelog"]);
+
+  fs.writeFileSync(path.join(t, "lib.js"), "x\n", "utf8");
+  git(t, ["add", "lib.js"]);
+  git(t, ["commit", "-q", "-m", "feat: add thing (F-001)"]);
+
+  const hash = git(t, ["rev-parse", "--short", "HEAD"]);
+  fs.appendFileSync(
+    path.join(t, "CHANGELOG.md"),
+    `- 2026-09-05 \`${hash}\` \u2014 add thing (F-001)\n`,
+    "utf8"
+  );
+  git(t, ["add", "CHANGELOG.md"]);
+  git(t, ["commit", "-q", "-m", "docs: record F-001 in changelog"]);
+
+  const r = runDocsGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /recorded/);
+});
+
 test("BACKLOG.md is preserved on re-deploy (project-owned, never overwritten)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
