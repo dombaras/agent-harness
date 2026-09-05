@@ -214,6 +214,7 @@ const HARNESS_SCRIPTS = {
   "test:docs": "node scripts/qa/check-docs.js",
   "test:concurrency": "node scripts/qa/check-concurrency.js",
   "test:integrate": "node scripts/qa/check-integrate.js",
+  serve: "node scripts/serve.js",
 };
 
 // Merge harness gate scripts into the project's existing package.json, preserving
@@ -237,7 +238,7 @@ function mergePackageJson(target) {
 // live in a marked section so `update` can re-merge them (and pick up new
 // entries) without touching the project's own ignores.
 const GITIGNORE_MARKER = "# agent-harness (managed below)";
-const HARNESS_IGNORE_ENTRIES = [".harness-backup/", ".backlog.lock"];
+const HARNESS_IGNORE_ENTRIES = [".harness-backup/", ".backlog.lock", ".serve/"];
 
 function mergeGitignore(target) {
   const p = path.join(target, ".gitignore");

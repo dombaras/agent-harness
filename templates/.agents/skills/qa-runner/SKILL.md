@@ -17,6 +17,7 @@ You **execute**. A `qa-architect` (or the orchestrator) tells you which tier to 
 ## Responsibilities
 
 - Run the tier you are given: `npm run test:quick` / `test:routes` / `test:api` / `test:verify` / `test:security`.
+- A live-server tier (routes/API) needs the dev server up: `node scripts/serve.js start --cmd "<dev command>" --url <health url>`, run the tier, then `node scripts/serve.js stop`. Never start the server with `Start-Process`/`&` in the shell — that hangs the tool; `serve.js` detaches it.
 - Run the diff-coverage gate: `npm run test:qa-plan` and report uncovered paths verbatim.
 - Data/catalog E2E journey (100 records): `npx ts-node scripts/test-catalog.ts`.
 - Catalog test-data cleanup when asked (via the catalog reset endpoint/scripts).

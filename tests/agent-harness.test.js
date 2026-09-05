@@ -446,6 +446,42 @@ test("deploy gitignores the transient board lock", async () => {
   assert.match(gi, /\.backlog\.lock/, "transient .backlog.lock is ignored");
 });
 
+test("serve helper is deployed, wired, and its runtime dir is gitignored", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  assert.ok(exists(path.join(target, "scripts", "serve.js")), "serve.js deployed");
+
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts.serve, "node scripts/serve.js", "serve npm script wired");
+
+  const gi = read(path.join(target, ".gitignore"));
+  assert.match(gi, /\.serve\//, ".serve/ (pid files + logs) gitignored");
+});
+
+test("serve.js starts a detached server, waits for it, and stops it", () => {
+  const target = tmpdir();
+  const port = 30000 + Math.floor(Math.random() * 5000);
+  const srv = path.join(target, "srv.js");
+  fs.writeFileSync(srv, `require('http').createServer((q, s) => s.end('ok')).listen(${port});\n`, "utf8");
+  const serve = path.join(h.TEMPLATES_DIR, "scripts", "serve.js");
+  const nodeExe = '"' + process.execPath + '"';
+
+  const startRes = spawnSync(
+    process.execPath,
+    [serve, "start", "--cmd", `${nodeExe} ${JSON.stringify(srv)}`, "--port", String(port), "--timeout", "15000"],
+    { cwd: target, encoding: "utf8" }
+  );
+  assert.strictEqual(startRes.status, 0, startRes.stdout + startRes.stderr);
+  assert.match(startRes.stdout, /ready on port/, "start reports readiness");
+  assert.ok(exists(path.join(target, ".serve", `port-${port}.pid`)), "pid file recorded");
+
+  const stopRes = spawnSync(process.execPath, [serve, "stop", "--port", String(port)], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(stopRes.status, 0, stopRes.stdout + stopRes.stderr);
+  assert.match(stopRes.stdout, /stopped/, "stop reports the kill");
+  assert.ok(!exists(path.join(target, ".serve", `port-${port}.pid`)), "pid file removed on stop");
+});
+
 
 test("qa-plans scaffold is preserved on re-deploy (project-owned)", async () => {
   const target = tmpdir();

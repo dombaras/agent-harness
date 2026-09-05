@@ -101,7 +101,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
   - **Parallel = disjoint** — run personas in parallel only when their owned files AND shared contracts are disjoint; otherwise serialize, with the shared-contract owner dispatched first.
   - **Orchestrator acceptance gate** — after a persona reports done, re-run the gate yourself (`tsc --noEmit`, `npm run lint:hooks`, `npm run test:quick`) and grep the metric before integrating or committing. A subagent's `Evidence` is a claim, not proof.
   - **No suppression shortcuts** — never accept (or produce) file-level `/* eslint-disable */`, `@ts-nocheck`, or `@ts-ignore` to hit a metric. Suppressions are line-level only and each carries a reason — a file-level disable is a rules violation, not a fix.
-- **Synchronous Terminal Commands**: Prefer sync one-shot commands (build/test/lint) that return inline, over background servers/watchers.
+- **Synchronous Terminal Commands**: Prefer sync one-shot commands (build/test/lint) that return inline, over background servers/watchers. When a tier genuinely needs a live server (runtime/API tiers), start it detached with `node scripts/serve.js start --cmd "<dev command>" --url <health url>` (or `--port <n>`) — it returns immediately and records the PID under `.serve/`. Never start a long-running server with `Start-Process` / `&` / a bare background job in the shell: the child inherits the shell's output handles, so the tool hangs until you interrupt it. Poll the health URL/port to know it is up (never `sleep`-and-pray); on a failed start read `.serve/<name>.out.log`. Stop it with `node scripts/serve.js stop` (or `stop-all`) once the tier passes — never leave a dev server running.
 - **No Output Bloat**: Never paste large files/diffs into chat; apply edits with the edit tool, never print a code block of a change.
 - **Right-Size the QA Tier**: Never run the full regression suite for a CSS/copy tweak.
 
@@ -120,6 +120,9 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
   | 4 | Data ingestion | the project's data E2E script |
   | 5 | Major release / breaking refactor | `npm run test:verify` |
   | 6 | Security / deps | `npm run test:security` |
+- **Live-server tiers (3+)**: a runtime/API tier that hits real routes needs the
+  dev server running. Start it detached with `node scripts/serve.js start --cmd "<dev command>" --url <health url>`
+  and stop it when the tier passes (`node scripts/serve.js stop`) — see §5.
 - **Progression Workflow**: for new routes/endpoints/states, (1) author a dedicated assertion path, (2) run the targeted progression test, (3) graduate it into the permanent regression suite. A change is NOT verified if the executed tier's backing suite never exercised the modified path — author a progression test for that path first (this is the "GAP" rule).
 
 ## 7. Definition of Done & Continuous Backup

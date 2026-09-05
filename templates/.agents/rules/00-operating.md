@@ -28,7 +28,7 @@ Before reading or editing any file for a task, dispatch the relevant personas vi
 4. **Product-first planning** — define the actor/need/outcome/acceptance before code; sequence work value-first against `.agents/memory/product-principles.md`.
 5. **Verify stack versions** before writing framework code (`.agents/memory/stack-versions.md`).
 6. **Token discipline** — search before read, targeted reads, batch reads, don't re-read unchanged files, right-size QA.
-7. **Static ≠ runtime** — never declare verified from `tsc` alone; execute a real runtime/API path that exercises the MODIFIED code — a tier label never proves coverage. `test:qa-plan` gates every changed code path to a covering assertion or waiver, and every touched flow's sibling surfaces / variants to an audit entry (`.agents/memory/flow-map.md` — "fix one, fix all").
+7. **Static ≠ runtime** — never declare verified from `tsc` alone; execute a real runtime/API path that exercises the MODIFIED code — a tier label never proves coverage. `test:qa-plan` gates every changed code path to a covering assertion or waiver, and every touched flow's sibling surfaces / variants to an audit entry (`.agents/memory/flow-map.md` — "fix one, fix all"). A runtime tier that needs a live server: start it detached (`node scripts/serve.js start --cmd "<dev command>" --url <health url>`; never `Start-Process`/`&` a foreground server — that freezes the tool), then `node scripts/serve.js stop` when done.
 8. **Commit** with `feat:`/`fix:`/`refactor:` then push to main — including any `BACKLOG.md` delta. **Integrate early**: `git rebase main` then re-run `test:backlog` + `test:concurrency` (or `npm run test:integrate`) before pushing, so board/code conflicts surface now, not at the merge.
 
 ## Definition of Done
