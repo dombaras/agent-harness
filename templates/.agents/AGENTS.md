@@ -13,6 +13,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
 ## 2. Dynamic Data & Business-Logic Integrity
 
 - **No Hardcoded Mock Lists**: Never create hardcoded lists (fake records, mock reviews, static fallback arrays) without explicit user approval. Prefer dynamic queries and database-backed settings.
+- **Environment data boundary (never leak test data forward)**: three environments — `development` (dirty by design: QA/test data lives here), `uat`, and `production` (both enforced clean). Only code, schema migrations, and idempotent seeds move FORWARD (dev → uat → prod); data never does — no `pg_dump`/restore/copy of one environment's database into another. The canonical registry is `.agents/memory/environments.md`.
 
 ## 3. UI, Mobile Ergonomics & RTL Support
 
@@ -29,6 +30,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
 - **Verify Stack Versions First**: Confirm versions against `.agents/memory/stack-versions.md` before writing framework-specific code. Never assume a newer/older convention.
 - **Stack-Specific Gotchas**: Framework/library gotchas (async route params, strict-typing quirks, ORM generator/config layout, native runtime caveats) live in `.agents/memory/stack-versions.md` — read the relevant section before coding against that layer.
 - **Privacy & Visibility Tiers**: Enforce the project's tier model (`.agents/memory/domain-map.md` §Visibility tiers) across all data-access endpoints.
+- **Environments**: read `.agents/memory/environments.md` for the three environments (dev/uat/prod), their databases, deploy commands, and seed commands. Live/QA tiers target the `development` DB only.
 
 ## 5. Token Efficiency & Workflow Discipline
 
@@ -53,7 +55,7 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
     | Error / performance / API debugging | `diagnostics-expert` |
     | Features, gamification, product journeys | `product-manager` |
     | Data ingestion / entity resolution | `data-engineer` |
-    | Deployment / cron / secrets / build+release | `devops-engineer` |
+    | Deployment (dev→uat→prod promotion) / cron / secrets / build+release | `devops-engineer` |
     | Session wrap-up / handoff | `handoff` |
     | Feature backlog registration + doc-tree scaffolding (registrar only — not authoring) | `features` |
     | Human-facing docs (README / CHANGELOG / docs / ADRs) | `docs` |
@@ -123,13 +125,14 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
 - **Live-server tiers (3+)**: a runtime/API tier that hits real routes needs the
   dev server running. Start it detached with `node scripts/serve.js start --cmd "<dev command>" --url <health url>`
   and stop it when the tier passes (`node scripts/serve.js stop`) — see §5.
+- **Live QA targets the development environment only**: runtime/API tiers and data-E2E runs execute against the dev database (`DATABASE_URL`). They never touch uat/prod; the forward boundary (`.agents/memory/environments.md`) is enforced at deploy time by `test:data-hygiene -- --env uat|prod`, not by dev-time runs.
 - **Progression Workflow**: for new routes/endpoints/states, (1) author a dedicated assertion path, (2) run the targeted progression test, (3) graduate it into the permanent regression suite. A change is NOT verified if the executed tier's backing suite never exercised the modified path — author a progression test for that path first (this is the "GAP" rule).
 
 ## 7. Definition of Done & Continuous Backup
 
 Every completed task closes with this gate. **QA gates dev work only:** steps 0-2
 run when the session touched code paths — a backlog-only (or docs-only) change skips
-them. Steps 3-6 are the unconditional session close; they are NOT gated by QA.
+them. Steps 3-7 are the unconditional session close; they are NOT gated by QA.
 
 0. **Feature Completeness Gate** (code changes only):
    - [ ] Product-first: `intent.md` (actor/need/outcome/acceptance) + value-led `plan.md` present — `npm run test:product` green (feature work only).
@@ -146,6 +149,7 @@ them. Steps 3-6 are the unconditional session close; they are NOT gated by QA.
 4. **Docs write-back** (always, on ship) — dispatch the `docs` persona to keep human-facing docs in sync with this session's shipped change: append a `CHANGELOG.md` line that cites the commit short hash (`git rev-parse --short HEAD`), and update `README.md` / `docs/**` / ADRs when the change adds or renames a subsystem, flow, public API, or hard-to-reverse decision (`.agents/skills/docs/SKILL.md`). `npm run test:docs` fails on any shipped commit with no changelog entry, so a docs-only `chore`/`docs` commit is not enough — the changelog delta ships in the same commit as the code. Right-size: a copy/CSS tweak needs at most a changelog line.
 5. **Commit** (always) — concise `feat:` / `fix:` / `refactor:` message, including the `BACKLOG.md` and `CHANGELOG.md` deltas.
 6. **Push** (always) — `git push origin main`. **Integrate early first**: `git rebase main`, then re-run `npm run test:backlog` + `npm run test:concurrency` (or `npm run test:integrate`) before pushing, so board/code conflicts surface now instead of at the merge.
+7. **Deploy to UAT** (always, after push — the finalize step) — dispatch `devops-engineer` to run the project's `deploy:uat` (build + `prisma migrate deploy` + idempotent seed) and then verify uat is clean of test-data markers (`npm run test:data-hygiene -- --env uat`). Production is human-gated and NOT part of a normal task. Never forward dev data — code + schema + idempotent seeds only (`.agents/memory/environments.md`).
 - **Mechanical floor**: a pre-push hook should run `npm run test:quick` (project-provided; the harness does not install git hooks).
 - **Concurrency isolation (never let a concurrent session's WIP block yours)**: the board + a shared working tree means one session's half-done files (e.g. a page referencing translation keys not yet in `messages/*.json`) can fail *another* session's push for no fault of its own. The harness ships mechanical counters:
   - `test:concurrency` (`node scripts/qa/check-concurrency.js`) fails a push when the board shows 2+ `In progress` rows while the working tree has uncommitted changes — the collision is *provable*, so it fails fast instead of surfacing as a random `check-translations`/`tsc` error. Declare each row's owned files (`.agents/memory/owned-files.md`, via `backlog owns <id> --files ...`) and the gate fails *exactly* when a dirty file is owned by two In-progress rows (or a tree mixes two sessions' WIP), instead of on every "2+ In progress + dirty" tree.

@@ -31,6 +31,9 @@ const EXPECTED = {
   "test:api": "Tier 3 — API/ORM edge cases",
   "test:verify": "Tier 5 — full regression",
   "test:security": "Tier 6 — npm audit + security checks",
+  "deploy:uat": "deploy to the User Acceptance environment (build + migrate deploy + idempotent seed)",
+  "deploy:prod": "deploy to production (human-gated)",
+  "test:data-hygiene": "forward-boundary check — fail when test-data markers exist in uat/prod",
 };
 
 const pkgPath = path.join(root, "package.json");

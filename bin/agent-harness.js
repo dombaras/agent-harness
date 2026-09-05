@@ -636,8 +636,10 @@ function printNextSteps() {
   console.log("   1. Fill in `.agents/memory/domain-map.md`, `.agents/memory/stack-versions.md`,");
   console.log("      `.agents/memory/product-principles.md` (actors, product concepts, UX");
   console.log("      heuristics — the planner reads this to lead planning product-first),");
-  console.log("      and `.agents/memory/flow-map.md` (register cross-surface flows so");
-  console.log("      test:qa-plan enforces their sibling-surface/variant closure).");
+  console.log("      `.agents/memory/flow-map.md` (register cross-surface flows so");
+  console.log("      test:qa-plan enforces their sibling-surface/variant closure), and");
+  console.log("      `.agents/memory/environments.md` (the dev/uat/prod registry — URLs, DB");
+  console.log("      env vars, deploy + seed commands; the DoD deploy-to-UAT step reads it).");
   console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`,");
   console.log("      `test:backlog`, `test:product`, `test:docs`) were auto-wired into package.json \"scripts\".");
   console.log("   3. Capture found items as one light row in the canonical `BACKLOG.md` (repo root);");

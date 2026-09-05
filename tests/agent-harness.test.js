@@ -228,6 +228,13 @@ test("check-qa-scripts expects test:qa-plan", () => {
   assert.match(src, /test:qa-plan/);
 });
 
+test("check-qa-scripts expects deploy:uat / deploy:prod / test:data-hygiene (env boundary)", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-qa-scripts.js"));
+  assert.match(src, /deploy:uat/);
+  assert.match(src, /deploy:prod/);
+  assert.match(src, /test:data-hygiene/);
+});
+
 test("switch-model command + script are deployed to every project", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
@@ -1024,6 +1031,47 @@ test("flow-map memory scaffold is deployed and preserved on re-deploy", async ()
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.strictEqual(read(flowMapPath), "## flow: custom\nsurfaces: a.ts\n", "project flow-map preserved");
+});
+
+// ---------------------------------------------------------------- environments (dev / uat / prod)
+
+test("environments memory scaffold is deployed and preserved on re-deploy", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const p = path.join(target, ".agents", "memory", "environments.md");
+  assert.ok(exists(p), "environments scaffold created");
+  const src = read(p);
+  assert.match(src, /development/);
+  assert.match(src, /uat/);
+  assert.match(src, /production/);
+  assert.match(src, /DATABASE_URL_UAT/);
+  assert.match(src, /deploy:uat/);
+
+  fs.writeFileSync(p, "| uat | https://uat.example | custom\n", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(p), "| uat | https://uat.example | custom\n", "project environments.md preserved");
+});
+
+test("rules encode the environment data boundary + deploy-to-UAT finalize step", () => {
+  const rules = read(path.join(h.TEMPLATES_DIR, ".agents", "rules", "00-operating.md"));
+  assert.match(rules, /never dump\/restore data across environments/);
+  assert.match(rules, /deploy:uat/);
+  assert.match(rules, /test:data-hygiene/);
+  assert.match(rules, /environments\.md/);
+
+  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  assert.match(rulebook, /Deploy to UAT/);
+  assert.match(rulebook, /no `pg_dump`\/restore\/copy/);
+  assert.match(rulebook, /environments\.md/);
+});
+
+test("devops-engineer skill owns environment promotion discipline", () => {
+  const skill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "devops-engineer", "SKILL.md"));
+  assert.match(skill, /Environment promotion/);
+  assert.match(skill, /deploy:uat/);
+  assert.match(skill, /prisma migrate deploy/);
+  assert.match(skill, /never.*dump\/restore a database across environments/);
 });
 
 // ---------------------------------------------------------------- test:backlog gate + migration

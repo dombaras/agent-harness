@@ -100,6 +100,19 @@ API route) plus its optional variants (e.g. `condition-selector-present` vs `-ab
 it in so a change to one surface is forced to account for all the others. If empty, the gate
 warns but does not block; the guarantee only applies to registered flows.
 
+**Environment registry (`.agents/memory/environments.md`)** — the project-owned
+canonical registry of the three environments: **development** (dirty by design —
+QA/test data lives and dies here), **User Acceptance (`uat`)**, and **production**
+(both enforced clean). The rulebook's non-negotiable law: only **code**, **schema
+migrations** (`prisma migrate deploy`), and **idempotent seeds** move forward
+(dev → uat → prod); **data never does** — no dump/restore across environments.
+Live QA tiers target the `development` DB only. Finalizing a task means deploying
+to **uat**: the Definition of Done routes it through `devops-engineer` →
+`deploy:uat`, then verifies the boundary with `test:data-hygiene -- --env uat`.
+Production is human-gated and out of the per-task flow. The harness scaffolds
+`environments.md` (create-if-missing, project-owned) and reminds projects to wire
+`deploy:uat` / `deploy:prod` / `test:data-hygiene` via `check-qa-scripts.js`.
+
 ## Model routing & enforcement
 
 - Concrete models are set in `.opencode/agents/<name>.md` (`model:` field) and
