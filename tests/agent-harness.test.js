@@ -1632,6 +1632,28 @@ test("backlog worktree defaults to a .worktrees/<repo>/<slug> container, not a r
   assert.match(b.split("## In progress")[1].split("## Open")[0], /worktree: .*\.worktrees.*; branch: f-001/);
 });
 
+test("backlog archive removes the shipped feature's worktree", () => {
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+
+  const suffix = path.basename(t);
+  const branch = `b-${suffix}`;
+  const dir = path.join(os.tmpdir(), `wt-${suffix}`);
+  assert.strictEqual(runBacklogCli(t, ["worktree", "F-001", "--branch", branch, "--dir", dir]).status, 0);
+  assert.ok(exists(dir), "worktree created");
+
+  const a = runBacklogCli(t, ["archive", "F-001"]);
+  assert.strictEqual(a.status, 0, a.out);
+  assert.ok(!exists(dir), "worktree directory removed on archive");
+  assert.match(a.out, /removed worktree/);
+});
+
 test("test:concurrency + run-clean are deployed and auto-wired", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });

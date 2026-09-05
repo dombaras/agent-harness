@@ -164,7 +164,8 @@ so agents see complete descriptions.
   checkout — `main` stays board + shippable code only — so one session's uncommitted work
   can't leak into another's pre-push gate. Worktrees land in a single hidden container
   sibling, `<repo>/../.worktrees/<repo>/<id>`, so the parent folder (e.g. `C:\develop`)
-  only ever holds top-level projects.
+  only ever holds top-level projects. `backlog archive <id>` removes the shipped
+  feature's worktree + merged branch, so a session cleans up after itself on close.
 - **Row-aware merge driver**: `.gitattributes` routes `BACKLOG.md` through
   `scripts/qa/merge-backlog.js` (wired by `init`/`update`), so two sessions editing
   *disjoint* rows merge by ID instead of conflicting — concurrent take/archive no longer

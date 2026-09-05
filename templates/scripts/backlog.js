@@ -33,7 +33,9 @@
  * `worktree` is the harness's isolation primitive: concurrent sessions should
  * each claim a separate `git worktree` + branch so one session's uncommitted
  * work can never leak into another's pre-push gate (`test:concurrency` fails a
- * push when that collision is provable). Run it from the MAIN tree.
+ * push when that collision is provable). Run it from the MAIN tree. `archive`
+ * reverses it: a shipped feature's worktree + merged branch are removed, so
+ * per-feature checkouts never pile up after sessions close.
  */
 const fs = require("fs");
 const path = require("path");
@@ -654,6 +656,36 @@ function cmdNext(state, argv) {
   return { id, epic, task, handoff };
 }
 
+/* A `worktree` row records its isolation target in the Handoff cell as
+ * "<handoff> (worktree: <rel>; branch: <branch>)". Parse it back out so
+ * `archive` can clean the worktree up when the feature ships. */
+function parseWorktree(handoff) {
+  if (!handoff) return null;
+  const m = /\(worktree:\s*([^;]+);\s*branch:\s*([^)]+)\)/.exec(handoff);
+  if (!m) return null;
+  return { rel: m[1].trim(), branch: m[2].trim() };
+}
+
+/* Best-effort cleanup of a shipped feature's isolation: remove its worktree
+ * checkout (the folder that would otherwise hang around) and, if the branch was
+ * merged, delete it. Never blocks the board write — a dirty/locked worktree is
+ * left in place with a warning rather than force-discarded (zero data loss). */
+function cleanupWorktree(root, rel, branch) {
+  const abs = path.resolve(root, rel);
+  const notes = [];
+  const rm = spawnSync("git", ["-C", root, "worktree", "remove", abs], { encoding: "utf8" });
+  if (rm.status === 0) {
+    notes.push(`removed worktree ${rel}`);
+  } else {
+    notes.push(`worktree ${rel} left in place (${(rm.stderr || rm.stdout || "not a worktree").trim()})`);
+  }
+  if (branch) {
+    const del = spawnSync("git", ["-C", root, "branch", "-d", branch], { encoding: "utf8" });
+    if (del.status === 0) notes.push(`deleted branch ${branch}`);
+  }
+  return notes;
+}
+
 function cmdArchive(state, argv) {
   const id = argv._[0];
   if (!id) throw new Error("archive: missing <id>.");
@@ -665,13 +697,19 @@ function cmdArchive(state, argv) {
   const epic = epicOf(found.cells, found.key);
   const closed = argv.closed || "shipped";
 
+  // A shipped feature no longer needs its isolated checkout: remove the worktree
+  // (and merged branch) it recorded in its Handoff cell, so worktrees don't pile
+  // up after each session.
+  const wt = found.key === "inprogress" ? parseWorktree(found.cells[3]) : null;
+  const cleanup = wt ? cleanupWorktree(path.dirname(state.p), wt.rel, wt.branch) : [];
+
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
   state.lines = setRows(state.lines, found.key, srcRows);
 
   const archiveRows = getRows(state.lines, "archive").map((r) => r.cells);
   archiveRows.push([id, epic, task, closed]);
   state.lines = setRows(state.lines, "archive", archiveRows);
-  return { id, epic, task, closed };
+  return { id, epic, task, closed, cleanup };
 }
 
 function cmdFreeze(state, argv) {
@@ -831,7 +869,10 @@ function formatResult(cmd, out) {
     if (out.empty) return "no queued rows";
     return out.handoff ? `next -> took ${out.id} (${out.handoff})` : `next: ${out.id} [${out.priority}] ${out.task}`;
   }
-  if (cmd === "archive") return out.note ? `${out.id}: ${out.note}` : `archived ${out.id} (${out.closed})`;
+  if (cmd === "archive") {
+    const base = out.note ? `${out.id}: ${out.note}` : `archived ${out.id} (${out.closed})`;
+    return out.cleanup && out.cleanup.length ? `${base} — ${out.cleanup.join("; ")}` : base;
+  }
   if (cmd === "freeze") return out.note ? `${out.id}: ${out.note}` : `froze ${out.id} (${out.cond})`;
   if (cmd === "priority") return `set ${out.id} -> ${out.priority}`;
   if (cmd === "depends") return `set ${out.id} -> depends on ${out.dependsOn}`;
