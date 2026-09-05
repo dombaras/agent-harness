@@ -21,7 +21,10 @@
  *   owns <id> --files "glob, glob"      record the files/globs a row owns
  *   worktree <id> [--branch b] [--dir d] [--handoff path]
  *                                       create a git worktree + branch for <id>
- *                                       and record it in the row's Handoff cell
+ *                                       and record it in the row's Handoff cell.
+ *                                       Default location: <repo>/../.worktrees/<repo>/<id>
+ *                                       (a single container sibling, so one worktree
+ *                                       per feature never pollutes the parent folder).
  *
  * Every mutation writes well-formed rows that `npm run test:backlog` accepts:
  * priority P1..P4, non-empty evidence/handoff/reopen, unique IDs, and
@@ -766,7 +769,9 @@ function cmdWorktree(state, argv) {
   const root = path.dirname(state.p);
   const slug = id.toLowerCase();
   const branch = argv.branch || slug;
-  const dir = argv.dir ? path.resolve(argv.dir) : path.resolve(root, "..", slug);
+  const dir = argv.dir
+    ? path.resolve(argv.dir)
+    : path.resolve(root, "..", ".worktrees", path.basename(root), slug);
 
   const found = findRow(state.lines, id);
   if (!found) throw new Error(`worktree: no row ${id} in BACKLOG.md.`);

@@ -1610,6 +1610,28 @@ test("backlog worktree fails cleanly on an unknown row", () => {
   assert.match(r.out, /no row F-999/);
 });
 
+test("backlog worktree defaults to a .worktrees/<repo>/<slug> container, not a repo sibling", () => {
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+
+  const r = runBacklogCli(t, ["worktree", "F-001"]);
+  assert.strictEqual(r.status, 0, r.out);
+
+  const parent = path.dirname(t);
+  const expected = path.join(parent, ".worktrees", path.basename(t), "f-001");
+  assert.ok(exists(expected), `worktree created under ${expected}`);
+  assert.ok(!exists(path.join(parent, "f-001")), "no sibling folder pollutes the parent");
+
+  const b = read(path.join(t, "BACKLOG.md"));
+  assert.match(b.split("## In progress")[1].split("## Open")[0], /worktree: .*\.worktrees.*; branch: f-001/);
+});
+
 test("test:concurrency + run-clean are deployed and auto-wired", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });

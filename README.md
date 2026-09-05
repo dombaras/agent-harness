@@ -162,7 +162,9 @@ so agents see complete descriptions.
 - **Isolation is a worktree per feature**: `backlog worktree <id>` (from the MAIN tree)
   creates a `git worktree` + branch and auto-takes the row. Every feature works in its own
   checkout — `main` stays board + shippable code only — so one session's uncommitted work
-  can't leak into another's pre-push gate.
+  can't leak into another's pre-push gate. Worktrees land in a single hidden container
+  sibling, `<repo>/../.worktrees/<repo>/<id>`, so the parent folder (e.g. `C:\develop`)
+  only ever holds top-level projects.
 - **Row-aware merge driver**: `.gitattributes` routes `BACKLOG.md` through
   `scripts/qa/merge-backlog.js` (wired by `init`/`update`), so two sessions editing
   *disjoint* rows merge by ID instead of conflicting — concurrent take/archive no longer
