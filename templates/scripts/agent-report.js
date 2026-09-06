@@ -58,32 +58,67 @@ function section(src, heading) {
   return (tail ? after.slice(0, tail.index) : after).trim();
 }
 
-/* Parse dispatch-log entries. Accepted shapes (mirror governance.js):
+/* Strip surrounding backticks / whitespace and normalize a "(per routing)"
+ * placeholder to "?" (the handoff did not record a concrete model). */
+function cleanCell(s) {
+  return String(s == null ? "" : s).replace(/^`+|`+$/g, "").trim();
+}
+function normModel(s) {
+  const m = cleanCell(s);
+  return m && !/^\(per routing\)$/i.test(m) ? m : "?";
+}
+
+/* Parse dispatch-log entries. Accepted shapes (mirror governance.js, plus the
+ * table variants seen in the wild):
  *   bullet:  - <persona> -> <model> -> <shipped/deferred>
- *   table:   | <persona> | <model> | <shipped/deferred> |   (after a separator) */
+ *   table:   | subagent | model | shipped/deferred |      (header + separator)
+ *   table:   | # | Subagent | Model | Shipped | Deferred |  (indexed table)
+ * Tables are parsed by their HEADER row, so column order never matters. */
 function parseDispatchEntries(sectionText) {
   const entries = [];
   const lines = sectionText.split(/\r?\n/);
+  let header = null;
   let seenSeparator = false;
+
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
-    const bullet = line.match(/^[-*]\s+([A-Za-z0-9_-]+)\s*->\s*([^\s>]+)\s*->\s*(.+)$/);
+
+    // bullet form: - persona -> model -> status
+    const bullet = line.match(/^[-*]\s+(.+?)\s*->\s*([^\s>]+)\s*->\s*(.+)$/);
     if (bullet) {
-      entries.push({ persona: bullet[1], model: bullet[2], status: bullet[3].trim() });
+      entries.push({ persona: cleanCell(bullet[1]), model: normModel(bullet[2]), status: bullet[3].trim() });
       continue;
     }
+
+    // table form
     if (/^\|.*\|$/.test(line)) {
       if (/^\|(\s*:?-+:?\s*\|)+\s*$/.test(line)) {
         seenSeparator = true;
         continue;
       }
-      if (seenSeparator) {
-        const cells = line.slice(1, -1).split("|").map((c) => c.trim());
-        if (cells.length >= 2 && cells[0]) {
-          entries.push({ persona: cells[0], model: cells[1] || "?", status: cells[2] || "shipped" });
-        }
+      const cells = line.slice(1, -1).split("|").map((c) => c.trim());
+      if (!header) {
+        // First data-looking row is the header: map column roles by keyword.
+        header = cells.map((c, idx) => ({ idx, text: c.toLowerCase() }));
+        continue;
       }
+      if (!seenSeparator) continue;
+      const findIdx = (re) => header.findIndex((h) => re.test(h.text));
+      const modelIdx = findIdx(/model/);
+      const statusIdx = findIdx(/shipped|deferred|status/);
+      let personaIdx = findIdx(/subagent|persona|agent/);
+      if (personaIdx === -1) {
+        // No named persona column: first column that isn't a bare `#` index and
+        // isn't the model/status column.
+        personaIdx = cells.findIndex((c, i) => c && !/^#?$/.test(c) && i !== modelIdx && i !== statusIdx);
+      }
+      if (personaIdx === -1 || !cells[personaIdx]) continue;
+      entries.push({
+        persona: cleanCell(cells[personaIdx]),
+        model: modelIdx !== -1 ? normModel(cells[modelIdx]) : "?",
+        status: statusIdx !== -1 ? cells[statusIdx] : "shipped",
+      });
     }
   }
   return entries;

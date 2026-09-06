@@ -359,6 +359,43 @@ test("agent-report aggregates dispatch logs, retries, escalations deterministica
   assert.strictEqual(parsed.suggestions.length, 1);
 });
 
+test("agent-report parses table dispatch logs (indexed + backticked columns)", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "agent-report.js"),
+    path.join(target, "scripts", "agent-report.js")
+  );
+  fs.mkdirSync(path.join(target, ".agents", "handoffs"), { recursive: true });
+
+  // indexed 5-column table (F-056 style) with a "(per routing)" model placeholder
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-056.md"),
+    "# handoff\n\n## Dispatch log\n\n| # | Subagent | Model | Shipped | Deferred |\n|---|----------|-------|---------|----------|\n| 1 | product-manager | (per routing) | intent.md | - |\n| 2 | system-architect | (per routing) | scope.md | - |\n",
+    "utf8"
+  );
+  // 3-column table (F-072 style) with backticked persona cells
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-072.md"),
+    "# handoff\n\n## Dispatch log\n\n| subagent | model | shipped / deferred |\n|---|---|---|\n| `mobile-engineer` | opencode/gpt-5.6-luna | shipped |\n| `qa-architect` | deepseek/deepseek-v4-pro | shipped |\n",
+    "utf8"
+  );
+
+  const res = spawnSync(process.execPath, ["scripts/agent-report.js", "--json"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  const parsed = JSON.parse(res.stdout);
+  assert.strictEqual(parsed.totalDispatches, 4);
+  assert.strictEqual(parsed.personaCount["product-manager"], 1);
+  assert.strictEqual(parsed.personaCount["system-architect"], 1);
+  assert.strictEqual(parsed.personaCount["mobile-engineer"], 1);
+  assert.strictEqual(parsed.personaCount["qa-architect"], 1);
+  // the `#` index column must never be mistaken for a persona
+  assert.ok(!("1" in parsed.personaCount), "index column is not parsed as a persona");
+  assert.ok(!("2" in parsed.personaCount), "index column is not parsed as a persona");
+  // "(per routing)" placeholder normalizes to "?"
+  assert.strictEqual(parsed.modelCount["?"], 2);
+});
+
 test("backlog CLI + custom tools + notify plugin are deployed to every project", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
