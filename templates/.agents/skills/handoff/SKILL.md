@@ -29,6 +29,12 @@ Date: <YYYY-MM-DD>
 ## Dispatch log
 - <subagent → model → shipped/deferred> (empty log = non-compliant session)
 
+## Retries (only when a persona was retried)
+- <persona>: <count> — <what changed on the last retry (instructions/context/model/decomposition/diagnostics)>
+
+## Escalations (only when a persona was escalated to a stronger tier)
+- <persona> -> <tier> reason: <evidence>
+
 ## Value shipped
 - <1-2 plain sentences: what the user now gets and why it matters — no file paths, no tech jargon>
 
@@ -58,5 +64,6 @@ Date: <YYYY-MM-DD>
 - Keep it under ~40 lines. Code is the source of truth; the handoff is a pointer, not a spec.
 - **Lead with value, not tech.** After the dispatch log, the file opens with `## Value shipped` (plain language — what the user now gets, why it matters) then `## How` (the main approach). File/test/commit detail lives below and is never the headline.
 - The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this.
+- Record any retries in `## Retries` and any escalation in `## Escalations` (both optional — omit when none) so `npm run report` can surface where inference budget actually went.
 - Keeping `.agents/memory/locations.md` current is part of this skill. Read it first, update it last.
 - **You only touch handoff memory.** The board write-back — moving shipped `BACKLOG.md` rows to `Archive (shipped · done)` (via the `backlog_*` tools) and committing them — is the orchestrator's DoD §7 step, not yours. If it hasn't been done, call it out in your output; never edit `BACKLOG.md` or run git yourself.

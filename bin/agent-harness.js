@@ -214,6 +214,7 @@ const HARNESS_SCRIPTS = {
   "test:docs": "node scripts/qa/check-docs.js",
   "test:concurrency": "node scripts/qa/check-concurrency.js",
   "test:integrate": "node scripts/qa/check-integrate.js",
+  report: "node scripts/agent-report.js",
   serve: "node scripts/serve.js",
 };
 

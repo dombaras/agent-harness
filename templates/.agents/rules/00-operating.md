@@ -20,6 +20,19 @@ Before reading or editing any file for a task, dispatch the relevant personas vi
 - Wrap up with a **dispatch log** (`subagent → model → shipped/deferred`) in your session's `.agents/handoffs/<feature-id>.md`.
 - **Report value-first.** The completion message to the user opens with **Value shipped** — a plain-language sentence on what the user now gets and why it matters — then **How** (the main approach, a sentence or two). Technical file/test/commit detail follows; it is never the headline. The handoff file carries the same summary in its `## Value shipped` + `## How` sections.
 
+## Dispatch economics (spend inference only where it earns value)
+
+- **A persona's existence is never a reason to dispatch it.** Dispatch only when a persona produces a distinct deliverable the main model cannot cheaply do itself: real implementation/reasoning in a bounded owned scope that reduces risk or parallelizes genuinely disjoint work.
+- **Orchestrator-only (never a subagent):** reads needed for orchestration, `git status`/`diff`, worktree/branch creation, commits, merges, final integration, simple moves/renames, mechanical search-replace, collecting outputs, summarizing results, simple command runs.
+- **Complexity threshold → direct execution.** Trivial or single-surface/single-file changes (rename, typo, constant, one-line doc, simple CSS, config tweak) bypass the pipeline: main model implements → targeted gate → done. The planner may conclude `execution_mode: direct` (with a reason) instead of emitting dispatches.
+- **Absorb before spawn.** If an already-dispatched or just-completed persona can absorb a small related change inside its owned scope, extend that dispatch instead of spawning another. Never cross ownership/contract boundaries to save a dispatch.
+- **Bounded retries.** Retry once (resume the same `task_id`) with a reason; a second retry MUST change one of instructions / context / model / decomposition / diagnostics. Identical prompt+context+model+failure twice = stop and escalate/report, never loop.
+- **Stuck-agent detection.** Stop a persona that repeats the same reads, tool calls, test failures, or rewrites the same region with no new evidence or changed files. Classify the blocker, one targeted recovery, then escalate or report — never burn turns.
+- **Early stop.** A persona stops the moment its `Done =` gate passes and its deliverable is verified — no post-hoc "improving" past the acceptance bar.
+- **Escalation is evidence-based** (see `.agents/AGENTS.md` §5): escalate to the Pro tier only on repeated failure, contradictory evidence, cross-module ambiguity, security-sensitive ambiguity, or an unsafe-workaround risk — never on a long answer or vague uncertainty.
+- **Parallel = genuinely disjoint.** Never fan out to N personas because N roles exist; launch the minimum that maximizes useful independent work (disjoint owned files AND contracts). Small tasks are usually cheaper serial.
+- **Compact results downstream.** Pass a persona's structured `Result`/`Evidence`/`Deferred & risks` summary — never a full verbose transcript — to the next consumer.
+
 ## Non-negotiable laws
 
 1. **Zero speculation** — base every fix/decision on observed logs, telemetry, or DB state; instrument first if evidence is missing.

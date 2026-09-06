@@ -314,6 +314,51 @@ test("board command is deployed to every project (delegates to the deterministic
   assert.match(read(path.join(target, ".opencode", "command", "board.md")), /BACKLOG\.md/, "board command restored on update");
 });
 
+test("report command + deterministic agent-report script are deployed to every project", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const cmd = read(path.join(target, ".opencode", "command", "report.md"));
+  assert.match(cmd, /^---/, "report command frontmatter");
+  assert.match(cmd, /scripts[\\/]agent-report\.js/, "command runs the deterministic report script");
+  assert.match(cmd, /Do NOT fabricate token counts/, "command forbids fabricated token/cost");
+
+  assert.ok(exists(path.join(target, "scripts", "agent-report.js")), "agent-report script deployed");
+
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["report"], "node scripts/agent-report.js");
+});
+
+test("agent-report aggregates dispatch logs, retries, escalations deterministically", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "agent-report.js"),
+    path.join(target, "scripts", "agent-report.js")
+  );
+  fs.mkdirSync(path.join(target, ".agents", "handoffs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-003.md"),
+    "# handoff\n\n## Dispatch log\n- planner -> opencode/gpt-5.6-luna -> shipped\n- frontend-engineer -> opencode/gpt-5.6-luna -> shipped\n- frontend-engineer -> opencode/gpt-5.6-luna -> shipped\n\n## Retries\n- frontend-engineer: 1 \u2014 corrected shared contract\n\n## Escalations\n- diagnostics-expert -> deepseek/deepseek-v4-pro reason: repeated failure\n",
+    "utf8"
+  );
+
+  const res = spawnSync(process.execPath, ["scripts/agent-report.js"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /Total dispatches:\s+3/);
+  assert.match(res.stdout, /Retries recorded:\s+1/);
+  assert.match(res.stdout, /Escalations:\s+1/);
+  assert.match(res.stdout, /frontend-engineer/);
+  assert.match(res.stdout, /absorb-before-spawn candidate/);
+
+  const jsonRes = spawnSync(process.execPath, ["scripts/agent-report.js", "--json"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(jsonRes.status, 0, jsonRes.stdout + jsonRes.stderr);
+  const parsed = JSON.parse(jsonRes.stdout);
+  assert.strictEqual(parsed.totalDispatches, 3);
+  assert.strictEqual(parsed.personaCount["frontend-engineer"], 2);
+  assert.strictEqual(parsed.suggestions.length, 1);
+});
+
 test("backlog CLI + custom tools + notify plugin are deployed to every project", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
