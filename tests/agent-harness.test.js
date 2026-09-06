@@ -247,12 +247,52 @@ test("switch-model command + script are deployed to every project", async () => 
   const script = read(path.join(target, "scripts", "switch-reasoning-model.ps1"));
   assert.match(script, /deepseek\/deepseek-v4-pro/, "script aliases map to the direct deepseek default");
   assert.match(script, /openrouter\/minimax\/minimax-m3/, "script exposes the OpenRouter alias");
+  assert.match(script, /nvidia\/nemotron-3-ultra-550b-a55b:free/, "script exposes the Nemotron free alias");
   assert.match(script, /6 reasoning-tier agents|planner\.md/, "script rewrites the reasoning agents");
 
   // the command is re-deployed (overwritten) on update, like any harness file
   fs.writeFileSync(path.join(target, ".opencode", "command", "switch-model.md"), "LOCAL EDIT", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.match(read(path.join(target, ".opencode", "command", "switch-model.md")), /deepseek\/deepseek-v4-pro/, "command restored on update");
+});
+
+test("switch-reasoning-model.ps1: replace list is derived from the alias map (no hardcoded find list)", () => {
+  // Regression: the script used to hardcode the find list separately from the
+  // alias map, so any value a user hand-set (or any alias added after the
+  // hardcode) was invisible to the regex and the script silently reported
+  // "already set". Derive the find list from the alias map so the two stay in
+  // sync automatically.
+  const script = read(path.join(h.TEMPLATES_DIR, "scripts", "switch-reasoning-model.ps1"));
+  // Block-list a hardcoded multi-line @(...) literal assigned to $reasoningModels.
+  // A single-line derivation like `@($aliases.Values | Sort-Object -Unique)` is
+  // fine and should NOT match.
+  assert.doesNotMatch(
+    script,
+    /\$reasoningModels\s*=\s*@\(\s*\r?\n\s+"/,
+    "reasoningModels must not be a hardcoded multi-line list (derive from $aliases.Values instead)"
+  );
+  assert.match(
+    script,
+    /\$aliases\.Values/,
+    "find list must be derived from the alias map"
+  );
+});
+
+test("switch-reasoning-model.ps1: surfaces 'current value not in replace list' instead of silent 'already set'", () => {
+  // Regression: when the regex never matches AND the current value != target,
+  // the script used to print "No files changed (already set)" which is a lie.
+  // It must emit a warning naming the unknown current value.
+  const script = read(path.join(h.TEMPLATES_DIR, "scripts", "switch-reasoning-model.ps1"));
+  assert.match(
+    script,
+    /not in replace list|not in replace list; edit by hand or add an alias/,
+    "script must warn when a file's current model is not in the replace list"
+  );
+  assert.match(
+    script,
+    /skipped/,
+    "script must collect skipped files and report them at the end"
+  );
 });
 
 test("board command is deployed to every project (delegates to the deterministic CLI)", async () => {
