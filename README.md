@@ -137,11 +137,13 @@ Production is human-gated and out of the per-task flow. The harness scaffolds
   (`.opencode/command/switch-model.md`) plus `scripts/switch-reasoning-model.ps1`
   that rewrites the main `opencode.json` `model` and the six reasoning-tier
   agents (planner, system-architect, security-engineer, diagnostics-expert,
-  product-manager, qa-architect) in one step. Aliases: `deepseek`/`direct` →
-  `deepseek/deepseek-v4-pro` (default, direct API key), `zen`/`opencode` →
-  `opencode/deepseek-v4-pro` (gateway), `pickle` → `opencode/big-pickle`,
-  `nvidia`/`kimi`/`kimi-k3` → `nvidia/moonshotai/kimi-k3` (NVIDIA NIM),
-  `nemotron`/`nemotron-ultra` → `nvidia/nemotron-3-ultra-550b-a55b:free` (NVIDIA NIM, free),
+  product-manager, qa-architect) in one step — a blunt override of the tiered
+  default. Aliases: `deepseek`/`flash`/`direct` → `deepseek/deepseek-v4-flash`
+  (default, direct API key), `pro`/`deepseek-pro` → `deepseek/deepseek-v4-pro`
+  (escalation), `zen`/`opencode` → `opencode/deepseek-v4-pro` (gateway),
+  `pickle` → `opencode/big-pickle`, `nvidia`/`kimi`/`kimi-k3` →
+  `nvidia/moonshotai/kimi-k3` (NVIDIA NIM), `nemotron`/`nemotron-ultra` →
+  `nvidia/nemotron-3-ultra-550b-a55b:free` (NVIDIA NIM, free),
   `openrouter`/`or`/`m3` → `openrouter/minimax/minimax-m3` (OpenRouter), or any
   explicit `provider/model`. Restart opencode after switching (config reads once).
 - **`/board` command** — every deploy ships an opencode command

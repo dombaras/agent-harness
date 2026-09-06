@@ -9,15 +9,20 @@ policy — the concrete model IDs are the source of truth in the agent files
 
 | Tier | Purpose |
 |---|---|
-| reasoning | Planning, architecture, security review, debugging, product design, QA architecture |
-| general | Everyday coding, UI design, mobile native, infra/devops, data, QA execution |
-| mechanical | File reads, commits, handoffs |
+| reasoning (hard) | System architecture, security review |
+| reasoning (debug) | Error / performance / API debugging |
+| reasoning (plan/review) | Planning, product design, QA architecture |
+| general | Everyday coding, UI design, mobile native, infra/devops, data, QA execution, feature registrar |
+| mechanical | Handoffs |
 
-The harness ships a recommended concrete mapping (`reasoning` → a strong
-reasoning model, `general` → a strong coder model, `mechanical` → a cheap fast
-model). Change it only by editing `.opencode/agents/<name>.md` `model:` — the
-`model:` label in `.agents/skills/*/SKILL.md` is informational only and does NOT
-route models.
+The reasoning tier is split by persona: hard reasoning (architecture, security)
+keeps the strongest reasoning model; debugging runs on a fast frontier reasoning
+model; plan/review runs on a strong tool-use model. The harness ships a
+recommended concrete mapping for each (hard reasoning → strongest reasoning
+model, debug → fast frontier reasoning model, plan/review + general → strong
+coder/tool-use model, mechanical → cheap fast model). Change it only by editing
+`.opencode/agents/<name>.md` `model:` — the `model:` label in
+`.agents/skills/*/SKILL.md` is informational only and does NOT route models.
 
 ## Per-persona enforcement
 

@@ -173,7 +173,7 @@ test("opencode.json merge preserves project keys and unions instructions", () =>
   );
 
   const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
-  assert.strictEqual(merged.model, "deepseek/deepseek-v4-pro");
+  assert.strictEqual(merged.model, "deepseek/deepseek-v4-flash");
   assert.strictEqual(merged.permission.edit, "deny");
   assert.ok(merged.instructions.includes("docs/my-rules.md"));
   assert.ok(merged.instructions.includes(".agents/rules/00-operating.md"));
@@ -241,11 +241,13 @@ test("switch-model command + script are deployed to every project", async () => 
 
   const cmd = read(path.join(target, ".opencode", "command", "switch-model.md"));
   assert.match(cmd, /^---/, "switch-model command frontmatter");
-  assert.match(cmd, /deepseek\/deepseek-v4-pro/, "command targets the direct deepseek default");
+  assert.match(cmd, /deepseek\/deepseek-v4-flash/, "command targets the direct deepseek flash default");
+  assert.match(cmd, /deepseek\/deepseek-v4-pro/, "command exposes the pro escalation alias");
   assert.match(cmd, /switch-reasoning-model\.ps1/, "command invokes the deployed script");
 
   const script = read(path.join(target, "scripts", "switch-reasoning-model.ps1"));
-  assert.match(script, /deepseek\/deepseek-v4-pro/, "script aliases map to the direct deepseek default");
+  assert.match(script, /deepseek\/deepseek-v4-flash/, "script aliases map to the direct deepseek flash default");
+  assert.match(script, /deepseek\/deepseek-v4-pro/, "script aliases map to the pro escalation model");
   assert.match(script, /openrouter\/minimax\/minimax-m3/, "script exposes the OpenRouter alias");
   assert.match(script, /nvidia\/nemotron-3-ultra-550b-a55b:free/, "script exposes the Nemotron free alias");
   assert.match(script, /6 reasoning-tier agents|planner\.md/, "script rewrites the reasoning agents");

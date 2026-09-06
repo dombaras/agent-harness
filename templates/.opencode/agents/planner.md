@@ -1,7 +1,7 @@
 ---
 description: Use to plan/decompose a task and emit the Step Zero subagent dispatch plan (personas, models, order, parallel batches) before any file is touched — value-led, product-first.
 mode: subagent
-model: deepseek/deepseek-v4-pro
+model: opencode/gpt-5.6-luna
 temperature: 0.1
 steps: 15
 hidden: true

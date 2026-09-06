@@ -1,7 +1,7 @@
 ---
 name: features
 description: Use only to capture a found item and manage the feature backlog — owns the BACKLOG.md task list and scaffolds the .agents/features/<slug>/ doc tree. Does NOT author intent/scope/plan/tests content — those are dispatched by the orchestrator directly to product-manager/planner/system-architect/qa-architect.
-model: mechanical
+model: general
 ---
 
 # Features — backlog & per-feature doc tree
