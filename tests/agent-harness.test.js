@@ -246,6 +246,7 @@ test("switch-model command + script are deployed to every project", async () => 
 
   const script = read(path.join(target, "scripts", "switch-reasoning-model.ps1"));
   assert.match(script, /deepseek\/deepseek-v4-pro/, "script aliases map to the direct deepseek default");
+  assert.match(script, /openrouter\/minimax\/minimax-m3/, "script exposes the OpenRouter alias");
   assert.match(script, /6 reasoning-tier agents|planner\.md/, "script rewrites the reasoning agents");
 
   // the command is re-deployed (overwritten) on update, like any harness file

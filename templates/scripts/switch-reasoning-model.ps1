@@ -18,6 +18,10 @@ $aliases = @{
   "nvidia"         = "nvidia/moonshotai/kimi-k3"
   "kimi"           = "nvidia/moonshotai/kimi-k3"
   "kimi-k3"        = "nvidia/moonshotai/kimi-k3"
+  "openrouter"     = "openrouter/minimax/minimax-m3"
+  "or"             = "openrouter/minimax/minimax-m3"
+  "minimax-m3"     = "openrouter/minimax/minimax-m3"
+  "m3"             = "openrouter/minimax/minimax-m3"
 }
 
 $targetModel = $Target
@@ -32,7 +36,8 @@ $reasoningModels = @(
   "deepseek/deepseek-v4-pro",
   "opencode/deepseek-v4-pro",
   "opencode/big-pickle",
-  "nvidia/moonshotai/kimi-k3"
+  "nvidia/moonshotai/kimi-k3",
+  "openrouter/minimax/minimax-m3"
 )
 
 $files = @(

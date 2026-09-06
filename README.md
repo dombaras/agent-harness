@@ -140,7 +140,8 @@ Production is human-gated and out of the per-task flow. The harness scaffolds
   product-manager, qa-architect) in one step. Aliases: `deepseek`/`direct` →
   `deepseek/deepseek-v4-pro` (default, direct API key), `zen`/`opencode` →
   `opencode/deepseek-v4-pro` (gateway), `pickle` → `opencode/big-pickle`,
-  `nvidia`/`kimi`/`kimi-k3` → `nvidia/moonshotai/kimi-k3` (NVIDIA NIM), or any
+  `nvidia`/`kimi`/`kimi-k3` → `nvidia/moonshotai/kimi-k3` (NVIDIA NIM),
+  `openrouter`/`or`/`m3` → `openrouter/minimax/minimax-m3` (OpenRouter), or any
   explicit `provider/model`. Restart opencode after switching (config reads once).
 - **`/board` command** — every deploy ships an opencode command
   (`.opencode/command/board.md`) that runs the deterministic `scripts/backlog.js
