@@ -3,12 +3,27 @@
 /*
  * serve.js — start/stop a long-running dev server WITHOUT freezing the agent shell.
  *
- * Why: a foreground server (or `Start-Process` on Windows, or a Node `spawn`
- * with `shell:true` + a file-descriptor stdio) inherits the shell's output
- * handles, so the agent tool waits for it to exit and hangs until the user
- * interrupts. This helper spawns the server fully detached (stdio ignored,
- * output redirected to log files by the shell, hidden window, unref'd), waits
- * for it to accept traffic, records its PID, and returns immediately.
+ * Why: the agent tool on Windows waits for a launched process tree to release the
+ * tool's console/output handles. A foreground server — or a Node `spawn(..., {
+ * detached: true, shell: true })`, which only sets CREATE_NEW_PROCESS_GROUP, not
+ * DETACHED_PROCESS/CREATE_NEW_CONSOLE — keeps the whole `cmd → dev server` tree
+ * attached to that console, so the tool call stays "running" for the server's
+ * whole lifetime and only a manual interrupt ends it. The detach that works on
+ * this stack is to give the server its OWN hidden console.
+ *
+ * How (win32): serve.js writes a small `<name>.cmd` launcher (it runs the dev
+ * command and redirects stdout/stderr to the log files), then starts it via
+ * PowerShell `Start-Process -WindowStyle Hidden` (CREATE_NEW_CONSOLE — the server
+ * gets a hidden console of its own and cannot hold this tool call's console).
+ * The real PID is captured from `-PassThru` and recorded; the process env + cwd
+ * are inherited, so `next dev`/`npm` resolve exactly as they do in the agent
+ * shell. Non-win32 keeps the plain detached `spawn` (setsid), which is sufficient.
+ *
+ * serve.js then polls --url (HTTP GET, any response) or --port (TCP connect)
+ * until ready or --timeout (default 60000ms), printing a heartbeat every few
+ * seconds so the tool shows live output instead of looking frozen. It prints the
+ * PID + log path and exits 0; exits 1 (after printing the log tail) if the
+ * server never became ready.
  *
  * Usage:
  *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--timeout <ms>]
@@ -16,12 +31,13 @@
  *   node scripts/serve.js stop-all
  *   node scripts/serve.js list
  *
- * - start: runs <cmd> via the platform shell, detached; then polls --url (HTTP
- *   GET, any response) or --port (TCP connect) until ready or --timeout (default
- *   60000ms). Prints the PID + log path and exits 0; exits 1 (after printing the
- *   log tail) if the server never became ready.
+ * - start: runs <cmd> detached (own hidden console on win32); polls --url/--port
+ *   until ready or --timeout. Exits 0 on ready; exits 1 (after printing the log
+ *   tail) on timeout. Always prints a "launching" line first + heartbeats while
+ *   waiting, so an in-progress start is never silent.
  * - stop: kills the recorded PID and its process tree, removes the PID file.
- * - PID files + logs live in <project>/.serve/ (gitignored by the harness).
+ * - PID files + logs + the generated launcher live in <project>/.serve/
+ *   (gitignored by the harness).
  * - A child's stdout is buffered while it runs; the log flushes on exit, so a
  *   startup crash is fully visible in the log after the fact.
  *
@@ -36,7 +52,15 @@ const { spawn, spawnSync } = require("child_process");
 
 const SERVE_DIR = path.join(process.cwd(), ".serve");
 const READY_INTERVAL = 500;
+const HEARTBEAT_INTERVAL = 5000;
 const DEFAULT_TIMEOUT = 60000;
+
+function powershellExe() {
+  const known = process.env.SystemRoot
+    ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    : "";
+  return known && fs.existsSync(known) ? known : "powershell.exe";
+}
 
 function parseArgs(argv) {
   const flags = { _: [] };
@@ -125,6 +149,53 @@ function logTail(p) {
   }
 }
 
+function launcherPath(name) {
+  return path.join(SERVE_DIR, name + ".cmd");
+}
+
+// win32 detach: give the server its OWN hidden console so its process tree can
+// never hold this tool call's console/output handles. Node's
+// spawn(..., { detached: true, shell: true }) only sets CREATE_NEW_PROCESS_GROUP
+// (the tree stays in the tool's console and the call blocks for its whole
+// lifetime); a ShellExecute-launched process gets a fresh console instead. cmd.exe
+// parsing is sidestepped by generating a .cmd launcher that runs the command and
+// redirects stdout/stderr to the log files. The real PID comes back from -PassThru.
+function launchDetachedWin32(fullCmd, name) {
+  const launcher = launcherPath(name);
+  fs.writeFileSync(launcher, "@echo off\r\n" + fullCmd + "\r\n", "utf8");
+  const script =
+    "$psi = New-Object System.Diagnostics.ProcessStartInfo;" +
+    "$psi.FileName = $env:ComSpec;" +
+    "$psi.Arguments = $env:SERVE_ARGS;" +
+    "$psi.UseShellExecute = $true;" +
+    "$psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden;" +
+    "$psi.WorkingDirectory = $env:SERVE_CWD;" +
+    "$p = [System.Diagnostics.Process]::Start($psi);" +
+    "Write-Output $p.Id";
+  const r = spawnSync(
+    powershellExe(),
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      windowsHide: true,
+      env: Object.assign({}, process.env, {
+        SERVE_ARGS: `/d /c ""${launcher}""`,
+        SERVE_CWD: process.cwd(),
+      }),
+    }
+  );
+  if (r.error) throw r.error;
+  if (r.status !== 0) {
+    throw new Error(`serve launch failed (powershell exit ${r.status}): ${(r.stderr || r.stdout || "").trim()}`);
+  }
+  const pid = parseInt((r.stdout || "").trim(), 10);
+  if (!pid || Number.isNaN(pid)) {
+    throw new Error(`serve launch returned no PID: ${JSON.stringify(r.stdout || "")}`);
+  }
+  return pid;
+}
+
 async function start(flags) {
   if (!flags["--cmd"]) {
     console.error("serve start: --cmd \"<command>\" is required");
@@ -137,27 +208,36 @@ async function start(flags) {
 
   fs.mkdirSync(SERVE_DIR, { recursive: true });
 
-  // Detach by ignoring the child's stdio entirely and redirecting output at the
-  // shell level (never via a stdio file descriptor + shell:true — that holds the
-  // shell's handles and freezes the agent tool on Windows).
   const fullCmd = `${flags["--cmd"]} > "${outLog}" 2> "${errLog}"`;
-  const child = spawn(fullCmd, {
-    cwd: process.cwd(),
-    shell: true,
-    detached: true,
-    windowsHide: true,
-    stdio: "ignore",
-  });
+
+  let pid;
+  if (process.platform === "win32") {
+    pid = launchDetachedWin32(fullCmd, name);
+  } else {
+    // POSIX: a detached spawn (setsid) is enough to leave the tool's terminal.
+    const child = spawn(fullCmd, {
+      cwd: process.cwd(),
+      shell: true,
+      detached: true,
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    pid = child.pid;
+    child.unref();
+  }
+
   fs.writeFileSync(
     pidFile(name),
     JSON.stringify(
-      { pid: child.pid, name, cmd: flags["--cmd"], port: flags["--port"] || null, url: flags["--url"] || null, startedAt: new Date().toISOString() },
+      { pid, name, cmd: flags["--cmd"], port: flags["--port"] || null, url: flags["--url"] || null, startedAt: new Date().toISOString() },
       null,
       2
     ),
     "utf8"
   );
-  child.unref();
+
+  console.log(`serve start: launching ${name} (pid ${pid}) → ${outLog}`);
+  if (process.platform === "win32") console.log(`  launcher: ${launcherPath(name)}`);
 
   const readyCheck = flags["--url"]
     ? () => checkUrl(flags["--url"])
@@ -166,21 +246,27 @@ async function start(flags) {
       : null;
 
   if (!readyCheck) {
-    console.log(`started ${name} (pid ${child.pid}) — no readiness check; logs: ${outLog}`);
+    console.log(`started ${name} (pid ${pid}) — no readiness check; logs: ${outLog}`);
     return;
   }
 
   const target = flags["--url"] || "port " + flags["--port"];
   const deadline = Date.now() + timeout;
+  let lastBeat = 0;
   while (Date.now() < deadline) {
     if (await readyCheck()) {
-      console.log(`started ${name} (pid ${child.pid}) — ready on ${target}`);
+      console.log(`started ${name} (pid ${pid}) — ready on ${target}`);
       return;
+    }
+    const elapsed = timeout - (deadline - Date.now());
+    if (elapsed - lastBeat >= HEARTBEAT_INTERVAL) {
+      console.log(`  …waiting for ${target} (${Math.round(elapsed / 1000)}s elapsed)`);
+      lastBeat = elapsed;
     }
     await sleep(READY_INTERVAL);
   }
   const tail = logTail(outLog) || logTail(errLog);
-  console.error(`started ${name} (pid ${child.pid}) but NOT ready on ${target} within ${timeout}ms.`);
+  console.error(`started ${name} (pid ${pid}) but NOT ready on ${target} within ${timeout}ms.`);
   if (tail) console.error(`\n--- last log lines (${outLog}) ---\n${tail}\n---`);
   else console.error(`(no output captured yet — see ${outLog} / ${errLog})`);
   process.exit(1);
@@ -206,6 +292,9 @@ function stop(flags) {
   }
   try {
     fs.unlinkSync(p);
+  } catch (_) {}
+  try {
+    fs.unlinkSync(launcherPath(name));
   } catch (_) {}
 }
 

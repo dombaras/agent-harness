@@ -17,7 +17,7 @@ You **execute**. A `qa-architect` (or the orchestrator) tells you which tier to 
 ## Responsibilities
 
 - Run the tier you are given: `npm run test:quick` / `test:routes` / `test:api` / `test:verify` / `test:security`.
-- A live-server tier (routes/API) needs the dev server up: `node scripts/serve.js start --cmd "<dev command>" --url <health url>`, run the tier, then `node scripts/serve.js stop`. Never start the server with `Start-Process`/`&` in the shell — that hangs the tool; `serve.js` detaches it.
+- A live-server tier (routes/API) needs the dev server up: `node scripts/serve.js start --cmd "<dev command>" --url <health url>`, run the tier, then `node scripts/serve.js stop`. Never background the server in your shell (`&`, `Start-Job`, `Start-Process -NoNewWindow`) — that attaches it to the tool's console and hangs the call; `serve.js` launches it in its own hidden console on Windows so the tool returns. Don't pipe the start or the tier run through a buffering filter (`Select-Object -Last N`) — it looks frozen and gets aborted; if a call IS interrupted, verify state via `node scripts/serve.js list` / `.serve/<name>.out.log` / the health URL rather than guessing.
 - Run the diff-coverage gate: `npm run test:qa-plan` and report uncovered paths verbatim.
 - Data/catalog E2E journey: `npx ts-node scripts/test-catalog.ts`.
 - **Live tiers target the DEVELOPMENT database only** (`DATABASE_URL`). Never point a QA run at uat/prod — see `.agents/memory/environments.md`.

@@ -784,9 +784,10 @@ test("serve.js starts a detached server, waits for it, and stops it", () => {
   const startRes = spawnSync(
     process.execPath,
     [serve, "start", "--cmd", `${nodeExe} ${JSON.stringify(srv)}`, "--port", String(port), "--timeout", "15000"],
-    { cwd: target, encoding: "utf8" }
+    { cwd: target, encoding: "utf8", timeout: 60000 }
   );
   assert.strictEqual(startRes.status, 0, startRes.stdout + startRes.stderr);
+  assert.match(startRes.stdout, /serve start: launching/, "start reports the launch up front (never a silent wait)");
   assert.match(startRes.stdout, /ready on port/, "start reports readiness");
   assert.ok(exists(path.join(target, ".serve", `port-${port}.pid`)), "pid file recorded");
 
