@@ -33,7 +33,14 @@ Date: <YYYY-MM-DD>
 - <persona>: <count> — <what changed on the last retry (instructions/context/model/decomposition/diagnostics)>
 
 ## Escalations (only when a persona was escalated to a stronger tier)
-- <persona> -> <tier> reason: <evidence>
+- <persona> -> <tier> reason: <evidence> attempt: <n>
+
+## Session metadata (structured — record what is known, never fabricate)
+- work_type: <feature|bugfix|investigation|architecture|planning|qa|security|maintenance|process|conversation|other>
+- outcome: <shipped|resolved|deferred|investigation-complete|abandoned|superseded|conversation-only>
+- termination_reason: <gate-pass|checkpoint|blocked|escalated|abandoned|unknown>
+- checkpoint_count: <n> (omit when 0)
+- main_turns: <unknown unless observed>
 
 ## Value shipped
 - <1-2 plain sentences: what the user now gets and why it matters — no file paths, no tech jargon>
@@ -65,5 +72,6 @@ Date: <YYYY-MM-DD>
 - **Lead with value, not tech.** After the dispatch log, the file opens with `## Value shipped` (plain language — what the user now gets, why it matters) then `## How` (the main approach). File/test/commit detail lives below and is never the headline.
 - The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this.
 - Record any retries in `## Retries` and any escalation in `## Escalations` (both optional — omit when none) so `npm run report` can surface where inference budget actually went.
+- Record the `## Session metadata` block (work_type / outcome / termination_reason / checkpoint_count) whenever you know the values — the deterministic report aggregates them per feature. Use `unknown`, never a fabricated value.
 - Keeping `.agents/memory/locations.md` current is part of this skill. Read it first, update it last.
 - **You only touch handoff memory.** The board write-back — moving shipped `BACKLOG.md` rows to `Archive (shipped · done)` (via the `backlog_*` tools) and committing them — is the orchestrator's DoD §7 step, not yours. If it hasn't been done, call it out in your output; never edit `BACKLOG.md` or run git yourself.

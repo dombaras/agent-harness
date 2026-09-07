@@ -9,9 +9,10 @@
  * every transcript. No LLM in the loop — pure Node, deterministic.
  *
  * Aggregates: dispatches per feature / persona / model, recorded retries,
- * recorded escalations, and a per-feature trace (`--json`). Token/cost is
- * intentionally NOT fabricated here — the handoff records dispatch intent, not
- * per-token telemetry; that lives in the provider's own session stats.
+ * recorded escalations, structured session metadata (work_type / outcome /
+ * termination_reason / checkpoint_count), and a per-feature trace (`--json`).
+ * Token/cost is intentionally NOT fabricated here — the handoff records dispatch
+ * intent, not per-token telemetry; that lives in the provider's own session stats.
  *
  * Usage:
  *   node scripts/agent-report.js            # human-readable report
@@ -134,6 +135,28 @@ function parseListItems(sectionText) {
   return items;
 }
 
+/* Parse the `## Session metadata` block: bullet `- key: value` lines into a
+ * plain object. Values are kept verbatim (never normalized/inferred); absent
+ * keys stay undefined so "not recorded" is distinguishable from "unknown". */
+function parseSessionMetadata(sectionText) {
+  const meta = {};
+  for (const raw of sectionText.split(/\r?\n/)) {
+    const m = raw.trim().match(/^[-*]\s+([a-z_]+)\s*:\s*(.+)$/i);
+    if (m) meta[m[1].toLowerCase()] = m[2].trim();
+  }
+  return meta;
+}
+
+/* Controlled vocabularies (mirror .agents/skills/handoff/SKILL.md). */
+const WORK_TYPES = [
+  "feature", "bugfix", "investigation", "architecture", "planning", "qa",
+  "security", "maintenance", "process", "conversation", "other",
+];
+const OUTCOMES = [
+  "shipped", "resolved", "deferred", "investigation-complete", "abandoned",
+  "superseded", "conversation-only",
+];
+
 const files = handoffFiles();
 
 if (files.length === 0) {
@@ -144,9 +167,19 @@ if (files.length === 0) {
 const perFeature = {};
 const personaCount = {};
 const modelCount = {};
+const workTypeCount = {};
+const outcomeCount = {};
+const terminationCount = {};
+const VALIDATION_WARNINGS = [];
 let totalDispatches = 0;
 let totalRetries = 0;
 let totalEscalations = 0;
+let totalCheckpoints = 0;
+
+function bump(map, key) {
+  if (!key) return;
+  map[key] = (map[key] || 0) + 1;
+}
 
 for (const file of files) {
   const src = fs.readFileSync(file, "utf8");
@@ -154,10 +187,24 @@ for (const file of files) {
   const entries = parseDispatchEntries(section(src, "Dispatch log"));
   const retries = parseListItems(section(src, "Retries"));
   const escalations = parseListItems(section(src, "Escalations"));
+  const meta = parseSessionMetadata(section(src, "Session metadata"));
 
-  perFeature[feature] = { dispatches: entries, retries, escalations };
+  perFeature[feature] = { dispatches: entries, retries, escalations, meta };
   totalRetries += retries.length;
   totalEscalations += escalations.length;
+
+  const workType = meta.work_type;
+  const outcome = meta.outcome;
+  const termination = meta.termination_reason;
+  if (workType && !WORK_TYPES.includes(workType))
+    VALIDATION_WARNINGS.push(`${feature}: metadata work_type \`${workType}\` is not in the controlled vocabulary`);
+  if (outcome && !OUTCOMES.includes(outcome))
+    VALIDATION_WARNINGS.push(`${feature}: metadata outcome \`${outcome}\` is not in the controlled vocabulary`);
+  bump(workTypeCount, workType);
+  bump(outcomeCount, outcome);
+  bump(terminationCount, termination);
+  const checkpoints = parseInt(meta.checkpoint_count, 10);
+  if (!Number.isNaN(checkpoints)) totalCheckpoints += checkpoints;
 
   for (const e of entries) {
     totalDispatches += 1;
@@ -166,17 +213,38 @@ for (const file of files) {
   }
 }
 
-/* Deterministic, defensible suggestions only — never a speculative "could have". */
+/* Deterministic, defensible suggestions only — never a speculative "could have".
+ * Fan-out / repeated-dispatch thresholds mirror .agents/memory/orchestration.md
+ * (5+ dispatches = planner justification, 8+ = explicit fan-out review). */
+const FAN_OUT_REVIEW = 8;
+const FAN_OUT_JUSTIFY = 5;
 const suggestions = [];
 for (const [feature, f] of Object.entries(perFeature)) {
   const seen = new Set();
+  let duplicates = 0;
   for (const e of f.dispatches) {
-    if (seen.has(e.persona)) {
-      suggestions.push(
-        `${feature}: dispatched \`${e.persona}\` more than once — absorb-before-spawn candidate`
-      );
-    }
+    if (seen.has(e.persona)) duplicates += 1;
     seen.add(e.persona);
+  }
+  if (duplicates > 0) {
+    suggestions.push(
+      `${feature}: ${duplicates} duplicate persona dispatch(es) — absorb-before-spawn candidate`
+    );
+  }
+  if (f.dispatches.length >= FAN_OUT_REVIEW) {
+    suggestions.push(
+      `${feature}: ${f.dispatches.length} dispatches (\u2265${FAN_OUT_REVIEW}) — requires explicit fan-out review (see orchestration.md)`
+    );
+  } else if (f.dispatches.length >= FAN_OUT_JUSTIFY) {
+    suggestions.push(
+      `${feature}: ${f.dispatches.length} dispatches (\u2265${FAN_OUT_JUSTIFY}) — planner should carry decomposition justification`
+    );
+  }
+  const retried = f.retries.filter((r) => /attempt|same|identical|re[- ]?ran/i.test(r));
+  if (retried.length >= 2) {
+    suggestions.push(
+      `${feature}: ${retried.length} retries with no stated change — a retry must change instructions/context/model/decomposition/diagnostics`
+    );
   }
 }
 
@@ -187,7 +255,20 @@ function sortCounts(obj) {
 if (json) {
   console.log(
     JSON.stringify(
-      { features: perFeature, personaCount, modelCount, totalDispatches, totalRetries, totalEscalations, suggestions },
+      {
+        features: perFeature,
+        personaCount,
+        modelCount,
+        totalDispatches,
+        totalRetries,
+        totalEscalations,
+        totalCheckpoints,
+        workTypeCount,
+        outcomeCount,
+        terminationCount,
+        validationWarnings: VALIDATION_WARNINGS,
+        suggestions,
+      },
       null,
       2
     )
@@ -197,9 +278,17 @@ if (json) {
   console.log(`Features (handoffs): ${files.length}`);
   console.log(`Total dispatches:   ${totalDispatches}`);
   console.log(`Retries recorded:   ${totalRetries}`);
-  console.log(`Escalations:        ${totalEscalations}\n`);
+  console.log(`Escalations:        ${totalEscalations}`);
+  console.log(`Checkpoints:        ${totalCheckpoints}\n`);
 
-  console.log("Dispatches by persona:");
+  console.log("Work type (recorded):");
+  for (const [k, c] of sortCounts(workTypeCount)) console.log(`  ${k.padEnd(22)} ${c}`);
+  console.log("\nOutcome (recorded):");
+  for (const [k, c] of sortCounts(outcomeCount)) console.log(`  ${k.padEnd(22)} ${c}`);
+  console.log("\nTermination reason (recorded):");
+  for (const [k, c] of sortCounts(terminationCount)) console.log(`  ${k.padEnd(22)} ${c}`);
+
+  console.log("\nDispatches by persona:");
   for (const [p, c] of sortCounts(personaCount)) console.log(`  ${p.padEnd(22)} ${c}`);
   console.log("\nDispatches by model:");
   for (const [m, c] of sortCounts(modelCount)) console.log(`  ${m.padEnd(40)} ${c}`);
@@ -210,6 +299,16 @@ if (json) {
     console.log(`  ${feature.padEnd(28)} ${f.dispatches.length} dispatch(es): ${personas}`);
     for (const r of f.retries) console.log(`    retry: ${r}`);
     for (const e of f.escalations) console.log(`    escalation: ${e}`);
+    const metaBits = [];
+    if (f.meta.work_type) metaBits.push(`work_type: ${f.meta.work_type}`);
+    if (f.meta.outcome) metaBits.push(`outcome: ${f.meta.outcome}`);
+    if (f.meta.termination_reason) metaBits.push(`termination_reason: ${f.meta.termination_reason}`);
+    if (metaBits.length) console.log(`    metadata: ${metaBits.join(" · ")}`);
+  }
+
+  if (VALIDATION_WARNINGS.length) {
+    console.log("\nValidation warnings (metadata outside the controlled vocabulary):");
+    for (const w of VALIDATION_WARNINGS) console.log(`  - ${w}`);
   }
 
   if (suggestions.length) {
@@ -220,7 +319,9 @@ if (json) {
   }
 
   console.log(
-    "\nNote: token/cost is not fabricated here — the handoff records dispatch intent, " +
-      "not per-token telemetry. For per-session token/cost, see the provider/opencode session stats."
+    "\nNote: token/cost is not fabricated here — the handoff records dispatch intent and\n" +
+      "session metadata, not per-token telemetry. For per-session token/cost, see the\n" +
+      "provider/opencode session stats. Recorded values are verbatim; absent metadata is\n" +
+      "simply not counted (distinct from `unknown`, which is counted)."
   );
 }

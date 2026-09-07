@@ -33,6 +33,18 @@ log is enforced without a shared file. An entry is a bullet line
     ## Dispatch log
     - <subagent → model → shipped/deferred> (empty log = non-compliant session)
 
+    ## Retries (only when a persona was retried)
+    - <persona>: <count> — <what changed on the last retry>
+
+    ## Escalations (only when a persona was escalated)
+    - <persona> -> <tier> reason: <evidence> attempt: <n>
+
+    ## Session metadata (structured — record what is known, never fabricate)
+    - work_type: <feature|bugfix|investigation|architecture|planning|qa|security|maintenance|process|conversation|other>
+    - outcome: <shipped|resolved|deferred|investigation-complete|abandoned|superseded|conversation-only>
+    - termination_reason: <gate-pass|checkpoint|blocked|escalated|abandoned|unknown>
+    - checkpoint_count: <n> (omit when 0)
+
     ## Value shipped
     - <1-2 plain sentences: what the user now gets and why it matters — no file paths, no tech jargon>
 

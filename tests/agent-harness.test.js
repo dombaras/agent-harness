@@ -95,11 +95,34 @@ test("agents carry mechanical enforcement frontmatter", () => {
   const dir = path.join(h.TEMPLATES_DIR, ".opencode", "agents");
   const planner = read(path.join(dir, "planner.md"));
   assert.match(planner, /hidden:\s*true/);
-  assert.match(planner, /edit:\s*deny/);
+  assert.match(planner, /"\*":\s*deny/);
+  assert.match(planner, /\.agents\/features\/\*\/plan\.md":\s*allow/);
   assert.match(planner, /bash:\s*deny/);
   assert.match(planner, /steps:\s*\d+/);
+  const productManager = read(path.join(dir, "product-manager.md"));
+  assert.match(productManager, /"\*":\s*deny/);
+  assert.match(productManager, /\.agents\/features\/\*\/intent\.md":\s*allow/);
+  assert.match(productManager, /bash:\s*deny/);
   const qaArchitect = read(path.join(dir, "qa-architect.md"));
   assert.match(qaArchitect, /bash:\s*deny/);
+});
+
+test("thinker artifact grants are narrow (deny-by-default, one owned path only)", () => {
+  const dir = path.join(h.TEMPLATES_DIR, ".opencode", "agents");
+  for (const [agent, allowed] of [
+    ["planner.md", "plan.md"],
+    ["product-manager.md", "intent.md"],
+  ]) {
+    const src = read(path.join(dir, agent));
+    // deny-by-default for every path...
+    assert.match(src, /"\*":\s*deny/);
+    // ...except the single owned artifact, written in the same `edit:` block.
+    const editBlock = src.split("permission:")[1].split("bash:")[0];
+    assert.match(editBlock, new RegExp("\\.agents/features/\\*/" + allowed.replace(".", "\\.") + "\":\\s*allow"));
+    // no broad .agents/** allow sneaks in
+    assert.doesNotMatch(editBlock, /\.agents\/\*\*\s*:\s*allow/);
+    assert.doesNotMatch(editBlock, /"\*":\s*allow/);
+  }
 });
 
 test("deploy init materializes files, substitutes placeholders, writes config", async () => {
@@ -221,6 +244,52 @@ test("handoffs scaffold is deployed sharded (no legacy single handoff.md)", asyn
   const readme = read(path.join(target, ".agents", "handoffs", "README.md"));
   assert.match(readme, /## Dispatch log/);
   assert.match(readme, /own your file/i);
+});
+
+test("orchestration.md memory scaffold is deployed, tunable, and preserved on re-deploy", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const p = path.join(target, ".agents", "memory", "orchestration.md");
+  assert.ok(exists(p), "orchestration.md scaffold created");
+  const src = read(p);
+  assert.match(src, /soft_turn_budget/);
+  assert.match(src, /hard_safety_turn_limit/);
+  assert.match(src, /dispatch fan-out/i);
+  assert.match(src, /same_failure_turns/);
+  assert.match(src, /orchestrator\.soft|soft_turn_budget/);
+
+  fs.writeFileSync(p, "- soft_turn_budget: 20\n", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(p), "- soft_turn_budget: 20\n", "project orchestration.md preserved");
+});
+
+test("operating rules encode bounded lifecycle + retry/gate/web discipline referencing orchestration.md", () => {
+  const rules = read(path.join(h.TEMPLATES_DIR, ".agents", "rules", "00-operating.md"));
+  assert.match(rules, /orchestration\.md/);
+  assert.match(rules, /Context budget & lifecycle/);
+  assert.match(rules, /Gate batching/);
+  assert.match(rules, /No identical re-runs/);
+  assert.match(rules, /Patch\/apply failures/);
+  assert.match(rules, /Web\/network failures/);
+
+  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  assert.match(rulebook, /checkpoint/i);
+  assert.match(rulebook, /work_type/);
+  assert.match(rulebook, /termination_reason/);
+  assert.match(rulebook, /Repeated-command \/ retry-loop detection/);
+
+  const rootAgents = read(path.join(h.TEMPLATES_DIR, "AGENTS.md"));
+  assert.match(rootAgents, /orchestration\.md/);
+  assert.match(rootAgents, /Bounded orchestration/);
+
+  const handoffSkill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "handoff", "SKILL.md"));
+  assert.match(handoffSkill, /Session metadata/);
+  assert.match(handoffSkill, /work_type:/);
+  assert.match(handoffSkill, /termination_reason:/);
+
+  const plannerSkill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "planner", "SKILL.md"));
+  assert.match(plannerSkill, /Fan-out review/);
+  assert.match(plannerSkill, /orchestration\.md/);
 });
 
 test("check-qa-scripts expects test:qa-plan", () => {
@@ -394,6 +463,119 @@ test("agent-report parses table dispatch logs (indexed + backticked columns)", (
   assert.ok(!("2" in parsed.personaCount), "index column is not parsed as a persona");
   // "(per routing)" placeholder normalizes to "?"
   assert.strictEqual(parsed.modelCount["?"], 2);
+});
+
+test("agent-report aggregates session metadata (work_type/outcome/termination/checkpoints) verbatim", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "agent-report.js"),
+    path.join(target, "scripts", "agent-report.js")
+  );
+  fs.mkdirSync(path.join(target, ".agents", "handoffs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-101.md"),
+    [
+      "# handoff",
+      "",
+      "## Dispatch log",
+      "- planner -> opencode/gpt-5.6-luna -> shipped",
+      "",
+      "## Session metadata",
+      "- work_type: feature",
+      "- outcome: shipped",
+      "- termination_reason: gate-pass",
+      "- checkpoint_count: 2",
+      "",
+      "## Value shipped",
+      "- done",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-102.md"),
+    [
+      "# handoff",
+      "",
+      "## Dispatch log",
+      "- diagnostics-expert -> deepseek/deepseek-v4-flash -> shipped",
+      "",
+      "## Session metadata",
+      "- work_type: bugfix",
+      "- outcome: deferred",
+      "- termination_reason: blocked",
+      "",
+      "## Value shipped",
+      "- done",
+    ].join("\n"),
+    "utf8"
+  );
+
+  const jsonRes = spawnSync(process.execPath, ["scripts/agent-report.js", "--json"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(jsonRes.status, 0, jsonRes.stdout + jsonRes.stderr);
+  const parsed = JSON.parse(jsonRes.stdout);
+  assert.strictEqual(parsed.workTypeCount.feature, 1);
+  assert.strictEqual(parsed.workTypeCount.bugfix, 1);
+  assert.strictEqual(parsed.outcomeCount.shipped, 1);
+  assert.strictEqual(parsed.outcomeCount.deferred, 1);
+  assert.strictEqual(parsed.terminationCount["gate-pass"], 1);
+  assert.strictEqual(parsed.terminationCount.blocked, 1);
+  assert.strictEqual(parsed.totalCheckpoints, 2);
+  assert.strictEqual(parsed.features["F-101"].meta.work_type, "feature");
+  assert.strictEqual(parsed.validationWarnings.length, 0);
+
+  const res = spawnSync(process.execPath, ["scripts/agent-report.js"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /Work type \(recorded\):/);
+  assert.match(res.stdout, /Outcome \(recorded\):/);
+  assert.match(res.stdout, /Termination reason \(recorded\):/);
+  assert.match(res.stdout, /Checkpoints:\s+2/);
+  assert.match(res.stdout, /work_type: feature/);
+});
+
+test("agent-report flags out-of-vocabulary metadata and high fan-out without fabricating", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "agent-report.js"),
+    path.join(target, "scripts", "agent-report.js")
+  );
+  fs.mkdirSync(path.join(target, ".agents", "handoffs"), { recursive: true });
+  const rows = [];
+  for (let i = 1; i <= 9; i++) rows.push(`| ${i} | frontend-engineer | opencode/gpt-5.6-luna | shipped | - |`);
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-200.md"),
+    [
+      "# handoff",
+      "",
+      "## Dispatch log",
+      "",
+      "| # | Subagent | Model | Shipped | Deferred |",
+      "|---|---|---|---|---|",
+      ...rows,
+      "",
+      "## Session metadata",
+      "- work_type: mystery",
+      "- outcome: nope",
+      "",
+      "## Value shipped",
+      "- done",
+    ].join("\n"),
+    "utf8"
+  );
+
+  const jsonRes = spawnSync(process.execPath, ["scripts/agent-report.js", "--json"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(jsonRes.status, 0, jsonRes.stdout + jsonRes.stderr);
+  const parsed = JSON.parse(jsonRes.stdout);
+  assert.strictEqual(parsed.totalDispatches, 9);
+  assert.ok(parsed.suggestions.some((s) => /F-200: 9 dispatches.*fan-out review/.test(s)), JSON.stringify(parsed.suggestions));
+  assert.strictEqual(parsed.validationWarnings.length, 2);
+  assert.ok(parsed.validationWarnings.some((w) => /work_type `mystery` is not in the controlled vocabulary/.test(w)));
+  assert.ok(parsed.validationWarnings.some((w) => /outcome `nope` is not in the controlled vocabulary/.test(w)));
+
+  const res = spawnSync(process.execPath, ["scripts/agent-report.js"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /Validation warnings/);
 });
 
 test("backlog CLI + custom tools + notify plugin are deployed to every project", async () => {

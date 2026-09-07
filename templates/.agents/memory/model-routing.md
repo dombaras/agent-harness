@@ -29,7 +29,12 @@ coder/tool-use model, mechanical → cheap fast model). Change it only by editin
 In addition to `model:`, agent files carry mechanical guardrails in their
 frontmatter:
 
-- **Thinkers** (`planner`, `product-manager`) have `permission: { edit: deny, bash: deny }`.
+- **Thinkers** (`planner`, `product-manager`) have edit **deny-by-default** with a
+  **narrow artifact write grant**: `planner` may write only
+  `.agents/features/<feature>/plan.md`, `product-manager` only
+  `.agents/features/<feature>/intent.md` — so a thinker authors its own doc instead
+  of forcing a dispatch → blocked → orchestrator-write cycle — and `bash: deny`.
+  Every other path stays read-only.
 - **`qa-architect`** has `permission: { bash: deny }` (authors tests, never runs).
 - **`handoff`** has `permission: { bash: deny }`.
 - **`features`** (Feature Registrar) has `permission: { bash: deny }` — owns `BACKLOG.md` (repo root) + `.agents/features/*` **tree structure only** (scaffolding, never doc content). It does NOT author `intent`/`scope`/`plan`/`tests` and does NOT dispatch author personas — those are dispatched by the orchestrator directly.

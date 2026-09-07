@@ -46,7 +46,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `scripts/backlog.js` | deterministic `BACKLOG.md` editor (list/add/take/archive/freeze) | harness (overwrite) |
 | `.opencode/tools/backlog.ts` | `backlog_*` custom tools the LLM calls (shell out to the CLI) | harness (overwrite) |
 | `.opencode/plugins/backlog-notify.ts` | toast/log whenever an agent mutates the board | harness (overwrite) |
-| `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, history, flow-map, product-principles) | **project** (create-if-missing) |
+| `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, orchestration, history, flow-map, product-principles) | **project** (create-if-missing) |
 | `.agents/handoffs/*` | project data (one session handoff file per session — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.agents/qa-plans/*` | project data (one QA plan file per change — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
@@ -113,12 +113,31 @@ Production is human-gated and out of the per-task flow. The harness scaffolds
 `environments.md` (create-if-missing, project-owned) and reminds projects to wire
 `deploy:uat` / `deploy:prod` / `test:data-hygiene` via `check-qa-scripts.js`.
 
+**Orchestration & context budget (`.agents/memory/orchestration.md`)** — the
+project-owned tuning file for the cost/context guards the operating rules
+reference: the main-orchestrator soft turn budget / hard safety ceiling, the
+request-context observe → warn → checkpoint → intervene thresholds, dispatch
+fan-out review bands, and the stuck/retry-loop heuristics. Shipped with sensible
+experimental defaults; tune from post-change data and record why. Scaffolded
+create-if-missing (project-owned).
+
+**Bounded orchestration & structured session telemetry** — the harness keeps the
+main context from growing unbounded: one bounded orchestration lifecycle per work
+unit, compact deterministic checkpoints into the session's `.agents/handoffs/<id>.md`
+when a session nears its budget (see `orchestration.md`), and a fresh context that
+resumes from the checkpoint instead of replaying the transcript. Every handoff can
+carry a `## Session metadata` block (`work_type`, `outcome`,
+`termination_reason`, `checkpoint_count` — controlled vocabularies, never
+fabricated) that `npm run report` aggregates deterministically per feature.
+
 ## Model routing & enforcement
 
 - Concrete models are set in `.opencode/agents/<name>.md` (`model:` field) and
   `opencode.json` (`model` + `small_model`).
 - Personas also carry mechanical guardrails in frontmatter:
-  - thinkers (`planner`, `product-manager`) → `permission: { edit: deny, bash: deny }`
+  - thinkers (`planner`, `product-manager`) → `edit` deny-by-default with a narrow
+    artifact write grant (planner → `.agents/features/<feature>/plan.md`,
+    product-manager → `.agents/features/<feature>/intent.md`), `bash: deny`
   - `qa-architect`, `handoff`, `docs` → `permission: { bash: deny }`
   - code personas (`frontend-engineer`, `mobile-engineer`, `ui-designer`,
     `data-engineer`, `devops-engineer`, `security-engineer`, `system-architect`,

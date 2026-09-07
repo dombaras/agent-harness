@@ -33,6 +33,48 @@ Before reading or editing any file for a task, dispatch the relevant personas vi
 - **Parallel = genuinely disjoint.** Never fan out to N personas because N roles exist; launch the minimum that maximizes useful independent work (disjoint owned files AND contracts). Small tasks are usually cheaper serial.
 - **Compact results downstream.** Pass a persona's structured `Result`/`Evidence`/`Deferred & risks` summary — never a full verbose transcript — to the next consumer.
 
+## Context budget & lifecycle (bounded orchestration)
+
+The main orchestrator context is a cumulative cost. Guard it; do not let a single
+session grow without bound. Thresholds are tunable in
+`.agents/memory/orchestration.md` — resolve numbers there, not from memory.
+
+- **Feature-scoped context**: one bounded orchestration lifecycle per meaningful
+  work unit. Do not let one feature's large context become the long-term home for
+  unrelated features, architecture/backlog/process discussion, or other sessions'
+  debugging.
+- **Checkpoint, don't grow**: when a session approaches the `soft_turn_budget` /
+  request-context thresholds in `orchestration.md`, write a compact deterministic
+  checkpoint to the session's `.agents/handoffs/<feature-id>.md` (task id/feature/
+  objective/phase, completed + active dispatches, files changed, contracts,
+  known facts, decisions, risks, next_action) and prefer to continue in a fresh
+  bounded context that reads the checkpoint — never by replaying the transcript.
+- **No abrupt kill**: a currently-running tool call finishes; the budget triggers a
+  checkpoint/finish, not a mid-operation abort.
+- **Cache-friendly prefix**: keep the stable leading context (operating rules →
+  persona → project rules) byte-stable across turns; never regenerate equivalent
+  instructions in new wording (the cache is an asset).
+- **Large tool outputs**: treat reads as evidence, but do not let a big read/diff/
+  test dump live forever in a long-lived context — checkpoint and move on.
+
+## Verification & retry discipline (deterministic)
+
+- **Gate batching**: make a coherent set of related edits, THEN run the gate once —
+  avoid edit → gate → edit → gate per micro-edit. A gate stays mandatory when the
+  dispatch says so, a dependency needs its result, the batch is complete, or the
+  agent is about to report done.
+- **No identical re-runs**: do not re-run the same command in the same session
+  with the same state and expect a different result. Repeated-command/retry-loop
+  heuristics (`same_failure_turns`, `identical_tool_calls`, `no_state_change_turns`)
+  live in `orchestration.md`. A second attempt MUST change instructions / context /
+  model / decomposition / diagnostics.
+- **Patch/apply failures**: on a failed file write/patch, refresh the target file,
+  regenerate a targeted patch, and retry ONCE. Never blindly replay the identical
+  patch. Record `patch_failure` + `retry` in the session handoff.
+- **Web/network failures**: one retry when transient; then fall back (`webfetch`,
+  repository-local evidence) or report. Never loop query variations hoping the
+  network changes.
+
 ## Non-negotiable laws
 
 1. **Zero speculation** — base every fix/decision on observed logs, telemetry, or DB state; instrument first if evidence is missing.
@@ -51,4 +93,4 @@ QA tier + security lens gate **code changes only** (a backlog-only change skips 
 
 ## Session checklist
 
-Start: read `.agents/memory/locations.md` + `.agents/memory/model-routing.md` + `.agents/memory/environments.md` + `BACKLOG.md`, then isolate: `backlog worktree <id>` (creates a `git worktree` + branch, auto-takes the row, and records the path in the row's `Handoff`) — every feature works in its own worktree, `main` stays board + shippable code only. Record the row's owned files (`backlog owns <id> --files ...`), and name the worktree path in every dispatch spec's `Working tree` so subagents verify their checkout before editing. End: `git rebase main` + re-run `test:backlog`/`test:concurrency`, move shipped `BACKLOG.md` rows from `In progress` to `Archive` (`backlog_archive` — this also removes the feature's worktree + merged branch, so a session's checkout never lingers), record the dispatch log, and update the handoff memory.
+Start: read `.agents/memory/locations.md` + `.agents/memory/model-routing.md` + `.agents/memory/orchestration.md` (context/turn budgets) + `.agents/memory/environments.md` + `BACKLOG.md`, then isolate: `backlog worktree <id>` (creates a `git worktree` + branch, auto-takes the row, and records the path in the row's `Handoff`) — every feature works in its own worktree, `main` stays board + shippable code only. Record the row's owned files (`backlog owns <id> --files ...`), and name the worktree path in every dispatch spec's `Working tree` so subagents verify their checkout before editing. End: `git rebase main` + re-run `test:backlog`/`test:concurrency`, move shipped `BACKLOG.md` rows from `In progress` to `Archive` (`backlog_archive` — this also removes the feature's worktree + merged branch, so a session's checkout never lingers), record the dispatch log, and update the handoff memory.

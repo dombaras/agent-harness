@@ -100,7 +100,9 @@ scaffold the doc directory `.agents/features/<slug>/` (and update
 
 The **orchestrator** authors the docs by dispatching the author persona for each
 layer directly via the `task` tool (Step Zero dispatch — see
-`.agents/rules/00-operating.md` §Step Zero):
+`.agents/rules/00-operating.md` §Step Zero). Each author persona holds a narrow
+artifact write grant and writes its own doc (`.agents/features/<slug>/<doc>`) —
+the orchestrator verifies the file exists rather than transcribing content:
 
 | Doc | Frames | Author persona (orchestrator dispatches directly) |
 |---|---|---|
