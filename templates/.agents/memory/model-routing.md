@@ -32,8 +32,10 @@ frontmatter:
 - **Thinkers** (`planner`, `product-manager`) have edit **deny-by-default** with a
   **narrow artifact write grant**: `planner` may write only
   `.agents/features/<feature>/plan.md`, `product-manager` only
-  `.agents/features/<feature>/intent.md` — so a thinker authors its own doc instead
-  of forcing a dispatch → blocked → orchestrator-write cycle — and `bash: deny`.
+  `.agents/features/<feature>/intent.md` — each writable in the main tree **or the
+  feature's git worktree sibling** (`../.worktrees/**`, where every feature's doc
+  chain lives) — so a thinker authors its own doc instead of forcing a
+  dispatch → blocked → orchestrator-write cycle — and `bash: deny`.
   Every other path stays read-only.
 - **`qa-architect`** has `permission: { bash: deny }` (authors tests, never runs).
 - **`handoff`** has `permission: { bash: deny }`.

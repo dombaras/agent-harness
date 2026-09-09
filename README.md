@@ -137,7 +137,8 @@ fabricated) that `npm run report` aggregates deterministically per feature.
 - Personas also carry mechanical guardrails in frontmatter:
   - thinkers (`planner`, `product-manager`) → `edit` deny-by-default with a narrow
     artifact write grant (planner → `.agents/features/<feature>/plan.md`,
-    product-manager → `.agents/features/<feature>/intent.md`), `bash: deny`
+    product-manager → `.agents/features/<feature>/intent.md`, each writable in the
+    main tree or the feature's `.worktrees` sibling), `bash: deny`
   - `qa-architect`, `handoff`, `docs` → `permission: { bash: deny }`
   - code personas (`frontend-engineer`, `mobile-engineer`, `ui-designer`,
     `data-engineer`, `devops-engineer`, `security-engineer`, `system-architect`,

@@ -107,7 +107,7 @@ test("agents carry mechanical enforcement frontmatter", () => {
   assert.match(qaArchitect, /bash:\s*deny/);
 });
 
-test("thinker artifact grants are narrow (deny-by-default, one owned path only)", () => {
+test("thinker artifact grants are narrow (deny-by-default; owned doc writable in main tree and feature worktree)", () => {
   const dir = path.join(h.TEMPLATES_DIR, ".opencode", "agents");
   for (const [agent, allowed] of [
     ["planner.md", "plan.md"],
@@ -119,6 +119,9 @@ test("thinker artifact grants are narrow (deny-by-default, one owned path only)"
     // ...except the single owned artifact, written in the same `edit:` block.
     const editBlock = src.split("permission:")[1].split("bash:")[0];
     assert.match(editBlock, new RegExp("\\.agents/features/\\*/" + allowed.replace(".", "\\.") + "\":\\s*allow"));
+    // ...also writable when the artifact lives in the feature's git worktree
+    // sibling (`../.worktrees/**`, where per-feature work is isolated).
+    assert.match(editBlock, /\.\.\/\.worktrees\/\*\*\/\.agents\/features\/\*/);
     // no broad .agents/** allow sneaks in
     assert.doesNotMatch(editBlock, /\.agents\/\*\*\s*:\s*allow/);
     assert.doesNotMatch(editBlock, /"\*":\s*allow/);
