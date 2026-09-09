@@ -46,7 +46,8 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `scripts/backlog.js` | deterministic `BACKLOG.md` editor (list/add/take/archive/freeze) | harness (overwrite) |
 | `.opencode/tools/backlog.ts` | `backlog_*` custom tools the LLM calls (shell out to the CLI) | harness (overwrite) |
 | `.opencode/plugins/backlog-notify.ts` | toast/log whenever an agent mutates the board | harness (overwrite) |
-| `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, orchestration, history, flow-map, product-principles) | **project** (create-if-missing) |
+| `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, orchestration, history, flow-map, product-principles, quality-parameters) | **project** (create-if-missing) |
+| `.agents/reviews/*` | project data (durable review/audit deliverables — REPORT.md + scans, tagged by quality-parameters) | **project** (create-if-missing) |
 | `.agents/handoffs/*` | project data (one session handoff file per session — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.agents/qa-plans/*` | project data (one QA plan file per change — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
@@ -226,15 +227,23 @@ so agents see complete descriptions.
   source of truth; status/priority enums, frozen-reopen conditions, non-empty
   priority/evidence (and non-empty task/handoff on `In progress` rows), no
   duplicate IDs, `Depends on` cells that name real rows, and `INDEX.md`/`todo.md`
-  must be pointers (not live lists).
+  must be pointers (not live lists). Reports an over-wide row honestly ("row F-127
+  has 7 cells, expected 6 — unescaped `|`") instead of surfacing a shifted cell as
+  a bogus "depends on unknown row".
 - `npm run test:concurrency` — cross-session working-tree guard. Fails when the
   board shows 2+ `In progress` rows while the tree has uncommitted changes; with
   owned files declared (`.agents/memory/owned-files.md`), it fails *exactly* when
   a dirty file is owned by two In-progress rows (or a tree mixes two sessions'
-  WIP).
+  WIP). The shared `BACKLOG.md` itself is treated as owned by every In-progress
+  row, so a dirty board under 2+ active sessions is a hard failure.
 - `npm run test:integrate` — pre-push rebase check: fails when the current branch
   is behind `origin/main`, reminding you to `git rebase` and re-run the board +
   concurrency gates before pushing, so conflicts surface early.
+- `npm run test:quality` — **mechanical code-quality gate on new/grown code**:
+  flags dead exports (a symbol whose only reference is its own declaration) and
+  files that are new or grew past the line limit (default 1000). Runs against the
+  diff by default (`--paths a,b` to target files, `--base <ref>` to set the
+  baseline, `--strict` for CI). Canonical rubric: `.agents/memory/quality-parameters.md`.
 - `npm run test:product` — **product/UX-first gate**: every feature doc in
   `.agents/features/<slug>/` must define its user before planning/implementation.
   `intent.md` must carry Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md`
@@ -269,7 +278,7 @@ scripts are **project-provided** — the rulebook references them, and
 npx @dombaras/agent-harness update --target /path/to/project
 ```
 
-- Overwrites harness-owned files, preserves `.agents/memory/*`, `.agents/handoffs/*`, `.agents/qa-plans/*`, and `BACKLOG.md`.
+- Overwrites harness-owned files, preserves `.agents/memory/*`, `.agents/reviews/*`, `.agents/handoffs/*`, `.agents/qa-plans/*`, and `BACKLOG.md`.
 - Auto-wires the harness gate scripts (`test:dispatch`, `test:governance`,
   `test:qa-plan`, `test:backlog`, `test:product`, `test:docs`) into the target's `package.json` (merged, add-only).
 - **Auto-commits** the harness files it changed (`chore(harness): @dombaras/agent-harness
@@ -277,7 +286,7 @@ npx @dombaras/agent-harness update --target /path/to/project
   modified harness files. Your unrelated uncommitted work is never staged.
   - `--no-commit` to skip commit+push, `--no-push` to commit but not push.
   - `init` auto-commits + pushes by default too: it commits everything it scaffolds
-    (including `.agents/memory/*`, `.agents/features/*`, `.agents/handoffs/*`, and `BACKLOG.md`) so a fresh
+    (including `.agents/memory/*`, `.agents/reviews/*`, `.agents/features/*`, `.agents/handoffs/*`, and `BACKLOG.md`) so a fresh
     project starts fully tracked and no harness file is left untracked.
   - Harness-owned paths are **force-added**, so a project that gitignores deployment
     artifacts (an inherited `.agents/` `.opencode/` `AGENTS.md` pattern) still gets the

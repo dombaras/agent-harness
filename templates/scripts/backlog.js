@@ -40,6 +40,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { splitCells, isSep, formatRow } = require("./qa/board-lib.js");
 
 const PRIORITIES = { P1: 0, P2: 1, P3: 2, P4: 3 };
 
@@ -54,33 +55,6 @@ const SECTIONS = {
 };
 
 // ---------------------------------------------------------------- helpers
-
-/* Split a markdown table row on unescaped `|` (respects `\|` inside cells). */
-function splitCells(row) {
-  const cells = [];
-  let cur = "";
-  let esc = false;
-  for (const ch of row) {
-    if (esc) {
-      cur += ch;
-      esc = false;
-    } else if (ch === "\\") {
-      esc = true;
-      cur += ch;
-    } else if (ch === "|") {
-      cells.push(cur.trim());
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  cells.push(cur.trim());
-  return cells;
-}
-
-function isSep(cells) {
-  return cells.every((c) => /^[-:|\s]*$/.test(c));
-}
 
 function normalizeHeading(text) {
   return text.replace(/^#+\s*/, "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -222,10 +196,6 @@ function setRows(lines, key, newCellsList) {
   const end = block.dataEnd >= block.dataStart ? block.dataEnd : block.sepIdx;
   out.splice(start, end - start + 1, headerLine(key), sepLine(key), ...dataLines);
   return out;
-}
-
-function formatRow(cells) {
-  return "| " + cells.join(" | ") + " |";
 }
 
 function nextId(lines) {
@@ -572,6 +542,30 @@ function cmdEpic(state, argv) {
   return { id, epic: to };
 }
 
+/* A session's Handoff cell must point at a real file under `.agents/handoffs/`
+ * named `<id>.md` (or a hyphenated slug — see the handoff skill). Fail fast on a
+ * placeholder like `.agents/handoffs/F-<id>.md` (the template's example path —
+ * F-104's session recorded that literal and only a later explicit `--handoff`
+ * corrected it) or any value that cannot be a real path. */
+function validateHandoff(id, raw) {
+  const v = (raw || "").trim();
+  if (!v || v === "?") return v; // "?" is an allowed "unknown" sentinel
+  if (!/^\.agents[\\/]handoffs[\\/].+\.md$/.test(v)) {
+    throw new Error(
+      `handoff must be a real path under .agents/handoffs/ ending in .md ` +
+        `(e.g. .agents/handoffs/${id}.md), not "${raw}"`
+    );
+  }
+  const stem = v.replace(/\.agents[\\/]handoffs[\\/]/i, "").replace(/\.md$/, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(stem)) {
+    throw new Error(
+      `handoff filename "${stem}" is not a valid <id> or slug ` +
+        `(use .agents/handoffs/${id}.md or a hyphenated slug)`
+    );
+  }
+  return v;
+}
+
 function cmdTake(state, argv) {
   const id = argv._[0];
   if (!id) throw new Error("take: missing <id>.");
@@ -588,7 +582,7 @@ function cmdTake(state, argv) {
 
   const task = taskOf(found.cells, found.key) || id;
   const epic = epicOf(found.cells, found.key);
-  const handoff = argv.handoff || "?";
+  const handoff = validateHandoff(id, argv.handoff) || "?";
 
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
   state.lines = setRows(state.lines, found.key, srcRows);
@@ -649,7 +643,7 @@ function cmdNext(state, argv) {
   const srcRows = queued.filter((c) => (c[0] || "").trim() !== id);
   state.lines = setRows(state.lines, "queued", srcRows);
 
-  const handoff = argv.handoff || `.agents/handoffs/${id}.md`;
+  const handoff = validateHandoff(id, argv.handoff) || `.agents/handoffs/${id}.md`;
   const inprog = getRows(state.lines, "inprogress").map((r) => r.cells);
   inprog.push([id, epic, task, handoff]);
   state.lines = setRows(state.lines, "inprogress", inprog);
@@ -824,7 +818,8 @@ function cmdWorktree(state, argv) {
   }
 
   // Ensure the row is In progress (auto-take if Open/Queued).
-  let handoff = argv.handoff || `.agents/handoffs/${id}.md`;
+  const claimed = argv.handoff !== undefined ? validateHandoff(id, argv.handoff) : "";
+  let handoff = claimed || `.agents/handoffs/${id}.md`;
   if (found.key === "open" || found.key === "queued") {
     const task = taskOf(found.cells, found.key) || id;
     const epic = epicOf(found.cells, found.key);
@@ -835,7 +830,7 @@ function cmdWorktree(state, argv) {
     state.lines = setRows(state.lines, "inprogress", inprog);
   } else {
     const existing = found.key === "inprogress" ? (found.cells[3] || "").split(/\s*[|(]/)[0].trim() : "";
-    handoff = argv.handoff || existing || `.agents/handoffs/${id}.md`;
+    handoff = claimed || existing || `.agents/handoffs/${id}.md`;
   }
 
   // Create the worktree + branch.

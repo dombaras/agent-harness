@@ -24,30 +24,9 @@
  * (they are explanatory, not row data).
  */
 const fs = require("fs");
+const { splitCells } = require("./board-lib.js");
 
 // ---- small self-contained markdown-table helpers -------------------------
-
-function splitCells(row) {
-  const cells = [];
-  let cur = "";
-  let esc = false;
-  for (const ch of row) {
-    if (esc) {
-      cur += ch;
-      esc = false;
-    } else if (ch === "\\") {
-      esc = true;
-      cur += ch;
-    } else if (ch === "|") {
-      cells.push(cur.trim());
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  cells.push(cur.trim());
-  return cells;
-}
 
 function isSep(cells) {
   return cells.every((c) => /^[-:|\s]*$/.test(c));

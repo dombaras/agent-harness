@@ -24,6 +24,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { splitCells } = require("./board-lib.js");
 
 const root = path.resolve(__dirname, "..", "..");
 
@@ -84,32 +85,21 @@ const src = fs.readFileSync(canonical, "utf8");
 const lines = src.split(/\r?\n/);
 
 // ---- table parsing ----------------------------------------------------------
-// Split a markdown table row on unescaped `|` (respects `\|` inside cells).
-function splitCells(row) {
-  const cells = [];
-  let cur = "";
-  let esc = false;
-  for (const ch of row) {
-    if (esc) {
-      cur += ch;
-      esc = false;
-    } else if (ch === "\\") {
-      esc = true;
-      cur += ch;
-    } else if (ch === "|") {
-      cells.push(cur.trim());
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  cells.push(cur.trim());
-  return cells;
-}
+// Split a markdown table row on unescaped `|` — shared with backlog.js and the
+// other board gates via board-lib.js (one home for the row parser, so a parse
+// fix never has to be replicated across scripts).
 
 // Group table rows by the last `##`/`###` section heading that preceded them.
+// Also records each section's column width (from its separator row) and flags
+// data rows with MORE cells than the header — the signature of an unescaped `|`
+// (or stray `|` fragment) splitting one logical row into corrupt cells. Over-wide
+// rows are reported with a precise message and EXCLUDED from the per-column
+// checks below, whose shifted indexes would otherwise produce misleading errors
+// ("depends on unknown row 404" when the real defect is a 7-cell Open row).
 function parseSectionRows(lines) {
   const buckets = {};
+  const widths = {};
+  const overWide = [];
   let current = null;
   let rowCount = 0;
   for (const raw of lines) {
@@ -124,20 +114,42 @@ function parseSectionRows(lines) {
     if (!/^\|.*\|$/.test(row)) continue;
     const inner = row.slice(1, -1);
     const cells = splitCells(inner);
-    // skip empty rows and separators like `|---|---|`
-    if (cells.every((c) => /^[-:|\s]*$/.test(c) && c.trim().length === 0)) continue;
-    if (cells.every((c) => /^[-:|\s]*$/.test(c))) continue;
+    // separator row `|---|---|` — records this section's canonical width
+    if (cells.length > 1 && cells.every((c) => /^[-:|\s]*$/.test(c))) {
+      if (!(current in widths)) widths[current] = cells.length;
+      continue;
+    }
     const joined = cells.join("|").trim();
     if (/^([-:|\s]*)$/.test(joined)) continue;
     // skip header rows named ID/P/Epic/Task/... and the Epics registry header (Key/Label/Goal)
     if (cells.some((c) => /^(ID|[Ii]d|P|Epic|Task|Evidence|Handoff|Why frozen \/ reopen when|Closed|Key|Label|Goal|Depends on)$/.test(c))) continue;
+    // over-wide row = unescaped `|`/stray fragment split the logical row
+    if (widths[current] && cells.length > widths[current]) {
+      overWide.push({ heading: current, cells, expected: widths[current] });
+      continue;
+    }
     buckets[current].push(cells);
     rowCount++;
   }
-  return { buckets, rowCount };
+  return { buckets, widths, overWide, rowCount };
 }
 
-const { buckets, rowCount } = parseSectionRows(lines);
+const parsed = parseSectionRows(lines);
+const { buckets, overWide, rowCount } = parsed;
+
+// ---- honest cell-count diagnostics (before per-column checks) ---------------
+for (const bad of overWide) {
+  const label = bad.heading.toLowerCase();
+  const id = (bad.cells[0] || "?").trim();
+  const extra = bad.cells.length - bad.expected;
+  check(
+    false,
+    `row ${id} under "${bad.heading}" has ${bad.cells.length} cells, expected ${bad.expected} ` +
+      `(${extra} extra — an unescaped \`|\` or stray fragment is splitting one logical row). ` +
+      `Repair the row with the backlog tools (never hand-edit): ` +
+      `remove the stray \`|\` or re-add the row via \`node scripts/backlog.js\`.`
+  );
+}
 
 // Column indexes per section (from the BACKLOG template schema).
 const COLS = {

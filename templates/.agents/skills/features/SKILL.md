@@ -115,6 +115,15 @@ For an **investigate + plan** request (no code yet), the orchestrator dispatches
 `planner` and/or `product-manager` directly — never `features`. `features` is
 invoked only to register the found item in `BACKLOG.md` and scaffold the doc tree.
 
+A **review / audit / investigation deliverable** (a code-quality review that files
+follow-up rows, a regression-package review, a logs/dependency audit) is NOT a
+feature contract — it does not live under `.agents/features/<slug>/` and is never
+scaffolded here. Its durable home is `.agents/reviews/<id-or-slug>/` (see its
+README): REPORT.md + scans/*, with findings tagged by the quality rubric in
+`.agents/memory/quality-parameters.md`. You still register the review as one
+`BACKLOG.md` row (epic `audits-reviews`) when the orchestrator asks, but the
+deliverables tree is `.agents/reviews/`, never `.agents/features/`.
+
 ### Right-size the ceremony to blast radius
 
 - **Trivial** (copy/docs, CSS tweak, single-file bug, anything a human would fix

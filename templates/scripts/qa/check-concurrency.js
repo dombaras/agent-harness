@@ -32,6 +32,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { splitCells } = require("./board-lib.js");
 
 const root = path.resolve(__dirname, "..", "..");
 
@@ -63,28 +64,8 @@ function dirtyFiles() {
     .map((l) => ({ code: l.slice(0, 2).trim(), file: l.slice(3) }));
 }
 
-/* Split a markdown table row on unescaped `|` (respects `\|` inside cells). */
-function splitCells(row) {
-  const cells = [];
-  let cur = "";
-  let esc = false;
-  for (const ch of row) {
-    if (esc) {
-      cur += ch;
-      esc = false;
-    } else if (ch === "\\") {
-      esc = true;
-      cur += ch;
-    } else if (ch === "|") {
-      cells.push(cur.trim());
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  cells.push(cur.trim());
-  return cells;
-}
+/* Split a markdown table row on unescaped `|` — shared with backlog.js and the
+ * other board gates via board-lib.js (one home for the row parser). */
 
 /* The active-session IDs: first cell of every table row under `## In progress`. */
 function inProgressIds() {
@@ -173,6 +154,29 @@ for (const d of dirty) console.log(`  ${d.code} ${d.file}`);
 
 const ids = inProgressIds();
 const active = ids.length;
+
+// The one file the ownership model cannot cleanly assign is BACKLOG.md itself:
+// the board is genuinely shared across every In-progress session (each session's
+// board tools write rows into the same file on main). When 2+ sessions are In
+// progress AND the shared board is dirty, we cannot tell whose uncommitted row
+// edits the tree holds — that is exactly the collision `test:concurrency` exists
+// to catch, so it FAILS instead of being tolerated as a warning. (A single
+// In-progress session's board delta is that session's own WIP and is handled by
+// the existing warn branches below.)
+const boardDirty = dirty.some((d) => (d.file || "").replace(/\\/g, "/") === "BACKLOG.md");
+if (boardDirty && active >= 2) {
+  failures.push(
+    `the shared BACKLOG.md is dirty while ${active} sessions are In progress (${ids.join(", ")}) ` +
+      `\u2014 the board is one file every session writes on main, so this tree mixes two sessions' board deltas. ` +
+      `Commit/stash this board delta before push (it belongs to ONE session), then re-run the gate.`
+  );
+  console.log("  \u2717 " + failures[failures.length - 1]);
+  console.log(
+    "\nRESULT: " +
+      `${failures.length} FAILURE(S) \u2014 isolate, stash, or commit before push`
+  );
+  process.exit(1);
+}
 
 if (active > 1) {
   // Ownership-aware attribution: if the project declared owned files

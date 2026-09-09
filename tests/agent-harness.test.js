@@ -612,8 +612,17 @@ function scaffoldBacklogCliTarget() {
     path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"),
     path.join(target, "scripts", "backlog.js")
   );
+  copyBoardLib(target);
   fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(target, "BACKLOG.md"));
   return target;
+}
+
+/* Copy the shared row-primitive module next to the standalone board scripts
+ * (backlog.js at scripts/, the QA gates at scripts/qa/) that now require it. */
+function copyBoardLib(target) {
+  const dir = path.join(target, "scripts", "qa");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-lib.js"), path.join(dir, "board-lib.js"));
 }
 
 function runBacklogCli(target, args) {
@@ -678,6 +687,7 @@ test("backlog CLI accumulates, sorts, and delegates deterministically (no LLM)",
     path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-backlog.js"),
     path.join(t, "scripts", "qa", "check-backlog.js")
   );
+  copyBoardLib(t);
   const gate = runBacklogGate(t);
   assert.strictEqual(gate.status, 0, gate.out);
   assert.match(gate.out, /RESULT: backlog green/);
@@ -687,6 +697,76 @@ test("backlog CLI rejects a non-P1..P4 priority and a blank add", () => {
   const t = scaffoldBacklogCliTarget();
   assert.strictEqual(runBacklogCli(t, ["add", "x", "--p", "P9"]).status, 1, "bad priority fails");
   assert.strictEqual(runBacklogCli(t, ["add"]).status, 1, "missing task fails");
+});
+
+test("backlog add escapes a `|` in a cell so it can't split the row (F-127 pipe variant)", () => {
+  const t = scaffoldBacklogCliTarget();
+  const r = runBacklogCli(t, ["add", "fix /en | he pages", "--evidence", "user | report"]);
+  assert.strictEqual(r.status, 0, r.out);
+  const b = read(path.join(t, "BACKLOG.md"));
+  const openRows = backlogOpenDataRows(b);
+  assert.strictEqual(openRows.length, 1, "pipe in a cell must not split the row");
+  assert.match(openRows[0], /fix \/en \/ he pages/, "pipe sanitized but content preserved");
+  assert.ok(!/task \| fix/.test(b), "no stray unescaped pipe mid-row");
+  // the canonical gate accepts the result
+  fs.mkdirSync(path.join(t, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-backlog.js"),
+    path.join(t, "scripts", "qa", "check-backlog.js")
+  );
+  copyBoardLib(t);
+  const gate = runBacklogGate(t);
+  assert.strictEqual(gate.status, 0, gate.out);
+});
+
+test("backlog add collapses a newline in a cell so it can't split the row (F-094 regression)", () => {
+  const t = scaffoldBacklogCliTarget();
+  const r = runBacklogCli(t, ["add", "task one\ntask two", "--evidence", "line1\nline2"]);
+  assert.strictEqual(r.status, 0, r.out);
+  const b = read(path.join(t, "BACKLOG.md"));
+  const openRows = backlogOpenDataRows(b);
+  assert.strictEqual(openRows.length, 1, "newline in a cell must not split the row");
+  assert.match(b, /task one task two/);
+});
+
+/* Real Open rows only (skip the `| ID |...` header, `|---|` separator, blank
+ * template placeholder row, and `_Rows:` examples) — the Open table ends at the
+ * next `##` heading. */
+function backlogOpenDataRows(backlog) {
+  const openTail = backlog.split("## Open")[1].split("## Frozen")[0];
+  return openTail
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(
+      (l) =>
+        /^\|.*\|$/.test(l) &&
+        !/^\|\s*(ID|[Ii]d)\s*\|/.test(l) &&
+        !/^\|[-:\s|]+\|$/.test(l) &&
+        !/^\|\s*\|/.test(l) &&
+        /^\|\s*F-\d+\s*\|/.test(l)
+    );
+}
+
+test("backlog take/next reject a placeholder handoff path (fail fast, not a silent record)", () => {
+  const t = scaffoldBacklogCliTarget();
+  runBacklogCli(t, ["add", "do thing", "--p", "P1"]); // F-001
+  const bad = runBacklogCli(t, ["take", "F-001", "--handoff", ".agents/handoffs/F-<id>.md"]);
+  assert.strictEqual(bad.status, 1);
+  assert.match(bad.out, /handoff/);
+
+  const b1 = read(path.join(t, "BACKLOG.md"));
+  assert.ok(!b1.includes("F-<id>"), "placeholder handoff never written to the board");
+
+  const q = runBacklogCli(t, ["queue", "F-001"]);
+  assert.strictEqual(q.status, 0, q.out);
+  const badNext = runBacklogCli(t, ["next", "--take", "--handoff", ".agents/handoffs/F-<id>.md"]);
+  assert.strictEqual(badNext.status, 1);
+  assert.match(badNext.out, /handoff/);
+
+  // a well-formed path still works
+  const ok = runBacklogCli(t, ["next", "--take", "--handoff", ".agents/handoffs/F-001.md"]);
+  assert.strictEqual(ok.status, 0, ok.out);
+  assert.match(ok.out, /next -> took F-001/);
 });
 
 test("/next command claims atomically (next --take) before anything else", async () => {
@@ -956,6 +1036,54 @@ test("test:docs passes when every shipped commit is cited in CHANGELOG.md", () =
   assert.match(r.out, /recorded/);
 });
 
+test("test:docs fails when a review ship (.agents/reviews/**) has no changelog line", () => {
+  // M5 changelog convention: a review that files follow-ups is a milestone, not an
+  // invisible docs/chore — even a `docs`-typed commit touching .agents/reviews/**
+  // must be cited in CHANGELOG.md.
+  const t = scaffoldDocsTarget();
+  fs.writeFileSync(path.join(t, "README.md"), "# Demo\n", "utf8");
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  fs.writeFileSync(path.join(t, "CHANGELOG.md"), "# Changelog\n", "utf8");
+  git(t, ["add", "README.md", "CHANGELOG.md"]);
+  git(t, ["commit", "-q", "-m", "docs: seed changelog"]);
+
+  fs.mkdirSync(path.join(t, ".agents", "reviews", "R-001"), { recursive: true });
+  fs.writeFileSync(path.join(t, ".agents", "reviews", "R-001", "REPORT.md"), "# Review\n", "utf8");
+  git(t, ["add", ".agents/reviews/R-001/REPORT.md"]);
+  git(t, ["commit", "-q", "-m", "docs(review): F-104 follow-ups filed"]);
+
+  const r = runDocsGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /ships \.agents\/reviews\//);
+});
+
+test("test:docs passes when the review ship is cited in CHANGELOG.md", () => {
+  const t = scaffoldDocsTarget();
+  fs.writeFileSync(path.join(t, "README.md"), "# Demo\n", "utf8");
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  fs.writeFileSync(path.join(t, "CHANGELOG.md"), "# Changelog\n", "utf8");
+  git(t, ["add", "README.md", "CHANGELOG.md"]);
+  git(t, ["commit", "-q", "-m", "docs: seed changelog"]);
+
+  fs.mkdirSync(path.join(t, ".agents", "reviews", "R-001"), { recursive: true });
+  fs.writeFileSync(path.join(t, ".agents", "reviews", "R-001", "REPORT.md"), "# Review\n", "utf8");
+  git(t, ["add", ".agents/reviews/R-001/REPORT.md"]);
+  git(t, ["commit", "-q", "-m", "docs(review): F-104 follow-ups filed"]);
+
+  const hash = git(t, ["rev-parse", "--short", "HEAD"]);
+  fs.appendFileSync(path.join(t, "CHANGELOG.md"), `- 2026-09-05 \`${hash}\` \u2014 review filed (R-001)\n`, "utf8");
+  git(t, ["add", "CHANGELOG.md"]);
+  git(t, ["commit", "-q", "-m", "docs: record review in changelog"]);
+
+  const r = runDocsGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /recorded/);
+});
+
 test("BACKLOG.md is preserved on re-deploy (project-owned, never overwritten)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
@@ -992,6 +1120,30 @@ test("deploy auto-wires harness gate scripts into package.json, preserving other
   assert.strictEqual(pkg.scripts["test:qa-plan"], "node scripts/qa/check-qa-plan.js");
   assert.strictEqual(pkg.scripts["test:backlog"], "node scripts/qa/check-backlog.js");
   assert.strictEqual(pkg.scripts["test:product"], "node scripts/qa/check-product.js");
+  assert.strictEqual(pkg.scripts["test:quality"], "node scripts/qa/check-quality.js");
+});
+
+test("deploy ships the quality rubric, reviews namespace, and test:quality gate", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  // M4: canonical quality rubric is project data (create-if-missing) + the gate script ships
+  const rubric = path.join(target, ".agents", "memory", "quality-parameters.md");
+  assert.ok(exists(rubric), "quality-parameters.md scaffolded");
+  assert.match(read(rubric), /P1|dead-code/i);
+  assert.ok(exists(path.join(target, "scripts", "qa", "check-quality.js")), "check-quality.js deployed");
+
+  // M5: reviews namespace is project data (create-if-missing)
+  const reviews = path.join(target, ".agents", "reviews", "README.md");
+  assert.ok(exists(reviews), "reviews README scaffolded");
+  assert.match(read(reviews), /REPORT\.md|quality-parameters/);
+
+  // a project-authored review survives an update (create-if-missing, never overwritten)
+  const rev = path.join(target, ".agents", "reviews", "R-001", "REPORT.md");
+  fs.mkdirSync(path.dirname(rev), { recursive: true });
+  fs.writeFileSync(rev, "LOCAL REVIEW", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(rev), "LOCAL REVIEW", "project review preserved across update");
 });
 
 test("package.json merge does not downgrade a project-customized harness gate", async () => {
@@ -1394,6 +1546,7 @@ function scaffoldBacklogTarget(backlogContent) {
     path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-backlog.js"),
     path.join(target, "scripts", "qa", "check-backlog.js")
   );
+  copyBoardLib(target);
   fs.writeFileSync(path.join(target, "BACKLOG.md"), backlogContent, "utf8");
   return target;
 }
@@ -1583,6 +1736,43 @@ test("test:backlog passes when BACKLOG.md is committed", () => {
   const r = runBacklogGate(t);
   assert.strictEqual(r.status, 0, r.out);
   assert.match(r.out, /RESULT: backlog green/);
+});
+
+test("test:backlog reports an over-wide row honestly instead of a shifted-cell error", () => {
+  // F-127 evidence: an unescaped `|` in a cell split one logical row into extra
+  // cells; the old parser then surfaced a *shifted* cell as a bogus "depends on
+  // unknown row NNN". The gate must name the real defect.
+  const corrupt = VALID_BACKLOG.replace(
+    "| F-003 | P2 | flow | do a thing | file.ts |",
+    "| F-003 | P2 | flow | do a thing | extra | file.ts |"
+  );
+  const t = scaffoldBacklogTarget(corrupt);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /F-003.*has 6 cells, expected 5/);
+  assert.doesNotMatch(r.out, /depends on unknown row/, "no misleading shifted-cell error");
+});
+
+test("board row primitives live in one shared module (no duplicated splitCells)", () => {
+  // P4 one-home-per-fact: the four board scripts must import from board-lib.js,
+  // not each carry a private splitCells copy that drifts (F-094 was reverted in a
+  // deployed copy precisely because the fix lived in only one of several copies).
+  const scripts = [
+    ["scripts", "backlog.js"],
+    ["scripts", "qa", "check-backlog.js"],
+    ["scripts", "qa", "check-concurrency.js"],
+    ["scripts", "qa", "merge-backlog.js"],
+  ];
+  const boardLib = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-lib.js"));
+  assert.match(boardLib, /function splitCells/, "board-lib ships the canonical splitCells");
+  assert.match(boardLib, /function formatRow/, "board-lib ships the escaping formatRow");
+  for (const segs of scripts) {
+    const src = read(path.join(h.TEMPLATES_DIR, ...segs));
+    assert.doesNotMatch(src, /function splitCells\s*\(/, `${segs.join("/")} must not redefine splitCells`);
+    assert.match(src, /board-lib\.js/, `${segs.join("/")} imports the shared board-lib`);
+  }
+  const backlogSrc = read(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"));
+  assert.doesNotMatch(backlogSrc, /function formatRow\s*\(/, "backlog.js must not redefine formatRow");
 });
 
 test("migrate-backlog consolidates INDEX.md F-rows and todo.md items into BACKLOG.md", () => {
@@ -1898,6 +2088,7 @@ function scaffoldConcurrencyTarget() {
     path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-concurrency.js"),
     path.join(target, "scripts", "qa", "check-concurrency.js")
   );
+  copyBoardLib(target);
   git(target, ["init", "-q"]);
   git(target, ["config", "user.email", "t@t.t"]);
   git(target, ["config", "user.name", "t"]);
@@ -2362,6 +2553,21 @@ test("test:concurrency passes when dirty files are cleanly owned by one session"
   assert.match(r.out, /no cross-session overlap detected/);
 });
 
+test("test:concurrency FAILS when the shared BACKLOG.md is dirty under 2+ In-progress rows", () => {
+  // Finding 4: the board is one shared file every session writes on main, so a
+  // dirty BACKLOG.md with 2+ active sessions is provably ambiguous — it must be a
+  // hard failure, not a tolerated warning.
+  const t = scaffoldConcurrencyTarget();
+  writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044", "F-060"]));
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044", "F-060", "F-099"])); // another session's board delta
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /BACKLOG\.md is dirty/);
+  assert.match(r.out, /FAILURE/);
+});
+
 test("test:concurrency fails when a tree mixes two sessions' WIP", () => {
   const t = scaffoldConcurrencyTarget();
   writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044", "F-060"]));
@@ -2437,4 +2643,71 @@ test("skills/features SKILL.md is harness-owned (overwritten), not project scaff
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.match(read(skill), /registrar only/, "features skill restored on update (harness-owned)");
+});
+
+// ---------------------------------------------------------------- test:quality gate (M4)
+
+function runQualityGate(target, args) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-quality.js", ...args], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("test:quality flags a dead export and an oversized new file on the diff", () => {
+  const t = tmpdir();
+  fs.mkdirSync(path.join(t, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-quality.js"),
+    path.join(t, "scripts", "qa", "check-quality.js")
+  );
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  writeFile(t, "package.json", "{}\n");
+  writeFile(t, "lib/used.ts", "export function used() { return 1; }\n");
+  writeFile(t, "lib/consumer.ts", "import { used } from './used';\nexport const x = used();\n");
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+
+  // NEW dead export (no consumer) + NEW oversized file on the change
+  writeFile(t, "lib/dead.ts", "export function deadExport() { return 2; }\n");
+  const big = ["export function f() {}"];
+  for (let i = 0; i < 1500; i++) big.push("// padding " + i);
+  writeFile(t, "lib/big.ts", big.join("\n") + "\n");
+
+  const r = runQualityGate(t, ["--base", "HEAD"]);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /deadExport.*no consumer/);
+  assert.match(r.out, /lib\/big\.ts is \d+ lines/);
+
+  // a used export is not flagged
+  assert.doesNotMatch(r.out, /`used` has no consumer/, "used export must not be flagged");
+});
+
+test("test:quality passes a clean diff and an explicit-path clean scan", () => {
+  const t = tmpdir();
+  fs.mkdirSync(path.join(t, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-quality.js"),
+    path.join(t, "scripts", "qa", "check-quality.js")
+  );
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  writeFile(t, "package.json", "{}\n");
+  writeFile(t, "lib/ok.ts", "export function ok() { return 1; }\n");
+  writeFile(t, "lib/consumer.ts", "import { ok } from './ok';\nexport const x = ok();\n");
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  // clean change: nothing new, nothing grown
+  writeFile(t, "lib/ok.ts", "export function ok() { return 1; }\n// touched\n");
+  const r = runQualityGate(t, ["--base", "HEAD"]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /green/);
+
+  // explicit-path clean scan is green too (whole-file references resolve)
+  const r2 = runQualityGate(t, ["--base", "HEAD", "--paths", "lib/ok.ts"]);
+  assert.strictEqual(r2.status, 0, r2.out);
 });

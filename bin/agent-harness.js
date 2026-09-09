@@ -93,11 +93,12 @@ function relKey(rel) {
 }
 
 /* `.agents/memory/*` (session memory), `.agents/features/*` (feature doc tree),
- * `.agents/qa-plans/*` (one QA plan file per change) and `.agents/handoffs/*`
- * (one session handoff file per session) are project data — scaffolded
- * create-if-missing, never overwritten, and never tracked in the manifest.
- * qa-plans and handoffs are sharded per change/session so concurrent sessions
- * never collide on a single shared file.
+ * `.agents/reviews/*` (durable review/audit deliverables), `.agents/qa-plans/*`
+ * (one QA plan file per change) and `.agents/handoffs/*` (one session handoff
+ * file per session) are project data — scaffolded create-if-missing, never
+ * overwritten, and never tracked in the manifest. qa-plans and handoffs are
+ * sharded per change/session so concurrent sessions never collide on a single
+ * shared file.
  * Note: the check matches the directory DIRECTLY under `.agents` (not any
  * segment), so `.agents/skills/features/SKILL.md` stays harness-owned. */
 function isProjectScaffold(rel) {
@@ -108,6 +109,7 @@ function isProjectScaffold(rel) {
   return (
     sub === "memory" ||
     sub === "features" ||
+    sub === "reviews" ||
     sub === "qa-plans" ||
     sub === "handoffs"
   );
@@ -214,6 +216,7 @@ const HARNESS_SCRIPTS = {
   "test:docs": "node scripts/qa/check-docs.js",
   "test:concurrency": "node scripts/qa/check-concurrency.js",
   "test:integrate": "node scripts/qa/check-integrate.js",
+  "test:quality": "node scripts/qa/check-quality.js",
   report: "node scripts/agent-report.js",
   serve: "node scripts/serve.js",
 };

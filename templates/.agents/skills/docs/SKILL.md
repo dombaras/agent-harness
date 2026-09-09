@@ -14,9 +14,11 @@ non-redundant.
 ## Boundary (never cross it)
 
 - **Not yours**: `.agents/features/<slug>/` (feature contract — `features`
-  persona), `.agents/memory/*` (handoff, locations, domain-map, stack-versions,
-  product-principles, flow-map, model-routing — the `handoff` persona and the
-  orchestrator), `BACKLOG.md` (the `features` persona), and all code.
+  persona), `.agents/reviews/<id>/` (review/audit deliverables — a review session,
+  tagged by `.agents/memory/quality-parameters.md`), `.agents/memory/*` (handoff,
+  locations, domain-map, stack-versions, product-principles, flow-map,
+  model-routing, quality-parameters — the `handoff` persona and the orchestrator),
+  `BACKLOG.md` (the `features` persona), and all code.
 - **Yours**: `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and `docs/**`.
 
 ## Principles
@@ -121,6 +123,10 @@ Status: <proposed | accepted | superseded>
 - CHANGELOG entries are one line, newest-first, matching the commit message, and
   each cites its commit short hash (`` `abc1234` ``) so the changelog can't drift
   silently — `test:docs` fails on any shipped commit with no cited hash.
+- A **review/audit ship** that delivers findings under `.agents/reviews/**` is a
+  milestone, not an invisible chore: append a `docs(review)` changelog line even
+  though the commit itself is `docs`/`chore` — `test:docs` enforces it. A
+  no-follow-up audit can skip the line.
 - Never delete a doc's history; supersede/archive instead.
 - Update `docs/INDEX.md` and `.agents/memory/locations.md` in the same commit.
 - Every doc statement must be verifiable — `file:line` or an observed fact.

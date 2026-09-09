@@ -16,6 +16,12 @@
  *      `perf`) since CHANGELOG.md first appeared must be cited in it by short
  *      hash (`abc1234` — backticked or parenthesized). This is the mechanical
  *      backstop that keeps the changelog from silently drifting.
+ *   5. Review/audit ships are changelog-visible: a commit that delivers durable
+ *      review findings under `.agents/reviews/**` is a meaningful milestone even
+ *      though it ships as `docs`/`chore`, so it must be cited in CHANGELOG.md
+ *      like any feat/fix (convention: append a `docs(review)` line). This makes
+ *      "we ran a review and filed N rows" appear in the human changelog instead
+ *      of being invisible because a code-quality review ships as `docs`/`chore`.
  *
  * Backward compatible: with no README.md and no docs/ tree the gate warns and
  * passes — projects opt in by keeping docs. Links are checked only against the
@@ -201,11 +207,38 @@ if (!fs.existsSync(changelogPath)) {
         if (!/^(feat|fix|refactor|perf)(\([^)]*\))?:/.test(subject)) continue;
         if (!cited.has(hash.toLowerCase())) missing.push({ hash, subject });
       }
+
+      // 5. Review/audit deliverables are milestones too — a commit that ships
+      // `.agents/reviews/**` is changelog-worthy even as docs/chore.
+      const reviewLog = gitLog([
+        "log",
+        "--no-merges",
+        "--format=%h%x09%s",
+        `${baseline.trim()}..HEAD`,
+        "--",
+        ".agents/reviews/",
+      ]);
+      if (reviewLog) {
+        for (const line of reviewLog.split(/\r?\n/)) {
+          if (!line) continue;
+          const sep = line.indexOf("\t");
+          if (sep < 0) continue;
+          const hash = line.slice(0, sep);
+          const subject = line.slice(sep + 1);
+          if (!cited.has(hash.toLowerCase())) {
+            missing.push({ hash, subject, note: "ships .agents/reviews/ — append a docs(review) changelog line" });
+          }
+        }
+      }
+
       if (missing.length === 0) {
         pass(`CHANGELOG.md: every shipped commit since ${baseline.trim().slice(0, 7)} is recorded`);
       } else {
-        for (const { hash, subject } of missing) {
-          fail(`CHANGELOG.md: missing entry for ${hash} \u2014 ${subject}`);
+        for (const { hash, subject, note } of missing) {
+          fail(
+            `CHANGELOG.md: missing entry for ${hash} \u2014 ${subject}` +
+              (note ? ` (${note})` : "")
+          );
         }
       }
     }

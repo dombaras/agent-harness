@@ -26,6 +26,7 @@ const EXPECTED = {
   "test:backlog": "harness — canonical single-file backlog gate (board schema + depends-on references valid)",
   "test:concurrency": "harness — cross-session working-tree guard (a concurrent session's uncommitted work must not leak into your push)",
   "test:integrate": "harness — pre-push rebase check (rebase onto main before push, so conflicts surface early)",
+  "test:quality": "harness — mechanical code-quality gate on new/changed code (dead exports + oversized files; rubric in .agents/memory/quality-parameters.md)",
   "test:quick": "Tier 1 — types + translations + mobile smoke",
   "test:routes": "Tier 2 — route/page render",
   "test:api": "Tier 3 — API/ORM edge cases",

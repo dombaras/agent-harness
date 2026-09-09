@@ -58,6 +58,11 @@ cite the written file + section map in **Evidence**.
    - `persona → model`
    - **Objective** — one sentence naming a single deliverable AND the user
      outcome it serves.
+   - **Working tree** — the exact feature-worktree path/branch (or `main`) the
+     persona edits, with the verbatim contract sentence: "run every read/write
+     shell command with `workdir` set to the assigned worktree (or `git -C
+     <path>` for git)". The persona verifies `git rev-parse --show-toplevel` +
+     `git branch --show-current` before its first edit and confirms both match.
    - **Owned files** — exact paths this persona may edit.
    - **Read-only files** — explicit out-of-scope paths (governance, memory,
      skills, other screens).
