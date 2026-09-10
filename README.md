@@ -159,8 +159,10 @@ fabricated) that `npm run report` aggregates deterministically per feature.
   that rewrites the main `opencode.json` `model` and the six reasoning-tier
   agents (planner, system-architect, security-engineer, diagnostics-expert,
   product-manager, qa-architect) in one step — a blunt override of the tiered
-  default. Aliases: `deepseek`/`flash`/`direct` → `deepseek/deepseek-v4-flash`
-  (default, direct API key), `pro`/`deepseek-pro` → `deepseek/deepseek-v4-pro`
+  default. Aliases: `deepseek`/`flash`/`direct` → `deepseek/deepseek-flash`
+  (default, direct API key, V4.1 Flash), `deepseek-v4-flash` →
+  `deepseek/deepseek-v4-flash` (legacy V4 pin), `pro`/`deepseek-pro` →
+  `deepseek/deepseek-v4-pro`
   (escalation), `zen`/`opencode` → `opencode/deepseek-v4-pro` (gateway),
   `pickle` → `opencode/big-pickle`, `nvidia`/`kimi`/`kimi-k3` →
   `nvidia/moonshotai/kimi-k3` (NVIDIA NIM), `nemotron`/`nemotron-ultra` →

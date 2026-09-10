@@ -1,11 +1,12 @@
 ---
-description: Switch the main model + reasoning-tier agents to one model (blunt override of the tiered default; default deepseek/deepseek-v4-flash direct).
+description: Switch the main model + reasoning-tier agents to one model (blunt override of the tiered default; default deepseek/deepseek-flash direct, V4.1 Flash).
 ---
 
 Change the reasoning-tier model to `$ARGUMENTS`.
 
 Valid values:
-- `deepseek` / `flash` / `direct` (default) -> `deepseek/deepseek-v4-flash` (direct API key)
+- `deepseek` / `flash` / `direct` (default) -> `deepseek/deepseek-flash` (direct API key, V4.1 Flash)
+- `deepseek-v4-flash` -> `deepseek/deepseek-v4-flash` (legacy V4 flash pin; kept replaceable for rollback/migration)
 - `deepseek-pro` / `pro` -> `deepseek/deepseek-v4-pro` (direct API key, escalation)
 - `zen` / `opencode` -> `opencode/deepseek-v4-pro` (Zen gateway)
 - `pickle` / `big-pickle` -> `opencode/big-pickle`
