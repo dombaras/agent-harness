@@ -1,17 +1,17 @@
-# agent-harness — Agent Operating Rules
+# agent-harness — repo workflow
 
-The always-loaded rules summary lives in [`.agents/rules/00-operating.md`](.agents/rules/00-operating.md) (wired into `opencode.json` `instructions`). The full, canonical rulebook is [`.agents/AGENTS.md`](.agents/AGENTS.md) — read it before any non-trivial work.
+Standing workflow for every change to the harness (`bin/`, `templates/`,
+`docs/`, tests):
 
-It governs: Step Zero subagent dispatch, zero-speculation debugging, data integrity, UI/RTL ergonomics, stack-version discipline, token efficiency, right-sized QA tiers, and the commit-and-push gate.
+1. Bump `package.json` version (the version-bump test enforces this).
+2. `npm run lint` and `npm test` must both be green.
+3. Commit + push to `main` with a `feat:`/`fix:` message ending in `(0.1.x)`.
+4. Deploy to the main project from this local checkout (always after harness changes):
 
-- **Dispatch personas** via the `task` tool (see `.agents/rules/00-operating.md` §Step Zero); consult the relevant `.agents/skills/<persona>/SKILL.md`.
-- **Features**: capture a found item as one light row in the canonical `BACKLOG.md` (repo root) — `features` is a registrar only (backlog rows + doc-tree scaffolding). Update the board with the `backlog_*` tools (or `node scripts/backlog.js`), never hand-edit `BACKLOG.md`. When a feature is picked up, author the per-feature doc chain (intent/scope/plan/tests) by dispatching each author persona **directly** (`product-manager` → intent, `system-architect` → scope, `planner` → plan, `qa-architect` → tests) — never via `features`. For an "investigate + plan" request, dispatch `planner` / `product-manager` directly.
-- **Product-first planning**: planning is value-led, not tech-led — define the user (actor/need/outcome/acceptance) before code, sequence work value-first against `.agents/memory/product-principles.md`, and let `npm run test:product` enforce it.
-- **Report value-first**: completion reports open with what value shipped (plain language — what the user now gets, why it matters) + the main "how", before any file/test/commit detail.
-- **Docs**: human-facing docs (`README.md`, `CHANGELOG.md`, `docs/**`) are owned by the `docs` persona — docs point at code, never duplicate it, and `npm run test:docs` enforces no placeholders / no dangling links / well-formed ADRs / every shipped commit has a changelog entry.
-- **Every change touching code paths gets a QA plan** (a per-change file under `.agents/qa-plans/`) from `qa-architect` — if it isn't dispatched, the main orchestrator plans in its place. `npm run test:qa-plan` fails on any changed code path with no covering assertion or waiver, and on any touched flow (`.agents/memory/flow-map.md`) whose sibling surfaces / declared variants the plan doesn't address. The plan also carries the test-design record (`## Test budget`, `## Oracle & owner`, `## Test-design self-check`); `npm run test:wiring` fails orphaned tests and the linger check flags passing-but-idling suites (T1–T10 → `.agents/memory/test-design-parameters.md`).
-- **Three environments**: `development` (dirty by design — QA/test data lives here), `uat`, and `production` (both enforced clean). Only code + schema migrations + idempotent seeds move forward; data never crosses the boundary (`.agents/memory/environments.md`). Finalizing a task means deploying to **uat** (`devops-engineer` → `deploy:uat`, then `test:data-hygiene -- --env uat`); production is human-gated.
-- **At session start**, read `.agents/memory/locations.md`, `.agents/memory/model-routing.md`, `.agents/memory/orchestration.md` (context/turn budgets), `.agents/memory/product-principles.md`, `.agents/memory/environments.md`, and `BACKLOG.md`. For review work, read `.agents/memory/quality-parameters.md` (the P1–P8 rubric) and write deliverables under `.agents/reviews/<id>/` (never `.agents/features/`).
-- **Bounded orchestration**: one bounded context per work unit — checkpoint into the session's `.agents/handoffs/<feature-id>.md` when approaching the budgets in `.agents/memory/orchestration.md`, and prefer a fresh context that resumes from the checkpoint over unbounded transcript growth.
+   ```powershell
+   node C:\develop\agent-harness\bin\agent-harness.js update --target C:\develop\PublicVirtualLibrary
+   ```
 
-> Deployed and maintained by `@dombaras/agent-harness` (`npx @dombaras/agent-harness init` / `update`). Do not hand-edit harness-owned files — regenerate them and commit the deltas.
+Main project: **LibraryOS** at `C:\develop\PublicVirtualLibrary`. Publishing to
+npm is optional and done on the user's side — the local-checkout update above is
+the authoritative way to push harness changes to LibraryOS.
