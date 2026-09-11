@@ -217,6 +217,8 @@ const HARNESS_SCRIPTS = {
   "test:concurrency": "node scripts/qa/check-concurrency.js",
   "test:integrate": "node scripts/qa/check-integrate.js",
   "test:quality": "node scripts/qa/check-quality.js",
+  "test:wiring": "node scripts/qa/check-test-wiring.js",
+  "test:linger": "node scripts/qa/check-linger.js",
   report: "node scripts/agent-report.js",
   serve: "node scripts/serve.js",
 };
@@ -645,7 +647,8 @@ function printNextSteps() {
   console.log("      `.agents/memory/environments.md` (the dev/uat/prod registry — URLs, DB");
   console.log("      env vars, deploy + seed commands; the DoD deploy-to-UAT step reads it).");
   console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`,");
-  console.log("      `test:backlog`, `test:product`, `test:docs`) were auto-wired into package.json \"scripts\".");
+  console.log("      `test:backlog`, `test:product`, `test:docs`, `test:quality`, `test:wiring`,");
+  console.log("      `test:linger`) were auto-wired into package.json \"scripts\".");
   console.log("   3. Capture found items as one light row in the canonical `BACKLOG.md` (repo root);");
   console.log("      dispatch the `features` persona to author the per-feature doc chain when one is picked up.");
   console.log("   4. Restart your agent CLI (config is read once at startup).\n");

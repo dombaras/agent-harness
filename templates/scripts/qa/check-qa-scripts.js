@@ -27,6 +27,8 @@ const EXPECTED = {
   "test:concurrency": "harness — cross-session working-tree guard (a concurrent session's uncommitted work must not leak into your push)",
   "test:integrate": "harness — pre-push rebase check (rebase onto main before push, so conflicts surface early)",
   "test:quality": "harness — mechanical code-quality gate on new/changed code (dead exports + oversized files; rubric in .agents/memory/quality-parameters.md)",
+  "test:wiring": "harness — orphan-test gate (every *.test.* file is executed by a package script; test-design param T7)",
+  "test:linger": "harness — exit-contract gate (process wall-clock vs runner-reported test duration on a tier; wraps test:quick by default; test-design params T1/T6/T9)",
   "test:quick": "Tier 1 — types + translations + mobile smoke",
   "test:routes": "Tier 2 — route/page render",
   "test:api": "Tier 3 — API/ORM edge cases",

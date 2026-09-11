@@ -23,6 +23,10 @@ The eight parameters, each with what "good" looks like and how it is measured:
 
 - A review's findings cite the tag: `W2.1 [P4] admin community summary duplicated
   across 3 routes` — not a prose re-definition of "duplication".
+- Test-quality findings (oracle independence, isolation, exit contract, tier
+  cost, wiring) cite the T1–T10 tags in
+  `.agents/memory/test-design-parameters.md` — P-tags are code quality, T-tags
+  are test quality; keep the two lenses separate.
 - The "fix one, fix all" rule still applies: a finding names every surface that
   carries the defect (web / mobile / scripts), per `.agents/memory/flow-map.md`.
 - Mechanical, provable parameters (P1 zero-consumer, P3 size, P4 duplicate

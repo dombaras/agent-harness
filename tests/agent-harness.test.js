@@ -2712,3 +2712,197 @@ test("test:quality passes a clean diff and an explicit-path clean scan", () => {
   const r2 = runQualityGate(t, ["--base", "HEAD", "--paths", "lib/ok.ts"]);
   assert.strictEqual(r2.status, 0, r2.out);
 });
+
+// ---------------------------------------------------------------- test:wiring gate (orphan detector)
+
+function scaffoldWiringTarget(scripts, files) {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-test-wiring.js"),
+    path.join(target, "scripts", "qa", "check-test-wiring.js")
+  );
+  writeFile(target, "package.json", JSON.stringify({ scripts }, null, 2) + "\n");
+  for (const [rel, content] of Object.entries(files)) writeFile(target, rel, content);
+  return target;
+}
+
+function runWiringGate(target, args = []) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-test-wiring.js", ...args], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("test:wiring fails a test file no script executes in an explicitly-managed test dir", () => {
+  const t = scaffoldWiringTarget(
+    { "test:quick": "node --test --test-force-exit scripts/qa/tests/a.test.js" },
+    {
+      "scripts/qa/tests/a.test.js": "// a\n",
+      "scripts/qa/tests/b.test.js": "// orphan\n",
+      "scripts/qa/tests/helpers.js": "// not a test file\n",
+    }
+  );
+  const r = runWiringGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /b\.test\.js is in an explicitly-managed test directory/);
+  assert.match(r.out, /a\.test\.js \(wired via/);
+  assert.doesNotMatch(r.out, /helpers\.js/);
+});
+
+test("test:wiring accepts dir/glob wiring, waivers, and discovery-runner notices", () => {
+  const viaGlob = scaffoldWiringTarget(
+    { "test:quick": "node --test scripts/qa/tests/*.js" },
+    { "scripts/qa/tests/a.test.js": "// a\n" }
+  );
+  let r = runWiringGate(viaGlob);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /wired via `scripts\/qa\/tests\/\*\.js`/);
+
+  const viaWaiver = scaffoldWiringTarget(
+    { "test:quick": "node --test scripts/qa/tests/a.test.js" },
+    {
+      "scripts/qa/tests/a.test.js": "// a\n",
+      "scripts/qa/tests/b.test.js": "// test-wiring-waived: fixture loaded by a.test.js\n",
+    }
+  );
+  r = runWiringGate(viaWaiver);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /waived: fixture loaded/);
+
+  // a bare discovery runner executes default matches; per-file wiring is a notice
+  const discovery = scaffoldWiringTarget(
+    { "test:e2e": "playwright test", "test:e2e:install": "playwright install chromium" },
+    { "e2e/smoke.spec.ts": "// spec\n" }
+  );
+  r = runWiringGate(discovery);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /default-discovery `playwright test`/);
+  r = runWiringGate(discovery, ["--strict"]);
+  assert.strictEqual(r.status, 1, r.out);
+
+  // `playwright install` is not a test run — the spec file is an orphan, not a notice
+  const installOnly = scaffoldWiringTarget(
+    { "test:e2e:install": "playwright install chromium" },
+    { "e2e/smoke.spec.ts": "// spec\n" }
+  );
+  r = runWiringGate(installOnly);
+  assert.strictEqual(r.status, 1, r.out);
+});
+
+// ---------------------------------------------------------------- test:linger gate (exit contract)
+
+function scaffoldLingerTarget(fileName, content) {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-linger.js"),
+    path.join(target, "scripts", "qa", "check-linger.js")
+  );
+  writeFile(target, fileName, content);
+  writeFile(
+    target,
+    "package.json",
+    JSON.stringify({ scripts: { "test:quick": `node ${fileName}` } }) + "\n"
+  );
+  return target;
+}
+
+function runLingerGate(target, args) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-linger.js", ...args], {
+    cwd: target,
+    encoding: "utf8",
+    timeout: 30000,
+  });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("test:linger flags a passing-but-idling suite and passes a prompt exit", () => {
+  const idler = scaffoldLingerTarget(
+    "slow.js",
+    "console.log('\\u2139 tests 2'); console.log('\\u2139 duration_ms 50'); setTimeout(function () {}, 2500);\n"
+  );
+  const r = runLingerGate(idler, ["--max-linger", "1", "--", "node", "slow.js"]);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /LINGER/);
+  assert.match(r.out, /runner-reported tests: 2/);
+
+  const prompt = scaffoldLingerTarget(
+    "fast.js",
+    "console.log('\\u2139 tests 2'); console.log('\\u2139 duration_ms 50');\n"
+  );
+  const r2 = runLingerGate(prompt, ["--max-linger", "1", "--", "node", "fast.js"]);
+  assert.strictEqual(r2.status, 0, r2.out);
+  assert.match(r2.out, /exit contract holds/);
+
+  // the child's failure is propagated when there is no linger
+  const failing = scaffoldLingerTarget(
+    "fail.js",
+    "console.log('\\u2139 tests 1'); console.log('\\u2139 duration_ms 5'); process.exit(5);\n"
+  );
+  const r3 = runLingerGate(failing, ["--", "node", "fail.js"]);
+  assert.strictEqual(r3.status, 5, r3.out);
+});
+
+// ---------------------------------------------------------------- test-design parameters + persona gates
+
+test("deploy ships the test-design parameters and wires test:wiring / test:linger", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  assert.ok(exists(path.join(target, "scripts", "qa", "check-test-wiring.js")), "wiring gate deployed");
+  assert.ok(exists(path.join(target, "scripts", "qa", "check-linger.js")), "linger gate deployed");
+
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["test:wiring"], "node scripts/qa/check-test-wiring.js");
+  assert.strictEqual(pkg.scripts["test:linger"], "node scripts/qa/check-linger.js");
+
+  const tdp = path.join(target, ".agents", "memory", "test-design-parameters.md");
+  assert.ok(exists(tdp), "test-design-parameters scaffold created");
+  const src = read(tdp);
+  assert.match(src, /\| T1 \|/);
+  assert.match(src, /\| T7 \|/);
+  assert.match(src, /\| T10 \|/);
+
+  // project-owned: preserved across update
+  fs.writeFileSync(tdp, "my custom T rules\n", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(tdp), "my custom T rules\n", "project test-design-parameters preserved");
+});
+
+test("qa-architect persona carries the T1–T10 checklist and QA-plan record sections", () => {
+  const skill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "qa-architect", "SKILL.md"));
+  assert.match(skill, /Test design & economics/);
+  assert.match(skill, /Independent oracle/);
+  assert.match(skill, /Test quality is part of coverage/);
+  assert.match(skill, /## Test budget/);
+  assert.match(skill, /## Oracle & owner/);
+  assert.match(skill, /## Test-design self-check/);
+  assert.match(skill, /test:wiring/);
+  assert.match(skill, /test-design-parameters\.md/);
+
+  const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", "qa-architect.md"));
+  assert.match(agent, /test-design-parameters\.md/);
+  assert.match(agent, /test:wiring/);
+  assert.doesNotMatch(agent, /\.agents\/memory\/qa-plan\.md/, "stale legacy qa-plan path removed");
+
+  const runner = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "qa-runner", "SKILL.md"));
+  assert.match(runner, /test:wiring/);
+  assert.match(runner, /check-linger\.js/);
+  assert.match(runner, /passing-but-idling/);
+
+  const planReadme = read(path.join(h.TEMPLATES_DIR, ".agents", "qa-plans", "README.md"));
+  assert.match(planReadme, /## Test budget/);
+  assert.match(planReadme, /## Oracle & owner/);
+  assert.match(planReadme, /## Test-design self-check/);
+
+  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  assert.match(rulebook, /test:wiring/);
+  assert.match(rulebook, /test-design-parameters\.md/);
+  assert.match(rulebook, /Test quality & economics rule/);
+
+  const wiringCheck = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-qa-scripts.js"));
+  assert.match(wiringCheck, /test:wiring/);
+  assert.match(wiringCheck, /test:linger/);
+});

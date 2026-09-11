@@ -46,7 +46,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `scripts/backlog.js` | deterministic `BACKLOG.md` editor (list/add/take/archive/freeze) | harness (overwrite) |
 | `.opencode/tools/backlog.ts` | `backlog_*` custom tools the LLM calls (shell out to the CLI) | harness (overwrite) |
 | `.opencode/plugins/backlog-notify.ts` | toast/log whenever an agent mutates the board | harness (overwrite) |
-| `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, orchestration, history, flow-map, product-principles, quality-parameters) | **project** (create-if-missing) |
+| `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, orchestration, history, flow-map, product-principles, quality-parameters, test-design-parameters) | **project** (create-if-missing) |
 | `.agents/reviews/*` | project data (durable review/audit deliverables — REPORT.md + scans, tagged by quality-parameters) | **project** (create-if-missing) |
 | `.agents/handoffs/*` | project data (one session handoff file per session — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.agents/qa-plans/*` | project data (one QA plan file per change — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
@@ -246,6 +246,19 @@ so agents see complete descriptions.
   files that are new or grew past the line limit (default 1000). Runs against the
   diff by default (`--paths a,b` to target files, `--base <ref>` to set the
   baseline, `--strict` for CI). Canonical rubric: `.agents/memory/quality-parameters.md`.
+- `npm run test:wiring` — **orphan-test gate**: every `*.test.*` / `*.spec.*`
+  file must be executed by some package script (directly, as a directory prefix,
+  or via a glob). An authored test wired into no tier is neither protection nor a
+  failure signal — test-design parameter T7. Default-discovery runners (`vitest
+  run`, bare `node --test`, …) downgrade unwired files to warnings unless
+  `--strict`; a deliberate orphan carries an auditable
+  `// test-wiring-waived: reason` comment. Tags: `.agents/memory/test-design-parameters.md`.
+- `npm run test:linger` — **exit-contract gate**: runs `test:quick` by default
+  (or an explicit command after `--`), measures real process wall-clock, parses
+  the runner's self-reported duration (`node:test` `duration_ms`, jest `Time:`,
+  vitest `Duration`), and fails when the process lingers after the tests are done
+  (T1/T6/T9) — the measured bug where 22 tests finished in 76 ms but the process
+  exited 60.4 s later. Tune with `--max-linger <sec>` / `--ratio <x>`.
 - `npm run test:product` — **product/UX-first gate**: every feature doc in
   `.agents/features/<slug>/` must define its user before planning/implementation.
   `intent.md` must carry Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md`
@@ -282,7 +295,8 @@ npx @dombaras/agent-harness update --target /path/to/project
 
 - Overwrites harness-owned files, preserves `.agents/memory/*`, `.agents/reviews/*`, `.agents/handoffs/*`, `.agents/qa-plans/*`, and `BACKLOG.md`.
 - Auto-wires the harness gate scripts (`test:dispatch`, `test:governance`,
-  `test:qa-plan`, `test:backlog`, `test:product`, `test:docs`) into the target's `package.json` (merged, add-only).
+  `test:qa-plan`, `test:backlog`, `test:product`, `test:docs`, `test:quality`,
+  `test:wiring`, `test:linger`) into the target's `package.json` (merged, add-only).
 - **Auto-commits** the harness files it changed (`chore(harness): @dombaras/agent-harness
   <old> -> <new>`) and **pushes** to origin, so the next session never sees unexplained
   modified harness files. Your unrelated uncommitted work is never staged.

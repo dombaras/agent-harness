@@ -21,9 +21,15 @@ covered if ANY plan file names it.
   the collision. If a later change revisits the same feature, append a new
   `##`-block to that feature's file (or open a new dated file) — never reorder
   or delete another entry.
-- Same four sections the old `qa-plan.md` carried (authored by `qa-architect`,
-  or by the main orchestrator as the mandatory fallback): `## Change intent`,
-  `## Parallel-surface & variant audit`, `## Coverage map`, `## Waivers`.
+- Authored by `qa-architect` (or by the main orchestrator as the mandatory
+  fallback). Required sections: `## Change intent`,
+  `## Parallel-surface & variant audit`, `## Coverage map`, `## Waivers`, plus
+  the test-design record — `## Test budget`, `## Oracle & owner`,
+  `## Test-design self-check` (T1–T10; see
+  `.agents/memory/test-design-parameters.md`). The record is what makes test
+  quality and economics auditable: coverage without an independent oracle, an
+  exit contract, a stated cost, and a wired tier produces suites that are green,
+  prove little, and cost a lot.
 
 ## Example (`F-003.md`)
 
@@ -42,6 +48,21 @@ covered if ANY plan file names it.
     ## Coverage map
     - components/return/ReturnConfirmDrawer.tsx -> test:quick::progression (click-through: Mark as Returned -> confirm -> /api/transactions/[id]/return)
     - app/api/transactions/[id]/return/route.ts -> test:quick::progression (return POST succeeds with no condition payload)
+
+    ## Test budget
+    - scripts/qa/tests/return-confirm.test.ts: ~4 s wall-clock, tier test:quick, teardown: runner force-exit (no open handles)
+    - test:quick total budget: <= 60 s (pre-push)
+
+    ## Oracle & owner
+    - return POST without condition payload -> behavior (route contract); owner: new
+    - ReturnConfirmDrawer renders no condition UI -> behavior (user-visible absence); owner: new
+    - generated-client parity -> drift-guard; owner: check-generated-client.js (do NOT duplicate)
+
+    ## Test-design self-check
+    - [x] T1 exit/teardown   - [x] T2 independent oracle - [x] T3 single owner
+    - [x] T4 real surface    - [x] T5 executed proof     - [x] T6 cheapest tier
+    - [x] T7 wired (test:wiring green) - [x] T8 hermetic  - [x] T9 fail-fast
+    - [x] T10 labels/negative case
 
     ## Waivers
     # waived: src/some-screen.tsx reason: copy-only string swap, no runtime path changed
