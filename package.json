@@ -16,7 +16,21 @@
   ],
   "scripts": {
     "test": "node --test",
-    "lint": "node --check bin/agent-harness.js && node --check templates/scripts/backlog.js && node --check templates/scripts/agent-report.js && node --check templates/scripts/serve.js && node --check templates/scripts/qa/check-dispatch-config.js && node --check templates/scripts/qa/governance.js && node --check templates/scripts/qa/check-qa-plan.js && node --check templates/scripts/qa/check-qa-scripts.js && node --check templates/scripts/qa/check-backlog.js && node --check templates/scripts/qa/board-lib.js && node --check templates/scripts/qa/check-quality.js && node --check templates/scripts/qa/check-product.js && node --check templates/scripts/qa/check-docs.js && node --check templates/scripts/qa/check-concurrency.js && node --check templates/scripts/qa/check-integrate.js && node --check templates/scripts/qa/merge-backlog.js && node --check templates/scripts/qa/run-clean.js && node --check templates/scripts/qa/check-test-wiring.js && node --check templates/scripts/qa/check-linger.js"
+    "lint": "node --check bin/agent-harness.js && node --check templates/scripts/backlog.js && node --check templates/scripts/agent-report.js && node --check templates/scripts/serve.js && node --check templates/scripts/qa/check-dispatch-config.js && node --check templates/scripts/qa/governance.js && node --check templates/scripts/qa/check-qa-plan.js && node --check templates/scripts/qa/check-qa-scripts.js && node --check templates/scripts/qa/check-backlog.js && node --check templates/scripts/qa/board-lib.js && node --check templates/scripts/qa/check-quality.js && node --check templates/scripts/qa/check-product.js && node --check templates/scripts/qa/check-docs.js && node --check templates/scripts/qa/check-concurrency.js && node --check templates/scripts/qa/check-integrate.js && node --check templates/scripts/qa/merge-backlog.js && node --check templates/scripts/qa/run-clean.js && node --check templates/scripts/qa/check-test-wiring.js && node --check templates/scripts/qa/check-linger.js",
+    "backlog": "node scripts/backlog.js",
+    "test:dispatch": "node scripts/qa/check-dispatch-config.js",
+    "test:governance": "node scripts/qa/governance.js",
+    "test:qa-plan": "node scripts/qa/check-qa-plan.js",
+    "test:backlog": "node scripts/qa/check-backlog.js",
+    "test:product": "node scripts/qa/check-product.js",
+    "test:docs": "node scripts/qa/check-docs.js",
+    "test:concurrency": "node scripts/qa/check-concurrency.js",
+    "test:integrate": "node scripts/qa/check-integrate.js",
+    "test:quality": "node scripts/qa/check-quality.js",
+    "test:wiring": "node scripts/qa/check-test-wiring.js",
+    "test:linger": "node scripts/qa/check-linger.js",
+    "report": "node scripts/agent-report.js",
+    "serve": "node scripts/serve.js"
   },
   "keywords": [
     "opencode",

@@ -11,3 +11,8 @@ node_modules/
 /.opencode/
 /opencode.json
 /AGENTS.md
+
+# agent-harness (managed below)
+.harness-backup/
+.backlog.lock
+.serve/
