@@ -13,9 +13,9 @@
  *      justification starts) MUST carry a `## Fan-out justification` section or
  *      a `dispatch_justification:` line citing why each dispatch is distinct —
  *      the planner's `§Fan-out review` names them. This rule is FORWARD-ONLY
- *      (`FANOUT_JUSTIFY_SINCE`): handoffs dated before it shipped, and undated
- *      legacy handoffs, are grandfathered — a gate never retroactively fails
- *      history.
+ *      (`FANOUT_JUSTIFY_SINCE`): handoffs dated before it shipped, undated
+ *      legacy handoffs, and the legacy aggregate `.agents/memory/handoff.md`
+ *      are grandfathered — a gate never retroactively fails history.
  *
  * Handoffs are SHARDED (like QA plans): one file per session under
  * `.agents/handoffs/` (e.g. `F-003.md`, `return-no-condition.md`), so concurrent
@@ -32,8 +32,10 @@ const root = path.resolve(__dirname, "..", "..");
  * explicit decomposition justification"; this gate enforces that at wrap-up. */
 const FANOUT_JUSTIFY_MIN = 5;
 /* Forward-only: only handoffs dated this day or later are subject to the
- * justification check. Undated legacy handoffs are grandfathered. */
+ * justification check. Undated legacy handoffs and the legacy aggregate
+ * `.agents/memory/handoff.md` are grandfathered. */
 const FANOUT_JUSTIFY_SINCE = "2026-09-12";
+const LEGACY_HANDOFF = path.join(root, ".agents", "memory", "handoff.md");
 
 const failures = [];
 const check = (ok, msg) => {
@@ -62,8 +64,7 @@ function handoffFiles(root) {
     }
   };
   collect(path.join(root, ".agents", "handoffs"));
-  const legacy = path.join(root, ".agents", "memory", "handoff.md");
-  if (fs.existsSync(legacy)) files.push(legacy);
+  if (fs.existsSync(LEGACY_HANDOFF)) files.push(LEGACY_HANDOFF);
   return files.sort();
 }
 
@@ -142,7 +143,7 @@ for (const file of files) {
       count >= 1,
       `${rel} dispatch log contains at least one entry (subagent result, waived:, or degraded: — bullet or table row)`
     );
-    if (count >= FANOUT_JUSTIFY_MIN) {
+    if (count >= FANOUT_JUSTIFY_MIN && file !== LEGACY_HANDOFF) {
       const date = handoffDate(src);
       const inScope = date !== null && date >= FANOUT_JUSTIFY_SINCE;
       if (inScope) {

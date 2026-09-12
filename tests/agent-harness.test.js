@@ -2206,6 +2206,8 @@ test("test:governance grandfathers pre-rule and undated fan-out handoffs", () =>
   writeFile(t, ".agents/handoffs/F-007.md", `# x\n\nDate: 2026-09-01\n\n## Dispatch log\n${entries}\n\n## Done\n- z\n`);
   // undated legacy handoff: grandfathered too
   writeFile(t, ".agents/handoffs/F-008.md", `# x\n\n## Dispatch log\n${entries}\n\n## Done\n- z\n`);
+  // the legacy aggregate is exempt even when it carries a recent date
+  writeFile(t, ".agents/memory/handoff.md", `# legacy\n\nDate: 2026-09-12\n\n## Dispatch log\n${entries}\n`);
   const r = runGovernanceGate(t);
   assert.strictEqual(r.status, 0, r.out);
   assert.doesNotMatch(r.out, /Fan-out justification/);
