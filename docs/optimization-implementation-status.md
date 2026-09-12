@@ -247,6 +247,15 @@ The loop is closed: observed cost/tokens/turns now join to features, and
 
 ## Gotchas
 
+- `model-routing.md` is project-owned (create-if-missing): existing deployments
+  keep their copy, so the new `opportunistic_models:` / `escalation_models:`
+  lines (and the R9/R10 tier classification + escalation flag in `report --cost`)
+  only appear in projects that refresh that file. The `explore` opportunistic pin
+  itself still arrives everywhere through the ADD-ONLY `opencode.json` merge.
+- `test:prefix` treats machine paths as legal in `.agents/memory/locations.md`
+  (the locations map exists to record them) but flags them in the other prefix
+  files; clock timestamps and session ids are flagged everywhere.
+
 - The version-bump test only enforces `bin/` + `templates/` changes; docs-only
   commits do not fail it. The repo workflow still bumps and deploys after every
   harness change.
