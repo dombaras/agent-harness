@@ -18,8 +18,8 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 | Version | `0.1.53` |
 | Shipped this session | `0.1.53` — Phase C (context-guard plugin + core) |
 | Lint / tests | green (`npm run lint`, `npm test` — 149/149) |
-| LibraryOS | `0.1.53` deployed (see post-deploy update commit) |
-| FamilyBudget | `0.1.53` deployed (see post-deploy update commit) |
+| LibraryOS | `0.1.53` deployed, committed, **pushed** (`origin/main`) |
+| FamilyBudget | `0.1.53` deployed + committed locally (no remote configured) |
 
 ---
 
