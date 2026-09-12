@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.51)
+# Agent Harness Optimization — Implementation Status (v0.1.53)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,11 +15,11 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.51` |
-| Shipped this session | `0.1.48` → `0.1.51` (4 commits) |
-| Lint / tests | green — 140/140 (`npm run lint`, `npm test`) |
-| LibraryOS | `0.1.51` deployed, committed, **pushed** (`origin/main`) |
-| FamilyBudget | `0.1.51` deployed + committed locally (no remote configured) |
+| Version | `0.1.53` |
+| Shipped this session | `0.1.53` — Phase C (context-guard plugin + core) |
+| Lint / tests | green (`npm run lint`, `npm test` — 149/149) |
+| LibraryOS | `0.1.53` deployed (see post-deploy update commit) |
+| FamilyBudget | `0.1.53` deployed (see post-deploy update commit) |
 
 ---
 
@@ -57,7 +57,42 @@ blocked its push. Fixed:
 - **Lesson for any future retroactive gate**: grandfather history, or it becomes
   a push blocker. LibraryOS push is green again after the fix.
 
----
+### `0.1.53` — Phase C: context-guard plugin (the 50/60/80 nudges + loop detector)
+The thresholds were well-specified prose that nothing read. Now something does:
+- **`templates/scripts/qa/context-guard-core.js`** (new) — pure, dependency-free
+  CJS core so every rule is `node:test`-able:
+  - parses the `orchestration.md` turn / request / stuck tables with documented
+    defaults for missing rows (a hand-trimmed file still guards);
+  - turn bands resolved **by threshold value** (descending), so a project can
+    retune the numbers without breaking the ladder; `soft_turn_budget` is not a
+    band itself (`compaction_target_turn` drives the checkpoint band);
+  - **byte-stable injected text per band** — never interpolated with the turn
+    count (a changing tail would break the ~97%-cache-read prefix);
+  - cumulative identical tool+args counter with an order-independent key hash
+    and a documented exemption list; first breach flagged once;
+  - guard-event JSONL formatter.
+- **`templates/.opencode/plugins/context-guard.ts`** (new) — thin hooks layer:
+  - `event`: counts assistant turns per session (dedupe by message id), tracks
+    child sessions from `session.created`/`session.updated` so only the primary
+    orchestrator is nudged, invalidates the threshold cache on
+    `file.watcher.updated` for `orchestration.md`, records `session.compacted`;
+  - `tool.execute.before`: loop counts for primary sessions;
+  - `experimental.chat.system.transform`: injects the band text and/or the loop
+    recovery rule (deduped against the current system array so a persistent
+    system prompt can never accumulate duplicates);
+  - `permission.ask`: surfaces the built-in `doom_loop` decision and arms the
+    recovery rule — it never overrides the permission.
+- **Guard events** append to `.agents/guard-events.jsonl` (local-only, added to
+  the harness-managed `.gitignore` section) — Phase B's data substrate.
+- Wired: `package.json` lint check, README file table + bounded-orchestration
+  section, `orchestration.md` "Machine-read thresholds" section, `00-operating.md`
+  context-budget bullet.
+- Tests: 7 core unit tests (parsing, retunable bands, byte-stability, turn
+  counting/crossings, loop flagging, exemptions, JSONL), a plugin source-contract
+  test (hooks present, no hardcoded thresholds), and a deploy test (both files
+  ship, core stays harness-owned, guard log gitignored). Verified end-to-end
+  locally by loading the real plugin with Node's TS type-stripping and driving
+  synthetic session events.
 
 ## Decision log (changes to the recommendations doc)
 
@@ -69,49 +104,36 @@ blocked its push. Fixed:
   backfilled **retroactively** from the session DB, so C does not need to wait.
 - **R2 soft claim (10–15%) stays unproven** — cap shipped first, measure before
   claiming. The plugin's job is 50/60/80 nudges, not the 100-block (the runtime
-  cap already ends the turn).
+  cap already ends the turn). Discovered nuance while implementing: a hard band
+  **nudge** at 100 is still injected for projects that override `steps`; it is
+  not a mechanical block.
+- **Request thresholds are telemetry only** — `observe/warn/checkpoint/intervene`
+  request-token crossings are logged to the guard JSONL, not injected (the
+  turn-band nudge is the actionable one; request-size injections would bloat).
+- **Loop counting is cumulative, not consecutive** — the measured worst sessions
+  ran the same tool 100–150× cumulatively; the runtime's own `doom_loop`
+  (3 consecutive identical calls, `ask`) covers the immediate case and arms the
+  same recovery rule.
+- **`same_failure_turns` / `no_state_change_turns` stay advisory** — enforcing
+  them requires polling worktree state (`git diff --quiet`) from the plugin,
+  which is expensive and noisy; defer until Phase B data justifies it.
 - **R8 deferred** — ~$0.2–0.7/2wk at current rates; splitting every SKILL.md
   into CORE/details invites drift.
 - Keep `orchestration.md` project-owned and single-source; the plugin reads it.
 
-## What's next — Phase C (context-guard plugin)
-
-Planned shape (verify against opencode 1.18.30 plugin types before coding):
-- New `templates/scripts/qa/context-guard-core.js` (pure, `node:test`-able) +
-  `templates/.opencode/plugins/context-guard.ts` (thin hooks layer).
-- Hooks available: `experimental.chat.system.transform` /
-  `experimental.chat.messages.transform` (mid-session injection),
-  `tool.execute.before` (block/mutate), `permission.ask` (doom_loop visibility),
-  `event` (message/session events). `chat.message` fires only on new user
-  messages — not usable for mid-run nudges.
-- Requirements:
-  - thresholds parsed from `.agents/memory/orchestration.md` (cache + invalidate
-    on `file.watcher.updated`); never hardcode.
-  - injected text **byte-stable within a band** (cache locality — ~97% of input
-    tokens are cache reads).
-  - primary sessions only (track child sessions from session events).
-  - loop detector: build on the built-in `permission.doom_loop` (3 identical
-    tool calls, default `ask`); exclude legitimate polling; inject the recovery
-    rule (`change instructions/context/model/decomposition/diagnostics`).
-  - **guard-event JSONL** (sessionID, threshold crossings, loop hits) so Phase B
-    has data before full telemetry exists.
-- Tests: core unit tests (band transitions, stable strings, threshold parsing,
-  loop counter), plugin source-contract test, deploy test. Update
-  `check-dispatch-config.js` only if needed.
-
-## Later — Phase B (telemetry) + remaining D
+## What's next — Phase B (telemetry) + remaining D
 
 - **B**: `scripts/qa/provider-stats.js` (resolve opencode DB/CLI cross-platform;
   `directory LIKE <root>%` so worktree sessions match) and
   `agent-report --cost --since=14d [--export fixture]` — totals, model mix,
   cache-read share, P50/P90, top-5 sessions, >60-turn count, loop candidates.
-  No sqlite dependency (engines `>=18`); tests use a fixture export. Add
+  The guard JSONL now provides threshold/loop crossings without the DB. Add
   `session: <id>` to handoff metadata + a `session_info` tool so
   cost-per-shipped-feature has a real join key.
 - **D remaining**: R9 opportunistic tier (`big-pickle`, privacy caveat), R10
   escalation evidence, R11 scoped cache-prefix lint (prefix files only — avoids
   false positives), R12 `checkpoint` tool + `/resume` command, R13 doc truth
-  pass (this doc included).
+  pass (this doc included), R14 scheduled review command (part of B).
 
 ## Gotchas
 
@@ -123,4 +145,8 @@ Planned shape (verify against opencode 1.18.30 plugin types before coding):
   green before its push succeeds.
 - `orchestration.md` and other `.agents/memory/*` files are project-owned
   (create-if-missing): edits to the templates only reach **new** projects;
-  existing projects keep their copy.
+  existing projects keep their copy. The context-guard plugin reads whatever
+  copy the project has and falls back to defaults for anything missing.
+- The context-guard plugin is loaded by opencode from `.opencode/plugins/` and
+  imports `../../scripts/qa/context-guard-core.js` — both paths must keep their
+  relative layout when the harness adds future guard rules.

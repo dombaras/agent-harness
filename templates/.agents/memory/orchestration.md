@@ -55,6 +55,26 @@ Defaults for the stuck-agent and retry-loop heuristics:
 Escalate (per `.agents/memory/model-routing.md`) only on evidence. Record every
 escalation structurally in the session handoff.
 
+## Machine-read thresholds (context-guard)
+
+`.opencode/plugins/context-guard.ts` (core: `scripts/qa/context-guard-core.js`)
+parses this file at runtime and injects nudges into the primary orchestrator
+session:
+
+- **turn bands** — `checkpoint_warning_turn`, `compaction_target_turn`,
+  `new_context_preference_turn`, `hard_safety_turn_limit` (the highest value the
+  current turn has reached wins; the hard band is an injected nudge, not a
+  mechanical block — `agent.build.steps` already ends the turn);
+- **request levels** — `observe` / `warn` / `checkpoint` / `intervene` crossings
+  from provider token data are recorded (telemetry only, no injection);
+- **loops** — `identical_tool_calls` arms the recovery nudge on repeated
+  tool+args calls (the runtime's own `doom_loop` permission also arms it).
+
+It appends threshold/loop events to `.agents/guard-events.jsonl` (local-only,
+gitignored). Keep the table row shapes above; a missing row falls back to the
+documented default. `same_failure_turns` and `no_state_change_turns` remain
+advisory prose — they need worktree state the plugin does not poll.
+
 ## Policy notes
 
 - Never destroy cache locality to shorten a prompt: keep the stable leading

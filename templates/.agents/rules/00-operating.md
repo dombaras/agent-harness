@@ -56,6 +56,11 @@ session grow without bound. Thresholds are tunable in
 - **Cache-friendly prefix**: keep the stable leading context (operating rules →
   persona → project rules) byte-stable across turns; never regenerate equivalent
   instructions in new wording (the cache is an asset).
+- **Mechanical guard**: the `context-guard` plugin reads the thresholds from
+  `orchestration.md` at runtime and injects the checkpoint warning / soft-budget /
+  new-context (and hard-ceiling) nudges at the turn bands, plus the recovery rule
+  on repeated identical tool calls — never rely on remembering the numbers.
+  Crossings land in `.agents/guard-events.jsonl` (local-only, gitignored).
 - **Large tool outputs**: treat reads as evidence, but do not let a big read/diff/
   test dump live forever in a long-lived context — checkpoint and move on.
 

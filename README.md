@@ -46,12 +46,13 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `scripts/backlog.js` | deterministic `BACKLOG.md` editor (list/add/take/archive/freeze) | harness (overwrite) |
 | `.opencode/tools/backlog.ts` | `backlog_*` custom tools the LLM calls (shell out to the CLI) | harness (overwrite) |
 | `.opencode/plugins/backlog-notify.ts` | toast/log whenever an agent mutates the board | harness (overwrite) |
+| `.opencode/plugins/context-guard.ts` | mid-session checkpoint/loop nudges read from `orchestration.md` (core: `scripts/qa/context-guard-core.js`) | harness (overwrite) |
 | `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, orchestration, history, flow-map, product-principles, quality-parameters, test-design-parameters) | **project** (create-if-missing) |
 | `.agents/reviews/*` | project data (durable review/audit deliverables — REPORT.md + scans, tagged by quality-parameters) | **project** (create-if-missing) |
 | `.agents/handoffs/*` | project data (one session handoff file per session — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.agents/qa-plans/*` | project data (one QA plan file per change — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
-| `.gitignore` | harness-managed section (`.harness-backup/`) merged in, project entries preserved | harness (merged) |
+| `.gitignore` | harness-managed section (`.harness-backup/`, `.backlog.lock`, `.serve/`, `.agents/guard-events.jsonl`) merged in, project entries preserved | harness (merged) |
 | `.gitattributes` | harness-managed section (`BACKLOG.md merge=backlog` — the row-aware merge driver) merged in, project entries preserved | harness (merged) |
 
 ### `opencode.json` is merged, not clobbered
@@ -126,7 +127,14 @@ create-if-missing (project-owned).
 main context from growing unbounded: one bounded orchestration lifecycle per work
 unit, compact deterministic checkpoints into the session's `.agents/handoffs/<id>.md`
 when a session nears its budget (see `orchestration.md`), and a fresh context that
-resumes from the checkpoint instead of replaying the transcript. Every handoff can
+resumes from the checkpoint instead of replaying the transcript. The
+**`context-guard` plugin** makes the turn bands mechanical: it parses
+`orchestration.md` at runtime (thresholds are never hardcoded) and injects a
+byte-stable checkpoint warning / soft-budget / new-context nudge into the primary
+orchestrator session as it crosses them, flags repeated identical tool calls with
+the recovery rule (building on the runtime's own `doom_loop` permission), and
+records band/loop/request crossings in `.agents/guard-events.jsonl` (local-only,
+gitignored). Every handoff can
 carry a `## Session metadata` block (`work_type`, `outcome`,
 `termination_reason`, `checkpoint_count` — controlled vocabularies, never
 fabricated) that `npm run report` aggregates deterministically per feature.

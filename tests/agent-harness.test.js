@@ -3087,3 +3087,200 @@ test("hash-file prints a sha256sum-style digest and fails cleanly on a missing f
   assert.strictEqual(bad.status, 1);
   assert.match(bad.stderr, /hash-file: /);
 });
+
+// ---------------------------------------------------------------- context-guard core + plugin
+
+const CG = path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js");
+const cg = require(CG);
+
+test("context-guard parses the orchestration.md tables and falls back to defaults", () => {
+  const fromTemplate = cg.parseThresholds(
+    read(path.join(h.TEMPLATES_DIR, ".agents", "memory", "orchestration.md"))
+  );
+  assert.deepStrictEqual(fromTemplate.turns, {
+    checkpoint_warning_turn: 50,
+    soft_turn_budget: 60,
+    compaction_target_turn: 60,
+    new_context_preference_turn: 80,
+    hard_safety_turn_limit: 100,
+  });
+  assert.deepStrictEqual(fromTemplate.stuck, {
+    same_failure_turns: 3,
+    identical_tool_calls: 3,
+    no_state_change_turns: 4,
+  });
+  assert.deepStrictEqual(fromTemplate.request, {
+    observe: 50000,
+    warn: 80000,
+    checkpoint: 120000,
+    intervene: 160000,
+  });
+
+  assert.deepStrictEqual(cg.parseThresholds(""), cg.parseThresholds(null), "missing file -> documented defaults");
+
+  const custom = cg.parseThresholds(
+    [
+      "| `compaction_target_turn` | 25 | x |",
+      "| `identical_tool_calls` | 5 | x |",
+      "| warn | 40K | x |",
+      "| checkpoint | 90K+ | x |",
+    ].join("\n")
+  );
+  assert.strictEqual(custom.turns.compaction_target_turn, 25);
+  assert.strictEqual(custom.turns.checkpoint_warning_turn, 50, "unstated rows keep the default");
+  assert.strictEqual(custom.stuck.identical_tool_calls, 5);
+  assert.strictEqual(custom.request.warn, 40000);
+  assert.strictEqual(custom.request.checkpoint, 90000);
+});
+
+test("context-guard resolves turn bands by threshold value (retunable, not a fixed ladder)", () => {
+  const turns = cg.parseThresholds("").turns;
+  assert.strictEqual(cg.turnBand(49, turns), null);
+  assert.strictEqual(cg.turnBand(50, turns), "warning");
+  assert.strictEqual(cg.turnBand(59, turns), "warning");
+  assert.strictEqual(cg.turnBand(60, turns), "checkpoint");
+  assert.strictEqual(cg.turnBand(79, turns), "checkpoint");
+  assert.strictEqual(cg.turnBand(80, turns), "new-context");
+  assert.strictEqual(cg.turnBand(99, turns), "new-context");
+  assert.strictEqual(cg.turnBand(100, turns), "hard");
+
+  const retuned = { ...turns, checkpoint_warning_turn: 20, compaction_target_turn: 30 };
+  assert.strictEqual(cg.turnBand(29, retuned), "warning");
+  assert.strictEqual(cg.turnBand(35, retuned), "checkpoint", "highest reached threshold wins");
+});
+
+test("context-guard injected text is byte-stable per band and never interpolated", () => {
+  for (const band of ["warning", "checkpoint", "new-context", "hard"]) {
+    const first = cg.bandText(band);
+    assert.ok(first && first.startsWith("CONTEXT GUARD"));
+    assert.strictEqual(cg.bandText(band), first, "re-reading a band returns the identical string");
+    assert.doesNotMatch(first, /\b(50|60|80|100)\b/, "no threshold numeral is baked into the text");
+  }
+  assert.strictEqual(cg.bandText("unknown"), null);
+  assert.ok(cg.LOOP_TEXT.startsWith("CONTEXT GUARD"));
+});
+
+test("context-guard counts assistant turns once and reports band/request crossings", () => {
+  const thresholds = cg.parseThresholds("");
+  const state = cg.createSessionState();
+  const msg = (id, tokens) => ({ id, role: "assistant", tokens });
+
+  let note = cg.noteAssistant(state, msg("m1", { input: 30000, cache: { read: 25000 } }), thresholds);
+  assert.strictEqual(note.newTurn, true);
+  assert.strictEqual(note.turns, 1);
+  assert.strictEqual(note.band, null);
+  assert.strictEqual(note.requestTokens, 55000);
+  assert.strictEqual(note.requestLevel, "observe");
+  assert.strictEqual(note.requestChanged, true);
+
+  note = cg.noteAssistant(state, msg("m1", { input: 30000, cache: { read: 25000 } }), thresholds);
+  assert.strictEqual(note.newTurn, false, "same message id is not a second turn");
+  assert.strictEqual(state.turns, 1);
+
+  note = cg.noteAssistant(state, msg("m2", { input: 20000, cache: { read: 70000, write: 1000 } }), thresholds);
+  assert.strictEqual(note.requestTokens, 91000);
+  assert.strictEqual(note.requestLevel, "warn");
+  assert.strictEqual(note.requestChanged, true);
+
+  for (let i = 3; i <= 50; i++) note = cg.noteAssistant(state, msg("m" + i, null), thresholds);
+  assert.strictEqual(state.turns, 50);
+  assert.strictEqual(note.band, "warning");
+  assert.strictEqual(note.bandChanged, true);
+
+  note = cg.noteAssistant(state, msg("m51", null), thresholds);
+  assert.strictEqual(note.newTurn, true);
+  assert.strictEqual(note.bandChanged, false, "the same band is not re-reported");
+});
+
+test("context-guard counts identical tool calls cumulatively and flags the breach once", () => {
+  const stuck = cg.parseThresholds("").stuck;
+  const state = cg.createSessionState();
+  const args = { command: "npm run test:quick" };
+
+  assert.strictEqual(cg.noteToolCall(state, "bash", args, stuck).count, 1);
+  assert.strictEqual(cg.noteToolCall(state, "bash", { command: "npm run test:quick" }, stuck).count, 2);
+  let note = cg.noteToolCall(state, "bash", args, stuck);
+  assert.strictEqual(note.count, 3);
+  assert.strictEqual(note.firstFlag, true, "the 3rd identical call is the first flag");
+  assert.strictEqual(note.loop, true);
+  assert.ok(note.keyHash);
+
+  note = cg.noteToolCall(state, "bash", args, stuck);
+  assert.strictEqual(note.loop, true);
+  assert.strictEqual(note.firstFlag, false, "the breach is only reported once");
+  assert.strictEqual(state.loopPending, true);
+
+  note = cg.noteToolCall(state, "read", { filePath: "a.ts" }, stuck);
+  assert.strictEqual(note.loop, false);
+  assert.strictEqual(state.loopPending, false, "a materially different call clears the recovery nudge");
+
+  assert.strictEqual(
+    cg.loopKey("edit", { filePath: "x.ts", oldString: "a", newString: "b" }),
+    cg.loopKey("edit", { newString: "b", oldString: "a", filePath: "x.ts" }),
+    "argument key order does not create a distinct call"
+  );
+});
+
+test("context-guard excludes legitimate polling/glue repeats from the loop counter", () => {
+  const stuck = cg.parseThresholds("").stuck;
+  const state = cg.createSessionState();
+  for (let i = 0; i < 5; i++) {
+    assert.strictEqual(cg.noteToolCall(state, "todowrite", { todos: [] }, stuck).counted, false);
+    assert.strictEqual(cg.noteToolCall(state, "question", {}, stuck).counted, false);
+    assert.strictEqual(cg.noteToolCall(state, "task", { prompt: "x" }, stuck).counted, false);
+    assert.strictEqual(cg.noteToolCall(state, "backlog_list", {}, stuck).counted, false);
+    assert.strictEqual(cg.noteToolCall(state, "batch", {}, stuck).counted, false);
+    assert.strictEqual(cg.noteToolCall(state, "bash", { command: "node scripts/serve.js list" }, stuck).counted, false);
+    assert.strictEqual(cg.noteToolCall(state, "bash", { command: "node scripts/serve.js status" }, stuck).counted, false);
+  }
+  assert.strictEqual(state.toolCounts.size, 0);
+  assert.strictEqual(state.loopPending, false);
+});
+
+test("context-guard events are one JSON object per line with a leading ts", () => {
+  const line = cg.formatGuardEvent({ kind: "band", sessionID: "ses_1", band: "checkpoint", turn: 61 });
+  assert.match(line, /\n$/);
+  assert.strictEqual(line.trimEnd().split("\n").length, 1);
+  const parsed = JSON.parse(line);
+  assert.strictEqual(parsed.kind, "band");
+  assert.strictEqual(parsed.sessionID, "ses_1");
+  assert.strictEqual(parsed.turn, 61);
+  assert.ok(!Number.isNaN(Date.parse(parsed.ts)));
+});
+
+test("context-guard plugin source-contract: hooks wired to the core, no hardcoded thresholds", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
+  assert.match(src, /from "@opencode-ai\/plugin"/);
+  assert.match(src, /context-guard-core\.js/, "loads the shared pure core");
+  for (const hook of ["event:", '"tool.execute.before"', '"experimental.chat.system.transform"', '"permission.ask"']) {
+    assert.ok(src.includes(hook), `hook ${hook} present`);
+  }
+  assert.match(src, /orchestration\.md/, "thresholds come from the project memory file");
+  assert.match(src, /parseThresholds/, "parses thresholds at runtime");
+  assert.match(src, /file\.watcher\.updated/, "invalidates the threshold cache on edits");
+  assert.match(src, /guard-events\.jsonl/);
+  assert.match(src, /childSessions/, "child sessions are tracked to be excluded");
+  assert.match(src, /bandText/, "injects the core's byte-stable band text");
+  assert.match(src, /doom_loop/, "builds on the built-in doom-loop permission");
+  assert.doesNotMatch(src, /identical_tool_calls\s*[:=]\s*\d/, "no hardcoded loop threshold");
+  assert.doesNotMatch(src, /(?:===|==|>=|>)\s*(?:50|60|80|100)\b/, "no hardcoded turn band numbers");
+});
+
+test("context-guard plugin + core deploy, stay harness-owned, and the guard log is gitignored", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const corePath = path.join(target, "scripts", "qa", "context-guard-core.js");
+  assert.ok(exists(corePath), "guard core deployed");
+  const plugin = read(path.join(target, ".opencode", "plugins", "context-guard.ts"));
+  assert.match(plugin, /tool\.execute\.before/);
+  assert.match(plugin, /experimental\.chat\.system\.transform/);
+
+  const gi = read(path.join(target, ".gitignore"));
+  assert.ok(gi.includes(".agents/guard-events.jsonl"), "runtime guard log is gitignored");
+
+  fs.writeFileSync(corePath, "LOCAL EDIT", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.match(read(corePath), /parseThresholds/, "guard core is harness-owned (restored on update)");
+});
+

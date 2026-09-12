@@ -260,7 +260,12 @@ function mergePackageJson(target) {
 // live in a marked section so `update` can re-merge them (and pick up new
 // entries) without touching the project's own ignores.
 const GITIGNORE_MARKER = "# agent-harness (managed below)";
-const HARNESS_IGNORE_ENTRIES = [".harness-backup/", ".backlog.lock", ".serve/"];
+const HARNESS_IGNORE_ENTRIES = [
+  ".harness-backup/",
+  ".backlog.lock",
+  ".serve/",
+  ".agents/guard-events.jsonl",
+];
 
 function mergeGitignore(target) {
   const p = path.join(target, ".gitignore");
