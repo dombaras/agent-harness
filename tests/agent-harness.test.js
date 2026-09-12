@@ -328,6 +328,17 @@ test("operating rules encode bounded lifecycle + retry/gate/web discipline refer
   const plannerSkill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "planner", "SKILL.md"));
   assert.match(plannerSkill, /Fan-out review/);
   assert.match(plannerSkill, /orchestration\.md/);
+  assert.match(plannerSkill, /execution_mode: direct/);
+  assert.match(plannerSkill, /dispatch_justification/);
+
+  // Step Zero no longer mandates dispatch before any read/edit — the
+  // complexity threshold and dispatch economics are the authority.
+  assert.doesNotMatch(rules, /Before reading or editing any file for a task, dispatch/);
+  assert.match(rules, /complexity threshold/i);
+
+  const governance = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "governance.js"));
+  assert.match(governance, /FANOUT_JUSTIFY_MIN/);
+  assert.match(governance, /Fan-out justification/);
 });
 
 test("check-qa-scripts expects test:qa-plan", () => {
@@ -413,6 +424,7 @@ test("board command is deployed to every project (delegates to the deterministic
   assert.match(cmd, /^---/, "board command frontmatter");
   assert.match(cmd, /BACKLOG\.md/, "command reads the local canonical board");
   assert.match(cmd, /node scripts\/backlog\.js list/, "command runs the deterministic CLI");
+  assert.match(cmd, /--limit 0/, "command documents the bounded default + escape hatch");
   assert.match(cmd, /Do NOT run git/, "command does not pull from git");
   assert.match(cmd, /Do NOT .* edit `BACKLOG\.md`/, "command forbids hand-editing the board");
 
@@ -631,6 +643,8 @@ test("backlog CLI + custom tools + notify plugin are deployed to every project",
   assert.match(tools, /export const archive\b/);
   assert.match(tools, /export const freeze\b/);
   assert.match(tools, /scripts[\\/]backlog\.js/, "tools shell out to the CLI");
+  assert.doesNotMatch(tools, /--full/, "list tool is bounded, not a full-board dump");
+  assert.match(tools, /--limit/, "list tool exposes the bounded limit");
 
   const plugin = read(path.join(target, ".opencode", "plugins", "backlog-notify.ts"));
   assert.match(plugin, /tool\.execute\.after/, "plugin hooks tool execution");
@@ -727,6 +741,40 @@ test("backlog CLI accumulates, sorts, and delegates deterministically (no LLM)",
   const gate = runBacklogGate(t);
   assert.strictEqual(gate.status, 0, gate.out);
   assert.match(gate.out, /RESULT: backlog green/);
+});
+
+test("backlog list is bounded by default and --limit controls the cap", () => {
+  const t = scaffoldBacklogCliTarget();
+  const p = path.join(t, "BACKLOG.md");
+  const lines = read(p).split(/\r?\n/);
+  const openIdx = lines.findIndex((l) => l.trim() === "## Open");
+  const sepIdx = lines.findIndex((l, i) => i > openIdx && /^\|[-| ]+\|$/.test(l.trim()));
+  const rows = [];
+  for (let i = 1; i <= 45; i++) {
+    rows.push(`| F-${String(i).padStart(3, "0")} | P3 | ? | task ${i} | ? | ? |`);
+  }
+  lines.splice(sepIdx + 1, 0, ...rows);
+  fs.writeFileSync(p, lines.join("\n") + "\n", "utf8");
+
+  // default cap: true counts first, then the first 40 rows, then the omitted count
+  const def = runBacklogCli(t, ["list"]);
+  assert.strictEqual(def.status, 0, def.out);
+  assert.match(def.out, /Open \(45\)/, "true row count is still printed");
+  assert.match(def.out, /\+5 row\(s\) omitted \(--limit 40, 0 = all\)/);
+  assert.match(def.out, /F-040/);
+  assert.doesNotMatch(def.out, /F-041/);
+
+  // explicit small cap
+  const two = runBacklogCli(t, ["list", "--limit", "2"]);
+  assert.match(two.out, /Open \(45\)/);
+  assert.match(two.out, /\+43 row\(s\) omitted/);
+  assert.match(two.out, /F-002/);
+  assert.doesNotMatch(two.out, /F-003/);
+
+  // 0 = all (escape hatch)
+  const all = runBacklogCli(t, ["list", "--limit", "0"]);
+  assert.match(all.out, /F-045/);
+  assert.doesNotMatch(all.out, /omitted/);
 });
 
 test("backlog CLI rejects a non-P1..P4 priority and a blank add", () => {
@@ -2115,6 +2163,40 @@ test("test:governance still fails a table dispatch log with a header but no data
   assert.match(r.out, /at least one entry/);
 });
 
+test("test:governance requires a fan-out justification when the dispatch log has 5+ entries", () => {
+  const t = scaffoldGovernanceTarget();
+  const entries = ["a", "b", "c", "d", "e"].map((p) => `- ${p} -> m -> shipped`).join("\n");
+
+  writeFile(t, ".agents/handoffs/F-060.md", `# x\n\n## Dispatch log\n${entries}\n\n## Done\n- z\n`);
+  let r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /Fan-out justification/);
+
+  // the planner's §Fan-out review mirrored into the handoff passes
+  writeFile(
+    t,
+    ".agents/handoffs/F-060.md",
+    `# x\n\n## Dispatch log\n${entries}\n\n## Fan-out justification\n- each entry owns a disjoint file set (see plan.md §Fan-out review)\n`
+  );
+  r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+
+  // a `dispatch_justification:` line is accepted too
+  writeFile(
+    t,
+    ".agents/handoffs/F-060.md",
+    `# x\n\n## Dispatch log\n${entries}\n\ndispatch_justification: distinct deliverables, disjoint owned files\n`
+  );
+  r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+
+  // 4 entries stay exempt
+  const four = entries.split("\n").slice(0, 4).join("\n");
+  writeFile(t, ".agents/handoffs/F-060.md", `# x\n\n## Dispatch log\n${four}\n\n## Done\n- z\n`);
+  r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+});
+
 // ---------------------------------------------------------------- test:concurrency gate (working-tree isolation)
 
 function scaffoldConcurrencyTarget() {
@@ -2940,4 +3022,52 @@ test("qa-architect persona carries the T1–T10 checklist and QA-plan record sec
   const wiringCheck = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-qa-scripts.js"));
   assert.match(wiringCheck, /test:wiring/);
   assert.match(wiringCheck, /test:linger/);
+});
+
+test("qa-runner writes verbatim evidence to .agents/qa-runs and reports path + sha256", () => {
+  const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", "qa-runner.md"));
+  assert.match(agent, /\.agents\/qa-runs\//);
+  assert.match(agent, /evidence\.txt/);
+  assert.match(agent, /hash-file/);
+  assert.doesNotMatch(agent, /Pass\/fail per suite with verbatim failure detail/, "verbatim logs are no longer demanded in the message");
+
+  const skill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "qa-runner", "SKILL.md"));
+  assert.match(skill, /\.agents\/qa-runs\//);
+  assert.match(skill, /evidence\.txt/);
+  assert.match(skill, /hash-file\.js/);
+  assert.match(skill, /sha256/i);
+});
+
+test("qa-runs evidence scaffold is deployed and preserved on re-deploy", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const readme = path.join(target, ".agents", "qa-runs", "README.md");
+  assert.ok(exists(readme), "qa-runs scaffold deployed");
+  fs.writeFileSync(readme, "custom project data", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(readme), "custom project data", "project qa-runs README preserved");
+});
+
+test("hash-file prints a sha256sum-style digest and fails cleanly on a missing file", () => {
+  const crypto = require("crypto");
+  const t = tmpdir();
+  const f = path.join(t, "evidence.txt");
+  fs.writeFileSync(f, "hello\n", "utf8");
+  const expected = crypto.createHash("sha256").update(read(f)).digest("hex");
+
+  const res = spawnSync(
+    process.execPath,
+    [path.join(h.TEMPLATES_DIR, "scripts", "qa", "hash-file.js"), f],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(res.status, 0, res.stderr);
+  assert.match(res.stdout, new RegExp("^" + expected + "  "));
+
+  const bad = spawnSync(
+    process.execPath,
+    [path.join(h.TEMPLATES_DIR, "scripts", "qa", "hash-file.js"), path.join(t, "nope.txt")],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(bad.status, 1);
+  assert.match(bad.stderr, /hash-file: /);
 });

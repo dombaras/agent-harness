@@ -94,11 +94,11 @@ function relKey(rel) {
 
 /* `.agents/memory/*` (session memory), `.agents/features/*` (feature doc tree),
  * `.agents/reviews/*` (durable review/audit deliverables), `.agents/qa-plans/*`
- * (one QA plan file per change) and `.agents/handoffs/*` (one session handoff
- * file per session) are project data — scaffolded create-if-missing, never
- * overwritten, and never tracked in the manifest. qa-plans and handoffs are
- * sharded per change/session so concurrent sessions never collide on a single
- * shared file.
+ * (one QA plan file per change), `.agents/qa-runs/*` (one directory of verbatim
+ * QA evidence per change) and `.agents/handoffs/*` (one session handoff file per
+ * session) are project data — scaffolded create-if-missing, never overwritten,
+ * and never tracked in the manifest. qa-plans/qa-runs/handoffs are sharded per
+ * change/session so concurrent sessions never collide on a single shared file.
  * Note: the check matches the directory DIRECTLY under `.agents` (not any
  * segment), so `.agents/skills/features/SKILL.md` stays harness-owned. */
 function isProjectScaffold(rel) {
@@ -111,6 +111,7 @@ function isProjectScaffold(rel) {
     sub === "features" ||
     sub === "reviews" ||
     sub === "qa-plans" ||
+    sub === "qa-runs" ||
     sub === "handoffs"
   );
 }

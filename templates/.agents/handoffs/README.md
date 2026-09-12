@@ -13,6 +13,10 @@ legacy `.agents/memory/handoff.md` if it exists) and requires each to open with 
 log is enforced without a shared file. An entry is a bullet line
 (`- <subagent> -> <model> -> <shipped/deferred>`) **or** a markdown table data row
 (`| subagent | model | shipped/deferred |`); both are accepted, so pick one.
+When the log has **5+ entries**, the handoff must also carry a
+`## Fan-out justification` section (or a `dispatch_justification:` line) citing
+the plan's `§Fan-out review` — the 5–7 band in `orchestration.md` where fan-out
+must be justified.
 
 ## Naming & ownership
 
@@ -32,6 +36,9 @@ log is enforced without a shared file. An entry is a bullet line
 
     ## Dispatch log
     - <subagent → model → shipped/deferred> (empty log = non-compliant session)
+
+    ## Fan-out justification (required when the dispatch log has 5+ entries)
+    - <why each dispatch is distinct/necessary — cite the plan's §Fan-out review>
 
     ## Retries (only when a persona was retried)
     - <persona>: <count> — <what changed on the last retry>

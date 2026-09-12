@@ -25,10 +25,14 @@ function run(context: any, args: string[]): string {
 
 export const list = tool({
   description:
-    "List the active BACKLOG.md rows (In progress + Open) — deterministic, no filtering. Use instead of reading BACKLOG.md directly.",
-  args: {},
-  async execute(_args, context) {
-    return run(context, ["list", "--full"])
+    "List the active BACKLOG.md rows (In progress + Open) — deterministic and bounded: true status counts + up to `limit` rows per section (default 40, 0 = all). Use instead of reading BACKLOG.md directly.",
+  args: {
+    limit: tool.schema.string().describe("max rows shown per section (default 40; 0 = all) — raise only when the board's tail matters"),
+  },
+  async execute(args, context) {
+    const argv = ["list"]
+    if (args.limit) argv.push("--limit", args.limit)
+    return run(context, argv)
   },
 })
 

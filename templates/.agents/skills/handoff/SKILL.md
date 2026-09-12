@@ -29,6 +29,9 @@ Date: <YYYY-MM-DD>
 ## Dispatch log
 - <subagent → model → shipped/deferred> (empty log = non-compliant session)
 
+## Fan-out justification (required when the dispatch log has 5+ entries)
+- <why each dispatch is distinct/necessary — cite the plan's §Fan-out review>
+
 ## Retries (only when a persona was retried)
 - <persona>: <count> — <what changed on the last retry (instructions/context/model/decomposition/diagnostics)>
 
@@ -70,7 +73,7 @@ Date: <YYYY-MM-DD>
 - Update this at session end even if the user doesn't ask, per the DoD in `.agents/AGENTS.md` §8.
 - Keep it under ~40 lines. Code is the source of truth; the handoff is a pointer, not a spec.
 - **Lead with value, not tech.** After the dispatch log, the file opens with `## Value shipped` (plain language — what the user now gets, why it matters) then `## How` (the main approach). File/test/commit detail lives below and is never the headline.
-- The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this.
+- The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this. When the log has 5+ entries, include the `## Fan-out justification` (or a `dispatch_justification:` line) — the gate also enforces that.
 - Record any retries in `## Retries` and any escalation in `## Escalations` (both optional — omit when none) so `npm run report` can surface where inference budget actually went.
 - Record the `## Session metadata` block (work_type / outcome / termination_reason / checkpoint_count) whenever you know the values — the deterministic report aggregates them per feature. Use `unknown`, never a fabricated value.
 - Keeping `.agents/memory/locations.md` current is part of this skill. Read it first, update it last.

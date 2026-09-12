@@ -54,7 +54,10 @@ cite the written file + section map in **Evidence**.
    this plan delivers (from `intent.md`).
 2. **Value-first sequence** — the ordered steps, each citing the actor + outcome
    it serves. State the smallest slice that ships first.
-3. **Dispatch plan** — ordered list of entries, each with:
+3. **Dispatch plan** — open with `execution_mode: direct | dispatched`. For
+   trivial/single-surface work (the complexity threshold), emit
+   `execution_mode: direct` + a one-line reason and STOP — no dispatch list; the
+   orchestrator executes inline. Otherwise list ordered entries, each with:
    - `persona → model`
    - **Objective** — one sentence naming a single deliverable AND the user
      outcome it serves.
@@ -86,6 +89,9 @@ cite the written file + section map in **Evidence**.
    scope, DISTINCT contract ownership, and real parallelism/dependency necessity.
    Reject or merge entries that are tiny, redundant, mechanical, overlapping, or
    better handled by the orchestrator. Planning may REDUCE the agent count.
+   Record the justification in the session handoff (`## Fan-out justification` or
+   a `dispatch_justification:` line) — `npm run test:governance` fails a 5+
+   dispatch session without it.
 8. **Risk flags** — any ambiguity that needs the user before proceeding,
    including a missing `intent.md` or an undefined user need.
 

@@ -10,9 +10,18 @@ You **execute**. A `qa-architect` (or the orchestrator) tells you which tier to 
 
 ## Output contract (always return)
 
-1. **Commands run** + exit codes.
-2. **Pass/fail per suite**, with any failing test names and captured error output verbatim.
-3. **Duration & exit evidence** — per suite: runner-reported test time **and** process wall-clock. A suite that passes and then idles is a failure, not a pass (T1/T6/T9).
+1. **Result summary** (≤15 lines): commands run + exit codes; pass/fail per
+   suite; evidence artifact path + sha256; blocked-at when applicable.
+2. **Full verbatim evidence on disk**: write every command, exit code, raw
+   stdout/stderr, failing test name, and duration to
+   `.agents/qa-runs/<feature-id or slug>/evidence.txt` (create the directory as
+   needed). Per suite record runner-reported test time **and** process
+   wall-clock — a suite that passes and then idles is a failure, not a pass
+   (T1/T6/T9). Never truncate the file — the message is the index, the file is
+   the proof.
+3. **Hash it**: run `node scripts/qa/hash-file.js .agents/qa-runs/<id>/evidence.txt`
+   and report the printed digest in the summary. The orchestrator recomputes it
+   when it needs proof the summary matches the file.
 4. **No editorializing** — do not declare "safe to ship"; that is qa-architect's call.
 
 ## Responsibilities
@@ -24,8 +33,8 @@ You **execute**. A `qa-architect` (or the orchestrator) tells you which tier to 
   import/compile the file. A syntax/module-load/require failure, a suite that
   reports `0 tests`, or a pass with no executed assertions (skipped,
   unreachable-server guard, empty block) is NOT a pass — report it as
-  FAILURE/blocked with the verbatim error. A run that never reached an
-  assertion is never coverage.
+  FAILURE/blocked (verbatim error in the evidence file). A run that never
+  reached an assertion is never coverage.
 - Run the tier you are given: `npm run test:quick` / `test:routes` / `test:api` / `test:verify` / `test:security`.
 - **Run the wiring gate: `npm run test:wiring`.** An orphaned `*.test.*` file (executed by no package script) is not coverage — report it as FAILURE/blocked (T7), naming the file; do not hand-wave it as "will be wired later".
 - **Check the exit contract on new or suspicious suites**: `node scripts/qa/check-linger.js -- <tier command>` (or `npm run test:linger`, which wraps `test:quick`). When it reports `LINGER`, the suite is a passing-but-idling defect — a green test count is NOT a pass until the process exits within the plan's `## Test budget` (T1/T6/T9). Report the runner-reported time vs wall-clock verbatim.
@@ -40,10 +49,11 @@ You **execute**. A `qa-architect` (or the orchestrator) tells you which tier to 
   has burned live runs. Prefer the project's cleanup script; if you must run a
   custom query, write a scratch `.js`/`.cjs` file under the OS temp dir and run
   it with `node --env-file=.env <file>`.
-- **Never end without the full report.** Even if every command failed at step
-  one, your final message still returns **Commands run + exit codes** ->
-  **Pass/fail per suite with verbatim failure detail** -> **Reachability +
-  cleanup evidence** -> **Blocked at** (which step). A session that stops after
+- **Never end without the report (and the evidence file).** Even if every command
+  failed at step one, write the full log to
+  `.agents/qa-runs/<feature-id or slug>/evidence.txt` and return the compact
+  summary — commands + exit codes, pass/fail per suite, evidence path + sha256,
+  reachability + cleanup, **Blocked at** (which step). A session that stops after
   a failed command — with no report — is itself a failure to report.
 
 ## Do NOT

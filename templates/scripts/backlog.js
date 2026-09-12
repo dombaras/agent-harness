@@ -407,10 +407,21 @@ function stripEmphasis(s) {
   return s.replace(/[*_]+/g, "").trim();
 }
 
+/* Bounded by default: the tool/board path is read by an LLM, so dumping an
+ * ever-growing board is a silent context leak. Every section still prints its
+ * true count first; rows are shown in file order (Open/Queued are priority-
+ * sorted), so the hidden rows are the lowest-priority tail. `--limit 0` = all. */
+const LIST_DEFAULT_LIMIT = 40;
+
 function cmdList(state, argv) {
   const full = !!argv.full;
   const TASK_W = full ? Infinity : 120;
   const SUB_W = full ? Infinity : 90;
+  let limit = LIST_DEFAULT_LIMIT;
+  if (argv.limit != null) {
+    const n = Number.parseInt(argv.limit, 10);
+    limit = Number.isFinite(n) && n >= 0 ? n : LIST_DEFAULT_LIMIT;
+  }
 
   const active = findSection(state.lines, "active");
   if (active) {
@@ -431,7 +442,8 @@ function cmdList(state, argv) {
   for (const [key, label] of groups) {
     const rows = getRows(state.lines, key).map((r) => r.cells);
     console.log(`${label} (${rows.length})`);
-    for (const c of rows) {
+    const shown = limit > 0 && rows.length > limit ? rows.slice(0, limit) : rows;
+    for (const c of shown) {
       if (key === "open" || key === "queued") {
         console.log(`  ${c[0]}  [${c[1]}]  [${c[2]}]  ${truncate(c[3] || "", TASK_W)}`);
         if (c[4] && c[4] !== "?") console.log(`             evidence: ${truncate(c[4], SUB_W)}`);
@@ -445,6 +457,9 @@ function cmdList(state, argv) {
         console.log(`  ${c[0]}  [${c[1]}]  ${truncate(c[2] || "", TASK_W)}`);
         if (c[3]) console.log(`             closed: ${truncate(c[3], SUB_W)}`);
       }
+    }
+    if (shown.length < rows.length) {
+      console.log(`  … +${rows.length - shown.length} row(s) omitted (--limit ${limit}, 0 = all)`);
     }
     console.log("");
   }
@@ -901,6 +916,7 @@ function parseArgs(argv) {
     else if (a === "--take") args.take = true;
     else if (a === "--all") args.all = true;
     else if (a === "--full") args.full = true;
+    else if (a === "--limit") args.limit = argv[++i];
     else if (a === "--json") args.json = true;
     else if (a === "--root") args.root = argv[++i];
     else args._.push(a);
@@ -911,7 +927,7 @@ function parseArgs(argv) {
 function usage() {
   console.log(
     "backlog — deterministic BACKLOG.md editor (no LLM)\n\n" +
-      "  node scripts/backlog.js list [--all] [--full] [--json]\n" +
+      "  node scripts/backlog.js list [--all] [--full] [--limit N] [--json]\n" +
       "  node scripts/backlog.js add <task> [--p P1..P4] [--epic key] [--evidence x] [--id F-xxx] [--depends-on ids]\n" +
       "  node scripts/backlog.js take <id> [--handoff path]\n" +
       "  node scripts/backlog.js queue <id>\n" +

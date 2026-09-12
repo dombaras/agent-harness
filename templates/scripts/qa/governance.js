@@ -3,12 +3,16 @@
 /*
  * test:governance — session-governance gate (repo guard).
  *
- * Mechanically enforces the two Step Zero reporting rules that keep dispatch
+ * Mechanically enforces the three Step Zero reporting rules that keep dispatch
  * predictable:
  *   1. Every session handoff MUST open a `## Dispatch log` section that
  *      contains at least one entry (subagent result, waiver, or degrade).
  *   2. Every `waived:` entry MUST cite a `reason:` on the same line — a waiver
  *      without a reason is itself a rules violation.
+ *   3. A dispatch log with 5+ entries (the `orchestration.md` fan-out band where
+ *      justification starts) MUST carry a `## Fan-out justification` section or
+ *      a `dispatch_justification:` line citing why each dispatch is distinct —
+ *      the planner's `§Fan-out review` names them.
  *
  * Handoffs are SHARDED (like QA plans): one file per session under
  * `.agents/handoffs/` (e.g. `F-003.md`, `return-no-condition.md`), so concurrent
@@ -20,6 +24,10 @@
 const fs = require("fs");
 const path = require("path");
 const root = path.resolve(__dirname, "..", "..");
+
+/* Fan-out band 5–7 in `.agents/memory/orchestration.md` = "planner must provide
+ * explicit decomposition justification"; this gate enforces that at wrap-up. */
+const FANOUT_JUSTIFY_MIN = 5;
 
 const failures = [];
 const check = (ok, msg) => {
@@ -58,22 +66,38 @@ function handoffFiles(root) {
  * accepts both so a session that renders its log as a table is not falsely
  * flagged as "empty". Table rows are recognized only AFTER a separator row
  * (`|---|---|`) so the header is never mistaken for an entry. */
-function hasDispatchEntry(section) {
+function dispatchCount(section) {
   const lines = section.split(/\r?\n/);
   let seenSeparator = false;
+  let count = 0;
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
-    if (/^[-*]\s+\S/.test(line)) return true; // bullet entry
+    if (/^[-*]\s+\S/.test(line)) {
+      count++; // bullet entry
+      continue;
+    }
     if (/^\|.*\|$/.test(line)) {
       if (/^\|(\s*:?-+:?\s*\|)+\s*$/.test(line)) {
         seenSeparator = true;
         continue;
       }
-      if (seenSeparator) return true; // data row after the separator
+      if (seenSeparator) count++; // data row after the separator
     }
   }
-  return false;
+  return count;
+}
+
+/* A fan-out justification is a `## Fan-out justification` / `## Fan-out review`
+ * section with content, or a `dispatch_justification: <why>` line anywhere in
+ * the file — so a handoff that mirrors the planner's §Fan-out review passes. */
+function hasFanoutJustification(src) {
+  if (/^\s*(?:[-*]\s*)?dispatch_justification:\s*\S/im.test(src)) return true;
+  const heading = src.match(/^#{1,6}\s*Fan-out\s+(?:review|justification)\s*$/im);
+  if (!heading) return false;
+  const after = src.slice(heading.index + heading[0].length);
+  const tail = after.match(/^#{1,6}\s/m);
+  return (tail ? after.slice(0, tail.index) : after).trim().length > 0;
 }
 
 const files = handoffFiles(root);
@@ -100,10 +124,17 @@ for (const file of files) {
     const after = src.slice(heading.index + heading[0].length);
     const sectionTail = after.match(/^#{1,6}\s/m);
     const section = (sectionTail ? after.slice(0, sectionTail.index) : after).trim();
+    const count = dispatchCount(section);
     check(
-      hasDispatchEntry(section),
+      count >= 1,
       `${rel} dispatch log contains at least one entry (subagent result, waived:, or degraded: — bullet or table row)`
     );
+    if (count >= FANOUT_JUSTIFY_MIN) {
+      check(
+        hasFanoutJustification(src),
+        `${rel} dispatch log has ${count} entries (fan-out >= ${FANOUT_JUSTIFY_MIN}) but no \`## Fan-out justification\` section / \`dispatch_justification:\` line citing the plan's §Fan-out review`
+      );
+    }
   }
 
   for (const w of src.matchAll(/\bwaived:\s*([^\n,]+)/gi)) {
