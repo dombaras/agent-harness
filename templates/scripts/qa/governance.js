@@ -12,7 +12,10 @@
  *   3. A dispatch log with 5+ entries (the `orchestration.md` fan-out band where
  *      justification starts) MUST carry a `## Fan-out justification` section or
  *      a `dispatch_justification:` line citing why each dispatch is distinct —
- *      the planner's `§Fan-out review` names them.
+ *      the planner's `§Fan-out review` names them. This rule is FORWARD-ONLY
+ *      (`FANOUT_JUSTIFY_SINCE`): handoffs dated before it shipped, and undated
+ *      legacy handoffs, are grandfathered — a gate never retroactively fails
+ *      history.
  *
  * Handoffs are SHARDED (like QA plans): one file per session under
  * `.agents/handoffs/` (e.g. `F-003.md`, `return-no-condition.md`), so concurrent
@@ -28,6 +31,9 @@ const root = path.resolve(__dirname, "..", "..");
 /* Fan-out band 5–7 in `.agents/memory/orchestration.md` = "planner must provide
  * explicit decomposition justification"; this gate enforces that at wrap-up. */
 const FANOUT_JUSTIFY_MIN = 5;
+/* Forward-only: only handoffs dated this day or later are subject to the
+ * justification check. Undated legacy handoffs are grandfathered. */
+const FANOUT_JUSTIFY_SINCE = "2026-09-12";
 
 const failures = [];
 const check = (ok, msg) => {
@@ -100,6 +106,13 @@ function hasFanoutJustification(src) {
   return (tail ? after.slice(0, tail.index) : after).trim().length > 0;
 }
 
+/* The handoff's `Date: <YYYY-MM-DD>` line (sessions before the template had it
+ * are undated). Used only for forward-only scope, never to fabricate order. */
+function handoffDate(src) {
+  const m = src.match(/^Date:\s*(\d{4}-\d{2}-\d{2})\s*$/im);
+  return m ? m[1] : null;
+}
+
 const files = handoffFiles(root);
 
 if (files.length === 0) {
@@ -130,10 +143,14 @@ for (const file of files) {
       `${rel} dispatch log contains at least one entry (subagent result, waived:, or degraded: — bullet or table row)`
     );
     if (count >= FANOUT_JUSTIFY_MIN) {
-      check(
-        hasFanoutJustification(src),
-        `${rel} dispatch log has ${count} entries (fan-out >= ${FANOUT_JUSTIFY_MIN}) but no \`## Fan-out justification\` section / \`dispatch_justification:\` line citing the plan's §Fan-out review`
-      );
+      const date = handoffDate(src);
+      const inScope = date !== null && date >= FANOUT_JUSTIFY_SINCE;
+      if (inScope) {
+        check(
+          hasFanoutJustification(src),
+          `${rel} dispatch log has ${count} entries (fan-out >= ${FANOUT_JUSTIFY_MIN}) but no \`## Fan-out justification\` section / \`dispatch_justification:\` line citing the plan's §Fan-out review`
+        );
+      }
     }
   }
 

@@ -16,7 +16,8 @@ log is enforced without a shared file. An entry is a bullet line
 When the log has **5+ entries**, the handoff must also carry a
 `## Fan-out justification` section (or a `dispatch_justification:` line) citing
 the plan's `§Fan-out review` — the 5–7 band in `orchestration.md` where fan-out
-must be justified.
+must be justified. That check is forward-only: handoffs dated `2026-09-12` or
+later are enforced; undated legacy handoffs are grandfathered.
 
 ## Naming & ownership
 

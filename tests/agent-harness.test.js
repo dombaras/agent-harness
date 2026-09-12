@@ -2166,8 +2166,9 @@ test("test:governance still fails a table dispatch log with a header but no data
 test("test:governance requires a fan-out justification when the dispatch log has 5+ entries", () => {
   const t = scaffoldGovernanceTarget();
   const entries = ["a", "b", "c", "d", "e"].map((p) => `- ${p} -> m -> shipped`).join("\n");
+  const doc = (extra = "") => `# x\n\nDate: 2026-09-12\n\n## Dispatch log\n${entries}\n\n${extra}`;
 
-  writeFile(t, ".agents/handoffs/F-060.md", `# x\n\n## Dispatch log\n${entries}\n\n## Done\n- z\n`);
+  writeFile(t, ".agents/handoffs/F-060.md", doc("## Done\n- z\n"));
   let r = runGovernanceGate(t);
   assert.strictEqual(r.status, 1, r.out);
   assert.match(r.out, /Fan-out justification/);
@@ -2176,7 +2177,7 @@ test("test:governance requires a fan-out justification when the dispatch log has
   writeFile(
     t,
     ".agents/handoffs/F-060.md",
-    `# x\n\n## Dispatch log\n${entries}\n\n## Fan-out justification\n- each entry owns a disjoint file set (see plan.md §Fan-out review)\n`
+    doc("## Fan-out justification\n- each entry owns a disjoint file set (see plan.md §Fan-out review)\n")
   );
   r = runGovernanceGate(t);
   assert.strictEqual(r.status, 0, r.out);
@@ -2185,16 +2186,29 @@ test("test:governance requires a fan-out justification when the dispatch log has
   writeFile(
     t,
     ".agents/handoffs/F-060.md",
-    `# x\n\n## Dispatch log\n${entries}\n\ndispatch_justification: distinct deliverables, disjoint owned files\n`
+    doc("dispatch_justification: distinct deliverables, disjoint owned files\n")
   );
   r = runGovernanceGate(t);
   assert.strictEqual(r.status, 0, r.out);
 
   // 4 entries stay exempt
   const four = entries.split("\n").slice(0, 4).join("\n");
-  writeFile(t, ".agents/handoffs/F-060.md", `# x\n\n## Dispatch log\n${four}\n\n## Done\n- z\n`);
+  writeFile(t, ".agents/handoffs/F-060.md", `# x\n\nDate: 2026-09-12\n\n## Dispatch log\n${four}\n\n## Done\n- z\n`);
   r = runGovernanceGate(t);
   assert.strictEqual(r.status, 0, r.out);
+});
+
+test("test:governance grandfathers pre-rule and undated fan-out handoffs", () => {
+  const t = scaffoldGovernanceTarget();
+  const entries = ["a", "b", "c", "d", "e", "f"].map((p) => `- ${p} -> m -> shipped`).join("\n");
+
+  // dated before the rule shipped: never retroactively failed
+  writeFile(t, ".agents/handoffs/F-007.md", `# x\n\nDate: 2026-09-01\n\n## Dispatch log\n${entries}\n\n## Done\n- z\n`);
+  // undated legacy handoff: grandfathered too
+  writeFile(t, ".agents/handoffs/F-008.md", `# x\n\n## Dispatch log\n${entries}\n\n## Done\n- z\n`);
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.doesNotMatch(r.out, /Fan-out justification/);
 });
 
 // ---------------------------------------------------------------- test:concurrency gate (working-tree isolation)
