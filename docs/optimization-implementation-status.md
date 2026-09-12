@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.54)
+# Agent Harness Optimization — Implementation Status (v0.1.56)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,11 +15,11 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.54` |
-| Shipped this session | `0.1.54` — Phase B (provider telemetry + session join key) |
-| Lint / tests | green (`npm run lint`, `npm test` — 156/156) |
-| LibraryOS | `0.1.54` deployed, committed, pushed (`origin/main`) |
-| FamilyBudget | `0.1.54` deployed + committed locally (no remote configured) |
+| Version | `0.1.56` |
+| Shipped this session | `0.1.56` — remaining D (R9, R10, R11, R12, R14) |
+| Lint / tests | green (`npm run lint`, `npm test` — 163/163) |
+| LibraryOS | pending `0.1.56` deploy |
+| FamilyBudget | pending `0.1.56` deploy |
 
 ---
 
@@ -144,6 +144,51 @@ The loop is closed: observed cost/tokens/turns now join to features, and
   test (subagent cost included, cost per shipped feature, `--export`), and a
   `session_info` source-contract + deploy/ownership test.
 
+### `0.1.56` — remaining D: routing hygiene + context lifecycle mechanics (R9, R10, R11, R12, R14)
+- **R9 — opportunistic tier.** `.agents/memory/model-routing.md` now documents
+  the free/low-cost lane (best-effort bulk exploration/summarization only,
+  mandatory fallback to the persona's normal tier, no-authoritative-output rule,
+  and the no-confidential-data caveat) with a machine-readable
+  `opportunistic_models:` line. The built-in `explore` agent is the reference
+  pin: `opencode.json` → `agent.explore.model` (default `opencode/big-pickle`,
+  ADD-ONLY merged — a project override always wins). `test:dispatch` now also
+  validates every `agent.<name>.model` pin and accepts declared
+  `opportunistic_models:` / `escalation_models:` targets as legal (a declared
+  target without a pin is no longer reported as doc↔config drift).
+- **R10 — escalation evidence.** The handoff `## Session metadata` schema gains
+  `model_escalation_evidence:` (the reason, or `none`). `provider-stats`
+  classifies the observed model mix by tier (`modelMix[].tier`, `tierMix`, the
+  `escalation` primary-session list, opportunistic usage), reading the
+  `escalation_models:` line from `model-routing.md` at run time; `agent-report
+  --cost` flags a primary session observed on a pro model with no recorded
+  reason (metadata line or `## Escalations` bullet). `--json` now pins
+  `schema: agent-report/1`.
+- **R11 — cache-prefix lint.** `test:prefix`
+  (`scripts/qa/check-prefix-stability.js`) fails a clock timestamp, a
+  machine-specific absolute path, or a session id in the always-loaded prefix
+  (root `AGENTS.md`, the rulebook, `00-operating.md`, and the session-start
+  memory reads). Bare historical dates stay legal; `BACKLOG.md`, handoffs,
+  feature docs, and other memory files are out of scope — scoped to avoid false
+  positives.
+- **R12 — checkpoint/resume mechanics.** `scripts/checkpoint.js` writes/replaces
+  the deterministic bounded-state block in `.agents/handoffs/<id>.md` (no
+  timestamps, `unknown` for anything not recorded, identical rewrite is a no-op,
+  changed state increments `checkpoint_count`, one block per file). The
+  `checkpoint_write` / `checkpoint_resume` tools plus `/checkpoint` and
+  `/resume` commands make the "fresh bounded context that reads the checkpoint"
+  half of the policy mechanical; resume prints the block alone, never the
+  transcript.
+- **R14 — scheduled review.** `npm run report:cost`
+  (`agent-report --cost --since=14d`) is documented as the monthly review in the
+  `/report` command (top primary sessions by cost, >soft-budget turns, loop
+  candidates, cost per shipped feature, model mix by tier, escalation-evidence
+  flag); the `agent-report/1` JSON schema is pinned for stable consumption.
+- Tests: model-routing content contract, `test:dispatch` declared-target vs
+  stray-model behavior, provider-stats tier classification, `agent-report --cost`
+  escalation flag (with/without evidence), `test:prefix` clean/volatile/date
+  cases, checkpoint round-trip/idempotency/replace/loud-failure, and a
+  deploy/ownership test for the new script + tools + commands + scripts.
+
 ## Decision log (changes to the recommendations doc)
 
 - **R1 (Zen DeepSeek guard) dropped** — user does not use `opencode/deepseek-*`;
@@ -187,19 +232,18 @@ The loop is closed: observed cost/tokens/turns now join to features, and
   work, so the join is close to complete for new handoffs; historical handoffs
   without it are reported as unmatched, never imputed.
 
-## What's next — remaining D + measurement
+## What's next — measurement only
 
-- **Measurement (now possible)**: run `npm run report -- --cost --since=14d`
-  monthly. The R2/R3 claim (50/60/80 nudges + loop flags vs spend) can now be
-  verified on post-`0.1.53` data; a 2-week window is the minimum before drawing
-  conclusions. Use `--export` to snapshot each window.
-- **D remaining**: R9 opportunistic tier (`big-pickle`, privacy caveat), R10
-  escalation evidence (`model_escalation_evidence` in the dispatch-log schema +
-  report flag), R11 scoped cache-prefix lint (prefix files only — avoids false
-  positives), R12 `checkpoint` tool + `/resume` command, R14 scheduled review
-  (now `npm run report -- --cost --since=14d`; optionally add it to CI).
+- **Measurement (start now)**: run `npm run report:cost` monthly (a 2-week window
+  is the minimum before drawing conclusions). R2/R3 can be judged on
+  post-`0.1.53` data; R9/R10 on post-`0.1.56` data (opportunistic usage and
+  recorded escalation evidence). Use `--export` to snapshot each window and
+  compare.
+- **All remaining D items shipped** (R9, R10, R11, R12, R14 in `0.1.56`).
   R13 (doc truth) is refreshed by this doc + README; re-check after the next
   change to the guard thresholds.
+- **Watchlist**: R2's 10–15% soft claim stays unproven until measured; R8
+  (per-dispatch persona dedup) remains deferred; R1 stays dropped.
 
 ## Gotchas
 

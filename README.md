@@ -42,13 +42,17 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.agents/skills/*/SKILL.md` | persona instruction skills | harness (overwrite) |
 | `.agents/features/INDEX.md` | pointer to `BACKLOG.md` (per-feature doc tree root) | **project** (create-if-missing) |
 | `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
-| `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` gates + QA-script wiring check | harness (overwrite) |
+| `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` / `test:prefix` gates + QA-script wiring check | harness (overwrite) |
 | `scripts/backlog.js` | deterministic `BACKLOG.md` editor (list/add/take/archive/freeze) | harness (overwrite) |
 | `.opencode/tools/backlog.ts` | `backlog_*` custom tools the LLM calls (shell out to the CLI) | harness (overwrite) |
 | `.opencode/plugins/backlog-notify.ts` | toast/log whenever an agent mutates the board | harness (overwrite) |
 | `.opencode/plugins/context-guard.ts` | mid-session checkpoint/loop nudges read from `orchestration.md` (core: `scripts/qa/context-guard-core.js`) | harness (overwrite) |
 | `.opencode/tools/session.ts` | `session_info` tool — reports the primary orchestrator session id (the handoff `session:` join key) + observed cost/tokens/turns | harness (overwrite) |
-| `scripts/agent-report.js` | deterministic dispatch report (`--cost` joins observed provider telemetry) | harness (overwrite) |
+| `.opencode/tools/checkpoint.ts` | `checkpoint_write` / `checkpoint_resume` tools (shell out to `scripts/checkpoint.js`) | harness (overwrite) |
+| `.opencode/command/checkpoint.md`, `.opencode/command/resume.md` | mid-session checkpoint + bounded resume-from-checkpoint commands | harness (overwrite) |
+| `scripts/checkpoint.js` | deterministic checkpoint write/replace/read for one session handoff (no timestamps, `unknown` for absent state) | harness (overwrite) |
+| `scripts/qa/check-prefix-stability.js` | `test:prefix` gate — fails a volatile value (clock timestamp, machine path, session id) in the always-loaded prompt prefix | harness (overwrite) |
+| `scripts/agent-report.js` | deterministic dispatch report (`--cost` joins observed provider telemetry; `--json` schema `agent-report/1`) | harness (overwrite) |
 | `scripts/qa/provider-stats.js` | observed cost/token/turn telemetry from the local opencode store (no sqlite dependency) | harness (overwrite) |
 | `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, orchestration, history, flow-map, product-principles, quality-parameters, test-design-parameters) | **project** (create-if-missing) |
 | `.agents/reviews/*` | project data (durable review/audit deliverables — REPORT.md + scans, tagged by quality-parameters) | **project** (create-if-missing) |
@@ -139,15 +143,19 @@ the recovery rule (building on the runtime's own `doom_loop` permission), and
 records band/loop/request crossings in `.agents/guard-events.jsonl` (local-only,
 excluded clone-locally). Every handoff can
 carry a `## Session metadata` block (`session`, `work_type`, `outcome`,
-`termination_reason`, `checkpoint_count` — controlled vocabularies, never
-fabricated) that `npm run report` aggregates deterministically per feature.
-`npm run report -- --cost --since=14d` closes the telemetry loop: the
-`session_info` tool returns the primary session id, and `agent-report` joins
-it to observed provider data (`scripts/qa/provider-stats.js` reads the local
-opencode store, including registered git worktrees) — totals, model mix,
-cache-read share, P50/P90 cost and turns, >60-turn sessions, identical-call
-loop candidates, and **cost per shipped feature** (primary session + its
-subagent sessions = one feature run). Nothing is inferred from text length.
+`termination_reason`, `checkpoint_count`, `model_escalation_evidence` —
+controlled vocabularies, never fabricated) that `npm run report` aggregates
+deterministically per feature.
+`npm run report -- --cost --since=14d` (also `npm run report:cost`) closes the
+telemetry loop: the `session_info` tool returns the primary session id, and
+`agent-report` joins it to observed provider data
+(`scripts/qa/provider-stats.js` reads the local opencode store, including
+registered git worktrees) — totals, model mix by tier, cache-read share, P50/P90
+cost and turns, >60-turn sessions, identical-call loop candidates, and **cost per
+shipped feature** (primary session + its subagent sessions = one feature run).
+A primary session observed on an `escalation_models:` model is flagged when no
+`model_escalation_evidence` / `## Escalations` reason is recorded — escalation is
+visible, never assumed. Nothing is inferred from text length.
 
 ## Model routing & enforcement
 
@@ -171,7 +179,15 @@ subagent sessions = one feature run). Nothing is inferred from text length.
 - `npx @dombaras/agent-harness list` prints the persona → model mapping.
 - `npm run test:dispatch` mechanically verifies model pins against
   `scripts/qa/models.allowlist.txt` and that `model-routing.md` does not name a
-  stale model no longer pinned anywhere (doc↔config drift).
+  stale model no longer pinned anywhere (doc↔config drift). Concrete IDs on the
+  machine-readable `opportunistic_models:` / `escalation_models:` lines are
+  legal declared targets, not drift.
+- **Opportunistic tier** (`.agents/memory/model-routing.md`): free/low-cost
+  models for best-effort bulk exploration/summarization, pinned through
+  `opencode.json` `agent.explore.model` (default `opencode/big-pickle`) and
+  ADD-ONLY overridable per project — with a mandatory fallback to the persona's
+  normal tier and a no-confidential-data caveat. `report` classifies the model
+  mix by tier.
 - **`/switch-model` command** — every deploy ships an opencode command
   (`.opencode/command/switch-model.md`) plus `scripts/switch-reasoning-model.ps1`
   that rewrites the main `opencode.json` `model` and the six reasoning-tier
@@ -277,6 +293,17 @@ so agents see complete descriptions.
   vitest `Duration`), and fails when the process lingers after the tests are done
   (T1/T6/T9) — the measured bug where 22 tests finished in 76 ms but the process
   exited 60.4 s later. Tune with `--max-linger <sec>` / `--ratio <x>`.
+- `npm run test:prefix` — **cache-prefix stability gate**: the always-loaded
+  prefix (root `AGENTS.md`, the rulebook, `00-operating.md`, and the session-start
+  memory reads) must carry no per-run content — clock timestamps, machine-specific
+  absolute paths, or session ids — because one changing byte breaks prompt-cache
+  locality for every later turn. Bare historical dates are fine; `BACKLOG.md`,
+  handoffs, and feature docs are out of scope.
+- `npm run checkpoint -- write --feature <id> ...` / `resume --feature <id>` —
+  deterministic bounded-state checkpoint in `.agents/handoffs/<id>.md`
+  (agents: the `checkpoint_write` / `checkpoint_resume` tools, or `/checkpoint` /
+  `/resume`). Rewriting identical state is a no-op; changed state increments
+  `checkpoint_count`; no timestamps, `unknown` for anything not recorded.
 - `npm run test:product` — **product/UX-first gate**: every feature doc in
   `.agents/features/<slug>/` must define its user before planning/implementation.
   `intent.md` must carry Actor(s) → Need → Outcome → Acceptance criteria, and `plan.md`
@@ -314,7 +341,9 @@ npx @dombaras/agent-harness update --target /path/to/project
 - Overwrites harness-owned files, preserves `.agents/memory/*`, `.agents/reviews/*`, `.agents/handoffs/*`, `.agents/qa-plans/*`, and `BACKLOG.md`.
 - Auto-wires the harness gate scripts (`test:dispatch`, `test:governance`,
   `test:qa-plan`, `test:backlog`, `test:product`, `test:docs`, `test:quality`,
-  `test:wiring`, `test:linger`) into the target's `package.json` (merged, add-only).
+  `test:wiring`, `test:linger`, `test:prefix`) plus the `report`, `report:cost`,
+  `checkpoint`, and `serve` helpers into the target's `package.json` (merged,
+  add-only).
 - **Auto-commits** the harness files it changed (`chore(harness): @dombaras/agent-harness
   <old> -> <new>`) and **pushes** to origin, so the next session never sees unexplained
   modified harness files. Your unrelated uncommitted work is never staged.

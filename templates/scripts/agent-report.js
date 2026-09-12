@@ -285,8 +285,17 @@ for (const [feature, f] of Object.entries(perFeature)) {
  * orchestrator session id mapped to its provider group (primary + subagent
  * child sessions) gives real cost per feature / per shipped feature. Handoffs
  * without a recorded session, or whose session is outside the window, are
- * reported as unmatched — never guessed. */
-function providerJoin(features, providerStats) {
+ * reported as unmatched — never guessed. When a primary session observed on a
+ * declared escalation model has no recorded reason (`model_escalation_evidence`
+ * metadata or an `## Escalations` bullet), it is flagged — never assumed. */
+function escalationEvidenceOf(f) {
+  const meta = f.meta.model_escalation_evidence;
+  if (meta && !/^(none|no|n\/a|\?|unknown)$/i.test(meta.trim())) return meta.trim();
+  if (f.escalations && f.escalations.length) return f.escalations.join("; ");
+  return null;
+}
+
+function providerJoin(features, providerStats, escalationIds) {
   const byId = new Map(providerStats.sessions.map((s) => [s.id, s]));
   const groups = providerStats.aggregates.groups || {};
   const byFeature = {};
@@ -309,11 +318,14 @@ function providerJoin(features, providerStats) {
     byFeature[feature] = {
       session: sid,
       rootId: cur.id,
+      rootModel: g.rootModel || s.model || null,
       cost: g.cost,
       turns: g.turns,
       totalTurns: g.totalTurns,
       sessions: g.sessions,
       outcome: f.meta.outcome || null,
+      escalated: !!escalationIds && escalationIds.has(cur.id),
+      escalationEvidence: escalationEvidenceOf(f),
     };
     matched += 1;
   }
@@ -324,6 +336,26 @@ function providerJoin(features, providerStats) {
   const shippedCost = successful.reduce((a, h) => a + h.cost, 0);
   const matchedSessions = new Set(entries.map((h) => h.session));
   const roots = providerStats.sessions.filter((s) => !s.parentId || !byId.has(s.parentId));
+
+  const escalated = Object.entries(byFeature).filter(([, h]) => h.escalated && !h.status);
+  const withEvidence = escalated.filter(([, h]) => h.escalationEvidence);
+  const withoutEvidence = escalated.filter(([, h]) => !h.escalationEvidence);
+  const matchedRoots = new Set(entries.filter((h) => !h.status).map((h) => h.rootId));
+  const escalation = {
+    models: (providerStats.aggregates.escalation && providerStats.aggregates.escalation.models) || [],
+    proSessions: (providerStats.aggregates.escalation && providerStats.aggregates.escalation.count) || 0,
+    matchedProSessions: escalated.length,
+    withEvidence: withEvidence.length,
+    withoutEvidence: withoutEvidence.map(([feature, h]) => ({
+      feature,
+      model: h.rootModel,
+      session: h.rootId,
+    })),
+    unobservable: ((providerStats.aggregates.escalation && providerStats.aggregates.escalation.rootIds) || []).filter(
+      (id) => !matchedRoots.has(id)
+    ),
+  };
+
   return {
     matched,
     handoffsWithSession: Object.values(features).filter((f) => f.meta.session).length,
@@ -332,6 +364,7 @@ function providerJoin(features, providerStats) {
     shippedCount: successful.length,
     shippedCost,
     costPerShippedFeature: successful.length ? shippedCost / successful.length : null,
+    escalation,
     byFeature,
   };
 }
@@ -349,20 +382,24 @@ if (args.cost) {
     ? ps.readFixture(args.fixture)
     : ps.collectStats({ root: args.root, since: args.since, opencode: args.opencode });
   const thresholds = ps.readThresholds(args.root);
+  const tiers = stats.meta.modelTiers || ps.readModelTiers(args.root);
   const aggregates = ps.aggregateSessions(stats.sessions, {
     stuck: stats.meta.stuck || thresholds.stuck,
     softTurnBudget: stats.meta.softTurnBudget,
+    opportunisticModels: tiers.opportunistic,
+    escalationModels: tiers.escalation,
   });
   if (args.exportFile) ps.writeFixture(args.exportFile, stats);
   provider = {
     meta: stats.meta,
     aggregates,
-    join: providerJoin(perFeature, { sessions: stats.sessions, aggregates }),
+    join: providerJoin(perFeature, { sessions: stats.sessions, aggregates }, new Set(aggregates.escalation.rootIds)),
   };
 }
 
 if (json) {
   const payload = {
+    schema: "agent-report/1",
     features: perFeature,
     personaCount,
     modelCount,
@@ -470,6 +507,16 @@ if (json) {
             : "$" + j.costPerShippedFeature.toFixed(4) + " (" + j.shippedCount + " feature(s))"
         }`
       );
+      const esc = j.escalation;
+      if (esc && esc.proSessions > 0) {
+        console.log(
+          `  Escalation evidence: ${esc.proSessions} primary session(s) on a pro model (${esc.models.join(", ")}) — ` +
+            `${esc.withEvidence} with a recorded reason, ${esc.withoutEvidence.length} without` +
+            (esc.unobservable.length ? ` · ${esc.unobservable.length} with no handoff in window` : "")
+        );
+        for (const u of esc.withoutEvidence)
+          console.log(`    ${u.feature.padEnd(24)} ${u.model} (no model_escalation_evidence recorded)`);
+      }
     }
   }
 

@@ -46,6 +46,7 @@ Date: <YYYY-MM-DD>
 - termination_reason: <gate-pass|checkpoint|blocked|escalated|abandoned|unknown>
 - checkpoint_count: <n> (omit when 0)
 - main_turns: <unknown unless observed>
+- model_escalation_evidence: <none | persona -> tier: reason> (required when the primary session ran on an `escalation_models:` model — `none` states explicitly that no escalation happened)
 
 ## Value shipped
 - <1-2 plain sentences: what the user now gets and why it matters — no file paths, no tech jargon>
@@ -76,7 +77,7 @@ Date: <YYYY-MM-DD>
 - Keep it under ~40 lines. Code is the source of truth; the handoff is a pointer, not a spec.
 - **Lead with value, not tech.** After the dispatch log, the file opens with `## Value shipped` (plain language — what the user now gets, why it matters) then `## How` (the main approach). File/test/commit detail lives below and is never the headline.
 - The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this. When the log has 5+ entries, include the `## Fan-out justification` (or a `dispatch_justification:` line) — the gate also enforces that for handoffs dated `2026-09-12`+ (older/undated history is grandfathered).
-- Record any retries in `## Retries` and any escalation in `## Escalations` (both optional — omit when none) so `npm run report` can surface where inference budget actually went.
+- Record any retries in `## Retries` and any escalation in `## Escalations` (both optional — omit when none) so `npm run report` can surface where inference budget actually went. When the primary session itself ran on an `escalation_models:` model (`.agents/memory/model-routing.md`), also set `model_escalation_evidence:` — the reason, or `none` when the pro model was the pinned default for that work. `npm run report -- --cost` flags a pro primary session with neither.
 - Record the `## Session metadata` block (session / work_type / outcome / termination_reason / checkpoint_count) whenever you know the values — the deterministic report aggregates them per feature, and `npm run report -- --cost` joins the `session:` id to observed provider cost. Get the primary orchestrator id from the `session_info` tool; if the orchestrator passed it in the dispatch prompt, use it verbatim. Use `unknown`, never a fabricated value.
 - Keeping `.agents/memory/locations.md` current is part of this skill. Read it first, update it last.
 - **You only touch handoff memory.** The board write-back — moving shipped `BACKLOG.md` rows to `Archive (shipped · done)` (via the `backlog_*` tools) and committing them — is the orchestrator's DoD §7 step, not yours. If it hasn't been done, call it out in your output; never edit `BACKLOG.md` or run git yourself.

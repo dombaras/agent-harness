@@ -6,6 +6,9 @@
   "agent": {
     "build": {
       "steps": 100
+    },
+    "explore": {
+      "model": "opencode/big-pickle"
     }
   }
 }

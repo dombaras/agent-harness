@@ -1213,6 +1213,9 @@ test("deploy auto-wires harness gate scripts into package.json, preserving other
   assert.strictEqual(pkg.scripts["test:backlog"], "node scripts/qa/check-backlog.js");
   assert.strictEqual(pkg.scripts["test:product"], "node scripts/qa/check-product.js");
   assert.strictEqual(pkg.scripts["test:quality"], "node scripts/qa/check-quality.js");
+  assert.strictEqual(pkg.scripts["test:prefix"], "node scripts/qa/check-prefix-stability.js");
+  assert.strictEqual(pkg.scripts["report:cost"], "node scripts/agent-report.js --cost --since=14d");
+  assert.strictEqual(pkg.scripts["checkpoint"], "node scripts/checkpoint.js");
 });
 
 test("deploy ships the quality rubric, reviews namespace, and test:quality gate", async () => {
@@ -3636,5 +3639,237 @@ test("session_info tool ships, reports the join key, and both telemetry files st
   fs.writeFileSync(scriptPath, "LOCAL EDIT", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.match(read(scriptPath), /aggregateSessions/, "provider-stats is harness-owned (restored on update)");
+});
+
+// ---------------------------------------------------------------- remaining D (R9/R10/R11/R12/R14)
+
+test("model-routing ships the opportunistic tier with fallback + privacy caveat and machine-read targets", () => {
+  const doc = read(path.join(h.TEMPLATES_DIR, ".agents", "memory", "model-routing.md"));
+  assert.match(doc, /opportunistic \(free\/low-cost\)/);
+  assert.match(doc, /agent\.explore\.model/);
+  assert.match(doc, /opencode\/big-pickle/);
+  assert.match(doc, /Mandatory fallback/i);
+  assert.match(doc, /Privacy caveat/i);
+  assert.match(doc, /^opportunistic_models: /m);
+  assert.match(doc, /^escalation_models: /m);
+  assert.match(doc, /model_escalation_evidence/);
+
+  const cfg = JSON.parse(read(path.join(h.TEMPLATES_DIR, "opencode.json")));
+  assert.strictEqual(cfg.agent.explore.model, "opencode/big-pickle", "explore is the reference opportunistic pin");
+});
+
+test("test:dispatch accepts declared tier targets and still fails a stray unpinned model", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const runGate = () =>
+    spawnSync(process.execPath, ["scripts/qa/check-dispatch-config.js"], { cwd: target, encoding: "utf8" });
+
+  const clean = runGate();
+  assert.strictEqual(clean.status, 0, clean.stdout + clean.stderr);
+  assert.match(clean.stdout, /declared opportunistic target/);
+  assert.match(clean.stdout, /agent\.explore\.model/, "the explore pin is validated like every other pin");
+
+  const routing = path.join(target, ".agents", "memory", "model-routing.md");
+  fs.appendFileSync(routing, "\nstray mention: opencode/kimi-k3\n", "utf8");
+  const dirty = runGate();
+  assert.strictEqual(dirty.status, 1, "an undeclared unpinned model still fails the drift check");
+  assert.match(dirty.stdout, /doc\u2194config drift/);
+});
+
+test("provider-stats classifies model mix by tier and surfaces escalation primary sessions", () => {
+  const sessions = [
+    fixtureSession({ id: "ses_pro", title: "pro primary", model: "deepseek/deepseek-v4-pro", provider: "deepseek", cost: 2, turns: 30 }),
+    fixtureSession({ id: "ses_pro1", parentId: "ses_pro", model: "opencode/big-pickle", provider: "opencode", cost: 0, turns: 2 }),
+    fixtureSession({ id: "ses_std", title: "standard", cost: 0.1, turns: 5 }),
+  ];
+  const agg = ps.aggregateSessions(sessions, {
+    escalationModels: ["deepseek/deepseek-v4-pro"],
+    opportunisticModels: ["opencode/big-pickle"],
+  });
+
+  assert.deepStrictEqual(agg.escalation.rootIds, ["ses_pro"]);
+  assert.strictEqual(agg.escalation.count, 1);
+  assert.strictEqual(agg.escalation.cost, 2);
+  assert.strictEqual(agg.escalation.sessions[0].model, "deepseek/deepseek-v4-pro");
+  assert.strictEqual(agg.opportunistic.sessions, 1, "the subagent big-pickle session is counted");
+  assert.strictEqual(agg.modelMix.find((m) => m.model === "opencode/big-pickle").tier, "opportunistic");
+  assert.strictEqual(agg.modelMix.find((m) => m.model === "deepseek/deepseek-v4-pro").tier, "escalation");
+  assert.strictEqual(agg.modelMix.find((m) => m.model === "deepseek-flash").tier, "standard");
+  const mix = Object.fromEntries(agg.tierMix.map((t) => [t.tier, t]));
+  assert.strictEqual(mix.escalation.cost, 2);
+  assert.strictEqual(mix.standard.sessions, 1);
+
+  const parsed = ps.parseModelTiers("opportunistic_models: a/b, c/d\nescalation_models: e/f\n");
+  assert.deepStrictEqual(parsed.opportunistic, ["a/b", "c/d"]);
+  assert.deepStrictEqual(parsed.escalation, ["e/f"]);
+});
+
+test("agent-report --cost flags a pro primary session with no recorded escalation evidence", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-010.md"),
+    [
+      "# handoff",
+      "",
+      "## Dispatch log",
+      "- system-architect -> deepseek/deepseek-v4-pro -> shipped",
+      "",
+      "## Session metadata",
+      "- session: ses_pro",
+      "- work_type: architecture",
+      "- outcome: shipped",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-011.md"),
+    [
+      "# handoff",
+      "",
+      "## Dispatch log",
+      "- qa-architect -> opencode/gpt-5.6-luna -> shipped",
+      "",
+      "## Session metadata",
+      "- session: ses_ok",
+      "- work_type: feature",
+      "- outcome: shipped",
+      "- model_escalation_evidence: qa-architect -> pro: contradictory evidence resolved by escalation",
+    ].join("\n"),
+    "utf8"
+  );
+  const sessions = [
+    fixtureSession({ id: "ses_pro", title: "F-010 architecture", model: "deepseek/deepseek-v4-pro", provider: "deepseek", cost: 1.5, turns: 40 }),
+    fixtureSession({ id: "ses_ok", title: "F-011 feature", model: "deepseek/deepseek-v4-pro", provider: "deepseek", cost: 1.0, turns: 20 }),
+  ];
+  fs.writeFileSync(path.join(target, "provider.json"), JSON.stringify(fixtureDoc(sessions)), "utf8");
+
+  const jsonRes = spawnSync(
+    process.execPath,
+    ["scripts/agent-report.js", "--cost", "--fixture", "provider.json", "--json"],
+    { cwd: target, encoding: "utf8" }
+  );
+  assert.strictEqual(jsonRes.status, 0, jsonRes.stdout + jsonRes.stderr);
+  const parsed = JSON.parse(jsonRes.stdout);
+  assert.strictEqual(parsed.schema, "agent-report/1", "the --json schema is pinned");
+  assert.strictEqual(parsed.provider.join.escalation.proSessions, 2);
+  assert.strictEqual(parsed.provider.join.escalation.withEvidence, 1);
+  assert.deepStrictEqual(parsed.provider.join.escalation.withoutEvidence.map((u) => u.feature), ["F-010"]);
+
+  const humanRes = spawnSync(process.execPath, ["scripts/agent-report.js", "--cost", "--fixture", "provider.json"], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  assert.strictEqual(humanRes.status, 0, humanRes.stdout + humanRes.stderr);
+  assert.match(humanRes.stdout, /Escalation evidence: 2 primary session/);
+  assert.match(humanRes.stdout, /F-010 .*no model_escalation_evidence/);
+});
+
+test("test:prefix passes a clean deploy and fails a volatile value in an always-loaded file", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const gate = () =>
+    spawnSync(process.execPath, ["scripts/qa/check-prefix-stability.js"], { cwd: target, encoding: "utf8" });
+
+  const clean = gate();
+  assert.strictEqual(clean.status, 0, clean.stdout + clean.stderr);
+  assert.match(clean.stdout, /prefix file\(s\) byte-stable/);
+
+  fs.appendFileSync(path.join(target, "AGENTS.md"), "\nGenerated: 2026-09-12T09:30\n", "utf8");
+  const dirty = gate();
+  assert.strictEqual(dirty.status, 1, "a clock timestamp in the prefix fails the gate");
+  assert.match(dirty.stdout, /clock timestamp/);
+  assert.match(dirty.stdout, /AGENTS\.md:\d+/);
+
+  // a bare historical date is stable context and stays allowed
+  fs.writeFileSync(path.join(target, "AGENTS.md"), "# Demo\n\nAs of 2026-09-12 this is fine.\n", "utf8");
+  const dateOk = gate();
+  assert.strictEqual(dateOk.status, 0, dateOk.stdout + dateOk.stderr);
+});
+
+test("checkpoint writes a deterministic bounded-state block and resume prints it alone", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const cp = (...args) => spawnSync(process.execPath, ["scripts/checkpoint.js", ...args], { cwd: target, encoding: "utf8" });
+
+  const full = [
+    "write",
+    "--feature", "F-042",
+    "--objective", "ship R12",
+    "--phase", "testing",
+    "--completed", "CLI written",
+    "--active", "author resume flow",
+    "--files-changed", "scripts/checkpoint.js",
+    "--facts", "governance reads every handoff .md",
+    "--decisions", "block replaces in place",
+    "--risks", "handoff overwrite",
+    "--next-action", "run tests",
+    "--session", "ses_abc123",
+  ];
+  const w1 = cp(...full);
+  assert.strictEqual(w1.status, 0, w1.stdout + w1.stderr);
+  assert.match(w1.stdout, /checkpoint_count 1/);
+  const file = read(path.join(target, ".agents", "handoffs", "F-042.md"));
+  assert.match(file, /## Checkpoint \(resume\)/);
+  assert.match(file, /- objective: ship R12/);
+  assert.match(file, /- next_action: run tests/);
+  assert.doesNotMatch(file, /\d{4}-\d{2}-\d{2}T/, "no timestamps — the block is deterministic");
+
+  // a checkpoint created mid-session must not break the wrap-up gate
+  const gov = spawnSync(process.execPath, ["scripts/qa/governance.js"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(gov.status, 0, gov.stdout + gov.stderr);
+  assert.match(file, /## Dispatch log/);
+
+  const again = cp(...full);
+  assert.match(again.stdout, /already matches/);
+  assert.strictEqual((read(path.join(target, ".agents", "handoffs", "F-042.md")).match(/## Checkpoint \(resume\)/g) || []).length, 1);
+
+  const changed = cp("write", "--feature", "F-042", "--objective", "ship R12", "--phase", "verified", "--next-action", "handoff");
+  assert.match(changed.stdout, /checkpoint_count 2/);
+  assert.strictEqual(
+    (read(path.join(target, ".agents", "handoffs", "F-042.md")).match(/## Checkpoint \(resume\)/g) || []).length,
+    1,
+    "the block is replaced in place, never duplicated"
+  );
+
+  const r = cp("resume", "--feature", "F-042");
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^- objective: ship R12$/m);
+  assert.doesNotMatch(r.stdout, /## Dispatch log/, "resume prints the checkpoint block only");
+  const rj = cp("resume", "--feature", "F-042", "--json");
+  assert.strictEqual(JSON.parse(rj.stdout).schema, "checkpoint/1");
+
+  const missing = cp("resume", "--feature", "F-999");
+  assert.strictEqual(missing.status, 1);
+  assert.match(missing.stderr, /no handoff found/);
+  const empty = cp("write", "--feature", "F-999");
+  assert.strictEqual(empty.status, 1);
+  assert.match(empty.stderr, /empty checkpoint/);
+});
+
+test("checkpoint CLI, tools, commands, and report:cost are deployed and stay harness-owned", async () => {
+  const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "checkpoint.ts"));
+  assert.match(tool, /export const write\b/);
+  assert.match(tool, /export const resume\b/);
+  assert.match(tool, /checkpoint\.js/, "shells out to the deterministic CLI");
+
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  for (const rel of [
+    "scripts/checkpoint.js",
+    ".opencode/tools/checkpoint.ts",
+    ".opencode/command/checkpoint.md",
+    ".opencode/command/resume.md",
+    "scripts/qa/check-prefix-stability.js",
+  ]) {
+    assert.ok(exists(path.join(target, ...rel.split("/"))), rel + " deployed");
+  }
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts.checkpoint, "node scripts/checkpoint.js");
+
+  fs.writeFileSync(path.join(target, "scripts", "checkpoint.js"), "LOCAL EDIT", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.match(read(path.join(target, "scripts", "checkpoint.js")), /resume/, "checkpoint.js restored on update");
 });
 

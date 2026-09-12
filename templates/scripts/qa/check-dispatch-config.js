@@ -11,9 +11,13 @@
  *      `.opencode/agents/<name>.md` and vice-versa (no path/skill drift).
  *   3. Every agent body carries the output-contract marker (Result / Evidence /
  *      Deferred & risks) so subagents return a consistent report shape.
- *   4. `opencode.json` main `model` + `small_model` are also real provider IDs.
+ *   4. `opencode.json` main `model` + `small_model` and every
+ *      `agent.<name>.model` override (e.g. the opportunistic `explore` pin) are
+ *      real provider IDs.
  *   5. `.agents/memory/model-routing.md` does not name a concrete model that is
- *      no longer pinned by any agent or opencode.json (doc↔config drift).
+ *      no longer pinned by any agent or opencode.json (doc↔config drift) —
+ *      except IDs declared on a machine-readable `opportunistic_models:` /
+ *      `escalation_models:` line (legal targets, deliberately unpinned).
  *   6. Every bash-enabled editor carries the working-tree gate (verify
  *      `git rev-parse --show-toplevel` + branch before editing) so a subagent
  *      can never silently edit the wrong checkout/worktree.
@@ -108,7 +112,8 @@ for (const a of agentSet) if (!skillSet.has(a)) fail(`agent ${a}: no matching .a
 if (skillNames.join("|") === [...agentNames].map((f) => f.replace(/\.md$/, "")).sort().join("|"))
   pass(`persona parity: ${agentNames.length} agents == ${skillNames.length} skills`);
 
-// 3. opencode.json main + small model are real provider IDs
+// 3. opencode.json main + small model are real provider IDs (and any
+// `agent.<name>.model` override — e.g. the opportunistic `explore` pin)
 const configModels = new Set();
 if (fs.existsSync(opencodeJson)) {
   const cfg = JSON.parse(fs.readFileSync(opencodeJson, "utf8"));
@@ -119,14 +124,38 @@ if (fs.existsSync(opencodeJson)) {
     else if (allowlist.has(v)) pass(`opencode.json ${key} \`${v}\` is a real provider model`);
     else fail(`opencode.json ${key} \`${v}\` NOT in provider allowlist`);
   }
+  if (cfg.agent && typeof cfg.agent === "object") {
+    for (const [name, agentCfg] of Object.entries(cfg.agent)) {
+      const v = agentCfg && typeof agentCfg === "object" ? agentCfg.model : null;
+      if (!v) continue;
+      configModels.add(v);
+      if (allowlist.has(v)) pass(`opencode.json agent.${name}.model \`${v}\` is a real provider model`);
+      else fail(`opencode.json agent.${name}.model \`${v}\` NOT in provider allowlist`);
+    }
+  }
 } else warn("opencode.json not found (skip)");
 
-// 4. model-routing.md ↔ model: pin consistency (doc↔config drift)
+// 4. model-routing.md ↔ model: pin consistency (doc↔config drift).
+// Concrete IDs on a machine-readable `opportunistic_models:` / `escalation_models:`
+// line are DECLARED TARGETS (legal tiers, deliberately not pinned) — they pass the
+// drift check without a matching pin; every other concrete ID must be pinned.
+const declaredTargets = new Set();
+const targetTiers = new Map();
 const usedModels = new Set([...agentModels, ...configModels]);
 const modelRoutingFile = path.join(root, ".agents", "memory", "model-routing.md");
 if (fs.existsSync(modelRoutingFile)) {
   const doc = fs.readFileSync(modelRoutingFile, "utf8");
-  const modelPattern = [...allowlist].map(escapeRe).join("|");
+  for (const m of doc.matchAll(/^(opportunistic|escalation)_models:\s*(.+)$/gim)) {
+    const tier = m[1].toLowerCase();
+    for (const id of m[2].split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)) {
+      if (/^`?(opportunistic|escalation)_models:`?$/i.test(id)) continue;
+      declaredTargets.add(id);
+      targetTiers.set(id, tier);
+    }
+  }
+  // Longest-first alternation so a declared `...-contributor-free` ID is never
+  // clipped to a shorter allowlist entry that shares its prefix.
+  const modelPattern = [...allowlist].sort((a, b) => b.length - a.length).map(escapeRe).join("|");
   const mentioned = new Set();
   const re = new RegExp(modelPattern, "g");
   let m;
@@ -136,6 +165,8 @@ if (fs.existsSync(modelRoutingFile)) {
   } else {
     for (const mid of mentioned) {
       if (usedModels.has(mid)) pass(`model-routing.md \`${mid}\` matches an actual pin`);
+      else if (declaredTargets.has(mid))
+        pass(`model-routing.md \`${mid}\` is a declared ${targetTiers.get(mid)} target (not a pin)`);
       else fail(`model-routing.md references \`${mid}\` but no agent/config pins it (doc↔config drift)`);
     }
   }

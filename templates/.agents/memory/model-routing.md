@@ -14,6 +14,7 @@ policy — the concrete model IDs are the source of truth in the agent files
 | reasoning (plan/review) | Planning, product design, QA architecture |
 | general | Everyday coding, UI design, mobile native, infra/devops, data, QA execution, feature registrar |
 | mechanical | Handoffs |
+| opportunistic (free/low-cost) | Bulk exploration, repo-wide search/summarize, mechanical repetition — best-effort only, never authoritative |
 
 The reasoning tier is split by persona: hard reasoning (architecture, security)
 keeps the strongest reasoning model; debugging runs on a fast frontier reasoning
@@ -23,6 +24,30 @@ model, debug → fast frontier reasoning model, plan/review + general → strong
 coder/tool-use model, mechanical → cheap fast model). Change it only by editing
 `.opencode/agents/<name>.md` `model:` — the `model:` label in
 `.agents/skills/*/SKILL.md` is informational only and does NOT route models.
+
+### Opportunistic tier (free / low-cost models)
+
+Free or near-free models are a **best-effort** lane, never an authority. Use
+them for genuinely disposable work: broad exploration/searches, chunk
+summarization, mechanical repetition, first-pass drafts. The built-in `explore`
+subagent is the reference pin — the harness ships it as
+`opencode.json` → `agent.explore.model` (default `opencode/big-pickle`) and a
+project may repoint it, on its main persona set or not at all.
+
+- **Mandatory fallback.** When an opportunistic model fails, returns empty, or
+  is unavailable, fall back to the persona's normal tier (retry once per the
+  dispatch-failure ladder, then degrade inline and log
+  `degraded: <persona> model: <reason>`). Never block a deliverable on a free
+  model.
+- **Not for authoritative output.** Explore→summaries and mechanical edits must
+  be verified by the normal tier before they count as evidence; never route a
+  thinker (planner/product-manager/system-architect/qa-architect) or a persona
+  whose output gates work to the opportunistic tier.
+- **Privacy caveat.** Free models may be training-enabled. Never send
+  confidential data, secrets, credentials, personal/customer data, or unpublishable
+  source to an opportunistic model.
+- **Machine-readable list** (reports classify model mix with it):
+  `opportunistic_models:` in the section below.
 
 ## Per-persona enforcement
 
@@ -79,12 +104,28 @@ stronger reasoning tier only on concrete evidence, in this order:
    evidence, cross-module reasoning failure, security-sensitive ambiguity,
    unresolved concurrency/state issues, or a genuinely-blocking workaround risk.
 4. **Record it** — log the escalation as `escalated: <persona> -> <tier> reason: <...>`
-   in the session's dispatch log, so the cost is visible and auditable.
+   in the session's dispatch log, and set the handoff's
+   `- model_escalation_evidence: <persona -> tier: reason>` metadata line (or
+   `none` when no escalation happened), so the cost is visible and auditable.
+   `npm run report -- --cost` flags a primary session observed on an
+   `escalation_models:` model with no recorded evidence.
 
 Do NOT escalate merely because a first attempt was imperfect, the answer was
 long, the task is technically complex, the agent asked for more context, or the
 agent expressed uncertainty without evidence. A strong model is a scarce
 resource, not a preference.
+
+## Machine-read tier targets (gates + report)
+
+Concrete model IDs here are **declared targets, not pins** — `test:dispatch`
+accepts a model named on these lines without requiring an agent/config pin, and
+`npm run report -- --cost` uses them to classify observed sessions by tier.
+Everything not listed is the standard execution tier.
+
+```
+opportunistic_models: opencode/big-pickle, opencode/nemotron-3-ultra-free, opencode/muse-spark-1.2-contributor-free
+escalation_models: deepseek/deepseek-v4-pro, opencode/gpt-5.6-sol
+```
 
 ## Role-aware context (inject the minimum sufficient context)
 

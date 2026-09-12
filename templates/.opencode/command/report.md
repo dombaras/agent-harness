@@ -12,11 +12,19 @@ For the cost roll-up, join the handoffs to observed provider telemetry
 (opencode store — never estimated):
 
 ```
-node scripts/agent-report.js --cost --since=14d
+npm run report:cost          # = node scripts/agent-report.js --cost --since=14d
 ```
 
-(or `--json` for machine-readable output; add `--fixture <file>` to read a
-previously exported provider snapshot and `--export <file>` to write one.)
+(or `node scripts/agent-report.js --cost --since=14d`; `--json` for
+machine-readable output — schema `agent-report/1`; add `--fixture <file>` to read
+a previously exported provider snapshot and `--export <file>` to write one.)
+
+This is the **scheduled review** command: run it at least monthly (a 2-week
+window is the minimum to judge a routing/guard change). It reports top primary
+sessions by cost, sessions over the soft turn budget, identical-call loop
+candidates, cost per feature / per shipped feature, model mix by tier, and the
+escalation-evidence check (a primary session on an `escalation_models:` model
+with no recorded `model_escalation_evidence` is listed for review).
 
 This aggregates the `## Dispatch log` / `## Retries` / `## Escalations` /
 `## Session metadata` sections across every `.agents/handoffs/*.md` and prints

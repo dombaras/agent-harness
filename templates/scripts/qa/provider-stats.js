@@ -313,6 +313,36 @@ function enrichLoops(sessions, partRows, stuck) {
 
 // ---------------------------------------------------------------- aggregate
 
+/* Machine-readable model-tier targets from `.agents/memory/model-routing.md`
+ * (`opportunistic_models:` / `escalation_models:` lines). These classify the
+ * observed model mix; anything unlisted is the standard execution tier. */
+function parseModelTiers(text) {
+  const out = { opportunistic: [], escalation: [] };
+  for (const m of String(text || "").matchAll(/^(opportunistic|escalation)_models:\s*(.+)$/gim)) {
+    out[m[1].toLowerCase()] = m[2]
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return out;
+}
+
+function readModelTiers(root) {
+  let text = "";
+  try {
+    text = fs.readFileSync(path.join(root, ".agents", "memory", "model-routing.md"), "utf8");
+  } catch (_) {
+    /* missing file -> no declared tiers (everything is standard) */
+  }
+  return parseModelTiers(text);
+}
+
+function tierOf(model, opportunistic, escalation) {
+  if (escalation.has(model)) return "escalation";
+  if (opportunistic.has(model)) return "opportunistic";
+  return "standard";
+}
+
 /* Aggregate observed sessions into feature-run groups (a primary orchestrator
  * session + every subagent child session) plus project-wide totals. Pure: all
  * inputs come from `collectStats` (or a fixture), nothing is fabricated. */
@@ -321,6 +351,8 @@ function aggregateSessions(sessions, opts = {}) {
   const softTurnBudget = Number.isFinite(opts.softTurnBudget)
     ? opts.softTurnBudget
     : CG.DEFAULT_TURNS.soft_turn_budget;
+  const escalationModels = new Set(opts.escalationModels || []);
+  const opportunisticModels = new Set(opts.opportunisticModels || []);
   const byId = new Map(sessions.map((s) => [s.id, s]));
 
   const totals = {
@@ -340,6 +372,7 @@ function aggregateSessions(sessions, opts = {}) {
       groups.set(rootId, {
         rootId,
         title: root ? root.title : rootId,
+        rootModel: root ? root.model : "?",
         cost: 0,
         turns: 0,
         totalTurns: 0,
@@ -383,7 +416,14 @@ function aggregateSessions(sessions, opts = {}) {
   for (const s of sessions) {
     const key = s.model + "|" + s.provider;
     if (!modelMap.has(key)) {
-      modelMap.set(key, { model: s.model, provider: s.provider, sessions: 0, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 } });
+      modelMap.set(key, {
+        model: s.model,
+        provider: s.provider,
+        tier: tierOf(s.model, opportunisticModels, escalationModels),
+        sessions: 0,
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+      });
     }
     const m = modelMap.get(key);
     m.sessions += 1;
@@ -391,6 +431,40 @@ function aggregateSessions(sessions, opts = {}) {
     for (const k of Object.keys(m.tokens)) m.tokens[k] += s.tokens[k];
   }
   const modelMix = [...modelMap.values()].sort((a, b) => b.cost - a.cost || a.model.localeCompare(b.model));
+
+  /* Tier mix: cost / sessions / tokens rolled up by tier (standard vs declared
+   * opportunistic / escalation targets). Never inferred — classification only. */
+  const tierMap = new Map();
+  for (const s of sessions) {
+    const tier = tierOf(s.model, opportunisticModels, escalationModels);
+    if (!tierMap.has(tier)) tierMap.set(tier, { tier, sessions: 0, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 } });
+    const t = tierMap.get(tier);
+    t.sessions += 1;
+    t.cost += s.cost;
+    for (const k of Object.keys(t.tokens)) t.tokens[k] += s.tokens[k];
+  }
+  const tierOrder = { escalation: 0, standard: 1, opportunistic: 2 };
+  const tierMix = [...tierMap.values()].sort(
+    (a, b) => (tierOrder[a.tier] ?? 9) - (tierOrder[b.tier] ?? 9) || b.cost - a.cost
+  );
+
+  /* Escalation evidence surface: primary (root) sessions observed on a declared
+   * escalation model. A pro model on a subagent is a legitimate pinned persona;
+   * the primary orchestrator running on one is the thing that needs a recorded
+   * reason (agent-report joins that to the handoff). */
+  const escalationGroups = groupList.filter((g) => escalationModels.has(g.rootModel));
+  const escalation = {
+    models: [...escalationModels].sort(),
+    count: escalationGroups.length,
+    cost: escalationGroups.reduce((a, g) => a + g.cost, 0),
+    sessions: escalationGroups.map((g) => ({ id: g.rootId, title: g.title, model: g.rootModel, cost: g.cost })),
+    rootIds: escalationGroups.map((g) => g.rootId),
+  };
+  const opportunistic = {
+    models: [...opportunisticModels].sort(),
+    sessions: sessions.filter((s) => opportunisticModels.has(s.model)).length,
+    cost: sessions.filter((s) => opportunisticModels.has(s.model)).reduce((a, s) => a + s.cost, 0),
+  };
 
   const loopCandidates = sessions
     .filter((s) => s.maxIdentical >= (Number.isFinite(stuck.identical_tool_calls) ? stuck.identical_tool_calls : 3))
@@ -417,6 +491,9 @@ function aggregateSessions(sessions, opts = {}) {
       },
     },
     modelMix,
+    tierMix,
+    escalation,
+    opportunistic,
     topSessions: groupList.slice(0, 5).map((g) => ({
       id: g.rootId,
       title: g.title,
@@ -436,7 +513,7 @@ function aggregateSessions(sessions, opts = {}) {
       count: loopCandidates.length,
       sessions: loopCandidates.slice(0, 10),
     },
-    groups: Object.fromEntries(groupList.map((g) => [g.rootId, { cost: g.cost, turns: g.turns, totalTurns: g.totalTurns, sessions: g.sessions, tokens: g.tokens }])),
+    groups: Object.fromEntries(groupList.map((g) => [g.rootId, { cost: g.cost, turns: g.turns, totalTurns: g.totalTurns, sessions: g.sessions, tokens: g.tokens, rootModel: g.rootModel, models: g.models }])),
   };
 }
 
@@ -484,6 +561,7 @@ function collectStats(opts = {}) {
     scope: null,
     stuck,
     softTurnBudget,
+    modelTiers: readModelTiers(root),
   };
   if (projectIds.length === 0) return { meta: { ...meta, note: "no opencode project matches this root" }, sessions: [] };
 
@@ -577,6 +655,25 @@ function printHuman(stats, agg) {
     );
   }
 
+  const tiers = agg.tierMix.filter((t) => t.sessions > 0);
+  if (tiers.length) {
+    console.log("\nModel mix by tier:");
+    for (const t of tiers) {
+      console.log(`  ${t.tier.padEnd(14)} ${String(t.sessions).padStart(4)} sessions  ${money(t.cost).padStart(10)}`);
+    }
+  }
+  if (agg.escalation.count) {
+    console.log(
+      `\nEscalation tier: ${agg.escalation.count} primary session(s) on ${agg.escalation.models.join(", ")} — ` +
+        `${money(agg.escalation.cost)} (record the reason in the handoff; agent-report flags the missing ones)`
+    );
+  }
+  if (agg.opportunistic.sessions) {
+    console.log(
+      `Opportunistic tier: ${agg.opportunistic.sessions} session(s) (${money(agg.opportunistic.cost)}) on ${agg.opportunistic.models.join(", ")}`
+    );
+  }
+
   if (agg.topSessions.length) {
     console.log("\nTop primary sessions by cost:");
     for (const s of agg.topSessions) {
@@ -606,7 +703,13 @@ function main() {
     ? readFixture(args.fixture)
     : collectStats({ root: args.root || defaultRoot(), since: args.since, session: args.session, opencode: args.opencode });
   const thresholds = readThresholds(stats.meta.root || defaultRoot());
-  const agg = aggregateSessions(stats.sessions, { stuck: stats.meta.stuck || thresholds.stuck, softTurnBudget: stats.meta.softTurnBudget });
+  const tiers = stats.meta.modelTiers || readModelTiers(stats.meta.root || defaultRoot());
+  const agg = aggregateSessions(stats.sessions, {
+    stuck: stats.meta.stuck || thresholds.stuck,
+    softTurnBudget: stats.meta.softTurnBudget,
+    opportunisticModels: tiers.opportunistic,
+    escalationModels: tiers.escalation,
+  });
   if (args.exportFile) {
     const file = writeFixture(args.exportFile, stats);
     console.error(`provider-stats: wrote ${file}`);
@@ -643,6 +746,8 @@ module.exports = {
   enrichTurns,
   enrichLoops,
   aggregateSessions,
+  parseModelTiers,
+  readModelTiers,
   readThresholds,
   defaultRoot,
   collectStats,

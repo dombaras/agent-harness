@@ -24,6 +24,17 @@ via the `session:` metadata line (get the primary orchestrator id from the
 `session_info` tool). That join maps a feature to its provider group — the
 primary session plus every subagent session it dispatched — so cost per shipped
 feature is measured, never estimated. Record it whenever the session did work.
+The same join flags a primary session observed on an `escalation_models:` model
+(`.agents/memory/model-routing.md`) with no recorded reason: record
+`model_escalation_evidence:` (or `none`) whenever the primary ran a pro model.
+
+Mid-session, `scripts/checkpoint.js` (agents: the `checkpoint_write` /
+`checkpoint_resume` tools, or `/checkpoint` / `/resume`) maintains a
+`## Checkpoint (resume)` block in the session's handoff file. It is
+machine-written — replaced in place, never duplicated — and `/resume` prints it
+alone as the bounded state a fresh context continues from, instead of replaying
+the transcript. Do not hand-edit the block; the handoff's own sections stay
+yours.
 
 ## Naming & ownership
 
@@ -59,6 +70,7 @@ feature is measured, never estimated. Record it whenever the session did work.
     - outcome: <shipped|resolved|deferred|investigation-complete|abandoned|superseded|conversation-only>
     - termination_reason: <gate-pass|checkpoint|blocked|escalated|abandoned|unknown>
     - checkpoint_count: <n> (omit when 0)
+    - model_escalation_evidence: <none | persona -> tier: reason> (required when the primary session ran on an escalation_models model; `none` = explicitly no escalation)
 
     ## Value shipped
     - <1-2 plain sentences: what the user now gets and why it matters — no file paths, no tech jargon>

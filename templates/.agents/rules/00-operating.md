@@ -51,11 +51,16 @@ session grow without bound. Thresholds are tunable in
   objective/phase, completed + active dispatches, files changed, contracts,
   known facts, decisions, risks, next_action) and prefer to continue in a fresh
   bounded context that reads the checkpoint — never by replaying the transcript.
+  This is mechanical: the `checkpoint_write` tool (or `/checkpoint`) writes the
+  state block via `scripts/checkpoint.js`, and `/resume` (the `checkpoint_resume`
+  tool) prints that block alone as the fresh session's bounded context.
 - **No abrupt kill**: a currently-running tool call finishes; the budget triggers a
   checkpoint/finish, not a mid-operation abort.
 - **Cache-friendly prefix**: keep the stable leading context (operating rules →
   persona → project rules) byte-stable across turns; never regenerate equivalent
-  instructions in new wording (the cache is an asset).
+  instructions in new wording (the cache is an asset). `npm run test:prefix`
+  fails a volatile value (clock timestamp, machine path, session id) in a prefix
+  file — those belong in handoffs/state files, not the always-loaded context.
 - **Mechanical guard**: the `context-guard` plugin reads the thresholds from
   `orchestration.md` at runtime and injects the checkpoint warning / soft-budget /
   new-context (and hard-ceiling) nudges at the turn bands, plus the recovery rule
