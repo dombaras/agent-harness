@@ -12,18 +12,49 @@
  * recorded escalations, structured session metadata (work_type / outcome /
  * termination_reason / checkpoint_count), and a per-feature trace (`--json`).
  * Token/cost is intentionally NOT fabricated here — the handoff records dispatch
- * intent, not per-token telemetry; that lives in the provider's own session stats.
+ * intent, not per-token telemetry. With `--cost` the observed provider data
+ * (opencode store, via `scripts/qa/provider-stats.js`) is joined in through the
+ * handoff `session:` metadata, giving cost per feature / per shipped feature.
  *
  * Usage:
- *   node scripts/agent-report.js            # human-readable report
- *   node scripts/agent-report.js --json     # machine-readable trace
+ *   node scripts/agent-report.js                     # human-readable report
+ *   node scripts/agent-report.js --json              # machine-readable trace
+ *   node scripts/agent-report.js --cost --since=14d  # + observed provider cost
+ *   node scripts/agent-report.js --cost --export provider.json   # write fixture
+ *   node scripts/agent-report.js --cost --fixture provider.json  # read fixture
  */
 
 const fs = require("fs");
 const path = require("path");
 
 const root = path.resolve(__dirname, "..");
-const json = process.argv.includes("--json");
+
+function parseArgs(argv) {
+  const out = {
+    json: false,
+    cost: false,
+    since: null,
+    fixture: null,
+    exportFile: null,
+    opencode: null,
+    root,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--json") out.json = true;
+    else if (a === "--cost") out.cost = true;
+    else if (a === "--since") out.since = argv[++i];
+    else if (a.startsWith("--since=")) out.since = a.slice("--since=".length);
+    else if (a === "--fixture") out.fixture = argv[++i];
+    else if (a === "--export") out.exportFile = argv[++i];
+    else if (a === "--opencode") out.opencode = argv[++i];
+    else if (a === "--root") out.root = argv[++i];
+  }
+  return out;
+}
+
+const args = parseArgs(process.argv.slice(2));
+const json = args.json;
 
 /* All handoff files: every `.md` under `.agents/handoffs/` (recursive), plus the
  * legacy single `.agents/memory/handoff.md` if present. `README.md` files are
@@ -49,9 +80,11 @@ function handoffFiles() {
   return files.sort();
 }
 
-/* Extract the body of a `## <heading>` section (until the next heading). */
+/* Extract the body of a `## <heading>` section (until the next heading).
+ * A trailing qualifier is allowed (`## Session metadata (structured — ...)`
+ * is the template heading), so both bare and suffixed forms parse. */
 function section(src, heading) {
-  const re = new RegExp("^#{1,6}\\s*" + heading + "\\s*$", "im");
+  const re = new RegExp("^#{1,6}\\s*" + heading + "\\b.*$", "im");
   const m = src.match(re);
   if (!m) return "";
   const after = src.slice(m.index + m[0].length);
@@ -248,31 +281,103 @@ for (const [feature, f] of Object.entries(perFeature)) {
   }
 }
 
+/* Join observed provider sessions to handoff `session:` metadata: the primary
+ * orchestrator session id mapped to its provider group (primary + subagent
+ * child sessions) gives real cost per feature / per shipped feature. Handoffs
+ * without a recorded session, or whose session is outside the window, are
+ * reported as unmatched — never guessed. */
+function providerJoin(features, providerStats) {
+  const byId = new Map(providerStats.sessions.map((s) => [s.id, s]));
+  const groups = providerStats.aggregates.groups || {};
+  const byFeature = {};
+  let matched = 0;
+  for (const [feature, f] of Object.entries(features)) {
+    const sid = f.meta.session;
+    if (!sid) continue;
+    const s = byId.get(sid);
+    if (!s) {
+      byFeature[feature] = { session: sid, status: "not in provider window" };
+      continue;
+    }
+    let cur = s;
+    const seen = new Set();
+    while (cur.parentId && byId.has(cur.parentId) && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      cur = byId.get(cur.parentId);
+    }
+    const g = groups[cur.id] || { cost: s.cost, turns: s.turns, totalTurns: s.turns, sessions: 1 };
+    byFeature[feature] = {
+      session: sid,
+      rootId: cur.id,
+      cost: g.cost,
+      turns: g.turns,
+      totalTurns: g.totalTurns,
+      sessions: g.sessions,
+      outcome: f.meta.outcome || null,
+    };
+    matched += 1;
+  }
+  const entries = Object.values(byFeature);
+  const successful = entries.filter(
+    (h) => typeof h.cost === "number" && (h.outcome === "shipped" || h.outcome === "resolved")
+  );
+  const shippedCost = successful.reduce((a, h) => a + h.cost, 0);
+  const matchedSessions = new Set(entries.map((h) => h.session));
+  const roots = providerStats.sessions.filter((s) => !s.parentId || !byId.has(s.parentId));
+  return {
+    matched,
+    handoffsWithSession: Object.values(features).filter((f) => f.meta.session).length,
+    unmatchedHandoffs: entries.filter((h) => h.status).length,
+    unmatchedSessions: roots.filter((s) => !matchedSessions.has(s.id)).length,
+    shippedCount: successful.length,
+    shippedCost,
+    costPerShippedFeature: successful.length ? shippedCost / successful.length : null,
+    byFeature,
+  };
+}
+
 function sortCounts(obj) {
   return Object.entries(obj).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
+/* `--cost`: observed provider telemetry, joined to the handoffs. Fails loudly
+ * when the store is unreachable instead of printing fabricated numbers. */
+let provider = null;
+if (args.cost) {
+  const ps = require("./qa/provider-stats.js");
+  const stats = args.fixture
+    ? ps.readFixture(args.fixture)
+    : ps.collectStats({ root: args.root, since: args.since, opencode: args.opencode });
+  const thresholds = ps.readThresholds(args.root);
+  const aggregates = ps.aggregateSessions(stats.sessions, {
+    stuck: stats.meta.stuck || thresholds.stuck,
+    softTurnBudget: stats.meta.softTurnBudget,
+  });
+  if (args.exportFile) ps.writeFixture(args.exportFile, stats);
+  provider = {
+    meta: stats.meta,
+    aggregates,
+    join: providerJoin(perFeature, { sessions: stats.sessions, aggregates }),
+  };
+}
+
 if (json) {
-  console.log(
-    JSON.stringify(
-      {
-        features: perFeature,
-        personaCount,
-        modelCount,
-        totalDispatches,
-        totalRetries,
-        totalEscalations,
-        totalCheckpoints,
-        workTypeCount,
-        outcomeCount,
-        terminationCount,
-        validationWarnings: VALIDATION_WARNINGS,
-        suggestions,
-      },
-      null,
-      2
-    )
-  );
+  const payload = {
+    features: perFeature,
+    personaCount,
+    modelCount,
+    totalDispatches,
+    totalRetries,
+    totalEscalations,
+    totalCheckpoints,
+    workTypeCount,
+    outcomeCount,
+    terminationCount,
+    validationWarnings: VALIDATION_WARNINGS,
+    suggestions,
+  };
+  if (provider) payload.provider = provider;
+  console.log(JSON.stringify(payload, null, 2));
 } else {
   console.log("Agent efficiency report\n");
   console.log(`Features (handoffs): ${files.length}`);
@@ -318,10 +423,64 @@ if (json) {
     console.log("\nPotential savings: none flagged.");
   }
 
+  if (provider) {
+    const t = provider.aggregates.totals;
+    const since = provider.meta.since ? provider.meta.since.arg : "all time";
+    console.log(`\nCost telemetry (observed provider data — ${provider.meta.root}, ${since}):`);
+    if (t.sessions === 0) {
+      console.log(`  No provider sessions: ${provider.meta.note || "none in this window"}.`);
+    } else {
+      console.log(
+        `  ${t.sessions} sessions (${t.primarySessions} primary + ${t.subagentSessions} subagent) · ${"$" + t.cost.toFixed(4)} total`
+      );
+      console.log(
+        `  Cache-read share: ${t.cacheReadShare == null ? "n/a" : (t.cacheReadShare * 100).toFixed(1) + "% of input tokens"}` +
+          ` · turns/primary P50 ${provider.aggregates.percentiles.primaryTurns.p50 == null ? "n/a" : provider.aggregates.percentiles.primaryTurns.p50}` +
+          ` / P90 ${provider.aggregates.percentiles.primaryTurns.p90 == null ? "n/a" : provider.aggregates.percentiles.primaryTurns.p90}`
+      );
+      console.log(
+        `  Primary sessions over ${provider.aggregates.sessionsOverTurnBudget.threshold} turns: ${provider.aggregates.sessionsOverTurnBudget.count}` +
+          ` · identical-call loops (>= ${provider.aggregates.loopCandidates.threshold}x): ${provider.aggregates.loopCandidates.count}`
+      );
+      if (provider.aggregates.topSessions.length) {
+        console.log("  Top primary sessions by cost:");
+        for (const s of provider.aggregates.topSessions) {
+          console.log(`    ${("$" + s.cost.toFixed(4)).padStart(10)}  ${s.id}  ${s.title.slice(0, 50)}`);
+        }
+      }
+    }
+    const j = provider.join;
+    if (j.handoffsWithSession > 0 || j.unmatchedSessions > 0) {
+      console.log(
+        `  Session join: ${j.matched}/${j.handoffsWithSession} handoffs with a recorded session matched` +
+          (j.unmatchedHandoffs ? ` · ${j.unmatchedHandoffs} outside the provider window` : "") +
+          (j.unmatchedSessions ? ` · ${j.unmatchedSessions} primary session(s) with no handoff in window` : "")
+      );
+      for (const [feature, h] of Object.entries(j.byFeature)) {
+        if (h.status) console.log(`    ${feature.padEnd(24)} (${h.status})`);
+        else
+          console.log(
+            `    ${feature.padEnd(24)} ${("$" + h.cost.toFixed(4)).padStart(10)}  ${h.totalTurns} turn(s) · ${h.sessions} session(s) · outcome: ${h.outcome || "unknown"}`
+          );
+      }
+      console.log(
+        `  Cost per shipped feature: ${
+          j.costPerShippedFeature == null
+            ? "n/a (no shipped/resolved handoff with a session)"
+            : "$" + j.costPerShippedFeature.toFixed(4) + " (" + j.shippedCount + " feature(s))"
+        }`
+      );
+    }
+  }
+
   console.log(
-    "\nNote: token/cost is not fabricated here — the handoff records dispatch intent and\n" +
-      "session metadata, not per-token telemetry. For per-session token/cost, see the\n" +
-      "provider/opencode session stats. Recorded values are verbatim; absent metadata is\n" +
-      "simply not counted (distinct from `unknown`, which is counted)."
+    provider
+      ? "\nNote: dispatch intent and session metadata are recorded verbatim (absent = not counted,\n" +
+          "distinct from `unknown`, which is counted). Cost/token/turn numbers above are observed\n" +
+          "provider data from the opencode store — never inferred from text length."
+      : "\nNote: token/cost is not fabricated here — the handoff records dispatch intent and\n" +
+          "session metadata, not per-token telemetry. Run with --cost to join observed provider\n" +
+          "data via the handoff `session:` metadata. Recorded values are verbatim; absent metadata\n" +
+          "is simply not counted (distinct from `unknown`, which is counted)."
   );
 }

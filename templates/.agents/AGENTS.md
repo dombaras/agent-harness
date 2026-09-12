@@ -184,11 +184,12 @@ them. Steps 3-7 are the unconditional session close; they are NOT gated by QA.
 - **Value-first completion report**: close a session by telling the user, in plain language, **what value shipped** (what they now get / what changed for them) and the main **how** — before any file/test/technical detail. The same summary is recorded durably in the handoff's `## Value shipped` + `## How` sections.
 - **Dispatch Log (mandatory)**: every wrap-up opens with `subagent → model → shipped/deferred`. An empty log is non-compliant.
 - **Structured session telemetry**: every handoff records, when known and never fabricated:
+  - `session` — the primary orchestrator session id from the `session_info` tool. This is the join key for `npm run report -- --cost`, which attaches observed provider cost/tokens/turns (primary + subagent sessions) to the feature.
   - `work_type` — one of `feature | bugfix | investigation | architecture | planning | qa | security | maintenance | process | conversation | other`.
   - `outcome` — one of `shipped | resolved | deferred | investigation-complete | abandoned | superseded | conversation-only`.
   - `termination_reason` — why the session ended (e.g. `gate-pass`, `checkpoint`, `blocked`, `escalated`, `abandoned`).
   - Retries/escalations with `attempt` numbers and reasons (see §5 bounded retries).
   - `null` / `unknown` when the runtime cannot know a value — never infer exact token/cost numbers from character counts, and never invent values.
-  These feed the deterministic `npm run report` (agent-report) so feature economics are measurable without reading transcripts.
+  These feed the deterministic `npm run report` (agent-report) so feature economics are measurable without reading transcripts; `--cost` reads only observed provider data from the opencode store.
 - **Persist Continuity**: use the `handoff` skill to write your session's file under `.agents/handoffs/` (one per session — never edit another session's). Project history lives in `.agents/memory/history.md`; stack facts in `.agents/memory/stack-versions.md`.
 - **Pointers Map Hygiene**: record every created/discovered/changed important location (session archives, scratch scripts, logs, docs, DB targets, env files) in `.agents/memory/locations.md`.

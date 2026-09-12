@@ -19,6 +19,12 @@ the plan's `§Fan-out review` — the 5–7 band in `orchestration.md` where fan
 must be justified. That check is forward-only: handoffs dated `2026-09-12` or
 later are enforced; undated legacy handoffs are grandfathered.
 
+`npm run report -- --cost` joins the handoff to the observed provider telemetry
+via the `session:` metadata line (get the primary orchestrator id from the
+`session_info` tool). That join maps a feature to its provider group — the
+primary session plus every subagent session it dispatched — so cost per shipped
+feature is measured, never estimated. Record it whenever the session did work.
+
 ## Naming & ownership
 
 - One file per session. Name it after the `BACKLOG.md` feature ID (`F-003.md`),
@@ -48,6 +54,7 @@ later are enforced; undated legacy handoffs are grandfathered.
     - <persona> -> <tier> reason: <evidence> attempt: <n>
 
     ## Session metadata (structured — record what is known, never fabricate)
+    - session: <ses_... — primary orchestrator id from the session_info tool>
     - work_type: <feature|bugfix|investigation|architecture|planning|qa|security|maintenance|process|conversation|other>
     - outcome: <shipped|resolved|deferred|investigation-complete|abandoned|superseded|conversation-only>
     - termination_reason: <gate-pass|checkpoint|blocked|escalated|abandoned|unknown>

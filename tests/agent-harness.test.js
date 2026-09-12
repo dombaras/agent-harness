@@ -3230,6 +3230,7 @@ test("context-guard excludes legitimate polling/glue repeats from the loop count
     assert.strictEqual(cg.noteToolCall(state, "task", { prompt: "x" }, stuck).counted, false);
     assert.strictEqual(cg.noteToolCall(state, "backlog_list", {}, stuck).counted, false);
     assert.strictEqual(cg.noteToolCall(state, "batch", {}, stuck).counted, false);
+    assert.strictEqual(cg.noteToolCall(state, "session_info", {}, stuck).counted, false);
     assert.strictEqual(cg.noteToolCall(state, "bash", { command: "node scripts/serve.js list" }, stuck).counted, false);
     assert.strictEqual(cg.noteToolCall(state, "bash", { command: "node scripts/serve.js status" }, stuck).counted, false);
   }
@@ -3282,5 +3283,330 @@ test("context-guard plugin + core deploy, stay harness-owned, and the guard log 
   fs.writeFileSync(corePath, "LOCAL EDIT", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   assert.match(read(corePath), /parseThresholds/, "guard core is harness-owned (restored on update)");
+});
+
+// ---------------------------------------------------------------- provider-stats / cost telemetry (Phase B)
+
+const PS = path.join(h.TEMPLATES_DIR, "scripts", "qa", "provider-stats.js");
+const ps = require(PS);
+
+function fixtureSession(overrides = {}) {
+  return {
+    id: "ses_x",
+    parentId: null,
+    title: "session",
+    directory: "C:/develop/Demo",
+    agent: "build",
+    model: "deepseek-flash",
+    provider: "deepseek",
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+    turns: 0,
+    toolCalls: 0,
+    maxIdentical: 0,
+    loops: [],
+    timeCreated: 0,
+    timeUpdated: 0,
+    ...overrides,
+  };
+}
+function fixtureDoc(sessions, extraMeta = {}) {
+  return {
+    schema: ps.SCHEMA,
+    meta: { schema: ps.SCHEMA, root: "C:/develop/Demo", since: null, projectIds: ["p1"], stuck: { identical_tool_calls: 3 }, softTurnBudget: 60, ...extraMeta },
+    sessions,
+  };
+}
+
+test("provider-stats parses since windows, model cells, and percentiles deterministically", () => {
+  const now = Date.parse("2026-09-12T00:00:00Z");
+  assert.strictEqual(ps.parseSince(null, now), null);
+  assert.strictEqual(ps.parseSince("all", now), null);
+  assert.strictEqual(ps.parseSince("14d", now), now - 14 * 86400000);
+  assert.strictEqual(ps.parseSince("36h", now), now - 36 * 3600000);
+  assert.strictEqual(ps.parseSince("2w", now), now - 2 * 604800000);
+  assert.strictEqual(ps.parseSince("1m", now), now - 30 * 86400000);
+  assert.strictEqual(ps.parseSince("2026-09-01", now), Date.parse("2026-09-01"));
+  assert.throws(() => ps.parseSince("banana", now), /invalid since value/);
+  assert.throws(() => ps.parseSince("14y", now), /invalid since value/);
+
+  assert.deepStrictEqual(ps.parseModelCell('{"id":"deepseek-flash","providerID":"deepseek"}'), { model: "deepseek-flash", provider: "deepseek" });
+  assert.deepStrictEqual(ps.parseModelCell("opencode/gpt-5-nano"), { model: "opencode/gpt-5-nano", provider: "?" });
+  assert.deepStrictEqual(ps.parseModelCell(""), { model: "?", provider: "?" });
+
+  assert.strictEqual(ps.percentile([], 50), null);
+  assert.strictEqual(ps.percentile([5, 1, 3, 2, 4], 50), 3);
+  assert.strictEqual(ps.percentile([5, 1, 3, 2, 4], 90), 5);
+  assert.strictEqual(ps.percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 50), 5);
+});
+
+test("provider-stats resolves the real opencode exe past Windows shims", () => {
+  const npmShim = "C:\\Users\\x\\AppData\\Roaming\\npm\\opencode";
+  const npmExe = "C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe";
+  const exec = () => npmShim + "\n" + npmShim + ".cmd\n";
+  assert.strictEqual(
+    ps.resolveOpencode({ platform: "win32", env: {}, exists: (p) => p === npmExe, execFileSync: exec }),
+    npmExe,
+    "the extensionless POSIX shim is not exec-able on Windows; the real exe wins"
+  );
+  assert.strictEqual(
+    ps.resolveOpencode({ platform: "win32", env: {}, exists: (p) => p === npmShim + ".exe", execFileSync: exec }),
+    npmShim + ".exe",
+    "a sibling .exe is preferred"
+  );
+  assert.strictEqual(
+    ps.resolveOpencode({ platform: "linux", env: {}, exists: (p) => p === "/usr/local/bin/opencode", execFileSync: () => "/usr/local/bin/opencode\n" }),
+    "/usr/local/bin/opencode",
+    "POSIX shim paths run directly"
+  );
+  assert.strictEqual(
+    ps.resolveOpencode({ platform: "win32", env: { OPENCODE_BIN: "C:\\tools\\opencode.exe" }, exists: (p) => p === "C:\\tools\\opencode.exe", execFileSync: () => "" }),
+    "C:\\tools\\opencode.exe",
+    "OPENCODE_BIN always wins"
+  );
+  assert.strictEqual(ps.resolveOpencode({ platform: "linux", env: {}, exists: () => false, execFileSync: () => { throw new Error("not found"); } }), null);
+});
+
+test("provider-stats aggregates primary + subagent groups, cache share, percentiles, and loops", () => {
+  const sessions = [
+    fixtureSession({
+      id: "ses_a",
+      title: "F-001 feature",
+      cost: 0.5,
+      turns: 70,
+      tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 900, cacheWrite: 20 },
+      maxIdentical: 1,
+    }),
+    fixtureSession({
+      id: "ses_a1",
+      parentId: "ses_a",
+      title: "explore",
+      cost: 0.25,
+      turns: 5,
+      maxIdentical: 4,
+      loops: [{ tool: "bash", hash: "abcd1234", count: 4 }],
+    }),
+    fixtureSession({ id: "ses_b", title: "F-002 bugfix", cost: 0.2, turns: 10, model: "gpt-5.6-luna", provider: "opencode" }),
+  ];
+  const agg = ps.aggregateSessions(sessions, { stuck: { identical_tool_calls: 3 }, softTurnBudget: 60 });
+
+  assert.strictEqual(agg.totals.sessions, 3);
+  assert.strictEqual(agg.totals.primarySessions, 2);
+  assert.strictEqual(agg.totals.subagentSessions, 1);
+  assert.strictEqual(agg.totals.cost, 0.95);
+  assert.strictEqual(agg.totals.turns, 85);
+  // cache-read share = 900 / (100 + 900 + 20)
+  assert.ok(Math.abs(agg.totals.cacheReadShare - 900 / 1020) < 1e-9);
+  assert.strictEqual(agg.groups.ses_a.cost, 0.75, "a primary group includes its subagent sessions");
+  assert.strictEqual(agg.groups.ses_a.turns, 70, "group turns are the primary's own turns");
+  assert.strictEqual(agg.groups.ses_a.totalTurns, 75);
+  assert.strictEqual(agg.groups.ses_a.sessions, 2);
+
+  assert.strictEqual(agg.topSessions[0].id, "ses_a");
+  assert.strictEqual(agg.topSessions[0].cost, 0.75);
+  assert.deepStrictEqual(agg.topSessions[0].models, ["deepseek-flash"]);
+  assert.strictEqual(agg.percentiles.primaryCost.p50, 0.2, "nearest-rank P50 of the two group costs");
+  assert.strictEqual(agg.percentiles.primaryCost.p90, 0.75);
+  assert.strictEqual(agg.percentiles.primaryTurns.p90, 70);
+
+  assert.strictEqual(agg.sessionsOverTurnBudget.threshold, 60);
+  assert.strictEqual(agg.sessionsOverTurnBudget.count, 1);
+  assert.strictEqual(agg.sessionsOverTurnBudget.sessions[0].id, "ses_a");
+
+  assert.strictEqual(agg.loopCandidates.threshold, 3);
+  assert.strictEqual(agg.loopCandidates.count, 1);
+  assert.strictEqual(agg.loopCandidates.sessions[0].id, "ses_a1");
+  assert.strictEqual(agg.loopCandidates.sessions[0].count, 4);
+
+  assert.strictEqual(agg.modelMix[0].sessions, 2, "model mix counts the subagent sessions too");
+  assert.strictEqual(agg.modelMix[0].cost, 0.75);
+});
+
+test("provider-stats collects by project id (worktree-aware) and detects canonical identical calls", () => {
+  const calls = [];
+  const sessionRows = [
+    { id: "ses_a", parent_id: null, title: "primary", directory: "C:/develop/Demo", agent: "build", model: '{"id":"deepseek-flash","providerID":"deepseek"}', cost: 0.5, tokens_input: 10, tokens_output: 5, tokens_reasoning: 1, tokens_cache_read: 90, tokens_cache_write: 0, time_created: 1, time_updated: 2 },
+    { id: "ses_a1", parent_id: "ses_a", title: "child", directory: "C:/develop/Demo", agent: "explore", model: '{"id":"big-pickle","providerID":"opencode"}', cost: 0.1, tokens_input: 1, tokens_output: 1, tokens_reasoning: 0, tokens_cache_read: 5, tokens_cache_write: 0, time_created: 1, time_updated: 2 },
+  ];
+  const now = Date.parse("2026-09-12T00:00:00Z");
+  const runDb = (sql) => {
+    calls.push(sql);
+    if (sql.includes("FROM project_directory")) return [{ id: "p1" }];
+    if (sql.includes("FROM session s")) return sessionRows;
+    if (sql.includes("FROM message")) return [{ session_id: "ses_a", turns: 70 }, { session_id: "ses_a1", turns: 3 }];
+    if (sql.includes("FROM part")) {
+      return [
+        { session_id: "ses_a", tool: "bash", input: '{"command":"npm test"}' },
+        { session_id: "ses_a", tool: "bash", input: '{"command":"npm test"}' },
+        { session_id: "ses_a", tool: "bash", input: '{"command":"npm test"}' },
+        { session_id: "ses_a", tool: "edit", input: '{"filePath":"a.ts","oldString":"x","newString":"y"}' },
+        { session_id: "ses_a", tool: "edit", input: '{"newString":"y","oldString":"x","filePath":"a.ts"}' },
+        { session_id: "ses_a", tool: "todowrite", input: '{"todos":[]}' },
+        { session_id: "ses_a", tool: "todowrite", input: '{"todos":[]}' },
+        { session_id: "ses_a", tool: "todowrite", input: '{"todos":[]}' },
+        { session_id: "ses_a", tool: "bash", input: '{"command":"node scripts/serve.js list"}' },
+        { session_id: "ses_a", tool: "bash", input: '{"command":"node scripts/serve.js list"}' },
+        { session_id: "ses_a", tool: "bash", input: '{"command":"node scripts/serve.js list"}' },
+      ];
+    }
+    return [];
+  };
+
+  const stats = ps.collectStats({ root: "C:/develop/Demo", since: "14d", now, runDb });
+  assert.strictEqual(stats.meta.projectIds[0], "p1");
+  assert.ok(calls[0].includes(".worktrees"), "worktree sessions resolve through project_directory");
+  assert.ok(calls[1].includes(`time_created >= ${now - 14 * 86400000}`), "the since window is applied in SQL");
+  assert.strictEqual(stats.sessions.length, 2);
+  assert.deepStrictEqual(stats.sessions[0].tokens, { input: 10, output: 5, reasoning: 1, cacheRead: 90, cacheWrite: 0 });
+  assert.strictEqual(stats.sessions[0].model, "deepseek-flash");
+  assert.strictEqual(stats.sessions[0].provider, "deepseek");
+  assert.strictEqual(stats.sessions[0].turns, 70);
+
+  // 3 identical bash calls = a loop; the two edits are the same call modulo key
+  // order (count 2, below threshold); repeated todowrite and serve.js polling
+  // are exempt and never counted.
+  const primary = stats.sessions[0];
+  assert.strictEqual(primary.maxIdentical, 3);
+  assert.strictEqual(primary.loops.length, 1);
+  assert.strictEqual(primary.loops[0].tool, "bash");
+  assert.strictEqual(primary.loops[0].count, 3);
+  assert.match(primary.loops[0].hash, /^[0-9a-f]{8}$/, "only the hash is retained, never raw args");
+
+  const scoped = ps.collectStats({ root: "C:/develop/Demo", session: "ses_a1", runDb });
+  assert.strictEqual(scoped.meta.scope.session, "ses_a1");
+  assert.strictEqual(scoped.meta.scope.rootId, "ses_a", "a subagent session resolves to its primary root");
+  assert.deepStrictEqual(scoped.sessions.map((s) => s.id), ["ses_a", "ses_a1"]);
+});
+
+test("provider-stats CLI reads a fixture, prints observed telemetry, and exports a round-trippable snapshot", () => {
+  const target = tmpdir();
+  const sessions = [
+    fixtureSession({ id: "ses_a", title: "F-001 feature", cost: 0.5, turns: 70, tokens: { input: 1, output: 2, reasoning: 3, cacheRead: 4, cacheWrite: 5 } }),
+    fixtureSession({ id: "ses_a1", parentId: "ses_a", cost: 0.25, turns: 2 }),
+  ];
+  const fixture = path.join(target, "fixture.json");
+  fs.writeFileSync(fixture, JSON.stringify(fixtureDoc(sessions)), "utf8");
+
+  const jsonRes = spawnSync(process.execPath, [PS, "--fixture", fixture, "--json"], { encoding: "utf8" });
+  assert.strictEqual(jsonRes.status, 0, jsonRes.stdout + jsonRes.stderr);
+  const parsed = JSON.parse(jsonRes.stdout);
+  assert.strictEqual(parsed.schema, ps.SCHEMA);
+  assert.strictEqual(parsed.aggregates.totals.cost, 0.75);
+  assert.strictEqual(parsed.aggregates.topSessions[0].id, "ses_a");
+
+  const humanRes = spawnSync(process.execPath, [PS, "--fixture", fixture], { encoding: "utf8" });
+  assert.strictEqual(humanRes.status, 0, humanRes.stdout + humanRes.stderr);
+  assert.match(humanRes.stdout, /Provider telemetry/);
+  assert.match(humanRes.stdout, /observed provider data/);
+
+  const out = path.join(target, "exported.json");
+  const exportRes = spawnSync(process.execPath, [PS, "--fixture", fixture, "--json", "--export", out], { encoding: "utf8" });
+  assert.strictEqual(exportRes.status, 0, exportRes.stdout + exportRes.stderr);
+  const round = ps.readFixture(out);
+  assert.strictEqual(round.sessions.length, 2);
+  assert.strictEqual(round.schema, ps.SCHEMA);
+
+  const badRes = spawnSync(process.execPath, [PS, "--fixture", path.join(target, "missing.json")], { encoding: "utf8" });
+  assert.strictEqual(badRes.status, 1, "an unreadable store/fixture fails loudly, never fabricates");
+  assert.match(badRes.stderr, /provider-stats:/);
+});
+
+test("agent-report --cost joins handoffs to provider sessions and reports cost per shipped feature", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-001.md"),
+    [
+      "# handoff",
+      "",
+      "## Dispatch log",
+      "- frontend-engineer -> opencode/gpt-5.6-luna -> shipped",
+      "",
+      "## Session metadata (structured — record what is known, never fabricate)",
+      "- session: ses_a",
+      "- work_type: feature",
+      "- outcome: shipped",
+      "- termination_reason: gate-pass",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(target, ".agents", "handoffs", "F-002.md"),
+    ["# handoff", "", "## Dispatch log", "- docs -> opencode/gpt-5-nano -> shipped", "", "## Session metadata", "- work_type: feature", "- outcome: shipped"].join("\n"),
+    "utf8"
+  );
+  const sessions = [
+    fixtureSession({ id: "ses_a", title: "F-001 feature", cost: 0.5, turns: 70, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 900, cacheWrite: 20 } }),
+    fixtureSession({ id: "ses_a1", parentId: "ses_a", cost: 0.25, turns: 5 }),
+    fixtureSession({ id: "ses_b", title: "unrelated", cost: 0.2, turns: 10 }),
+  ];
+  fs.writeFileSync(path.join(target, "provider.json"), JSON.stringify(fixtureDoc(sessions)), "utf8");
+
+  const jsonRes = spawnSync(
+    process.execPath,
+    ["scripts/agent-report.js", "--cost", "--since=14d", "--fixture", "provider.json", "--json"],
+    { cwd: target, encoding: "utf8" }
+  );
+  assert.strictEqual(jsonRes.status, 0, jsonRes.stdout + jsonRes.stderr);
+  const parsed = JSON.parse(jsonRes.stdout);
+  // the suffixed template heading still parses (session + metadata are read)
+  assert.strictEqual(parsed.features["F-001"].meta.session, "ses_a");
+  assert.strictEqual(parsed.workTypeCount.feature, 2);
+  assert.strictEqual(parsed.provider.join.matched, 1);
+  assert.strictEqual(parsed.provider.join.handoffsWithSession, 1);
+  assert.strictEqual(parsed.provider.join.byFeature["F-001"].rootId, "ses_a");
+  assert.strictEqual(parsed.provider.join.byFeature["F-001"].cost, 0.75, "the group includes the subagent session");
+  assert.strictEqual(parsed.provider.join.unmatchedSessions, 1, "ses_b is a primary session with no handoff in window");
+  assert.strictEqual(parsed.provider.join.shippedCount, 1);
+  assert.strictEqual(parsed.provider.join.costPerShippedFeature, 0.75);
+  assert.strictEqual(parsed.provider.aggregates.totals.cost, 0.95);
+
+  const humanRes = spawnSync(process.execPath, ["scripts/agent-report.js", "--cost", "--since=14d", "--fixture", "provider.json"], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  assert.strictEqual(humanRes.status, 0, humanRes.stdout + humanRes.stderr);
+  assert.match(humanRes.stdout, /Cost telemetry \(observed provider data/);
+  assert.match(humanRes.stdout, /Cost per shipped feature: \$0\.7500/);
+  assert.match(humanRes.stdout, /Session join: 1\/1/);
+
+  // without --cost the report stays byte-deterministic and never reads the store
+  const plainRes = spawnSync(process.execPath, ["scripts/agent-report.js"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(plainRes.status, 0, plainRes.stdout + plainRes.stderr);
+  assert.doesNotMatch(plainRes.stdout, /Cost telemetry/);
+  assert.match(plainRes.stdout, /Run with --cost/);
+
+  const exported = path.join(target, "provider-export.json");
+  const exportRes = spawnSync(
+    process.execPath,
+    ["scripts/agent-report.js", "--cost", "--fixture", "provider.json", "--export", exported],
+    { cwd: target, encoding: "utf8" }
+  );
+  assert.strictEqual(exportRes.status, 0, exportRes.stdout + exportRes.stderr);
+  assert.ok(exists(exported), "--export writes a fixture snapshot");
+  assert.strictEqual(JSON.parse(read(exported)).schema, ps.SCHEMA);
+});
+
+test("session_info tool ships, reports the join key, and both telemetry files stay harness-owned", async () => {
+  const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "session.ts"));
+  assert.match(src, /export const info\b/, "file session.ts + export info -> the session_info tool");
+  assert.match(src, /context\.sessionID/, "reports the calling session id");
+  assert.match(src, /session: \$\{rootID \|\| sessionID\}/, "the session: line is the primary join key");
+  assert.match(src, /provider-stats\.js/, "reads observed telemetry, never fabricates it");
+  assert.match(src, /unavailable/, "an unreachable store is reported as unavailable");
+
+  const cmd = read(path.join(h.TEMPLATES_DIR, ".opencode", "command", "report.md"));
+  assert.match(cmd, /--cost/, "the report command documents the cost join");
+
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  assert.ok(exists(path.join(target, ".opencode", "tools", "session.ts")), "session_info tool deployed");
+  assert.ok(exists(path.join(target, "scripts", "qa", "provider-stats.js")), "provider-stats deployed");
+
+  const scriptPath = path.join(target, "scripts", "qa", "provider-stats.js");
+  fs.writeFileSync(scriptPath, "LOCAL EDIT", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.match(read(scriptPath), /aggregateSessions/, "provider-stats is harness-owned (restored on update)");
 });
 

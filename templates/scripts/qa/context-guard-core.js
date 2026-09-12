@@ -63,9 +63,9 @@ const LOOP_TEXT =
 
 /* Identical repeats of these are legitimate and must not count as loops:
  * todo list rewrites, user questions, dispatches (retries are governed by the
- * bounded-retry ladder), batched calls, board listings, and the documented
- * serve.js health polling. */
-const EXEMPT_TOOLS = new Set(["todowrite", "question", "task", "batch", "backlog_list"]);
+ * bounded-retry ladder), batched calls, board listings, the session join-key
+ * lookup, and the documented serve.js health polling. */
+const EXEMPT_TOOLS = new Set(["todowrite", "question", "task", "batch", "backlog_list", "session_info"]);
 
 const SERVE_POLL = /serve\.js\s+(list|status)\b/;
 

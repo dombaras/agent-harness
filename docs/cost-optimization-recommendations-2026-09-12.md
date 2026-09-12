@@ -4,7 +4,8 @@ Date: 2026-09-12
 Status: partially implemented — see
 [`docs/optimization-implementation-status.md`](optimization-implementation-status.md)
 for what shipped (R2 hard cap + R2/R3 context-guard plugin as of v0.1.53,
-R5–R7) and the revised order (R1 dropped; C before B).
+R4 telemetry via `agent-report --cost` + the `session_info` join key as of
+v0.1.54, R5–R7) and the revised order (R1 dropped; C before B).
 Scope: `agent-harness` (this repo, v0.1.47 at analysis time) and the personas/config it deploys.
 
 ## Basis

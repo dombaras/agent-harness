@@ -47,6 +47,9 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.opencode/tools/backlog.ts` | `backlog_*` custom tools the LLM calls (shell out to the CLI) | harness (overwrite) |
 | `.opencode/plugins/backlog-notify.ts` | toast/log whenever an agent mutates the board | harness (overwrite) |
 | `.opencode/plugins/context-guard.ts` | mid-session checkpoint/loop nudges read from `orchestration.md` (core: `scripts/qa/context-guard-core.js`) | harness (overwrite) |
+| `.opencode/tools/session.ts` | `session_info` tool — reports the primary orchestrator session id (the handoff `session:` join key) + observed cost/tokens/turns | harness (overwrite) |
+| `scripts/agent-report.js` | deterministic dispatch report (`--cost` joins observed provider telemetry) | harness (overwrite) |
+| `scripts/qa/provider-stats.js` | observed cost/token/turn telemetry from the local opencode store (no sqlite dependency) | harness (overwrite) |
 | `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, orchestration, history, flow-map, product-principles, quality-parameters, test-design-parameters) | **project** (create-if-missing) |
 | `.agents/reviews/*` | project data (durable review/audit deliverables — REPORT.md + scans, tagged by quality-parameters) | **project** (create-if-missing) |
 | `.agents/handoffs/*` | project data (one session handoff file per session — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
@@ -135,9 +138,16 @@ orchestrator session as it crosses them, flags repeated identical tool calls wit
 the recovery rule (building on the runtime's own `doom_loop` permission), and
 records band/loop/request crossings in `.agents/guard-events.jsonl` (local-only,
 gitignored). Every handoff can
-carry a `## Session metadata` block (`work_type`, `outcome`,
+carry a `## Session metadata` block (`session`, `work_type`, `outcome`,
 `termination_reason`, `checkpoint_count` — controlled vocabularies, never
 fabricated) that `npm run report` aggregates deterministically per feature.
+`npm run report -- --cost --since=14d` closes the telemetry loop: the
+`session_info` tool returns the primary session id, and `agent-report` joins
+it to observed provider data (`scripts/qa/provider-stats.js` reads the local
+opencode store, including registered git worktrees) — totals, model mix,
+cache-read share, P50/P90 cost and turns, >60-turn sessions, identical-call
+loop candidates, and **cost per shipped feature** (primary session + its
+subagent sessions = one feature run). Nothing is inferred from text length.
 
 ## Model routing & enforcement
 

@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.53)
+# Agent Harness Optimization — Implementation Status (v0.1.54)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,11 +15,11 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.53` |
-| Shipped this session | `0.1.53` — Phase C (context-guard plugin + core) |
-| Lint / tests | green (`npm run lint`, `npm test` — 149/149) |
-| LibraryOS | `0.1.53` deployed, committed, **pushed** (`origin/main`) |
-| FamilyBudget | `0.1.53` deployed + committed locally (no remote configured) |
+| Version | `0.1.54` |
+| Shipped this session | `0.1.54` — Phase B (provider telemetry + session join key) |
+| Lint / tests | green (`npm run lint`, `npm test` — 156/156) |
+| LibraryOS | `0.1.54` deployed, committed, pushed (`origin/main`) |
+| FamilyBudget | `0.1.54` deployed + committed locally (no remote configured) |
 
 ---
 
@@ -94,6 +94,56 @@ The thresholds were well-specified prose that nothing read. Now something does:
   locally by loading the real plugin with Node's TS type-stripping and driving
   synthetic session events.
 
+### `0.1.54` — Phase B: provider telemetry + the session join key (R4)
+The loop is closed: observed cost/tokens/turns now join to features, and
+`cost per shipped feature` is a real, deterministic number.
+- **`templates/scripts/qa/provider-stats.js`** (new, pure core + CLI) — reads the
+  local opencode store through `opencode db --format json "<SQL>"` (no sqlite
+  dependency; the CLI is located cross-platform, resolving past the Windows
+  `.cmd`/`.ps1`/extensionless shims). Scoping is **worktree-aware**: the project
+  is resolved through `project_directory` (which registers every
+  `git_worktree` opencode has seen) plus `project.worktree`, so sessions started
+  in `<repo>/../.worktrees/<repo>/<id>` match. It maps every session
+  (`parent_id`, model/provider from the JSON cell, cost, input/output/
+  reasoning/cache-read/cache-write tokens, assistant turns), **groups a primary
+  session with its subagent child sessions** (the parent's `cost` column does
+  NOT include children — measured), and detects cumulative identical tool+args
+  calls with the same canonical key/exemptions as the live guard.
+- **Aggregates** (pure function, exported for tests): totals, model mix,
+  cache-read share of input tokens, P50/P90 cost + turns per primary session,
+  top-5 primary sessions by cost, sessions over the `soft_turn_budget`, and
+  loop candidates at the `identical_tool_calls` threshold — all read from
+  `.agents/memory/orchestration.md` at run time (no hardcoded thresholds).
+- **Fixtures**: `--export <file>` writes a `provider-stats/1` snapshot
+  (`{schema, meta, sessions}`) and `--fixture <file>` reads one, so reports and
+  tests run offline and deterministic.
+- **`agent-report --cost --since=14d [--export <file>] [--fixture <file>]`** —
+  joins each handoff's `## Session metadata` `session:` id to its provider
+  group and prints cost per feature, cost per shipped feature (shipped/resolved
+  outcomes), matched/unmatched counts, and provider totals. Without `--cost`
+  the report is byte-for-byte the old deterministic dispatch report (no store
+  access). `--json` carries the whole `provider` block.
+- **`.opencode/tools/session.ts`** (new `session_info` tool) — returns the
+  primary orchestrator session id (the handoff join key; walks the parent chain
+  so a subagent call still reports the primary) plus observed cost/tokens/turns.
+  It never fabricates: an unreachable store reports `unavailable` and still
+  returns the id.
+- **Handoff integration**: `session:` added to the `## Session metadata`
+  template (handoffs README + handoff skill + rulebook §8 + the root summary
+  bullet), with the `session_info` step in the skill procedure.
+- **Field fix (latent)**: `agent-report`'s section parser required a heading to
+  end after the section name, so the template headings that carry a qualifier
+  (`## Session metadata (structured — …)`, `## Retries (only when …)`) never
+  parsed. The parser now accepts a trailing qualifier; the new test writes the
+  suffixed heading.
+- `session_info` is added to the context-guard loop-exemption list (glue call).
+- Tests: 4 provider-stats unit tests (since/model/percentile parsing; Windows
+  shim resolution; group/cache-share/percentile/loop aggregation; worktree-aware
+  collection + canonical loop keys with only hashes retained), a CLI
+  fixture/export round-trip + loud-failure test, an `agent-report --cost` join
+  test (subagent cost included, cost per shipped feature, `--export`), and a
+  `session_info` source-contract + deploy/ownership test.
+
 ## Decision log (changes to the recommendations doc)
 
 - **R1 (Zen DeepSeek guard) dropped** — user does not use `opencode/deepseek-*`;
@@ -120,20 +170,36 @@ The thresholds were well-specified prose that nothing read. Now something does:
 - **R8 deferred** — ~$0.2–0.7/2wk at current rates; splitting every SKILL.md
   into CORE/details invites drift.
 - Keep `orchestration.md` project-owned and single-source; the plugin reads it.
+- **Provider data source: `opencode db --format json`** — version-stable (per the
+  session-fetch skill) and dependency-free; direct sqlite would need `node:sqlite`
+  (Node 22.5+, engines say >=18) or a sqlite3 binary.
+- **A feature run = primary session + descendant sessions.** Measured on real
+  data: the parent's `cost` column excludes child sessions (parent $0.235 vs
+  children $0.343 in F-019), so `session:` stores the primary id and both
+  reports sum descendants.
+- **`--since` filters on session `time_created`** — a run that started before the
+  window and continued inside it is excluded (matching the original analysis
+  shape); boundary distortion is documented, not hidden.
+- **Loop candidates use the project's `identical_tool_calls`** (default 3) rather
+  than the analysis' >=4x filter; the reported `count` makes the deeper loops
+  distinguishable.
+- **Incentive check**: `session: <id>` is recorded by the session that did the
+  work, so the join is close to complete for new handoffs; historical handoffs
+  without it are reported as unmatched, never imputed.
 
-## What's next — Phase B (telemetry) + remaining D
+## What's next — remaining D + measurement
 
-- **B**: `scripts/qa/provider-stats.js` (resolve opencode DB/CLI cross-platform;
-  `directory LIKE <root>%` so worktree sessions match) and
-  `agent-report --cost --since=14d [--export fixture]` — totals, model mix,
-  cache-read share, P50/P90, top-5 sessions, >60-turn count, loop candidates.
-  The guard JSONL now provides threshold/loop crossings without the DB. Add
-  `session: <id>` to handoff metadata + a `session_info` tool so
-  cost-per-shipped-feature has a real join key.
+- **Measurement (now possible)**: run `npm run report -- --cost --since=14d`
+  monthly. The R2/R3 claim (50/60/80 nudges + loop flags vs spend) can now be
+  verified on post-`0.1.53` data; a 2-week window is the minimum before drawing
+  conclusions. Use `--export` to snapshot each window.
 - **D remaining**: R9 opportunistic tier (`big-pickle`, privacy caveat), R10
-  escalation evidence, R11 scoped cache-prefix lint (prefix files only — avoids
-  false positives), R12 `checkpoint` tool + `/resume` command, R13 doc truth
-  pass (this doc included), R14 scheduled review command (part of B).
+  escalation evidence (`model_escalation_evidence` in the dispatch-log schema +
+  report flag), R11 scoped cache-prefix lint (prefix files only — avoids false
+  positives), R12 `checkpoint` tool + `/resume` command, R14 scheduled review
+  (now `npm run report -- --cost --since=14d`; optionally add it to CI).
+  R13 (doc truth) is refreshed by this doc + README; re-check after the next
+  change to the guard thresholds.
 
 ## Gotchas
 
@@ -150,3 +216,13 @@ The thresholds were well-specified prose that nothing read. Now something does:
 - The context-guard plugin is loaded by opencode from `.opencode/plugins/` and
   imports `../../scripts/qa/context-guard-core.js` — both paths must keep their
   relative layout when the harness adds future guard rules.
+- `provider-stats.js` reads the **local** opencode store. On a machine without
+  opencode (CI), `agent-report --cost` fails loudly by design — use
+  `--cost --fixture <snapshot>` for offline/deterministic runs.
+- Windows: `where.exe opencode` lists the extensionless POSIX shim first; the
+  resolver prefers the sibling `.exe` / npm-global `opencode-ai` exe, and
+  `OPENCODE_BIN` overrides everything.
+- Only sessions whose directory opencode registered for the project match
+  (main worktree + `git_worktree` rows in `project_directory`). A session started
+  from an unregistered directory will not appear — the script reports the
+  resolved project ids in `meta.projectIds` so that is visible, not silent.
