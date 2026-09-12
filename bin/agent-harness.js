@@ -255,11 +255,18 @@ function mergePackageJson(target) {
   return { text: JSON.stringify(merged, null, 2) + "\n", hadPkg };
 }
 
-// Harness-managed .gitignore entries. These are LOCAL-ONLY artifacts (never
-// committed): everything else the harness deploys is tracked by git. Entries
-// live in a marked section so `update` can re-merge them (and pick up new
-// entries) without touching the project's own ignores.
-const GITIGNORE_MARKER = "# agent-harness (managed below)";
+/* Harness local-only ignore entries: rollback artifacts, the transient board
+ * lock, serve pid/log dir, and the guard telemetry log. These are LOCAL-ONLY
+ * artifacts (never committed), so they are recorded in the clone-local
+ * `.git/info/exclude` — NOT in the project's committed `.gitignore`.
+ *
+ * The harness deliberately never writes the project's `.gitignore`: an earlier
+ * design merged a marked section into it, but that merge truncated every
+ * project entry that followed the marker, silently un-ignoring secrets (`.env`,
+ * `data/`) that the harness auto-commit then exposed/pushed (FamilyBudget
+ * F-020). `.git/info/exclude` is untracked, per-clone, and never pushed, so it
+ * cannot alter or expose project files. */
+const HARNESS_IGNORE_MARKER = "# agent-harness (managed below)";
 const HARNESS_IGNORE_ENTRIES = [
   ".harness-backup/",
   ".backlog.lock",
@@ -267,16 +274,30 @@ const HARNESS_IGNORE_ENTRIES = [
   ".agents/guard-events.jsonl",
 ];
 
-function mergeGitignore(target) {
-  const p = path.join(target, ".gitignore");
+/* Add-only merge of the harness local-only entries into the clone's
+ * `.git/info/exclude`. No-op outside a git repo (nothing can commit there) and
+ * when every entry is already present. Entries are prefixed with the target's
+ * path within the repo, so a nested harness project (`mobile/`) gets patterns
+ * that match its own tree. Never enters the deploy manifest/commit — the file
+ * is not part of the project. */
+function mergeGitInfoExclude(target) {
+  if (!isGitRepo(target)) return;
+  const rp = runGit(target, ["rev-parse", "--git-path", "info/exclude"]);
+  if (!rp.ok || !rp.out) return;
+  const pf = runGit(target, ["rev-parse", "--show-prefix"]);
+  const prefix = pf.ok ? pf.out.replace(/\\/g, "/") : "";
+  const entries = HARNESS_IGNORE_ENTRIES.map((e) => prefix + e);
+  const p = path.isAbsolute(rp.out) ? rp.out : path.join(target, rp.out);
   const existing = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
   const lines = existing.split(/\r?\n/);
-  const idx = lines.findIndex((l) => l === GITIGNORE_MARKER);
-  const kept = idx === -1 ? lines : lines.slice(0, idx);
-  while (kept.length && kept[kept.length - 1].trim() === "") kept.pop();
-  const managed = [GITIGNORE_MARKER, ...HARNESS_IGNORE_ENTRIES, ""];
-  const out = kept.length ? [...kept, "", ...managed] : [...managed];
-  return out.join("\n");
+  const missing = entries.filter((e) => !lines.includes(e));
+  if (missing.length === 0) return;
+  const hasMarker = lines.includes(HARNESS_IGNORE_MARKER);
+  const base = existing.replace(/\s*$/, "");
+  const block = (hasMarker ? [] : [HARNESS_IGNORE_MARKER]).concat(missing).join("\n");
+  const out = (base ? base + "\n\n" : "") + block + "\n";
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, out, "utf8");
 }
 
 /* Harness-managed .gitattributes entries: route BACKLOG.md through the row-aware
@@ -457,23 +478,6 @@ async function deploy(target, opts) {
     }
   }
 
-  // Merge harness-managed gitignore entries (add-only, marked section).
-  {
-    const text = mergeGitignore(target);
-    const key = ".gitignore";
-    const targetAbs = path.join(target, ".gitignore");
-    const had = fs.existsSync(targetAbs);
-    const current = had ? fs.readFileSync(targetAbs, "utf8") : null;
-    if (!had) actions.push({ rel: key, kind: "create" });
-    else if (current !== text) actions.push({ rel: key, kind: "merge" });
-    else actions.push({ rel: key, kind: "unchanged" });
-    manifest[key] = sha256(text);
-    if (!dryRun) {
-      fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
-      fs.writeFileSync(targetAbs, text, "utf8");
-    }
-  }
-
   // Merge harness-managed .gitattributes (BACKLOG.md row-aware merge driver).
   {
     const text = mergeGitattributes(target, driverName);
@@ -492,8 +496,13 @@ async function deploy(target, opts) {
   }
 
   // Register the row-aware BACKLOG.md merge driver in the target's local git
-  // config (the script is committed; the driver pointer is per-clone).
-  if (!dryRun) registerBacklogMergeDriver(target, driverName);
+  // config (the script is committed; the driver pointer is per-clone). Also
+  // record harness local-only artifact ignores in the clone-local exclude file
+  // — never in the project's committed `.gitignore`.
+  if (!dryRun) {
+    registerBacklogMergeDriver(target, driverName);
+    mergeGitInfoExclude(target);
+  }
 
   for (const { abs, rel } of listFiles(TEMPLATES_DIR)) {
     const key = relKey(rel);

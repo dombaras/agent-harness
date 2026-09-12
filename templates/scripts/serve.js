@@ -37,7 +37,7 @@
  *   waiting, so an in-progress start is never silent.
  * - stop: kills the recorded PID and its process tree, removes the PID file.
  * - PID files + logs + the generated launcher live in <project>/.serve/
- *   (gitignored by the harness).
+ *   (excluded clone-locally by the harness).
  * - A child's stdout is buffered while it runs; the log flushes on exit, so a
  *   startup crash is fully visible in the log after the fact.
  *

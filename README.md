@@ -55,7 +55,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.agents/handoffs/*` | project data (one session handoff file per session — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.agents/qa-plans/*` | project data (one QA plan file per change — sharded so concurrent sessions never collide) | **project** (create-if-missing) |
 | `.harness.json` | deployed version + project profile + per-file checksums | harness |
-| `.gitignore` | harness-managed section (`.harness-backup/`, `.backlog.lock`, `.serve/`, `.agents/guard-events.jsonl`) merged in, project entries preserved | harness (merged) |
+| `.gitignore` | **project-owned** — deployment never reads or rewrites it; harness local-only artifact patterns go to the clone-local `.git/info/exclude` | project |
 | `.gitattributes` | harness-managed section (`BACKLOG.md merge=backlog` — the row-aware merge driver) merged in, project entries preserved | harness (merged) |
 
 ### `opencode.json` is merged, not clobbered
@@ -137,7 +137,7 @@ byte-stable checkpoint warning / soft-budget / new-context nudge into the primar
 orchestrator session as it crosses them, flags repeated identical tool calls with
 the recovery rule (building on the runtime's own `doom_loop` permission), and
 records band/loop/request crossings in `.agents/guard-events.jsonl` (local-only,
-gitignored). Every handoff can
+excluded clone-locally). Every handoff can
 carry a `## Session metadata` block (`session`, `work_type`, `outcome`,
 `termination_reason`, `checkpoint_count` — controlled vocabularies, never
 fabricated) that `npm run report` aggregates deterministically per feature.
@@ -339,10 +339,14 @@ npx @dombaras/agent-harness update --target /path/to/project
   last deploy (tracked by checksum in `.harness.json`), it is backed up to
   `.harness-backup/<timestamp>/` before overwrite.
 - `opencode.json` is merged (project keys preserved).
-- **Managed `.gitignore`**: the harness merges a marked section (`.harness-backup/`, its
-  local rollback artifacts) into the project's `.gitignore`, preserving every project entry.
-  New harness files are tracked (committed), not ignored — so they don't need a gitignore
-  change. If the harness ever adds a new local-only artifact, `update` re-merges the entry.
+- **Local-only excludes — never `.gitignore`**: the harness's local artifacts
+  (`.harness-backup/`, `.backlog.lock`, `.serve/`, `.agents/guard-events.jsonl`)
+  are recorded in the clone-local `.git/info/exclude` (add-only; pre-existing
+  excludes preserved). That file is untracked and never pushed, so the project's
+  committed `.gitignore` is **never** read or rewritten. (A pre-0.1.55 managed
+  `.gitignore` section truncated project entries after its marker, silently
+  un-ignoring `.env`/`data/` — FamilyBudget F-020.) New harness files are tracked
+  (committed), not ignored — so they don't need a gitignore change.
 - **Managed `.gitattributes` + merge driver**: the harness merges a marked section
   (`BACKLOG.md merge=backlog`) into the project's `.gitattributes` and registers the
   row-aware driver in the local `.git/config` (`merge.backlog.driver`). The driver script is

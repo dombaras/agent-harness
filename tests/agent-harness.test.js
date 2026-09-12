@@ -920,15 +920,23 @@ test("next --take claims are atomic — concurrent sessions pick distinct rows",
   assert.strictEqual(queuedIds.length, 0, "Queued drained — no row left unclaimed");
 });
 
-test("deploy gitignores the transient board lock", async () => {
+test("deploy records local-only ignores in .git/info/exclude, never in .gitignore", async () => {
   const target = tmpdir();
+  git(target, ["init", "-q"]);
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
-  const gi = read(path.join(target, ".gitignore"));
-  assert.match(gi, /\.backlog\.lock/, "transient .backlog.lock is ignored");
+  const exclude = read(path.join(target, ".git", "info", "exclude"));
+  assert.match(exclude, /\.backlog\.lock/, "transient .backlog.lock is clone-locally excluded");
+  assert.ok(!exists(path.join(target, ".gitignore")), "deploy never creates/rewrites the project .gitignore");
+
+  // outside a git repo there is nothing to exclude for — and still no .gitignore
+  const plain = tmpdir();
+  await h.deploy(plain, { name: "Demo", yes: true, isUpdate: false });
+  assert.ok(!exists(path.join(plain, ".gitignore")), "non-git target still gets no .gitignore");
 });
 
-test("serve helper is deployed, wired, and its runtime dir is gitignored", async () => {
+test("serve helper is deployed, wired, and its runtime dir is excluded clone-locally", async () => {
   const target = tmpdir();
+  git(target, ["init", "-q"]);
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
   assert.ok(exists(path.join(target, "scripts", "serve.js")), "serve.js deployed");
@@ -936,8 +944,8 @@ test("serve helper is deployed, wired, and its runtime dir is gitignored", async
   const pkg = JSON.parse(read(path.join(target, "package.json")));
   assert.strictEqual(pkg.scripts.serve, "node scripts/serve.js", "serve npm script wired");
 
-  const gi = read(path.join(target, ".gitignore"));
-  assert.match(gi, /\.serve\//, ".serve/ (pid files + logs) gitignored");
+  const exclude = read(path.join(target, ".git", "info", "exclude"));
+  assert.match(exclude, /\.serve\//, ".serve/ (pid files + logs) excluded clone-locally");
 });
 
 test("serve.js starts a detached server, waits for it, and stops it", () => {
@@ -1338,6 +1346,11 @@ test("update force-adds harness files the project gitignores and still commits",
     /^chore\(harness\):/,
     "the harness commit was made"
   );
+  assert.strictEqual(
+    read(path.join(target, ".gitignore")),
+    ".agents/\n.opencode/\nAGENTS.md\nopencode.json\n",
+    "update never rewrites the project .gitignore"
+  );
 });
 
 test("update refuses to downgrade a target deployed with a newer harness", async () => {
@@ -1399,27 +1412,41 @@ test("init auto-commits everything it deploys (scaffolds + BACKLOG.md tracked)",
   assert.ok(tracked.includes(".agents/features/INDEX.md"), "features scaffold tracked after init");
   assert.ok(tracked.includes(".opencode/command/board.md"), "command tracked after init");
   assert.ok(tracked.includes("AGENTS.md"), "AGENTS.md tracked after init");
-  assert.ok(tracked.includes(".gitignore"), ".gitignore tracked after init");
+  assert.ok(!exists(path.join(target, ".gitignore")), "init never creates a .gitignore (project-owned)");
   assert.strictEqual(git(target, ["status", "--porcelain"]), "", "working tree clean after init");
 });
 
-test("init merges the harness-managed gitignore section without clobbering project entries", async () => {
+test("deploy never rewrites the project .gitignore, even around a stale harness marker", async () => {
   const target = tmpdir();
-  fs.writeFileSync(path.join(target, ".gitignore"), "node_modules/\n.env\n", "utf8");
+  git(target, ["init", "-q"]);
+  // The pre-0.1.55 managed section, with project entries on BOTH sides of the
+  // marker. The old merge truncated everything after the marker, un-ignoring
+  // `.env` and `data/` (FamilyBudget F-020).
+  const original =
+    "node_modules/\n" +
+    "# agent-harness (managed below)\n" +
+    ".harness-backup/\n.backlog.lock\n.serve/\n.agents/guard-events.jsonl\n\n" +
+    "# local financial data — never commit (PII)\ndata/\n\n" +
+    "# secrets\n.env\n.env.*\n.envrc\n*.env\n!.env.example\n";
+  fs.writeFileSync(path.join(target, ".gitignore"), original, "utf8");
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  assert.strictEqual(read(path.join(target, ".gitignore")), original, ".gitignore untouched by init");
 
-  const gi = read(path.join(target, ".gitignore"));
-  assert.ok(gi.includes("node_modules/"), "project entry preserved");
-  assert.ok(gi.includes(".env"), "project entry preserved");
-  assert.match(gi, /# agent-harness \(managed below\)/);
-  assert.ok(gi.includes(".harness-backup/"), "harness local artifact ignored");
-
-  // idempotent: a re-deploy must not duplicate the marker/entries
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
-  const gi2 = read(path.join(target, ".gitignore"));
-  const markers = (gi2.match(/# agent-harness \(managed below\)/g) || []).length;
-  assert.strictEqual(markers, 1, "marker is not duplicated on re-deploy");
+  assert.strictEqual(
+    read(path.join(target, ".gitignore")),
+    original,
+    ".gitignore untouched by update (no marker truncation)"
+  );
+
+  const excludePath = path.join(target, ".git", "info", "exclude");
+  const exclude = read(excludePath);
+  assert.ok(exclude.includes(".harness-backup/"), "harness local artifacts excluded clone-locally");
+  assert.ok(exclude.includes(".agents/guard-events.jsonl"), "guard log excluded clone-locally");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(excludePath), exclude, "exclude merge is idempotent (marker not duplicated)");
 });
 
 // ---------------------------------------------------------------- test:qa-plan gate (flow closure)
@@ -3267,8 +3294,9 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.doesNotMatch(src, /(?:===|==|>=|>)\s*(?:50|60|80|100)\b/, "no hardcoded turn band numbers");
 });
 
-test("context-guard plugin + core deploy, stay harness-owned, and the guard log is gitignored", async () => {
+test("context-guard plugin + core deploy, stay harness-owned, and the guard log is excluded clone-locally", async () => {
   const target = tmpdir();
+  git(target, ["init", "-q"]);
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
   const corePath = path.join(target, "scripts", "qa", "context-guard-core.js");
@@ -3277,8 +3305,8 @@ test("context-guard plugin + core deploy, stay harness-owned, and the guard log 
   assert.match(plugin, /tool\.execute\.before/);
   assert.match(plugin, /experimental\.chat\.system\.transform/);
 
-  const gi = read(path.join(target, ".gitignore"));
-  assert.ok(gi.includes(".agents/guard-events.jsonl"), "runtime guard log is gitignored");
+  const exclude = read(path.join(target, ".git", "info", "exclude"));
+  assert.ok(exclude.includes(".agents/guard-events.jsonl"), "runtime guard log is excluded clone-locally");
 
   fs.writeFileSync(corePath, "LOCAL EDIT", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });

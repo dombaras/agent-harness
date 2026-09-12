@@ -8,7 +8,7 @@ import guard from "../../scripts/qa/context-guard-core.js"
 // it crosses them — injected text is constant per band so the cache-friendly
 // prefix stays byte-stable. Also counts identical tool+args calls (loop
 // detector) and records crossings in `.agents/guard-events.jsonl` (local-only,
-// gitignored) so telemetry exists before a full provider-stats pass does.
+// excluded clone-locally) so telemetry exists before a full provider-stats pass does.
 // Child sessions (subagent dispatches) are tracked only to be excluded.
 
 const ORCHESTRATION_REL = path.join(".agents", "memory", "orchestration.md")

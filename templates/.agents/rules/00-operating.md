@@ -60,7 +60,7 @@ session grow without bound. Thresholds are tunable in
   `orchestration.md` at runtime and injects the checkpoint warning / soft-budget /
   new-context (and hard-ceiling) nudges at the turn bands, plus the recovery rule
   on repeated identical tool calls — never rely on remembering the numbers.
-  Crossings land in `.agents/guard-events.jsonl` (local-only, gitignored).
+  Crossings land in `.agents/guard-events.jsonl` (local-only, excluded clone-locally).
 - **Large tool outputs**: treat reads as evidence, but do not let a big read/diff/
   test dump live forever in a long-lived context — checkpoint and move on.
 
