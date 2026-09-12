@@ -145,6 +145,9 @@ test("deploy init materializes files, substitutes placeholders, writes config", 
   assert.strictEqual(cfg.projectName, "Demo");
   assert.strictEqual(cfg.version, h.PKG.version);
   assert.ok(cfg.files && typeof cfg.files === "object");
+
+  const oc = JSON.parse(read(path.join(target, "opencode.json")));
+  assert.strictEqual(oc.agent.build.steps, 100, "deploy writes the mechanical turn cap");
 });
 
 test("deploy preserves project-owned handoff files on re-deploy", async () => {
@@ -203,6 +206,38 @@ test("opencode.json merge preserves project keys and unions instructions", () =>
   assert.strictEqual(merged.permission.edit, "deny");
   assert.ok(merged.instructions.includes("docs/my-rules.md"));
   assert.ok(merged.instructions.includes(".agents/rules/00-operating.md"));
+});
+
+test("opencode.json merge ships agent.build.steps as an ADD-ONLY default", () => {
+  // fresh project: the harness turn cap appears
+  const fresh = tmpdir();
+  const defaults = JSON.parse(
+    h.mergeOpencodeJson(fresh, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" })
+  );
+  assert.strictEqual(defaults.agent.build.steps, 100, "hard turn cap is deployed by default");
+
+  // a project override and unrelated agent config are preserved
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify(
+      {
+        agent: {
+          build: { steps: 150, model: "custom/model" },
+          explore: { model: "custom/explore" },
+        },
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+  const merged = JSON.parse(
+    h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" })
+  );
+  assert.strictEqual(merged.agent.build.steps, 150, "project steps override wins");
+  assert.strictEqual(merged.agent.build.model, "custom/model");
+  assert.strictEqual(merged.agent.explore.model, "custom/explore");
 });
 
 test("update is non-interactive (never prompts)", async () => {

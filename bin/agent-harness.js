@@ -200,6 +200,21 @@ function mergeOpencodeJson(target, variables) {
     const prior = Array.isArray(existing.instructions) ? existing.instructions : [];
     merged.instructions = [...new Set([...prior, ...harness.instructions])];
   }
+  // The harness `agent` block ships ADD-ONLY defaults (e.g. `build.steps`): a
+  // project's own agent config — including an overridden steps cap — always
+  // wins, and every agent the project defines is preserved.
+  if (harness.agent && typeof harness.agent === "object") {
+    const priorAgents =
+      existing.agent && typeof existing.agent === "object" && !Array.isArray(existing.agent)
+        ? existing.agent
+        : {};
+    const agent = { ...priorAgents };
+    for (const [name, cfg] of Object.entries(harness.agent)) {
+      const prior = agent[name] && typeof agent[name] === "object" ? agent[name] : {};
+      agent[name] = { ...cfg, ...prior };
+    }
+    merged.agent = agent;
+  }
   return JSON.stringify(merged, null, 2) + "\n";
 }
 
