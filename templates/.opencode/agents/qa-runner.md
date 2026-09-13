@@ -1,7 +1,7 @@
 ---
 description: Use to execute a QA plan or test tier (including the catalog E2E journey and catalog test-data cleanup) and report pass/fail — does not design tests or judge risk.
 mode: subagent
-model: opencode-go/gpt-5.6-luna
+model: opencode-go/deepseek-v4.1-flash
 temperature: 0.1
 steps: 50
 ---

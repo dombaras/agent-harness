@@ -7,22 +7,27 @@ policy — the concrete model IDs are the source of truth in the agent files
 
 ## Tiers (recommended — override per-project)
 
-| Tier | Purpose |
-|---|---|
-| reasoning (hard) | System architecture, security review |
-| reasoning (debug) | Error / performance / API debugging |
-| reasoning (plan/review) | Planning, product design, QA architecture |
-| general | Everyday coding, UI design, mobile native, infra/devops, data, QA execution, feature registrar |
-| mechanical | Handoffs |
-| opportunistic (free/low-cost) | Bulk exploration, repo-wide search/summarize, mechanical repetition — best-effort only, never authoritative |
+| Tier | Purpose | Default lane |
+|---|---|---|
+| reasoning (hard) | System architecture, security review | strongest reasoning |
+| reasoning (plan/review) | Planning, QA architecture — an unrecoverable logic error here poisons everything downstream | strongest reasoning |
+| reasoning (debug) | Error / performance / API debugging | fast frontier |
+| engineering (general) | Everyday coding, mobile native, infra/devops, data, QA execution | cheap fast coder |
+| content (general) | UI design, product journeys, feature registrar, docs | strong generalist |
+| mechanical | Handoffs | cheap fast |
+| opportunistic (free/low-cost) | Bulk exploration, repo-wide search/summarize, mechanical repetition — best-effort only, never authoritative | free/low-cost |
 
-The reasoning tier is split by persona: hard reasoning (architecture, security)
-keeps the strongest reasoning model; debugging runs on a fast frontier reasoning
-model; plan/review runs on a strong tool-use model. The harness ships a
-recommended concrete mapping for each (hard reasoning → strongest reasoning
-model, debug → fast frontier reasoning model, plan/review + general → strong
-coder/tool-use model, mechanical → cheap fast model). Change it only by editing
-`.opencode/agents/<name>.md` `model:` — the `model:` label in
+The reasoning tier is split by persona. Hard reasoning (architecture, security)
+and plan/review (planner, qa-architect) run on the strongest reasoning model —
+a planner/QA architect that makes a logic error invalidates the whole dispatch
+plan, so they are priced as architects, not as coders. Debugging and general
+engineering run on a fast frontier coder (cheap, strong on coding benchmarks,
+better cache pricing); UI/docs/features/product content keeps the strong
+generalist. The harness ships a recommended concrete mapping for each lane
+(strongest reasoning → `deepseek-v4-pro`, fast frontier + engineering →
+`deepseek-v4.1-flash`, content → `gpt-5.6-luna`, mechanical →
+`glm-5.3-flash`, all on the `opencode-go/` subscription). Change it only by
+editing `.opencode/agents/<name>.md` `model:` — the `model:` label in
 `.agents/skills/*/SKILL.md` is informational only and does NOT route models.
 
 ## Provider priority & fallback (subscription first)

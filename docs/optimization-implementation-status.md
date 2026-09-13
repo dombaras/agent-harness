@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.58)
+# Agent Harness Optimization — Implementation Status (v0.1.59)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,8 +15,8 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.58` |
-| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue` |
+| Version | `0.1.59` |
+| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning |
 | Lint / tests | green (`npm run lint`, `npm test`) |
 | LibraryOS | `0.1.58` deployed + pushed; provider policy merged into the project-owned `model-routing.md` |
 | FamilyBudget | `0.1.58` deployed (local repo, no remote); provider policy merged into the project-owned `model-routing.md` |
@@ -24,6 +24,33 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 ---
 
 ## What shipped
+
+### `0.1.59` — persona model re-tuning (architect-tier plan/review, cheap engineering)
+
+External review recommendation applied through the harness's own routing policy:
+
+- **Plan/review moves to the architect tier.** `planner` and `qa-architect` →
+  `opencode-go/deepseek-v4-pro` (same tier as `system-architect` /
+  `security-engineer`): a planner/QA logic error invalidates the whole dispatch
+  plan, so both are priced as architects rather than coders.
+- **Engineering moves to the cheap frontier coder.** `frontend-engineer`,
+  `mobile-engineer`, `data-engineer`, `devops-engineer`, `qa-runner` →
+  `opencode-go/deepseek-v4.1-flash` (matching the already-flash
+  `diagnostics-expert` and the main default) — cheaper, better cache pricing,
+  and stronger on coding benchmarks than Luna.
+- **Content stays on the strong generalist.** `ui-designer`, `docs`, `features`,
+  `product-manager` keep `opencode-go/gpt-5.6-luna` (general text, layout,
+  documentation). `product-manager` was not named in the recommendation; it was
+  left unchanged rather than guessed onto the pro tier.
+- **Unchanged already-correct tiers:** `system-architect` / `security-engineer`
+  stay `opencode-go/deepseek-v4-pro`, `handoff` stays `opencode-go/glm-5.3-flash`.
+- `.agents/memory/model-routing.md` tier table/policy updated to the new lanes
+  (strongest reasoning = hard reasoning + plan/review; fast frontier = debug +
+  engineering; content = strong generalist). No tooling change needed —
+  `/switch-model` + `switch-reasoning-model.ps1` already rewrote exactly those
+  six reasoning-tier agents.
+- Tests: harness suite green; `test:dispatch` re-validates pins vs the provider
+  allowlist and doc↔config drift.
 
 ### `0.1.58` — upstream the project-local `backlog unqueue` (ownership fix)
 
