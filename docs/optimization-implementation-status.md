@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.60)
+# Agent Harness Optimization — Implementation Status (v0.1.61)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,15 +15,46 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.60` |
-| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning; `0.1.60` architect tier → direct DeepSeek |
+| Version | `0.1.61` |
+| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning; `0.1.60` architect tier → direct DeepSeek; `0.1.61` funds guard names the failed provider/model + Zen removed from routing |
 | Lint / tests | green (`npm run lint`, `npm test`) |
-| LibraryOS | `0.1.60` deployed + pushed (4 V4 Pro pins + policy docs auto-committed); `model-routing.md` is gitignored/local-only and was updated in place |
-| FamilyBudget | `0.1.60` deployed (local repo, no remote); routing doc synced + committed |
+| LibraryOS | `0.1.61` deployed + pushed (harness auto-commit `05471b4`, explore pin `01f75c0`); `model-routing.md` is gitignored/local-only and was updated in place |
+| FamilyBudget | `0.1.61` deployed (local repo, no remote); routing policy + explore pin commit `97cd9e9` |
 
 ---
 
 ## What shipped
+
+### `0.1.61` — funds guard names the failing provider/model; Zen removed from routing
+
+Two corrections from the F-166 pause (a Zen funds error the guard reported
+without naming the provider):
+
+- **Funds stop now attributes the failure.** `context-guard-core.js` gains
+  `fundsText(label, where)` and `modelLabel(info)`: the injected stop names the
+  observed `provider/model` (e.g. `opencode/gpt-5.6-luna`). The plugin tracks
+  child→parent sessions so a **subagent** funds error arms the orchestrator's
+  stop, and reads the failed dispatch's model from the task result's
+  `metadata.model` (or the child assistant message's `providerID/modelID`).
+  `.agents/guard-events.jsonl` funds events now carry
+  `provider`/`model`/`failedSessionID`. With nothing known the generic text is
+  byte-identical to the old rule.
+- **Zen pay-as-you-go (`opencode/*`) is out of the policy** — OpenCode Go +
+  DeepSeek direct only. Removed: the `explore` pin (`opencode/big-pickle` →
+  `opencode-go/glm-5.3-flash`), the opportunistic targets
+  (big-pickle/nemotron/muse → Go glm-flash), the escalation
+  `opencode/gpt-5.6-sol`, the `zen`/`opencode`/`big-pickle` switch aliases, and
+  every Zen line from `models.allowlist.txt`. `check-dispatch-config.js` now
+  **fails** if the allowlist carries an `opencode/*` (Zen) line, so a
+  regenerated allowlist cannot silently re-allow it.
+- **Why the pause happened:** the failing `opencode/gpt-5.6-luna` dispatches
+  predate the `0.1.57` Go-first deploy (all persona pins moved to
+  `opencode-go/*` then); the only Zen left after that was `explore` and the
+  machine-read/alias lists — all removed now. The `explore` pin is a
+  project-owned `opencode.json` override, so the updater preserves it and it
+  was re-pinned in place in both projects.
+- **Deployed:** both projects on `0.1.61`; both `model-routing.md` policies
+  synced; `test:dispatch` green on both (15 agents, 0 failures).
 
 ### `0.1.60` — architect tier runs direct DeepSeek (correction to 0.1.59)
 
