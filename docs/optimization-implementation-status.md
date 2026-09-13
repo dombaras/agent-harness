@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.61)
+# Agent Harness Optimization — Implementation Status (v0.1.62)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,15 +15,48 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.61` |
-| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning; `0.1.60` architect tier → direct DeepSeek; `0.1.61` funds guard names the failed provider/model + Zen removed from routing |
-| Lint / tests | green (`npm run lint`, `npm test`) |
-| LibraryOS | `0.1.61` deployed + pushed (harness auto-commit `05471b4`, explore pin `01f75c0`); `model-routing.md` is gitignored/local-only and was updated in place |
-| FamilyBudget | `0.1.61` deployed (local repo, no remote); routing policy + explore pin commit `97cd9e9` |
+| Version | `0.1.62` |
+| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning; `0.1.60` architect tier → direct DeepSeek; `0.1.61` funds guard names the failed provider/model + Zen removed from routing; `0.1.62` funds guard arms on structured failures only (doc-read false positive fixed) |
+| Lint / tests | green (`npm run lint`, `npm test` — 168 pass) |
+| LibraryOS | `0.1.62` deployed + pushed (harness auto-commit `443af25`); `model-routing.md` is gitignored/local-only and was updated in place; F-169 (the false-stop victim) itself shipped/archived in-session (`9d45b04`) |
+| FamilyBudget | `0.1.62` deployed (local repo, no remote); routing doc update `8aee12d` |
 
 ---
 
 ## What shipped
+
+### `0.1.62` — funds guard arms on structured failures only (doc-read false positive)
+
+Driven by LibraryOS F-169: the picked-up row never started because the guard
+paused the session on the **session-start read of `model-routing.md` itself** —
+that file documents the funds rule with its literal trigger phrases
+(`insufficient balance`, `insufficient funds`, `out of credits`, `usage limit
+reached`, HTTP 402), and `tool.execute.after` scanned the text of every
+successful tool result. Verified from `opencode.log` (`provider funds/quota
+error from read — pausing for top-up`) and the session transcript; no provider
+call had failed (the "unknown provider/model" was the give-away — a `read` has
+no model metadata). Handoffs/plans/rulebooks that quote the rule, and the
+guard's own source, re-armed it on every read/grep, so the stop recurred every
+session.
+
+- **`context-guard-core.js` gains `fundsArmText(tool, output)`** — the only
+  text eligible for the funds scan. Structured failure evidence only:
+  `output.error` (a failed dispatch's `Subagent failed (...): Insufficient
+  balance` carries the failed model in `metadata.model`; any thrown tool error),
+  or a `bash` result with a non-zero `metadata.exit`. Successful reads, greps,
+  globs, dispatches, and commands are context, never evidence.
+- **Plugin `tool.execute.after` uses the gate**; `logEvent` no longer swallows
+  a guard-log write failure silently — it reports it (the LibraryOS
+  `guard-events.jsonl` was absent while detections were firing, turning a real
+  detection into an unattributable one).
+- **Docs**: README + `templates/.agents/memory/model-routing.md` now state the
+  structured-evidence rule and that reading a document quoting it never trips
+  the stop; both project copies were updated in place (LibraryOS ignored
+  local-only; FamilyBudget tracked).
+- **Tests**: regression pins the exact F-169 input (model-routing.md text via
+  `read`/`grep`/successful `bash`/successful `task` → no arm) and the true
+  positives (real failed-dispatch shape, failed-bash output, structured
+  `output.error`) — 168 pass.
 
 ### `0.1.61` — funds guard names the failing provider/model; Zen removed from routing
 
