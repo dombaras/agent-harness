@@ -10,8 +10,6 @@ Valid values:
 - `deepseek` / `flash` / `direct` -> `deepseek/deepseek-flash` (direct API key, V4.1 Flash — fallback when Go is unavailable)
 - `deepseek-v4-flash` -> `deepseek/deepseek-v4-flash` (legacy V4 flash pin; kept replaceable for rollback/migration)
 - `deepseek-pro` / `pro` -> `deepseek/deepseek-v4-pro` (direct API key, escalation)
-- `zen` / `opencode` -> `opencode/deepseek-v4-pro` (Zen gateway)
-- `pickle` / `big-pickle` -> `opencode/big-pickle`
 - `nvidia` / `kimi` / `kimi-k3` -> `nvidia/moonshotai/kimi-k3` (NVIDIA NIM)
 - `nemotron` / `nemotron-ultra` -> `nvidia/nemotron-3-ultra-550b-a55b:free` (NVIDIA NIM, free)
 - `openrouter` / `or` / `minimax-m3` / `m3` -> `openrouter/minimax/minimax-m3` (OpenRouter)

@@ -8,7 +8,7 @@
       "steps": 100
     },
     "explore": {
-      "model": "opencode/big-pickle"
+      "model": "opencode-go/glm-5.3-flash"
     }
   }
 }

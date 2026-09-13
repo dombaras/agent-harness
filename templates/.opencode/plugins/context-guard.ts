@@ -11,7 +11,10 @@ import guard from "../../scripts/qa/context-guard-core.js"
 // excluded clone-locally) so telemetry exists before a full provider-stats pass does.
 // It also hard-stops on provider funds/quota errors (see model-routing.md
 // "Provider funds stop") so a failed dispatch can never silently degrade inline.
-// Child sessions (subagent dispatches) are tracked only to be excluded.
+// Child sessions (subagent dispatches) are tracked to attribute their funds
+// errors to the orchestrator *with the failing provider/model* — the top-up
+// target comes from observed dispatch metadata (task `metadata.model` or the
+// child assistant message `providerID/modelID`), never a guess.
 
 const ORCHESTRATION_REL = path.join(".agents", "memory", "orchestration.md")
 const GUARD_LOG_REL = path.join(".agents", "guard-events.jsonl")
@@ -19,6 +22,8 @@ const GUARD_LOG_REL = path.join(".agents", "guard-events.jsonl")
 export const ContextGuard: Plugin = async ({ directory, client }) => {
   const sessions = new Map<string, any>()
   const childSessions = new Set<string>()
+  const childParent = new Map<string, string>()
+  const sessionModel = new Map<string, string>()
   let thresholds: any = null
 
   const stateFor = (sessionID: string) => {
@@ -28,6 +33,38 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       sessions.set(sessionID, state)
     }
     return state
+  }
+
+  /* Walk a subagent session up to the primary orchestrator it belongs to, so a
+   * child's funds error arms the stop on the session the user actually sees. */
+  const primaryRoot = (sessionID: string) => {
+    let cur = sessionID
+    for (let i = 0; i < 100 && childParent.has(cur); i++) cur = childParent.get(cur) as string
+    return cur
+  }
+
+  /* Arm the funds stop on the primary session, naming the failed provider/model
+   * (when observed) in the injected rule, the guard-event log, and the TUI log. */
+  const armFunds = async (sessionID: string, label: string | null, source: string) => {
+    const owner = primaryRoot(sessionID)
+    const state = stateFor(owner)
+    if (state.fundsPending) return
+    state.fundsPending = true
+    state.fundsNotice = guard.fundsText(label, source)
+    const [provider, model] = label
+      ? label.includes("/")
+        ? [label.slice(0, label.indexOf("/")), label.slice(label.indexOf("/") + 1)]
+        : [null, label]
+      : [null, null]
+    logEvent({
+      kind: "funds",
+      sessionID: owner,
+      failedSessionID: sessionID === owner ? null : sessionID,
+      provider,
+      model,
+      source,
+    })
+    await report(`${label || "unknown provider/model"} — provider funds/quota error (${source}) — pausing for top-up`)
   }
 
   const isPrimary = (sessionID: unknown): sessionID is string =>
@@ -70,7 +107,10 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         const props = event?.properties || {}
 
         if (type === "session.created" || type === "session.updated") {
-          if (props.info?.id && props.info.parentID) childSessions.add(props.info.id)
+          if (props.info?.id && props.info.parentID) {
+            childSessions.add(props.info.id)
+            childParent.set(props.info.id, props.info.parentID)
+          }
           return
         }
 
@@ -78,6 +118,8 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           const id = props.info?.id
           if (id) {
             childSessions.delete(id)
+            childParent.delete(id)
+            sessionModel.delete(id)
             sessions.delete(id)
           }
           return
@@ -90,15 +132,28 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
 
         if (type === "message.updated") {
           const info = props.info
-          if (!isPrimary(info?.sessionID)) return
+          const sid = info?.sessionID
+          if (typeof sid !== "string" || sid.length === 0) return
+          if (info?.role === "assistant") {
+            const label = guard.modelLabel(info)
+            if (label) sessionModel.set(sid, label)
+            // A failed dispatch reports its own provider/model on the assistant
+            // message — capture it even for child (subagent) sessions.
+            if (info?.error && guard.fundsError(JSON.stringify(info.error))) {
+              await armFunds(sid, label, "assistant error")
+            }
+          }
+          if (!isPrimary(sid)) return
           if (info?.role === "user") {
             // The user is speaking (usually the top-up-complete message):
             // release the funds stop so work can resume.
-            stateFor(info.sessionID).fundsPending = false
+            const state = stateFor(sid)
+            state.fundsPending = false
+            state.fundsNotice = null
             return
           }
           if (info?.role !== "assistant") return
-          const note = guard.noteAssistant(stateFor(info.sessionID), info, loadThresholds())
+          const note = guard.noteAssistant(stateFor(sid), info, loadThresholds())
           if (note.newTurn && note.bandChanged && note.band) {
             logEvent({ kind: "band", sessionID: info.sessionID, band: note.band, turn: note.turns })
             await report(`turn ${note.turns}: ${note.band} band`)
@@ -116,14 +171,11 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
 
         if (type === "session.error") {
           const sid = props.sessionID || props.info?.sessionID
-          if (!isPrimary(sid)) return
+          if (typeof sid !== "string" || sid.length === 0) return
           const text = JSON.stringify(props.error ?? props.message ?? props)
           if (!guard.fundsError(text)) return
-          const state = stateFor(sid)
-          if (state.fundsPending) return
-          state.fundsPending = true
-          logEvent({ kind: "funds", sessionID: sid, source: "session.error" })
-          await report("provider funds/quota error — pausing for top-up")
+          const label = guard.modelLabel(props.error) || sessionModel.get(sid) || null
+          await armFunds(sid, label, "session.error")
           return
         }
       } catch {
@@ -160,12 +212,12 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         if (!isPrimary(input?.sessionID)) return
         const text =
           typeof output?.output === "string" ? output.output : JSON.stringify(output ?? {})
-        if (!guard.fundsError(text)) return
-        const state = stateFor(input.sessionID)
-        if (state.fundsPending) return
-        state.fundsPending = true
-        logEvent({ kind: "funds", sessionID: input.sessionID, tool: String(input?.tool || "") })
-        await report(`provider funds/quota error from ${input?.tool} — pausing for top-up`)
+        const error = output?.error ? String(output.error) : ""
+        if (!guard.fundsError(text) && !guard.fundsError(error)) return
+        const meta = output?.metadata || {}
+        const label =
+          guard.modelLabel(meta.model) || sessionModel.get(String(meta.sessionId || "")) || null
+        await armFunds(input.sessionID, label, `tool:${input?.tool}`)
       } catch {
         /* never break the tool call */
       }
@@ -178,7 +230,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         const texts: string[] = []
         const band = guard.turnBand(state.turns, loadThresholds().turns)
         if (band) texts.push(guard.bandText(band))
-        if (state.fundsPending) texts.push(guard.FUNDS_TEXT)
+        if (state.fundsPending) texts.push(state.fundsNotice || guard.FUNDS_TEXT)
         if (state.loopPending) texts.push(guard.LOOP_TEXT)
         for (const text of texts) {
           const already = output.system.some((s: string) => typeof s === "string" && s.includes(text))

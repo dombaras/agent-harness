@@ -44,6 +44,11 @@ routing: it is pinned to the **direct DeepSeek API key**
 | 1 | OpenCode Go (`opencode-go/<model-id>`) | `opencode-go/deepseek-v4.1-flash` | default for the flash/content/mechanical tiers — the $10/mo subscription quota pays for it |
 | 2 | DeepSeek direct (`deepseek/<model-id>`) | `deepseek/deepseek-flash` | fallback when Go is unavailable or its usage limit is hit |
 
+**Zen pay-as-you-go (`opencode/*`) is not part of the policy.** The only two
+providers are the Go subscription and the direct DeepSeek API key — no agent,
+`opencode.json` override, switch alias, or machine-read target may pin a Zen
+model (`explore` included: default `opencode-go/glm-5.3-flash`).
+
 - **V4 Pro always runs direct.** The architect tier uses
   `deepseek/deepseek-v4-pro` (direct DeepSeek API key); never re-point it at
   the Go-served Pro model.
@@ -81,7 +86,11 @@ a reason to silently leave the designed multi-agent process.
 
 This overrides the dispatch-failure ladder below for funds/quota errors. The
 `context-guard` plugin mechanically detects such an error in a dispatch/tool
-result and injects the same stop into the next request.
+result or a subagent session error, attributes it with the observed
+provider/model (the task result's `metadata.model` or the child assistant
+message's `providerID/modelID`) and injects the stop naming that provider/model
+into the next request — the top-up target is evidence, never a guess. Each
+detection is recorded in `.agents/guard-events.jsonl` with `provider`/`model`.
 
 ### Opportunistic tier (free / low-cost models)
 
@@ -89,8 +98,10 @@ Free or near-free models are a **best-effort** lane, never an authority. Use
 them for genuinely disposable work: broad exploration/searches, chunk
 summarization, mechanical repetition, first-pass drafts. The built-in `explore`
 subagent is the reference pin — the harness ships it as
-`opencode.json` → `agent.explore.model` (default `opencode/big-pickle`) and a
-project may repoint it, on its main persona set or not at all.
+`opencode.json` → `agent.explore.model` (default `opencode-go/glm-5.3-flash` —
+the Go subscription's cheap flash model; Zen pay-as-you-go `opencode/*` is not
+in the policy) and a project may repoint it, on its main persona set or not at
+all.
 
 - **Mandatory fallback.** When an opportunistic model fails, returns empty, or
   is unavailable, fall back to the persona's normal tier (retry once per the
@@ -185,8 +196,8 @@ accepts a model named on these lines without requiring an agent/config pin, and
 Everything not listed is the standard execution tier.
 
 ```
-opportunistic_models: opencode/big-pickle, opencode/nemotron-3-ultra-free, opencode/muse-spark-1.2-contributor-free
-escalation_models: deepseek/deepseek-v4-pro, opencode/gpt-5.6-sol
+opportunistic_models: opencode-go/glm-5.3-flash
+escalation_models: opencode-go/deepseek-v4-pro, deepseek/deepseek-v4-pro
 fallback_models: deepseek/deepseek-flash, deepseek/deepseek-v4-flash
 ```
 

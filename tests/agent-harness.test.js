@@ -3334,6 +3334,20 @@ test("context-guard recognizes provider funds/quota errors (hard stop) and ignor
   assert.ok(cg.FUNDS_TEXT.startsWith("PROVIDER GUARD"));
   assert.match(cg.FUNDS_TEXT, /do NOT do the persona's work inline/);
   assert.strictEqual(cg.createSessionState().fundsPending, false, "the funds stop starts disarmed");
+  assert.strictEqual(cg.createSessionState().fundsNotice, null, "no stale attribution notice");
+
+  // Attribution: the failing provider/model is named from observed metadata.
+  assert.strictEqual(cg.modelLabel({ providerID: "opencode", modelID: "gpt-5.6-luna" }), "opencode/gpt-5.6-luna");
+  assert.strictEqual(cg.modelLabel({ provider: "deepseek", model: "deepseek-v4-pro" }), "deepseek/deepseek-v4-pro");
+  assert.strictEqual(cg.modelLabel({ modelID: "solo" }), "solo");
+  assert.strictEqual(cg.modelLabel({}), null);
+  assert.strictEqual(cg.modelLabel(null), null);
+  assert.strictEqual(cg.fundsText(), cg.FUNDS_TEXT, "the generic rule stays byte-identical when nothing is known");
+  const named = cg.fundsText("opencode/gpt-5.6-luna", "tool:task");
+  assert.match(named, /from `opencode\/gpt-5\.6-luna`/);
+  assert.match(named, /observed in tool:task/);
+  assert.match(named, /Announce the failing provider\/model/);
+  assert.doesNotMatch(cg.fundsText(null, "session.error"), /from `/);
 });
 
 test("context-guard plugin source-contract: hooks wired to the core, no hardcoded thresholds", () => {
@@ -3353,7 +3367,11 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /parseThresholds/, "parses thresholds at runtime");
   assert.match(src, /file\.watcher\.updated/, "invalidates the threshold cache on edits");
   assert.match(src, /guard-events\.jsonl/);
-  assert.match(src, /childSessions/, "child sessions are tracked to be excluded");
+  assert.match(src, /childSessions/, "child sessions are tracked to be excluded from band/loop counting");
+  assert.match(src, /childParent/, "child->parent mapping attributes subagent funds errors to the orchestrator");
+  assert.match(src, /sessionModel/, "tracks the observed provider/model per session");
+  assert.match(src, /modelLabel\(meta\.model\)/, "names the failed provider/model from the dispatch metadata");
+  assert.match(src, /fundsText/, "injects an attributed funds-stop notice");
   assert.match(src, /bandText/, "injects the core's byte-stable band text");
   assert.match(src, /fundsError/, "detects provider funds/quota errors mechanically");
   assert.match(src, /FUNDS_TEXT/, "injects the hard funds-stop rule");
@@ -3714,7 +3732,12 @@ test("model-routing ships the opportunistic tier with fallback + privacy caveat 
   const doc = read(path.join(h.TEMPLATES_DIR, ".agents", "memory", "model-routing.md"));
   assert.match(doc, /opportunistic \(free\/low-cost\)/);
   assert.match(doc, /agent\.explore\.model/);
-  assert.match(doc, /opencode\/big-pickle/);
+  assert.match(doc, /opencode-go\/glm-5\.3-flash/);
+  assert.doesNotMatch(
+    doc,
+    /opencode\/(?:big-pickle|gpt-|claude|glm|kimi|nemotron|muse|deepseek|gemini|grok|minimax|qwen|hy)/,
+    "Zen pay-as-you-go is not part of the routing policy"
+  );
   assert.match(doc, /Mandatory fallback/i);
   assert.match(doc, /Privacy caveat/i);
   assert.match(doc, /^opportunistic_models: /m);
@@ -3732,7 +3755,7 @@ test("model-routing ships the opportunistic tier with fallback + privacy caveat 
   const cfg = JSON.parse(read(path.join(h.TEMPLATES_DIR, "opencode.json")));
   assert.strictEqual(cfg.model, "opencode-go/deepseek-v4.1-flash", "OpenCode Go is the default provider");
   assert.strictEqual(cfg.small_model, "opencode-go/glm-5.3-flash", "the cheap Go model handles small jobs");
-  assert.strictEqual(cfg.agent.explore.model, "opencode/big-pickle", "explore is the reference opportunistic pin");
+  assert.strictEqual(cfg.agent.explore.model, "opencode-go/glm-5.3-flash", "explore is the reference opportunistic pin (Go, no Zen)");
 });
 
 test("architect-tier personas pin direct DeepSeek V4 Pro; engineering pins Go V4.1 Flash", () => {
@@ -3754,33 +3777,44 @@ test("test:dispatch accepts declared tier targets and still fails a stray unpinn
 
   const clean = runGate();
   assert.strictEqual(clean.status, 0, clean.stdout + clean.stderr);
-  assert.match(clean.stdout, /declared opportunistic target/);
+  assert.match(clean.stdout, /declared escalation target/);
   assert.match(clean.stdout, /agent\.explore\.model/, "the explore pin is validated like every other pin");
+  assert.doesNotMatch(clean.stdout, /agent\.explore\.model `opencode\//, "explore is not pinned to Zen");
 
   const routing = path.join(target, ".agents", "memory", "model-routing.md");
-  fs.appendFileSync(routing, "\nstray mention: opencode/kimi-k3\n", "utf8");
+  fs.appendFileSync(routing, "\nstray mention: opencode-go/kimi-k2.6\n", "utf8");
   const dirty = runGate();
   assert.strictEqual(dirty.status, 1, "an undeclared unpinned model still fails the drift check");
   assert.match(dirty.stdout, /doc\u2194config drift/);
 });
 
+test("test:dispatch refuses a Zen pay-as-you-go allowlist entry (Go + direct only)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const allow = path.join(target, "scripts", "qa", "models.allowlist.txt");
+  fs.appendFileSync(allow, "\nopencode/gpt-5.6-luna\n", "utf8");
+  const r = spawnSync(process.execPath, ["scripts/qa/check-dispatch-config.js"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(r.status, 1, "a regenerated allowlist must not silently re-allow Zen");
+  assert.match(r.stdout, /Zen pay-as-you-go/);
+});
+
 test("provider-stats classifies model mix by tier and surfaces escalation primary sessions", () => {
   const sessions = [
     fixtureSession({ id: "ses_pro", title: "pro primary", model: "deepseek/deepseek-v4-pro", provider: "deepseek", cost: 2, turns: 30 }),
-    fixtureSession({ id: "ses_pro1", parentId: "ses_pro", model: "opencode/big-pickle", provider: "opencode", cost: 0, turns: 2 }),
+    fixtureSession({ id: "ses_pro1", parentId: "ses_pro", model: "opencode-go/glm-5.3-flash", provider: "opencode-go", cost: 0, turns: 2 }),
     fixtureSession({ id: "ses_std", title: "standard", cost: 0.1, turns: 5 }),
   ];
   const agg = ps.aggregateSessions(sessions, {
     escalationModels: ["deepseek/deepseek-v4-pro"],
-    opportunisticModels: ["opencode/big-pickle"],
+    opportunisticModels: ["opencode-go/glm-5.3-flash"],
   });
 
   assert.deepStrictEqual(agg.escalation.rootIds, ["ses_pro"]);
   assert.strictEqual(agg.escalation.count, 1);
   assert.strictEqual(agg.escalation.cost, 2);
   assert.strictEqual(agg.escalation.sessions[0].model, "deepseek/deepseek-v4-pro");
-  assert.strictEqual(agg.opportunistic.sessions, 1, "the subagent big-pickle session is counted");
-  assert.strictEqual(agg.modelMix.find((m) => m.model === "opencode/big-pickle").tier, "opportunistic");
+  assert.strictEqual(agg.opportunistic.sessions, 1, "the subagent opportunistic session is counted");
+  assert.strictEqual(agg.modelMix.find((m) => m.model === "opencode-go/glm-5.3-flash").tier, "opportunistic");
   assert.strictEqual(agg.modelMix.find((m) => m.model === "deepseek/deepseek-v4-pro").tier, "escalation");
   assert.strictEqual(agg.modelMix.find((m) => m.model === "deepseek-flash").tier, "standard");
   const mix = Object.fromEntries(agg.tierMix.map((t) => [t.tier, t]));

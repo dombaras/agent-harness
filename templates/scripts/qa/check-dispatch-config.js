@@ -25,7 +25,10 @@
  *
  * Allowlist refresh (only when the provider adds/removes models):
  *   npx opencode models > scripts/qa/models.allowlist.txt
- * Never edit agent `model:` without re-running this check.
+ * then DELETE every `opencode/*` (Zen pay-as-you-go) line — the routing policy
+ * is OpenCode Go (`opencode-go/*`) + DeepSeek direct (`deepseek/*`) only, and
+ * this gate fails if a Zen line is present. Never edit agent `model:` without
+ * re-running this check.
  */
 const fs = require("fs");
 const path = require("path");
@@ -62,6 +65,17 @@ const allowlist = new Set(
 );
 
 console.log("dispatch preflight \u2014 persona model pins vs provider allowlist");
+
+// 0. no Zen pay-as-you-go targets: the policy is OpenCode Go + DeepSeek direct
+// only, so `opencode/*` must never be an allowed pin (a regenerated allowlist
+// re-adds it — delete those lines, don't relax the policy).
+const zenLines = [...allowlist].filter((m) => /^opencode\//.test(m));
+if (zenLines.length) {
+  fail(
+    `allowlist has ${zenLines.length} Zen pay-as-you-go model(s) (${zenLines.slice(0, 3).join(", ")}${zenLines.length > 3 ? ", ..." : ""}) — ` +
+      "policy is opencode-go/* + deepseek/* only; remove them"
+  );
+}
 
 function frontmatterModel(file) {
   const src = fs.readFileSync(file, "utf8");

@@ -68,11 +68,36 @@ const LOOP_TEXT =
 const FUNDS_RE =
   /insufficient (?:balance|funds|credits?)|out of (?:credits?|funds)|credit balance|(?:usage|quota) (?:limit|exceeded)|exceeded your (?:usage|quota)|payment required|status(?:Code)?["'\s:]*402/i;
 
-const FUNDS_TEXT =
-  "PROVIDER GUARD — a provider funds/quota error was observed (insufficient balance / credits / usage limit). STOP now: do not retry this call, do NOT do the persona's work inline, and do not silently switch providers. Announce which provider/model failed and the exact unfinished step, checkpoint the state to `.agents/handoffs/<feature-id>.md`, then end the turn and wait for the user's explicit top-up-complete / continue message before resuming.";
+/* The failure label is the concrete account to top up (`opencode/gpt-5.6-luna`,
+ * `deepseek/deepseek-v4-pro`), taken from the observed dispatch metadata — never
+ * guessed. `where` names the surface that observed it (tool/event). Both are
+ * interpolated only when known, so the unknown case stays byte-identical to the
+ * original generic rule. */
+function fundsText(label, where) {
+  const who = label ? ` from \`${label}\`` : "";
+  const at = where ? ` (observed in ${where})` : "";
+  const announce = label
+    ? `Announce the failing provider/model (\`${label}\`)`
+    : "Announce which provider/model failed";
+  return `PROVIDER GUARD — a provider funds/quota error was observed${who}${at} (insufficient balance / credits / usage limit). STOP now: do not retry this call, do NOT do the persona's work inline, and do not silently switch providers. ${announce} and the exact unfinished step, checkpoint the state to \`.agents/handoffs/<feature-id>.md\`, then end the turn and wait for the user's explicit top-up-complete / continue message before resuming.`;
+}
+
+const FUNDS_TEXT = fundsText();
 
 function fundsError(text) {
   return FUNDS_RE.test(String(text || ""));
+}
+
+/* `provider/model` label from an opencode assistant message (providerID/modelID)
+ * or a dispatch metadata model object (provider/model). Null when neither side
+ * is known, so a label is only ever reported from observed data. */
+function modelLabel(info) {
+  if (!info || typeof info !== "object") return null;
+  const provider = info.providerID || info.provider;
+  const model = info.modelID || info.model;
+  if (provider && model) return `${provider}/${model}`;
+  if (model) return String(model);
+  return null;
 }
 
 /* Identical repeats of these are legitimate and must not count as loops:
@@ -186,6 +211,7 @@ function createSessionState() {
     flaggedLoops: new Set(),
     loopPending: false,
     fundsPending: false,
+    fundsNotice: null,
   };
 }
 
@@ -266,7 +292,9 @@ module.exports = {
   BAND_TEXT,
   LOOP_TEXT,
   FUNDS_TEXT,
+  fundsText,
   fundsError,
+  modelLabel,
   parseThresholds,
   turnBand,
   bandText,
