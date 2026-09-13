@@ -18,8 +18,8 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 | Version | `0.1.58` |
 | Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue` |
 | Lint / tests | green (`npm run lint`, `npm test`) |
-| LibraryOS | `0.1.57` deployed locally (push blocked by the pre-push gate until `0.1.58` re-deploy) |
-| FamilyBudget | pending `0.1.58` deploy |
+| LibraryOS | `0.1.58` deployed + pushed; provider policy merged into the project-owned `model-routing.md` |
+| FamilyBudget | `0.1.58` deployed (local repo, no remote); provider policy merged into the project-owned `model-routing.md` |
 
 ---
 
