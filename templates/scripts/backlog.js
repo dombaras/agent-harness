@@ -14,6 +14,8 @@
  *   add <task> [--p P1..P4] [--evidence x] [--id F-xxx] [--depends-on ids]
  *   take <id> [--handoff path]          Open/Queued -> In progress (pick it up)
  *   queue <id>                          Open -> Queued (allocate to a worker)
+ *   unqueue <id>                        Queued -> Open (return an allocated row
+ *                                       to the triage pool)
  *   next [--take] [--handoff path]      pick the top unblocked Queued row
  *   archive <id> [--closed note]        -> Archive (shipped · done)
  *   freeze <id> [--why x] [--reopen x]  -> Frozen (parked)
@@ -628,6 +630,28 @@ function cmdQueue(state, argv) {
   return { id, epic: cells[2], task: cells[3] };
 }
 
+/* unqueue <id> — Queued -> Open (return an allocated row to the triage pool,
+ * e.g. re-triaging a row that was queued in error). The inverse of `queue`. */
+function cmdUnqueue(state, argv) {
+  const id = argv._[0];
+  if (!id) throw new Error("unqueue: missing <id>.");
+  const found = findRow(state.lines, id);
+  if (!found) throw new Error(`unqueue: no row ${id} in BACKLOG.md.`);
+  if (found.key === "open") return { id, note: "already Open" };
+  if (found.key !== "queued") {
+    const where = found.key === "inprogress" ? "In progress" : found.key === "frozen" ? "Frozen" : "Archived";
+    throw new Error(`unqueue: ${id} is ${where} — only Queued rows can be returned to Open.`);
+  }
+
+  const cells = found.cells.slice(); // queued cells: [id, p, epic, task, evidence, dependsOn]
+  const srcRows = getRows(state.lines, "queued").map((r) => r.cells).filter((c) => c[0].trim() !== id);
+  state.lines = setRows(state.lines, "queued", srcRows);
+
+  const openRows = getRows(state.lines, "open").map((r) => r.cells);
+  state.lines = setRows(state.lines, "open", insertOpen(openRows, cells));
+  return { id, priority: cells[1], task: cells[3] };
+}
+
 /* next [--take] — report the top-priority UNBLOCKED Queued row; with --take,
  * move it to In progress (the pick-then-go primitive behind /next). A queued row
  * whose "Depends on" IDs are not all archived is skipped (blocked). */
@@ -874,6 +898,7 @@ function formatResult(cmd, out) {
   if (cmd === "add") return `added ${out.id} [${out.priority}] ${out.task}`;
   if (cmd === "take") return out.note ? `${out.id}: ${out.note}` : `took ${out.id} -> In progress (${out.handoff})`;
   if (cmd === "queue") return out.note ? `${out.id}: ${out.note}` : `queued ${out.id} (${out.task})`;
+  if (cmd === "unqueue") return out.note ? `${out.id}: ${out.note}` : `unqueued ${out.id} -> Open (${out.task})`;
   if (cmd === "next") {
     if (out.empty && out.blocked) return `next: all queued rows are blocked (${out.blocked.join(", ")})`;
     if (out.empty) return "no queued rows";
@@ -931,6 +956,7 @@ function usage() {
       "  node scripts/backlog.js add <task> [--p P1..P4] [--epic key] [--evidence x] [--id F-xxx] [--depends-on ids]\n" +
       "  node scripts/backlog.js take <id> [--handoff path]\n" +
       "  node scripts/backlog.js queue <id>\n" +
+      "  node scripts/backlog.js unqueue <id>\n" +
       "  node scripts/backlog.js next [--take] [--handoff path]\n" +
       "  node scripts/backlog.js archive <id> [--closed note]\n" +
       "  node scripts/backlog.js freeze <id> [--why x] [--reopen x]\n" +
@@ -984,6 +1010,7 @@ function main() {
       if (cmd === "add") out = cmdAdd(state, args);
       else if (cmd === "take") out = cmdTake(state, args);
       else if (cmd === "queue") out = cmdQueue(state, args);
+      else if (cmd === "unqueue") out = cmdUnqueue(state, args);
       else if (cmd === "next") out = cmdNext(state, args);
       else if (cmd === "archive") out = cmdArchive(state, args);
       else if (cmd === "freeze") out = cmdFreeze(state, args);
@@ -1026,6 +1053,7 @@ module.exports = {
   cmdAdd,
   cmdTake,
   cmdQueue,
+  cmdUnqueue,
   cmdNext,
   cmdArchive,
   cmdFreeze,

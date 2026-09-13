@@ -754,6 +754,36 @@ test("backlog CLI accumulates, sorts, and delegates deterministically (no LLM)",
   assert.match(gate.out, /RESULT: backlog green/);
 });
 
+test("backlog CLI unqueue returns a Queued row to Open (priority-sorted, cells preserved)", () => {
+  const t = scaffoldBacklogCliTarget();
+  runBacklogCli(t, ["add", "queued item", "--p", "P2", "--evidence", "qa-unqueue"]);
+  runBacklogCli(t, ["add", "urgent item", "--p", "P1"]);
+  assert.match(runBacklogCli(t, ["queue", "F-001"]).out, /queued F-001/);
+
+  const out = runBacklogCli(t, ["unqueue", "F-001"]);
+  assert.strictEqual(out.status, 0, out.out);
+  assert.match(out.out, /unqueued F-001 -> Open \(queued item\)/);
+
+  const b = read(path.join(t, "BACKLOG.md"));
+  assert.doesNotMatch(b.split("## Queued")[1].split("## Open")[0], /F-001/, "the row leaves Queued");
+  assert.match(
+    b.split("## Open")[1],
+    /\| F-001 \| P2 \| \? \| queued item \| qa-unqueue \|/,
+    "priority/evidence cells are preserved"
+  );
+  const open = b.split("## Open")[1];
+  assert.ok(open.indexOf("F-002") < open.indexOf("F-001"), "re-inserted priority-sorted (P1 before P2)");
+
+  const noop = runBacklogCli(t, ["unqueue", "F-001"]);
+  assert.strictEqual(noop.status, 0, noop.out);
+  assert.match(noop.out, /F-001: already Open/);
+
+  runBacklogCli(t, ["take", "F-002", "--handoff", ".agents/handoffs/F-002.md"]);
+  const refused = runBacklogCli(t, ["unqueue", "F-002"]);
+  assert.strictEqual(refused.status, 1, refused.out);
+  assert.match(refused.out, /only Queued rows can be returned to Open/);
+});
+
 test("backlog list is bounded by default and --limit controls the cap", () => {
   const t = scaffoldBacklogCliTarget();
   const p = path.join(t, "BACKLOG.md");

@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.57)
+# Agent Harness Optimization — Implementation Status (v0.1.58)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,15 +15,27 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.57` |
-| Shipped this session | `0.1.57` — provider funds stop + OpenCode Go-first routing |
-| Lint / tests | green (`npm run lint`, `npm test` — 164/164) |
-| LibraryOS | pending `0.1.57` deploy |
-| FamilyBudget | pending `0.1.57` deploy |
+| Version | `0.1.58` |
+| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue` |
+| Lint / tests | green (`npm run lint`, `npm test`) |
+| LibraryOS | `0.1.57` deployed locally (push blocked by the pre-push gate until `0.1.58` re-deploy) |
+| FamilyBudget | pending `0.1.58` deploy |
 
 ---
 
 ## What shipped
+
+### `0.1.58` — upstream the project-local `backlog unqueue` (ownership fix)
+
+LibraryOS's F-157 committed an `unqueue` command directly into the harness-owned
+`scripts/backlog.js` (Queued → Open for re-triage, with project tests). The
+`0.1.57` update correctly overwrote the harness-owned file and broke the
+project's pre-push `test:quick` (`unqueue` unknown). Rather than restore a
+project-local edit that every future update would clobber, the feature is now
+upstreamed: `templates/scripts/backlog.js` gains `cmdUnqueue` (+ usage/help,
+`formatResult`, dispatch, export) and the harness suite gains the three
+behavior tests (Queued → Open priority-sorted with cells preserved; already-Open
+no-op; non-Queued refusal).
 
 ### `0.1.57` — provider funds stop + OpenCode Go-first routing (field fix)
 
