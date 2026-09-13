@@ -3722,8 +3722,9 @@ test("model-routing ships the opportunistic tier with fallback + privacy caveat 
   assert.match(doc, /^fallback_models: /m);
   assert.match(doc, /model_escalation_evidence/);
 
-  // Go-first provider policy + the funds stop that overrides the retry ladder.
-  assert.match(doc, /Provider priority & fallback \(subscription first\)/);
+  // Go-first provider policy (V4 Pro architect tier excepted) + the funds stop.
+  assert.match(doc, /Provider priority & fallback \(Go for flash\/default, direct for V4 Pro\)/);
+  assert.match(doc, /deepseek\/deepseek-v4-pro/);
   assert.match(doc, /Provider funds stop \(hard rule — pause, announce, wait\)/);
   assert.match(doc, /opencode-go\/deepseek-v4\.1-flash/);
   assert.match(doc, /funds\/quota error follows the provider funds stop/);
@@ -3732,6 +3733,17 @@ test("model-routing ships the opportunistic tier with fallback + privacy caveat 
   assert.strictEqual(cfg.model, "opencode-go/deepseek-v4.1-flash", "OpenCode Go is the default provider");
   assert.strictEqual(cfg.small_model, "opencode-go/glm-5.3-flash", "the cheap Go model handles small jobs");
   assert.strictEqual(cfg.agent.explore.model, "opencode/big-pickle", "explore is the reference opportunistic pin");
+});
+
+test("architect-tier personas pin direct DeepSeek V4 Pro; engineering pins Go V4.1 Flash", () => {
+  for (const name of ["planner", "qa-architect", "system-architect", "security-engineer"]) {
+    const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", `${name}.md`));
+    assert.match(agent, /^model: deepseek\/deepseek-v4-pro$/m, `${name} must pin direct V4 Pro (never Go)`);
+  }
+  for (const name of ["frontend-engineer", "mobile-engineer", "data-engineer", "devops-engineer", "qa-runner", "diagnostics-expert"]) {
+    const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", `${name}.md`));
+    assert.match(agent, /^model: opencode-go\/deepseek-v4\.1-flash$/m, `${name} must pin Go V4.1 Flash`);
+  }
 });
 
 test("test:dispatch accepts declared tier targets and still fails a stray unpinned model", async () => {

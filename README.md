@@ -190,8 +190,11 @@ visible, never assumed. Nothing is inferred from text length.
   mix by tier.
 - **Provider priority & fallback**: models run on the **OpenCode Go
   subscription first** (`opencode-go/*`), with **DeepSeek direct**
-  (`deepseek/*`) as the pay-per-token fallback — every fallback is announced
-  immediately (a fallback the user cannot see is a silent process change).
+  (`deepseek/*`) as the pay-per-token fallback — except the **V4 Pro architect
+  tier** (`planner`, `qa-architect`, `system-architect`, `security-engineer`),
+  which always pins **direct `deepseek/deepseek-v4-pro`**. Every fallback is
+  announced immediately (a fallback the user cannot see is a silent process
+  change).
 - **Provider funds stop**: a provider funds/quota error (`insufficient
   balance`/`funds`/`credits`, usage limit, HTTP 402) is a hard stop, never a
   silent inline degrade: the orchestrator announces the failed provider/model and

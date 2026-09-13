@@ -29,7 +29,8 @@ diagnostics-expert, product-manager, qa-architect). Note: the shipped default is
 tiered per persona (see `.agents/memory/model-routing.md`); this command collapses
 it to one model, so use it as a deliberate override (e.g. `pro` to escalate).
 Switching to the direct `deepseek/*` fallback must be announced immediately
-(provider priority: OpenCode Go first — `.agents/memory/model-routing.md`).
+(provider priority: Go for the flash/content/mechanical tiers; V4 Pro architect
+pins are direct — see `.agents/memory/model-routing.md`).
 
 Report the old model -> new model delta, and remind the user that opencode
 does not hot-reload config, so they must quit and restart for it to take

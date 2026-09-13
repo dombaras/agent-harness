@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.59)
+# Agent Harness Optimization — Implementation Status (v0.1.60)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,8 +15,8 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.59` |
-| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning |
+| Version | `0.1.60` |
+| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning; `0.1.60` architect tier → direct DeepSeek |
 | Lint / tests | green (`npm run lint`, `npm test`) |
 | LibraryOS | `0.1.59` deployed + pushed (the 7 re-pinned agent files auto-committed); project keeps its own simplified `model-routing.md` tier table |
 | FamilyBudget | `0.1.59` deployed (local repo, no remote); tier policy synced into the project-owned `model-routing.md` |
@@ -24,6 +24,29 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 ---
 
 ## What shipped
+
+### `0.1.60` — architect tier runs direct DeepSeek (correction to 0.1.59)
+
+User correction to the `0.1.59` re-tuning: **V4 Pro always uses the direct
+DeepSeek API key**, not the OpenCode Go subscription.
+
+- **All four V4 Pro pins → `deepseek/deepseek-v4-pro` direct** (`planner`,
+  `qa-architect`, plus the pre-existing `system-architect`,
+  `security-engineer`). This reverses the 0.1.57 migration for Pro only — the
+  Go subscription carries the flash/content/mechanical tiers.
+- **Why V4 Pro (not V4.1):** the provider catalog has no V4.1 Pro — V4.1 only
+  exists as `deepseek-v4.1-flash` (Go), the engineering/coding tier. V4 Pro is
+  the strongest reasoning model available, so the architect tier stays there
+  until a V4.1 Pro-class model appears.
+- **Policy docs updated:** `.agents/memory/model-routing.md` provider section
+  (Go for flash/default, direct for V4 Pro; `escalation_models:` now
+  `deepseek/deepseek-v4-pro, opencode/gpt-5.6-sol`; `fallback_models:` now the
+  direct flash pair), `AGENTS.md`, `.agents/AGENTS.md`,
+  `.agents/rules/00-operating.md`, `README.md`, `switch-model.md`.
+- **Regression test:** architect-tier pins must be `deepseek/deepseek-v4-pro`
+  and engineering pins `opencode-go/deepseek-v4.1-flash` (never Go Pro).
+- `test:dispatch` green (the removed `opencode-go/deepseek-v4-pro` pin is no
+  longer referenced by any routing doc).
 
 ### `0.1.59` — persona model re-tuning (architect-tier plan/review, cheap engineering)
 
