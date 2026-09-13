@@ -200,7 +200,10 @@ visible, never assumed. Nothing is inferred from text length.
   silent inline degrade: the orchestrator announces the failed provider/model and
   the exact unfinished step, checkpoints, and waits for the user's explicit
   top-up-complete message. The `context-guard` plugin mechanically detects such
-  an error in a dispatch/tool result and injects the same stop.
+  an error from **structured failure evidence only** — a failed dispatch
+  (`task` error), a non-zero-exit command, or a subagent session error — and
+  injects the same stop; reading a document that merely quotes the rule (the
+  session-start `model-routing.md`, a handoff, a plan) never trips it.
 - **`/switch-model` command** — every deploy ships an opencode command
   (`.opencode/command/switch-model.md`) plus `scripts/switch-reasoning-model.ps1`
   that rewrites the main `opencode.json` `model` and the six reasoning-tier

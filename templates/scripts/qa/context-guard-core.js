@@ -88,6 +88,30 @@ function fundsError(text) {
   return FUNDS_RE.test(String(text || ""));
 }
 
+/* Only STRUCTURED failure evidence may arm the stop. Scanning the text of every
+ * successful tool result false-positives on the harness's own documents: the
+ * mandated session-start read of `.agents/memory/model-routing.md` — and any
+ * handoff/plan/rulebook that quotes the funds rule — contains the literal
+ * trigger phrases, which paused sessions (F-169, LibraryOS) that had never seen
+ * a provider failure. Genuine failures carry a signal:
+ *   - `error` — a tool that reported failure: a dispatch whose subagent died
+ *     with "Subagent failed (...): Insufficient balance", or any thrown tool
+ *     error (observed shape: task metadata carries the failed model);
+ *   - `bash` with a non-zero `metadata.exit` — the command failed, so a
+ *     provider CLI's funds error is in its output.
+ * Everything else (read/grep/glob content, successful dispatches and commands)
+ * is context, never failure evidence. Returns the text to scan, or null. */
+function fundsArmText(tool, output) {
+  if (output?.error) return String(output.error);
+  if (String(tool || "") === "bash") {
+    const exit = output?.metadata?.exit;
+    if (Number.isFinite(exit) && exit !== 0) {
+      return typeof output?.output === "string" ? output.output : JSON.stringify(output ?? {});
+    }
+  }
+  return null;
+}
+
 /* `provider/model` label from an opencode assistant message (providerID/modelID)
  * or a dispatch metadata model object (provider/model). Null when neither side
  * is known, so a label is only ever reported from observed data. */
@@ -294,6 +318,7 @@ module.exports = {
   FUNDS_TEXT,
   fundsText,
   fundsError,
+  fundsArmText,
   modelLabel,
   parseThresholds,
   turnBand,

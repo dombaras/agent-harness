@@ -3367,11 +3367,13 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /parseThresholds/, "parses thresholds at runtime");
   assert.match(src, /file\.watcher\.updated/, "invalidates the threshold cache on edits");
   assert.match(src, /guard-events\.jsonl/);
+  assert.match(src, /guard-event log write failed/, "a failed guard-log write is surfaced, never silent");
   assert.match(src, /childSessions/, "child sessions are tracked to be excluded from band/loop counting");
   assert.match(src, /childParent/, "child->parent mapping attributes subagent funds errors to the orchestrator");
   assert.match(src, /sessionModel/, "tracks the observed provider/model per session");
   assert.match(src, /modelLabel\(meta\.model\)/, "names the failed provider/model from the dispatch metadata");
   assert.match(src, /fundsText/, "injects an attributed funds-stop notice");
+  assert.match(src, /fundsArmText/, "the tool-result funds scan is gated to structured failure evidence");
   assert.match(src, /bandText/, "injects the core's byte-stable band text");
   assert.match(src, /fundsError/, "detects provider funds/quota errors mechanically");
   assert.match(src, /FUNDS_TEXT/, "injects the hard funds-stop rule");
@@ -3380,6 +3382,46 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /doom_loop/, "builds on the built-in doom-loop permission");
   assert.doesNotMatch(src, /identical_tool_calls\s*[:=]\s*\d/, "no hardcoded loop threshold");
   assert.doesNotMatch(src, /(?:===|==|>=|>)\s*(?:50|60|80|100)\b/, "no hardcoded turn band numbers");
+});
+
+test("funds scan trusts only structured failure evidence — docs quoting the rule never arm the stop", () => {
+  // The exact F-169 regression: the mandated session-start read of model-routing.md
+  // contains the literal trigger phrases; a healthy session must not pause on it.
+  const doc =
+    "A provider error reporting insufficient funds / balance / credits / quota " +
+    "(`insufficient balance`, `insufficient funds`, `out of credits`, `usage limit reached`, HTTP 402, ...)";
+  assert.strictEqual(cg.fundsArmText("read", { output: doc, metadata: {} }), null);
+  assert.strictEqual(cg.fundsArmText("grep", { output: doc, metadata: { matches: 4 } }), null);
+  assert.strictEqual(cg.fundsArmText("glob", { output: doc, metadata: { count: 1 } }), null);
+  assert.strictEqual(cg.fundsArmText("bash", { output: doc, metadata: { exit: 0 } }), null);
+  assert.strictEqual(
+    cg.fundsArmText("task", { output: doc, metadata: { model: { providerID: "opencode", modelID: "gpt-5.6-luna" } } }),
+    null,
+    "a successful dispatch whose report quotes the rule is not a failure"
+  );
+  assert.strictEqual(cg.fundsArmText("bash", { output: doc, metadata: { exit: null } }), null);
+  assert.strictEqual(cg.fundsArmText("bash", { output: doc, metadata: {} }), null);
+  assert.strictEqual(cg.fundsArmText(null, {}), null);
+  assert.strictEqual(cg.fundsArmText(undefined, undefined), null);
+
+  // A failed dispatch (real observed shape) still arms, attributed to the model.
+  const failedTask = cg.fundsArmText("task", {
+    error:
+      "Subagent failed (task_id: ses_x): Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk/billing",
+    output: null,
+    metadata: { model: { providerID: "opencode", modelID: "gpt-5.6-luna" } },
+  });
+  assert.match(failedTask, /Insufficient balance/);
+  assert.ok(cg.fundsError(failedTask), "the task failure text still matches the narrow funds regex");
+
+  // A command that exited non-zero (a provider CLI failing) is failure evidence.
+  const failedBash = cg.fundsArmText("bash", { output: "Insufficient balance", metadata: { exit: 1 } });
+  assert.match(failedBash, /Insufficient balance/);
+  assert.strictEqual(
+    cg.fundsArmText("read", { error: "Insufficient balance" }),
+    "Insufficient balance",
+    "a structured tool error on any tool is still scanned"
+  );
 });
 
 test("context-guard plugin + core deploy, stay harness-owned, and the guard log is excluded clone-locally", async () => {

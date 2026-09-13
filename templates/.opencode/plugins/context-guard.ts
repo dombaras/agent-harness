@@ -87,8 +87,10 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       const file = path.join(directory, GUARD_LOG_REL)
       fs.mkdirSync(path.dirname(file), { recursive: true })
       fs.appendFileSync(file, guard.formatGuardEvent(event), "utf8")
-    } catch {
-      /* the guard-event log is best-effort telemetry */
+    } catch (err: any) {
+      // Best-effort telemetry, but never silent: a missing guard log left a real
+      // detection unattributable once (LibraryOS) — surface the write failure.
+      void report(`guard-event log write failed: ${err?.message || err}`)
     }
   }
 
@@ -210,10 +212,11 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     "tool.execute.after": async (input: any, output: any) => {
       try {
         if (!isPrimary(input?.sessionID)) return
-        const text =
-          typeof output?.output === "string" ? output.output : JSON.stringify(output ?? {})
-        const error = output?.error ? String(output.error) : ""
-        if (!guard.fundsError(text) && !guard.fundsError(error)) return
+        // Only structured failure evidence may arm the stop (core gate): a
+        // successful read/grep/dispatch returning the harness's own docs — which
+        // quote the trigger phrases — must never pause a healthy session.
+        const text = guard.fundsArmText(input?.tool, output)
+        if (!text || !guard.fundsError(text)) return
         const meta = output?.metadata || {}
         const label =
           guard.modelLabel(meta.model) || sessionModel.get(String(meta.sessionId || "")) || null

@@ -85,12 +85,16 @@ a reason to silently leave the designed multi-agent process.
    handoff).
 
 This overrides the dispatch-failure ladder below for funds/quota errors. The
-`context-guard` plugin mechanically detects such an error in a dispatch/tool
-result or a subagent session error, attributes it with the observed
-provider/model (the task result's `metadata.model` or the child assistant
-message's `providerID/modelID`) and injects the stop naming that provider/model
-into the next request — the top-up target is evidence, never a guess. Each
-detection is recorded in `.agents/guard-events.jsonl` with `provider`/`model`.
+`context-guard` plugin mechanically detects such an error from **structured
+failure evidence only** — a failed dispatch (the task error text), a command
+that exited non-zero, or a subagent session error — attributes it with the
+observed provider/model (the task result's `metadata.model` or the child
+assistant message's `providerID/modelID`) and injects the stop naming that
+provider/model into the next request — the top-up target is evidence, never a
+guess. Reading a document that merely quotes this rule (the mandated
+session-start `model-routing.md` itself, a handoff, a QA plan) is **not**
+failure evidence and never trips the stop. Each detection is recorded in
+`.agents/guard-events.jsonl` with `provider`/`model`.
 
 ### Opportunistic tier (free / low-cost models)
 
