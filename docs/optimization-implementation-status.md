@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.56)
+# Agent Harness Optimization — Implementation Status (v0.1.57)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,15 +15,45 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.56` |
-| Shipped this session | `0.1.56` — remaining D (R9, R10, R11, R12, R14) |
-| Lint / tests | green (`npm run lint`, `npm test` — 163/163) |
-| LibraryOS | pending `0.1.56` deploy |
-| FamilyBudget | pending `0.1.56` deploy |
+| Version | `0.1.57` |
+| Shipped this session | `0.1.57` — provider funds stop + OpenCode Go-first routing |
+| Lint / tests | green (`npm run lint`, `npm test` — 164/164) |
+| LibraryOS | pending `0.1.57` deploy |
+| FamilyBudget | pending `0.1.57` deploy |
 
 ---
 
 ## What shipped
+
+### `0.1.57` — provider funds stop + OpenCode Go-first routing (field fix)
+
+Driven by the LibraryOS F-154/F-159/F-161 pattern: subagent dispatches failed
+with the provider's "Insufficient balance", the orchestrator degraded every
+persona inline per the old ladder, the main turn blew the 100-step cap, and
+sessions ended with "remaining: commit/push/deploy" instead of a shipped close.
+
+- **Funds stop (policy + mechanical).** `.agents/memory/model-routing.md` gains a
+  "Provider funds stop" hard rule — stop, announce the failed provider/model and
+  the exact unfinished step, checkpoint, wait for the user's explicit
+  top-up-complete message, resume from the checkpoint — which precedes the
+  dispatch-failure ladder. `00-operating.md`, `.agents/AGENTS.md` §5, and the
+  root `AGENTS.md` carry the same rule. The `context-guard` core detects
+  funds/quota error text (balance/funds/credits/usage-limit/402 — deliberately
+  not transient rate limits); the plugin arms a hard-stop injection from
+  `tool.execute.after` (dispatch results) and `session.error`, released by the
+  user's next message.
+- **Go-first routing.** `opencode.json` default is now
+  `opencode-go/deepseek-v4.1-flash` (`small_model` →
+  `opencode-go/glm-5.3-flash`); every persona pin moves to its `opencode-go/*`
+  equivalent (`opencode-go/gpt-5.6-luna`, `opencode-go/deepseek-v4-pro`,
+  `opencode-go/deepseek-v4.1-flash`), and `deepseek/*` direct is the declared
+  `fallback_models:` target — every fallback is announced immediately.
+- **Gates + tooling.** `test:dispatch` now accepts declared
+  `fallback_models:` targets; the Go catalog is in the allowlist; the
+  `/switch-model` command and `switch-reasoning-model.ps1` gain
+  `go`/`go-flash`/`go-pro` aliases alongside the direct aliases.
+- Tests: funds detection + plugin source contract, rules/policy content,
+  model-routing/config assertions (164 total, green).
 
 ### `0.1.48` — mechanical main-agent turn cap (the hard half of R2)
 - `templates/opencode.json`: `agent.build.steps = 100` — opencode-enforced

@@ -17,7 +17,8 @@
  *   5. `.agents/memory/model-routing.md` does not name a concrete model that is
  *      no longer pinned by any agent or opencode.json (doc↔config drift) —
  *      except IDs declared on a machine-readable `opportunistic_models:` /
- *      `escalation_models:` line (legal targets, deliberately unpinned).
+ *      `escalation_models:` / `fallback_models:` line (legal targets,
+ *      deliberately unpinned).
  *   6. Every bash-enabled editor carries the working-tree gate (verify
  *      `git rev-parse --show-toplevel` + branch before editing) so a subagent
  *      can never silently edit the wrong checkout/worktree.
@@ -137,18 +138,19 @@ if (fs.existsSync(opencodeJson)) {
 
 // 4. model-routing.md ↔ model: pin consistency (doc↔config drift).
 // Concrete IDs on a machine-readable `opportunistic_models:` / `escalation_models:`
-// line are DECLARED TARGETS (legal tiers, deliberately not pinned) — they pass the
-// drift check without a matching pin; every other concrete ID must be pinned.
+// / `fallback_models:` line are DECLARED TARGETS (legal tiers, deliberately not
+// pinned) — they pass the drift check without a matching pin; every other concrete
+// ID must be pinned.
 const declaredTargets = new Set();
 const targetTiers = new Map();
 const usedModels = new Set([...agentModels, ...configModels]);
 const modelRoutingFile = path.join(root, ".agents", "memory", "model-routing.md");
 if (fs.existsSync(modelRoutingFile)) {
   const doc = fs.readFileSync(modelRoutingFile, "utf8");
-  for (const m of doc.matchAll(/^(opportunistic|escalation)_models:\s*(.+)$/gim)) {
+  for (const m of doc.matchAll(/^(opportunistic|escalation|fallback)_models:\s*(.+)$/gim)) {
     const tier = m[1].toLowerCase();
     for (const id of m[2].split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)) {
-      if (/^`?(opportunistic|escalation)_models:`?$/i.test(id)) continue;
+      if (/^`?(opportunistic|escalation|fallback)_models:`?$/i.test(id)) continue;
       declaredTargets.add(id);
       targetTiers.set(id, tier);
     }

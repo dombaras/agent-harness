@@ -1,7 +1,7 @@
 ---
 description: Use when writing or fixing web React / Next.js / Tailwind / shadcn code (app/, components/, pages/), or resolving web build errors — not Expo/React Native (that's mobile-engineer).
 mode: subagent
-model: opencode/gpt-5.6-luna
+model: opencode-go/gpt-5.6-luna
 steps: 40
 permission:
   edit:

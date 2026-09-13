@@ -1,7 +1,7 @@
 ---
 description: Use when designing the visual system — design tokens, theming, and shared/reusable UI components (shadcn/ui, Tailwind, Framer Motion) — not app screens or native code.
 mode: subagent
-model: opencode/gpt-5.6-luna
+model: opencode-go/gpt-5.6-luna
 steps: 40
 permission:
   edit:

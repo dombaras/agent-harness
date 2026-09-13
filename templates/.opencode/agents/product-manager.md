@@ -1,7 +1,7 @@
 ---
 description: Use when designing features, gamification, or user journeys — maps DB logic to UX with the 5 UI states.
 mode: subagent
-model: opencode/gpt-5.6-luna
+model: opencode-go/gpt-5.6-luna
 steps: 20
 permission:
   edit:

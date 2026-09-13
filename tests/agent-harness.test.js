@@ -202,7 +202,8 @@ test("opencode.json merge preserves project keys and unions instructions", () =>
   );
 
   const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
-  assert.strictEqual(merged.model, "deepseek/deepseek-flash");
+  assert.strictEqual(merged.model, "opencode-go/deepseek-v4.1-flash");
+  assert.strictEqual(merged.small_model, "opencode-go/glm-5.3-flash");
   assert.strictEqual(merged.permission.edit, "deny");
   assert.ok(merged.instructions.includes("docs/my-rules.md"));
   assert.ok(merged.instructions.includes(".agents/rules/00-operating.md"));
@@ -320,6 +321,13 @@ test("operating rules encode bounded lifecycle + retry/gate/web discipline refer
   assert.match(rootAgents, /orchestration\.md/);
   assert.match(rootAgents, /Bounded orchestration/);
 
+  // Provider funds stop: a funds/quota error pauses the process instead of
+  // silently degrading inline (the behavior the harness must never repeat).
+  assert.match(rules, /Funds stop \(pause, announce, wait\)/);
+  assert.match(rules, /top-up-complete/);
+  assert.match(rulebook, /provider funds\/quota error is a STOP/);
+  assert.match(rootAgents, /Provider funds stop/);
+
   const handoffSkill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "handoff", "SKILL.md"));
   assert.match(handoffSkill, /Session metadata/);
   assert.match(handoffSkill, /work_type:/);
@@ -359,12 +367,15 @@ test("switch-model command + script are deployed to every project", async () => 
 
   const cmd = read(path.join(target, ".opencode", "command", "switch-model.md"));
   assert.match(cmd, /^---/, "switch-model command frontmatter");
-  assert.match(cmd, /deepseek\/deepseek-flash/, "command targets the direct deepseek V4.1 flash default");
+  assert.match(cmd, /opencode-go\/deepseek-v4\.1-flash/, "command targets the OpenCode Go default");
+  assert.match(cmd, /deepseek\/deepseek-flash/, "command exposes the direct deepseek fallback alias");
   assert.match(cmd, /deepseek\/deepseek-v4-pro/, "command exposes the pro escalation alias");
   assert.match(cmd, /switch-reasoning-model\.ps1/, "command invokes the deployed script");
 
   const script = read(path.join(target, "scripts", "switch-reasoning-model.ps1"));
-  assert.match(script, /deepseek\/deepseek-flash/, "script aliases map to the direct deepseek V4.1 flash default");
+  assert.match(script, /opencode-go\/deepseek-v4\.1-flash/, "script aliases map to the OpenCode Go default");
+  assert.match(script, /opencode-go\/deepseek-v4-pro/, "script exposes the Go pro escalation alias");
+  assert.match(script, /deepseek\/deepseek-flash/, "script aliases map to the direct deepseek fallback");
   assert.match(script, /deepseek\/deepseek-v4-flash/, "script keeps the legacy v4 flash pin replaceable (migration/rollback)");
   assert.match(script, /deepseek\/deepseek-v4-pro/, "script aliases map to the pro escalation model");
   assert.match(script, /openrouter\/minimax\/minimax-m3/, "script exposes the OpenRouter alias");
@@ -374,7 +385,7 @@ test("switch-model command + script are deployed to every project", async () => 
   // the command is re-deployed (overwritten) on update, like any harness file
   fs.writeFileSync(path.join(target, ".opencode", "command", "switch-model.md"), "LOCAL EDIT", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
-  assert.match(read(path.join(target, ".opencode", "command", "switch-model.md")), /deepseek\/deepseek-v4-pro/, "command restored on update");
+  assert.match(read(path.join(target, ".opencode", "command", "switch-model.md")), /opencode-go\/deepseek-v4\.1-flash/, "command restored on update");
 });
 
 test("switch-reasoning-model.ps1: replace list is derived from the alias map (no hardcoded find list)", () => {
@@ -3279,11 +3290,33 @@ test("context-guard events are one JSON object per line with a leading ts", () =
   assert.ok(!Number.isNaN(Date.parse(parsed.ts)));
 });
 
+test("context-guard recognizes provider funds/quota errors (hard stop) and ignores ordinary failures", () => {
+  assert.strictEqual(cg.fundsError("Error: Insufficient balance"), true);
+  assert.strictEqual(cg.fundsError("provider error: insufficient funds"), true);
+  assert.strictEqual(cg.fundsError("You are out of credits"), true);
+  assert.strictEqual(cg.fundsError("usage limit reached for this model"), true);
+  assert.strictEqual(cg.fundsError("quota exceeded"), true);
+  assert.strictEqual(cg.fundsError('{"statusCode":402,"message":"payment required"}'), true);
+  assert.strictEqual(cg.fundsError("3 tests failed: expected 1 to equal 2"), false);
+  assert.strictEqual(cg.fundsError("rate limit exceeded, retry in 20s"), false, "a transient rate limit is not a funds stop");
+  assert.strictEqual(cg.fundsError(""), false);
+  assert.strictEqual(cg.fundsError(null), false);
+  assert.ok(cg.FUNDS_TEXT.startsWith("PROVIDER GUARD"));
+  assert.match(cg.FUNDS_TEXT, /do NOT do the persona's work inline/);
+  assert.strictEqual(cg.createSessionState().fundsPending, false, "the funds stop starts disarmed");
+});
+
 test("context-guard plugin source-contract: hooks wired to the core, no hardcoded thresholds", () => {
   const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
   assert.match(src, /from "@opencode-ai\/plugin"/);
   assert.match(src, /context-guard-core\.js/, "loads the shared pure core");
-  for (const hook of ["event:", '"tool.execute.before"', '"experimental.chat.system.transform"', '"permission.ask"']) {
+  for (const hook of [
+    "event:",
+    '"tool.execute.before"',
+    '"tool.execute.after"',
+    '"experimental.chat.system.transform"',
+    '"permission.ask"',
+  ]) {
     assert.ok(src.includes(hook), `hook ${hook} present`);
   }
   assert.match(src, /orchestration\.md/, "thresholds come from the project memory file");
@@ -3292,6 +3325,10 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /guard-events\.jsonl/);
   assert.match(src, /childSessions/, "child sessions are tracked to be excluded");
   assert.match(src, /bandText/, "injects the core's byte-stable band text");
+  assert.match(src, /fundsError/, "detects provider funds/quota errors mechanically");
+  assert.match(src, /FUNDS_TEXT/, "injects the hard funds-stop rule");
+  assert.match(src, /session\.error/, "also watches provider session errors");
+  assert.match(src, /fundsPending = false/, "a user message releases the funds stop");
   assert.match(src, /doom_loop/, "builds on the built-in doom-loop permission");
   assert.doesNotMatch(src, /identical_tool_calls\s*[:=]\s*\d/, "no hardcoded loop threshold");
   assert.doesNotMatch(src, /(?:===|==|>=|>)\s*(?:50|60|80|100)\b/, "no hardcoded turn band numbers");
@@ -3652,9 +3689,18 @@ test("model-routing ships the opportunistic tier with fallback + privacy caveat 
   assert.match(doc, /Privacy caveat/i);
   assert.match(doc, /^opportunistic_models: /m);
   assert.match(doc, /^escalation_models: /m);
+  assert.match(doc, /^fallback_models: /m);
   assert.match(doc, /model_escalation_evidence/);
 
+  // Go-first provider policy + the funds stop that overrides the retry ladder.
+  assert.match(doc, /Provider priority & fallback \(subscription first\)/);
+  assert.match(doc, /Provider funds stop \(hard rule — pause, announce, wait\)/);
+  assert.match(doc, /opencode-go\/deepseek-v4\.1-flash/);
+  assert.match(doc, /funds\/quota error follows the provider funds stop/);
+
   const cfg = JSON.parse(read(path.join(h.TEMPLATES_DIR, "opencode.json")));
+  assert.strictEqual(cfg.model, "opencode-go/deepseek-v4.1-flash", "OpenCode Go is the default provider");
+  assert.strictEqual(cfg.small_model, "opencode-go/glm-5.3-flash", "the cheap Go model handles small jobs");
   assert.strictEqual(cfg.agent.explore.model, "opencode/big-pickle", "explore is the reference opportunistic pin");
 });
 

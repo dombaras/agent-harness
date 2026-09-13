@@ -1,7 +1,7 @@
 ---
 description: Use when the user asks to save progress, hand off, wrap up, or "remind me where we stopped" — writes a planned→shipped→deferred delta and updates the session handoff memory.
 mode: subagent
-model: opencode/gpt-5-nano
+model: opencode-go/glm-5.3-flash
 temperature: 0.1
 steps: 10
 hidden: true

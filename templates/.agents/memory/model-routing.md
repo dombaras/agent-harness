@@ -25,6 +25,53 @@ coder/tool-use model, mechanical → cheap fast model). Change it only by editin
 `.opencode/agents/<name>.md` `model:` — the `model:` label in
 `.agents/skills/*/SKILL.md` is informational only and does NOT route models.
 
+## Provider priority & fallback (subscription first)
+
+Models are bought through the **OpenCode Go subscription first**
+(`opencode-go/*`), then the same family **direct** (`deepseek/*`) as the
+pay-per-token fallback:
+
+| Priority | Provider | Main-tier example | Role |
+|---|---|---|---|
+| 1 | OpenCode Go (`opencode-go/<model-id>`) | `opencode-go/deepseek-v4.1-flash` | default — the $10/mo subscription quota pays for it |
+| 2 | DeepSeek direct (`deepseek/<model-id>`) | `deepseek/deepseek-flash` | fallback when Go is unavailable or its usage limit is hit |
+
+- **Announce every fallback immediately.** Name the failed provider/model, the
+  observed reason, and the provider you are switching to — in chat, before
+  continuing. A fallback the user cannot see is a silent process change and is
+  forbidden. Record it in the session handoff dispatch log too.
+- Fall back to direct only for **availability / usage-limit** errors. A
+  **funds/credit** error is a stop (below), never a fallback trigger.
+- opencode reads model config once at startup and does not hot-reload it: switch
+  the main conversation with the `/switch-model` command (alias `go` → Go
+  default, `direct`/`deepseek` → direct fallback), and switch a persona by
+  editing its `.opencode/agents/<name>.md` `model:` then restarting/re-dispatching.
+  The `switch-reasoning-model.ps1` replace list is derived from its alias map, so
+  any alias it can switch TO it can also switch FROM.
+
+## Provider funds stop (hard rule — pause, announce, wait)
+
+A provider error reporting **insufficient funds / balance / credits / quota**
+(`insufficient balance`, `insufficient funds`, `out of credits`, `usage limit
+reached`, HTTP 402, ...) is NOT a retry, NOT a degraded-inline condition, and NOT
+a reason to silently leave the designed multi-agent process.
+
+1. **Stop starting work** — no inline substitute for the failed persona, no
+   silent re-scope, no repeated dispatch/retry of the same call.
+2. **Announce immediately** in chat: which provider/model failed, the exact
+   error, and the exact step left unfinished — never a vague "dispatch failed".
+3. **Checkpoint** the session state into `.agents/handoffs/<feature-id>.md` so the
+   work resumes exactly where it stopped.
+4. **Wait** — end the turn and wait for the user's explicit *top-up done /
+   continue* message. Never assume a top-up happened.
+5. On the user's go-ahead, **resume from the checkpoint** (never by replaying the
+   transcript) and record the pause honestly (`termination_reason` in the
+   handoff).
+
+This overrides the dispatch-failure ladder below for funds/quota errors. The
+`context-guard` plugin mechanically detects such an error in a dispatch/tool
+result and injects the same stop into the next request.
+
 ### Opportunistic tier (free / low-cost models)
 
 Free or near-free models are a **best-effort** lane, never an authority. Use
@@ -38,7 +85,8 @@ project may repoint it, on its main persona set or not at all.
   is unavailable, fall back to the persona's normal tier (retry once per the
   dispatch-failure ladder, then degrade inline and log
   `degraded: <persona> model: <reason>`). Never block a deliverable on a free
-  model.
+  model. **Exception:** a funds/quota error follows the provider funds stop
+  above — pause and announce, never silently degrade.
 - **Not for authoritative output.** Explore→summaries and mechanical edits must
   be verified by the normal tier before they count as evidence; never route a
   thinker (planner/product-manager/system-architect/qa-architect) or a persona
@@ -87,6 +135,9 @@ Every subagent must return a single final message with, in order:
 
 ## Dispatch failure ladder (never silent)
 
+0. **Funds/quota error** — the provider funds stop above: pause, announce, wait
+   for the user's top-up-complete message. Never retry, never degrade inline,
+   never silently skip.
 1. Retry once (resume the same `task_id`).
 2. Degrade inline on the main model and log `degraded: <persona> model: <reason>`.
 3. Never silently skip or re-scope — only waive via the explicit waiver path.
@@ -124,7 +175,8 @@ Everything not listed is the standard execution tier.
 
 ```
 opportunistic_models: opencode/big-pickle, opencode/nemotron-3-ultra-free, opencode/muse-spark-1.2-contributor-free
-escalation_models: deepseek/deepseek-v4-pro, opencode/gpt-5.6-sol
+escalation_models: opencode-go/deepseek-v4-pro, deepseek/deepseek-v4-pro, opencode/gpt-5.6-sol
+fallback_models: deepseek/deepseek-flash, deepseek/deepseek-v4-pro
 ```
 
 ## Role-aware context (inject the minimum sufficient context)

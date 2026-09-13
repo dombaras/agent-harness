@@ -1,7 +1,7 @@
 ---
 description: Use only to capture a found item and manage the feature backlog — owns the BACKLOG.md task list and scaffolds the .agents/features/<slug>/ doc tree. Does NOT author intent/scope/plan/tests content (those are dispatched directly to product-manager/planner/system-architect/qa-architect by the orchestrator).
 mode: subagent
-model: opencode/gpt-5.6-luna
+model: opencode-go/gpt-5.6-luna
 temperature: 0.1
 steps: 15
 hidden: true

@@ -61,6 +61,20 @@ const BAND_TEXT = Object.freeze({
 const LOOP_TEXT =
   "CONTEXT GUARD — repeated identical tool call detected (`identical_tool_calls` in `.agents/memory/orchestration.md`). Do not repeat it again: change instructions, context, model, decomposition, or diagnostics — or report the blocker. A retry must materially change something.";
 
+/* Provider funds/quota failures are a hard stop in `.agents/memory/model-routing.md`:
+ * the harness must pause and wait for the user's top-up instead of degrading
+ * inline. The regex is deliberately narrow (balance/funds/credits/limits/402) so
+ * ordinary task failures never trigger the stop. */
+const FUNDS_RE =
+  /insufficient (?:balance|funds|credits?)|out of (?:credits?|funds)|credit balance|(?:usage|quota) (?:limit|exceeded)|exceeded your (?:usage|quota)|payment required|status(?:Code)?["'\s:]*402/i;
+
+const FUNDS_TEXT =
+  "PROVIDER GUARD — a provider funds/quota error was observed (insufficient balance / credits / usage limit). STOP now: do not retry this call, do NOT do the persona's work inline, and do not silently switch providers. Announce which provider/model failed and the exact unfinished step, checkpoint the state to `.agents/handoffs/<feature-id>.md`, then end the turn and wait for the user's explicit top-up-complete / continue message before resuming.";
+
+function fundsError(text) {
+  return FUNDS_RE.test(String(text || ""));
+}
+
 /* Identical repeats of these are legitimate and must not count as loops:
  * todo list rewrites, user questions, dispatches (retries are governed by the
  * bounded-retry ladder), batched calls, board listings, the session join-key
@@ -171,6 +185,7 @@ function createSessionState() {
     toolCounts: new Map(),
     flaggedLoops: new Set(),
     loopPending: false,
+    fundsPending: false,
   };
 }
 
@@ -250,6 +265,8 @@ module.exports = {
   DEFAULT_REQUEST,
   BAND_TEXT,
   LOOP_TEXT,
+  FUNDS_TEXT,
+  fundsError,
   parseThresholds,
   turnBand,
   bandText,

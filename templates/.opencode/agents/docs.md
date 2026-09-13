@@ -1,7 +1,7 @@
 ---
 description: Use when creating, updating, or maintaining project documentation — README.md, CHANGELOG.md, docs/ (architecture, ADRs, runbooks, API), CONTRIBUTING.md — keeping docs in sync with code and never duplicated.
 mode: subagent
-model: opencode/gpt-5.6-luna
+model: opencode-go/gpt-5.6-luna
 temperature: 0.1
 steps: 20
 permission:

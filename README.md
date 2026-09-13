@@ -188,16 +188,27 @@ visible, never assumed. Nothing is inferred from text length.
   ADD-ONLY overridable per project — with a mandatory fallback to the persona's
   normal tier and a no-confidential-data caveat. `report` classifies the model
   mix by tier.
+- **Provider priority & fallback**: models run on the **OpenCode Go
+  subscription first** (`opencode-go/*`), with **DeepSeek direct**
+  (`deepseek/*`) as the pay-per-token fallback — every fallback is announced
+  immediately (a fallback the user cannot see is a silent process change).
+- **Provider funds stop**: a provider funds/quota error (`insufficient
+  balance`/`funds`/`credits`, usage limit, HTTP 402) is a hard stop, never a
+  silent inline degrade: the orchestrator announces the failed provider/model and
+  the exact unfinished step, checkpoints, and waits for the user's explicit
+  top-up-complete message. The `context-guard` plugin mechanically detects such
+  an error in a dispatch/tool result and injects the same stop.
 - **`/switch-model` command** — every deploy ships an opencode command
   (`.opencode/command/switch-model.md`) plus `scripts/switch-reasoning-model.ps1`
   that rewrites the main `opencode.json` `model` and the six reasoning-tier
   agents (planner, system-architect, security-engineer, diagnostics-expert,
   product-manager, qa-architect) in one step — a blunt override of the tiered
-  default. Aliases: `deepseek`/`flash`/`direct` → `deepseek/deepseek-flash`
-  (default, direct API key, V4.1 Flash), `deepseek-v4-flash` →
-  `deepseek/deepseek-v4-flash` (legacy V4 pin), `pro`/`deepseek-pro` →
-  `deepseek/deepseek-v4-pro`
-  (escalation), `zen`/`opencode` → `opencode/deepseek-v4-pro` (gateway),
+  default. Aliases: `go`/`go-flash` → `opencode-go/deepseek-v4.1-flash` (default,
+  OpenCode Go), `go-pro` → `opencode-go/deepseek-v4-pro` (Go escalation),
+  `deepseek`/`flash`/`direct` → `deepseek/deepseek-flash` (direct fallback),
+  `deepseek-v4-flash` → `deepseek/deepseek-v4-flash` (legacy V4 pin),
+  `pro`/`deepseek-pro` → `deepseek/deepseek-v4-pro`
+  (direct escalation), `zen`/`opencode` → `opencode/deepseek-v4-pro` (gateway),
   `pickle` → `opencode/big-pickle`, `nvidia`/`kimi`/`kimi-k3` →
   `nvidia/moonshotai/kimi-k3` (NVIDIA NIM), `nemotron`/`nemotron-ultra` →
   `nvidia/nemotron-3-ultra-550b-a55b:free` (NVIDIA NIM, free),

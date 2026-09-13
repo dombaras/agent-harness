@@ -1,7 +1,7 @@
 ---
 description: Use for catalog/data ingestion and entity resolution — external-source ingestion, canonical-record dedup, external service telemetry.
 mode: subagent
-model: opencode/gpt-5.6-luna
+model: opencode-go/gpt-5.6-luna
 steps: 40
 permission:
   edit:

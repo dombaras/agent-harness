@@ -9,6 +9,8 @@ import guard from "../../scripts/qa/context-guard-core.js"
 // prefix stays byte-stable. Also counts identical tool+args calls (loop
 // detector) and records crossings in `.agents/guard-events.jsonl` (local-only,
 // excluded clone-locally) so telemetry exists before a full provider-stats pass does.
+// It also hard-stops on provider funds/quota errors (see model-routing.md
+// "Provider funds stop") so a failed dispatch can never silently degrade inline.
 // Child sessions (subagent dispatches) are tracked only to be excluded.
 
 const ORCHESTRATION_REL = path.join(".agents", "memory", "orchestration.md")
@@ -88,7 +90,14 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
 
         if (type === "message.updated") {
           const info = props.info
-          if (info?.role !== "assistant" || !isPrimary(info.sessionID)) return
+          if (!isPrimary(info?.sessionID)) return
+          if (info?.role === "user") {
+            // The user is speaking (usually the top-up-complete message):
+            // release the funds stop so work can resume.
+            stateFor(info.sessionID).fundsPending = false
+            return
+          }
+          if (info?.role !== "assistant") return
           const note = guard.noteAssistant(stateFor(info.sessionID), info, loadThresholds())
           if (note.newTurn && note.bandChanged && note.band) {
             logEvent({ kind: "band", sessionID: info.sessionID, band: note.band, turn: note.turns })
@@ -102,6 +111,20 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
               tokens: note.requestTokens,
             })
           }
+          return
+        }
+
+        if (type === "session.error") {
+          const sid = props.sessionID || props.info?.sessionID
+          if (!isPrimary(sid)) return
+          const text = JSON.stringify(props.error ?? props.message ?? props)
+          if (!guard.fundsError(text)) return
+          const state = stateFor(sid)
+          if (state.fundsPending) return
+          state.fundsPending = true
+          logEvent({ kind: "funds", sessionID: sid, source: "session.error" })
+          await report("provider funds/quota error — pausing for top-up")
+          return
         }
       } catch {
         /* the guard must never break a session */
@@ -132,6 +155,22 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       }
     },
 
+    "tool.execute.after": async (input: any, output: any) => {
+      try {
+        if (!isPrimary(input?.sessionID)) return
+        const text =
+          typeof output?.output === "string" ? output.output : JSON.stringify(output ?? {})
+        if (!guard.fundsError(text)) return
+        const state = stateFor(input.sessionID)
+        if (state.fundsPending) return
+        state.fundsPending = true
+        logEvent({ kind: "funds", sessionID: input.sessionID, tool: String(input?.tool || "") })
+        await report(`provider funds/quota error from ${input?.tool} — pausing for top-up`)
+      } catch {
+        /* never break the tool call */
+      }
+    },
+
     "experimental.chat.system.transform": async (input: any, output: any) => {
       try {
         if (!isPrimary(input?.sessionID) || !Array.isArray(output?.system)) return
@@ -139,6 +178,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         const texts: string[] = []
         const band = guard.turnBand(state.turns, loadThresholds().turns)
         if (band) texts.push(guard.bandText(band))
+        if (state.fundsPending) texts.push(guard.FUNDS_TEXT)
         if (state.loopPending) texts.push(guard.LOOP_TEXT)
         for (const text of texts) {
           const already = output.system.some((s: string) => typeof s === "string" && s.includes(text))

@@ -1,7 +1,7 @@
 ---
 description: Use for deployment, CI/CD, cron/scheduling, env & secrets management, hosting config, and mobile build/release setup.
 mode: subagent
-model: opencode/gpt-5.6-luna
+model: opencode-go/gpt-5.6-luna
 steps: 40
 permission:
   edit:

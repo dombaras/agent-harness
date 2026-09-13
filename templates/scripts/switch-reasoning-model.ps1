@@ -7,6 +7,10 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
 $aliases = @{
+  "go"                = "opencode-go/deepseek-v4.1-flash"
+  "go-flash"          = "opencode-go/deepseek-v4.1-flash"
+  "go-deepseek"       = "opencode-go/deepseek-v4.1-flash"
+  "go-pro"            = "opencode-go/deepseek-v4-pro"
   "deepseek"          = "deepseek/deepseek-flash"
   "flash"             = "deepseek/deepseek-flash"
   "deepseek-flash"    = "deepseek/deepseek-flash"
