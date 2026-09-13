@@ -18,8 +18,8 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 | Version | `0.1.60` |
 | Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning; `0.1.60` architect tier → direct DeepSeek |
 | Lint / tests | green (`npm run lint`, `npm test`) |
-| LibraryOS | `0.1.59` deployed + pushed (the 7 re-pinned agent files auto-committed); project keeps its own simplified `model-routing.md` tier table |
-| FamilyBudget | `0.1.59` deployed (local repo, no remote); tier policy synced into the project-owned `model-routing.md` |
+| LibraryOS | `0.1.60` deployed + pushed (4 V4 Pro pins + policy docs auto-committed); `model-routing.md` is gitignored/local-only and was updated in place |
+| FamilyBudget | `0.1.60` deployed (local repo, no remote); routing doc synced + committed |
 
 ---
 
@@ -47,6 +47,12 @@ DeepSeek API key**, not the OpenCode Go subscription.
   and engineering pins `opencode-go/deepseek-v4.1-flash` (never Go Pro).
 - `test:dispatch` green (the removed `opencode-go/deepseek-v4-pro` pin is no
   longer referenced by any routing doc).
+- **Deployed** to both projects: the 4 V4 Pro agent pins + policy docs
+  (`AGENTS.md`, `.agents/AGENTS.md`, `.agents/rules/00-operating.md`,
+  `switch-model.md`) auto-committed (LibraryOS pushed). Routing docs updated in
+  place: FamilyBudget's `model-routing.md` committed; LibraryOS's is
+  gitignored/local-only and was updated in the working tree (not committed by
+  the project's own design).
 
 ### `0.1.59` — persona model re-tuning (architect-tier plan/review, cheap engineering)
 
