@@ -18,8 +18,8 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 | Version | `0.1.59` |
 | Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning |
 | Lint / tests | green (`npm run lint`, `npm test`) |
-| LibraryOS | `0.1.58` deployed + pushed; provider policy merged into the project-owned `model-routing.md` |
-| FamilyBudget | `0.1.58` deployed (local repo, no remote); provider policy merged into the project-owned `model-routing.md` |
+| LibraryOS | `0.1.59` deployed + pushed (the 7 re-pinned agent files auto-committed); project keeps its own simplified `model-routing.md` tier table |
+| FamilyBudget | `0.1.59` deployed (local repo, no remote); tier policy synced into the project-owned `model-routing.md` |
 
 ---
 
@@ -51,6 +51,11 @@ External review recommendation applied through the harness's own routing policy:
   six reasoning-tier agents.
 - Tests: harness suite green; `test:dispatch` re-validates pins vs the provider
   allowlist and doc↔config drift.
+- **Deployed** to both projects: updates auto-committed the 7 re-pinned agent
+  files (LibraryOS pushed; FamilyBudget local-only). FamilyBudget's
+  project-owned `model-routing.md` tier section was synced to the new lanes
+  (committed there); LibraryOS keeps its deliberately simplified tier table —
+  the concrete `model:` pins are authoritative, so nothing contradicts.
 
 ### `0.1.58` — upstream the project-local `backlog unqueue` (ownership fix)
 
