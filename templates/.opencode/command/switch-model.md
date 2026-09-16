@@ -15,11 +15,10 @@ Valid values:
 - `openrouter` / `or` / `minimax-m3` / `m3` -> `openrouter/minimax/minimax-m3` (OpenRouter)
 - any other explicit model id (e.g. `opencode-go/gpt-5.6-luna`)
 
-Run:
+Run the platform-appropriate script from the project root:
 
-```
-powershell -ExecutionPolicy Bypass -File scripts/switch-reasoning-model.ps1 -Target $ARGUMENTS
-```
+- POSIX (WSL/Linux/macOS): `bash scripts/switch-reasoning-model.sh "$ARGUMENTS"`
+- Windows PowerShell: `powershell -ExecutionPolicy Bypass -File scripts/switch-reasoning-model.ps1 -Target $ARGUMENTS`
 
 This rewrites the `model` field in `opencode.json` and the `model:` frontmatter
 of the six reasoning-tier agents (planner, system-architect, security-engineer,
