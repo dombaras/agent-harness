@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.62)
+# Agent Harness Optimization — Implementation Status (v0.1.65)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -15,15 +15,43 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.62` |
-| Shipped this session | `0.1.57` provider funds stop + Go-first routing; `0.1.58` upstreams LibraryOS's local `backlog unqueue`; `0.1.59` persona model re-tuning; `0.1.60` architect tier → direct DeepSeek; `0.1.61` funds guard names the failed provider/model + Zen removed from routing; `0.1.62` funds guard arms on structured failures only (doc-read false positive fixed) |
-| Lint / tests | green (`npm run lint`, `npm test` — 168 pass) |
+| Version | `0.1.65` |
+| Shipped this session | `0.1.65` backlog integrity + auto-commit scope + merge-driver hardening (the `docs/backlog-integrity-fixes.md` queue, items 1–6) |
+| Lint / tests | green (`npm run lint`, `npm test` — 177 pass) |
 | LibraryOS | `0.1.62` deployed + pushed (harness auto-commit `443af25`); `model-routing.md` is gitignored/local-only and was updated in place; F-169 (the false-stop victim) itself shipped/archived in-session (`9d45b04`) |
 | FamilyBudget | `0.1.62` deployed (local repo, no remote); routing doc update `8aee12d` |
 
 ---
 
 ## What shipped
+
+### `0.1.65` — backlog integrity, auto-commit scope, merge-driver hardening
+
+The `docs/backlog-integrity-fixes.md` queue, all six items:
+
+- **Atomic board lock (item 1, HIGH).** `templates/scripts/backlog.js` `withLock`
+  now uses an exclusive **directory** (`.backlog.lock/`) — `mkdirSync` is atomic,
+  so there is no `open(O_CREAT|O_EXCL)`→`write` window in which a waiter reads an
+  empty lock and unlinks a live one (the proven lost-update / duplicate-ID cause).
+  The holder PID is published atomically (`<lock>/pid` via temp+rename); a
+  missing/unparseable PID is HELD, broken only on a provably dead positive PID.
+- **Stray-board gate (item 2).** `templates/scripts/qa/check-backlog.js` fails on
+  any non-root git-tracked `BACKLOG.md` (`git ls-files '*BACKLOG.md'`), closing the
+  shadow-board blind spot.
+- **EOF-stable writes (item 3).** `serializeBacklog()` appends the final newline
+  only when the source didn't end in one; a no-op read-modify-write is now a
+  byte-for-byte no-op (was +1 blank line per mutation).
+- **`process.execPath` in tools (item 4).** `templates/.opencode/tools/{backlog,checkpoint,session}.ts`
+  spawn the running Node, not a bare `"node"` that WSL interop can hijack.
+- **Auto-commit scope (item 5, HIGH).** `commitHarnessChanges()` now diffs and
+  commits **by pathspec**, so a concurrent session's already-staged work can no
+  longer be swept into (and pushed by) a harness `chore` commit.
+- **Merge-driver path (item 6).** `registerBacklogMergeDriver()` resolves the
+  **main worktree** (linked-worktree targets are not registered against a path
+  that dies when the worktree is removed); nested projects keep their own script.
+- Tests: 7 added (locked-increment contention, concurrent-add distinct ids, EOF
+  idempotency, stray-board failure, `process.execPath` static gate, pre-staged
+  sweep guard, worktree merge-driver resolution) — 177 pass.
 
 ### `0.1.64` — WSL environment hardening
 

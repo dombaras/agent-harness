@@ -13,7 +13,7 @@ function rootOf(context: any): string {
 function run(context: any, args: string[]): string {
   const script = path.join(rootOf(context), "scripts", "backlog.js")
   try {
-    return execFileSync("node", [script, ...args], {
+    return execFileSync(process.execPath, [script, ...args], {
       cwd: rootOf(context),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

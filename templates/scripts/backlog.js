@@ -96,6 +96,15 @@ function readBacklog(root) {
   return { p, eol, lines: src.split(/\r?\n/) };
 }
 
+/* Serialize the in-memory board back to disk. `readBacklog` splits on newlines,
+ * so a source that ended in a newline carries a trailing "" element and
+ * join(eol) already emits that final newline. Appending eol unconditionally
+ * (the old `join(eol) + eol`) added one blank line at EOF on every mutation. */
+function serializeBacklog(state) {
+  const body = state.lines.join(state.eol);
+  return state.lines[state.lines.length - 1] === "" ? body : body + state.eol;
+}
+
 /* Locate a section (## heading) by its normalized key. */
 function findSection(lines, key) {
   for (let i = 0; i < lines.length; i++) {
@@ -251,12 +260,22 @@ function findRow(lines, id) {
 /* The board write path (take / next --take / queue / archive / worktree / ...)
  * is a read-modify-write of BACKLOG.md. Two concurrent sessions could otherwise
  * both read the same Queued row and both claim it. `withLock` serializes that
- * write path across processes via an exclusive `.backlog.lock` file (O_EXCL).
- * The holder's PID is written inside so a crashed session's lock is detected and
- * broken by PID liveness — never by age alone, since a slow `git worktree add`
- * under the lock must not be mistaken for a stale lock. */
+ * write path across processes via an exclusive `.backlog.lock` DIRECTORY:
+ * `fs.mkdirSync(lockPath)` is atomic and the directory's existence *is* the
+ * lock, so there is no `open(O_CREAT|O_EXCL)`→`write` window in which a waiter
+ * can read an empty lock and mistake it for stale. (The old file lock did
+ * exactly that: it read `""`, `pidAlive(NaN)` was false, and it unlinked a live
+ * lock under contention — losing rows and assigning duplicate IDs.)
+ *
+ * The holder's PID is published inside `<lockPath>/pid` via temp-file + rename
+ * (atomic), so a waiter never reads a partial pid. A missing/unparseable PID
+ * means the creator is mid-setup, so the lock is treated as HELD, never stale;
+ * it is broken only when a valid, positive PID is provably dead — never by age
+ * alone, since a slow `git worktree add` under the lock must not be mistaken
+ * for a stale lock. */
 const LOCK_RETRY_MS = 25;
 const LOCK_TIMEOUT_MS = 15000;
+const LOCK_PID_FILE = "pid";
 
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -272,23 +291,33 @@ function pidAlive(pid) {
   }
 }
 
+function breakLock(lockPath) {
+  try {
+    fs.rmSync(lockPath, { recursive: true, force: true });
+  } catch {
+    /* vanished — retry */
+  }
+}
+
 function withLock(root, fn) {
   const lockPath = path.join(root, ".backlog.lock");
+  const pidPath = path.join(lockPath, LOCK_PID_FILE);
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  for (;;) {
+  let acquired = false;
+  while (!acquired) {
     try {
-      fs.writeFileSync(lockPath, String(process.pid), { flag: "wx" });
-      break;
+      fs.mkdirSync(lockPath);
+      acquired = true;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
       let holderPid = NaN;
       try {
-        holderPid = parseInt(fs.readFileSync(lockPath, "utf8"), 10);
+        holderPid = parseInt(fs.readFileSync(pidPath, "utf8"), 10);
       } catch {
-        /* lock vanished between attempts — retry */
+        /* pid not published yet (creator mid-setup) — held, never stale */
       }
-      if (!pidAlive(holderPid)) {
-        try { fs.unlinkSync(lockPath); } catch { /* vanished — retry */ }
+      if (Number.isFinite(holderPid) && holderPid > 0 && !pidAlive(holderPid)) {
+        breakLock(lockPath);
         continue;
       }
       if (Date.now() > deadline) {
@@ -298,9 +327,15 @@ function withLock(root, fn) {
     }
   }
   try {
+    const tmp = path.join(
+      lockPath,
+      `.pid.${process.pid}.${Math.random().toString(36).slice(2)}`
+    );
+    fs.writeFileSync(tmp, String(process.pid));
+    fs.renameSync(tmp, pidPath); // atomic publish — no partial pid ever visible
     return fn();
   } finally {
-    try { fs.unlinkSync(lockPath); } catch { /* already removed */ }
+    breakLock(lockPath);
   }
 }
 
@@ -1028,7 +1063,7 @@ function main() {
       if (cmd === "owns") {
         console.log(formatResult(cmd, out));
       } else {
-        fs.writeFileSync(state.p, state.lines.join(state.eol) + state.eol, "utf8");
+        fs.writeFileSync(state.p, serializeBacklog(state), "utf8");
         console.log(formatResult(cmd, out));
       }
     });

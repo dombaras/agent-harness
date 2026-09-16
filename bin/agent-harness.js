@@ -342,6 +342,32 @@ function mergeGitattributes(target, driverName) {
   return out.join("\n");
 }
 
+/* The root that owns `scripts/qa/merge-backlog.js` for the driver registration.
+ *
+ * Git config is per-clone and SHARED by every linked worktree, and the driver
+ * stores an absolute path. Registering it while the target is a linked worktree
+ * (e.g. `<repo>/../.worktrees/<repo>/<id>`) would poison the shared config with
+ * a path that dangles once the feature worktree is removed (`backlog archive`,
+ * `git worktree remove`). So when the target IS a worktree root, register
+ * against the MAIN worktree instead. A nested harness project (`<repo>/mobile`)
+ * is NOT a worktree root — its `--show-toplevel` is the repo root, not itself —
+ * so it keeps its own script and the two drivers never clobber each other. */
+function resolveDriverRoot(target) {
+  const abs = path.resolve(target);
+  const top = runGit(abs, ["rev-parse", "--show-toplevel"]);
+  if (!top.ok) return abs;
+  if (path.resolve(top.out) !== abs) return abs; // nested project inside a worktree
+  const list = runGit(abs, ["worktree", "list", "--porcelain"]);
+  if (list.ok) {
+    const first = (list.out || "").split(/\r?\n/).find((l) => l.startsWith("worktree "));
+    if (first) {
+      const main = path.resolve(first.slice("worktree ".length).trim());
+      if (main !== abs) return main;
+    }
+  }
+  return abs;
+}
+
 /* Register the row-aware merge driver in the target's LOCAL git config (never
  * committed — merge drivers are per-clone). Git runs it as
  * `node <abs>/scripts/qa/merge-backlog.js %O %A %B`. The driver script is
@@ -349,7 +375,8 @@ function mergeGitattributes(target, driverName) {
  * so nested projects in one repo each keep their own registration. */
 function registerBacklogMergeDriver(target, driverName) {
   if (!isGitRepo(target)) return;
-  const driverScript = path.join(target, "scripts", "qa", "merge-backlog.js").split(path.sep).join("/");
+  const root = resolveDriverRoot(target);
+  const driverScript = path.join(root, "scripts", "qa", "merge-backlog.js").split(path.sep).join("/");
   const driver = `node "${driverScript}" %O %A %B`;
   runGit(target, ["config", `merge.${driverName}.name`, "BACKLOG.md row merge"]);
   runGit(target, ["config", `merge.${driverName}.driver`, driver]);
@@ -381,8 +408,11 @@ function isWindowsMount(target, platform = process.platform) {
 
 // Auto-commit ONLY the harness-owned files an update just changed, so the target
 // project's next session never sees "unexplained" modified harness files. Scoped
-// to this run's changed harness files (never `git add -A`) so unrelated uncommitted
-// work is NEVER swept in. Memory/backup files are excluded (project data / rollback).
+// to this run's changed harness files (never `git add -A`) so unrelated
+// uncommitted work is NEVER swept in — including work another session already
+// STAGED: the diff and the commit both carry a pathspec, so pre-staged paths are
+// left in the index instead of being swept into the harness commit. Memory/backup
+// files are excluded (project data / rollback).
 // Harness-owned paths are force-added (`-f`): target projects often gitignore
 // .agents/ .opencode/ AGENTS.md (inherited from the harness's own .gitignore), and
 // a plain `git add` would fail on the first ignored path and commit NOTHING.
@@ -407,7 +437,10 @@ function commitHarnessChanges(target, changedRels, opts) {
     out.skipped.push("git add failed: " + firstGitErrorLine(addR.err));
     return out;
   }
-  const diffCached = runGit(target, ["diff", "--cached", "--name-only"]);
+  // Scope the "what changed" report AND the commit to this run's paths. A bare
+  // `git diff --cached` / `git commit` operate on the WHOLE index, which is how a
+  // concurrent session's pre-staged work ended up in a harness `chore` commit.
+  const diffCached = runGit(target, ["diff", "--cached", "--name-only", "--", ...changedRels]);
   const staged = (diffCached.out || "").split(/\r?\n/).filter(Boolean).map(relKey);
   if (staged.length === 0) {
     out.skipped.push("no harness changes staged");
@@ -416,7 +449,7 @@ function commitHarnessChanges(target, changedRels, opts) {
   out.staged = staged;
   const prior = opts.priorVersion ? opts.priorVersion + " -> " : "";
   const message = `chore(harness): @dombaras/agent-harness ${prior}${PKG.version}`;
-  const commitR = runGit(target, ["commit", "-m", message]);
+  const commitR = runGit(target, ["commit", "-m", message, "--", ...changedRels]);
   if (!commitR.ok) {
     out.skipped.push("commit failed: " + firstGitErrorLine(commitR.err));
     return out;
@@ -1105,6 +1138,7 @@ module.exports = {
   isMemoryFile,
   isOpencodeJson,
   isWindowsMount,
+  resolveDriverRoot,
   sha256,
   readConfig,
   resolveVars,

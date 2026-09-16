@@ -700,6 +700,27 @@ test("backlog CLI + custom tools + notify plugin are deployed to every project",
   assert.strictEqual(pkg.scripts["backlog"], "node scripts/backlog.js");
 });
 
+test('opencode tools spawn the running Node (process.execPath), never a bare "node"', () => {
+  // Under WSL interop a bare `"node"` can resolve to the Windows node.exe
+  // (/mnt/c/Program Files/nodejs) against Linux paths. process.execPath is the
+  // exact Node running opencode, so the spawn always targets the right runtime.
+  const tools = ["backlog.ts", "checkpoint.ts", "session.ts"];
+  for (const f of tools) {
+    const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", f));
+    assert.match(src, /process\.execPath/, `${f} must spawn process.execPath`);
+    assert.doesNotMatch(src, /execFileSync\(\s*["']node["']/, `${f} must not spawn a bare "node"`);
+  }
+  // static gate over the whole template tree: no tool shells out to a bare node
+  const toolDir = path.join(h.TEMPLATES_DIR, ".opencode", "tools");
+  for (const f of fs.readdirSync(toolDir).filter((n) => n.endsWith(".ts"))) {
+    assert.doesNotMatch(
+      read(path.join(toolDir, f)),
+      /execFileSync\(\s*["']node["']/,
+      `${f} must not spawn a bare "node"`
+    );
+  }
+});
+
 function scaffoldBacklogCliTarget() {
   const target = tmpdir();
   fs.mkdirSync(path.join(target, "scripts"), { recursive: true });
@@ -888,6 +909,21 @@ test("backlog add collapses a newline in a cell so it can't split the row (F-094
   assert.match(b, /task one task two/);
 });
 
+test("backlog write is EOF-stable — a mutation adds no blank line and a no-op is byte-identical", () => {
+  const t = scaffoldBacklogCliTarget();
+  const p = path.join(t, "BACKLOG.md");
+  assert.strictEqual(runBacklogCli(t, ["add", "eof check", "--p", "P2"]).status, 0);
+  const afterAdd = read(p);
+  assert.ok(afterAdd.endsWith("\n"), "file ends with a newline");
+  assert.ok(!afterAdd.endsWith("\n\n"), "a mutation must not append a trailing blank line");
+
+  // a no-op read-modify-write (unqueue an already-Open row) must not change bytes
+  const noop = runBacklogCli(t, ["unqueue", "F-001"]);
+  assert.strictEqual(noop.status, 0, noop.out);
+  assert.match(noop.out, /already Open/);
+  assert.strictEqual(read(p), afterAdd, "no-op mutation is byte-for-byte idempotent");
+});
+
 /* Real Open rows only (skip the `| ID |...` header, `|---|` separator, blank
  * template placeholder row, and `_Rows:` examples) — the Open table ends at the
  * next `##` heading. */
@@ -993,6 +1029,73 @@ test("next --take claims are atomic — concurrent sessions pick distinct rows",
   }
   assert.strictEqual(inprogIds.length, n, "exactly n rows In progress — no row double-claimed");
   assert.strictEqual(queuedIds.length, 0, "Queued drained — no row left unclaimed");
+});
+
+test("withLock is a correct mutex — locked increments lose no updates under contention", async () => {
+  const t = scaffoldBacklogCliTarget();
+  const counter = path.join(t, "counter.txt");
+  fs.writeFileSync(counter, "0", "utf8");
+
+  const procs = 12;
+  const incs = 8;
+  const worker = path.join(t, "lock-worker.js");
+  fs.writeFileSync(
+    worker,
+    `"use strict";
+const fs = require("fs");
+const { withLock } = require(${JSON.stringify(path.join(t, "scripts", "backlog.js"))});
+const root = ${JSON.stringify(t)};
+const counter = ${JSON.stringify(counter)};
+for (let i = 0; i < ${incs}; i++) {
+  withLock(root, () => {
+    const n = parseInt(fs.readFileSync(counter, "utf8"), 10) || 0;
+    fs.writeFileSync(counter, String(n + 1), "utf8");
+  });
+}
+`,
+    "utf8"
+  );
+
+  const results = await Promise.all(
+    Array.from({ length: procs }, () =>
+      new Promise((resolve) => {
+        const c = spawn(process.execPath, [worker], { stdio: ["ignore", "ignore", "pipe"] });
+        let err = "";
+        c.stderr.on("data", (d) => (err += d));
+        c.on("close", (code) => resolve({ code, err }));
+      })
+    )
+  );
+  for (const r of results) assert.strictEqual(r.code, 0, r.err);
+  assert.strictEqual(
+    parseInt(read(counter), 10),
+    procs * incs,
+    `every locked increment landed (expected ${procs * incs})`
+  );
+});
+
+test("concurrent backlog add assigns distinct ids and lands every row", async () => {
+  const t = scaffoldBacklogCliTarget();
+  const script = path.join(t, "scripts", "backlog.js");
+  const n = 12;
+  const results = await Promise.all(
+    Array.from({ length: n }, (_, i) =>
+      new Promise((resolve) => {
+        const c = spawn(process.execPath, [script, "add", `row ${i}`, "--p", "P3"], {
+          cwd: t,
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        let err = "";
+        c.stderr.on("data", (d) => (err += d));
+        c.on("close", (code) => resolve({ code, err }));
+      })
+    )
+  );
+  results.forEach((r, i) => assert.strictEqual(r.code, 0, `add ${i}: ${r.err}`));
+  const rows = backlogOpenDataRows(read(path.join(t, "BACKLOG.md")));
+  const ids = rows.map((l) => (l.split("|")[1] || "").trim());
+  assert.strictEqual(ids.length, n, "all rows landed");
+  assert.strictEqual(new Set(ids).size, n, "all ids distinct");
 });
 
 test("deploy records local-only ignores in .git/info/exclude, never in .gitignore", async () => {
@@ -1384,6 +1487,42 @@ test("update auto-commits only harness files and a no-op update makes no commit"
   assert.strictEqual(read(path.join(target, ".harness.json")), configBefore, ".harness.json untouched");
   const committedCount = git(target, ["log", "--oneline"]).split(/\r?\n/).filter(Boolean).length;
   assert.strictEqual(committedCount, 2, "no new commit was made on a no-op update");
+});
+
+test("update auto-commit never sweeps a path another session already staged", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+
+  // another session's work, STAGED but not committed (a pre-existing index entry)
+  fs.writeFileSync(path.join(target, "other-session.js"), "// another session\n", "utf8");
+  git(target, ["add", "other-session.js"]);
+
+  const result = await h.deploy(target, {
+    name: "Demo",
+    yes: true,
+    isUpdate: true,
+    commit: true,
+    push: false,
+  });
+
+  assert.strictEqual(result.commitResult.committed, true, "harness commit was made");
+  const committed = git(target, ["show", "--name-only", "--pretty=format:", "HEAD"])
+    .split(/\r?\n/)
+    .filter(Boolean);
+  assert.ok(committed.length > 0, "the harness commit contains harness files");
+  assert.ok(!committed.includes("other-session.js"), "the pre-staged file was not swept into the commit");
+  assert.ok(
+    result.commitResult.staged.every((p) => p !== "other-session.js"),
+    "commitResult.staged reports only this run's files"
+  );
+  assert.match(
+    git(target, ["status", "--porcelain"]),
+    /^A  other-session\.js$/m,
+    "the other session's file is still staged, uncommitted"
+  );
 });
 
 test("update force-adds harness files the project gitignores and still commits", async () => {
@@ -1925,6 +2064,21 @@ test("test:backlog passes when BACKLOG.md is committed", () => {
   const r = runBacklogGate(t);
   assert.strictEqual(r.status, 0, r.out);
   assert.match(r.out, /RESULT: backlog green/);
+});
+
+test("test:backlog fails on a stray (non-root) BACKLOG.md board", () => {
+  const t = scaffoldBacklogTarget(VALID_BACKLOG);
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  fs.mkdirSync(path.join(t, "mobile"), { recursive: true });
+  fs.writeFileSync(path.join(t, "mobile", "BACKLOG.md"), "# shadow board\n", "utf8");
+  git(t, ["add", "."]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /no stray BACKLOG\.md boards/);
+  assert.match(r.out, /mobile\/BACKLOG\.md/);
 });
 
 test("test:backlog reports an over-wide row honestly instead of a shifted-cell error", () => {
@@ -2685,6 +2839,32 @@ test("nested harness projects get distinct merge-driver names that don't clobber
   assert.ok(rootDriver && rootDriver.includes("merge-backlog.js"), "root driver registered");
   assert.ok(nestedDriver && nestedDriver.includes("merge-backlog.js"), "nested driver registered");
   assert.notStrictEqual(rootDriver, nestedDriver, "each project's driver points at its own script");
+});
+
+test("merge driver for a linked worktree target registers against the MAIN worktree", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+
+  // deploy the main checkout first, then a linked feature worktree
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const wt = path.join(target, "..", path.basename(target) + "-wt");
+  git(target, ["worktree", "add", "-q", wt, "-b", "feat-x"]);
+  await h.deploy(wt, { name: "Demo", yes: true, isUpdate: true });
+
+  const driver = git(target, ["config", "--get", "merge.backlog-demo.driver"]);
+  const mainScript = path.join(target, "scripts", "qa", "merge-backlog.js").split(path.sep).join("/");
+  const wtScript = path.join(wt, "scripts", "qa", "merge-backlog.js").split(path.sep).join("/");
+  assert.ok(driver.includes(mainScript), `driver points at the main worktree's script: ${driver}`);
+  assert.ok(!driver.includes(wtScript), "driver must not point into the feature worktree");
+  assert.strictEqual(h.resolveDriverRoot(wt), path.resolve(target), "worktree target resolves to the main worktree");
+  assert.strictEqual(h.resolveDriverRoot(target), path.resolve(target), "main target stays itself");
+
+  // the registered path survives worktree removal (no dangling driver)
+  git(target, ["worktree", "remove", "--force", wt]);
+  assert.ok(exists(path.join(target, "scripts", "qa", "merge-backlog.js")), "driver script survives worktree removal");
 });
 
 test("isWindowsMount flags WSL Windows-drive mounts only on POSIX hosts", () => {

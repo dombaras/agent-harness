@@ -20,7 +20,7 @@ function rootOf(context: any): string {
 function observed(context: any, sessionID: string): any | null {
   const script = path.join(rootOf(context), "scripts", "qa", "provider-stats.js")
   try {
-    const out = execFileSync("node", [script, "--session", sessionID, "--json", "--root", rootOf(context)], {
+    const out = execFileSync(process.execPath, [script, "--session", sessionID, "--json", "--root", rootOf(context)], {
       cwd: rootOf(context),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

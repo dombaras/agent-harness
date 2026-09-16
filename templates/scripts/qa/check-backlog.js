@@ -47,6 +47,20 @@ if (!fs.existsSync(canonical)) {
 }
 check(true, "canonical BACKLOG.md present at repo root");
 
+// No stray/secondary boards: the root file is the ONLY canonical board. A
+// leftover board (e.g. `mobile/BACKLOG.md` from an old nested harness install)
+// silently diverges from the root one while this gate stayed green. Commit the
+// canonical board and delete any non-root `BACKLOG.md`.
+if (insideGitRepo()) {
+  const strays = gitLsFiles("*BACKLOG.md").filter((f) => f !== "BACKLOG.md");
+  check(
+    strays.length === 0,
+    `no stray BACKLOG.md boards (found: ${strays.join(", ") || "none"})`
+  );
+} else {
+  check(true, "not a git repo \u2014 skipping stray BACKLOG.md check");
+}
+
 // ---- 7. BACKLOG.md must be git-tracked (committed), not untracked ----------
 // The board syncs across sessions only through git; an untracked BACKLOG.md
 // never reaches the shared board. Skipped outside a git repo.
@@ -70,6 +84,21 @@ function gitTracked(rel) {
     return (r.toString() || "").trim().length > 0;
   } catch (_) {
     return false;
+  }
+}
+/* Git-tracked paths matching a pathspec glob (relative to the repo root). */
+function gitLsFiles(pattern) {
+  try {
+    const r = execFileSync("git", ["ls-files", "--", pattern], {
+      cwd: root,
+      stdio: "pipe",
+    });
+    return (r.toString() || "")
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } catch (_) {
+    return [];
   }
 }
 if (insideGitRepo()) {
