@@ -205,21 +205,24 @@ visible, never assumed. Nothing is inferred from text length.
   injects the same stop; reading a document that merely quotes the rule (the
   session-start `model-routing.md`, a handoff, a plan) never trips it.
 - **`/switch-model` command** — every deploy ships an opencode command
-  (`.opencode/command/switch-model.md`) plus `scripts/switch-reasoning-model.ps1`
-  that rewrites the main `opencode.json` `model` and the six reasoning-tier
-  agents (planner, system-architect, security-engineer, diagnostics-expert,
-  product-manager, qa-architect) in one step — a blunt override of the tiered
-  default. Aliases: `go`/`go-flash` → `opencode-go/deepseek-v4.1-flash` (default,
-  OpenCode Go), `go-pro` → `opencode-go/deepseek-v4-pro` (Go escalation),
+  (`.opencode/command/switch-model.md`) plus per-platform twins
+  `scripts/switch-reasoning-model.ps1` (Windows PowerShell) and
+  `scripts/switch-reasoning-model.sh` (WSL/Linux/macOS; the command invokes this
+  one on POSIX). It rewrites the main `opencode.json` `model` and the six
+  reasoning-tier agents (planner, system-architect, security-engineer,
+  diagnostics-expert, product-manager, qa-architect) in one step — a blunt
+  override of the tiered default. Aliases: `go`/`go-flash`/`go-deepseek` →
+  `opencode-go/deepseek-v4.1-flash` (default, OpenCode Go), `go-pro` →
+  `opencode-go/deepseek-v4-pro` (Go escalation),
   `deepseek`/`flash`/`direct` → `deepseek/deepseek-flash` (direct fallback),
   `deepseek-v4-flash` → `deepseek/deepseek-v4-flash` (legacy V4 pin),
-  `pro`/`deepseek-pro` → `deepseek/deepseek-v4-pro`
-  (direct escalation), `zen`/`opencode` → `opencode/deepseek-v4-pro` (gateway),
-  `pickle` → `opencode/big-pickle`, `nvidia`/`kimi`/`kimi-k3` →
+  `pro`/`deepseek-pro`/`deepseek-v4-pro` → `deepseek/deepseek-v4-pro`
+  (direct escalation), `nvidia`/`kimi`/`kimi-k3` →
   `nvidia/moonshotai/kimi-k3` (NVIDIA NIM), `nemotron`/`nemotron-ultra` →
   `nvidia/nemotron-3-ultra-550b-a55b:free` (NVIDIA NIM, free),
-  `openrouter`/`or`/`m3` → `openrouter/minimax/minimax-m3` (OpenRouter), or any
-  explicit `provider/model`. Restart opencode after switching (config reads once).
+  `openrouter`/`or`/`minimax-m3`/`m3` → `openrouter/minimax/minimax-m3`
+  (OpenRouter), or any explicit `provider/model`. Restart opencode after
+  switching (config reads once).
 - **`/board` command** — every deploy ships an opencode command
   (`.opencode/command/board.md`) that runs the deterministic `scripts/backlog.js
   list` and shows the active rows verbatim — no LLM filtering, no re-ordering, no
@@ -420,6 +423,19 @@ npm run lint      # syntax-check the CLI + QA scripts
 node bin/agent-harness.js list
 node bin/agent-harness.js init --target /tmp/demo --name Demo --yes
 ```
+
+### Running on WSL2
+
+- Keep the checkout and target projects on the Linux filesystem
+  (`~/develop/...`), never on `/mnt/c` — Node/npm I/O over the Windows drvfs
+  mount is far slower. `init`/`update` warn when a target is on `/mnt/<drive>/`.
+- `.gitattributes` pins `*.sh` to LF (and `*.ps1` to CRLF); the same rules are
+  merged into every deployed project, so POSIX scripts survive a Windows-side
+  checkout. See the `switch-reasoning-model.sh` POSIX twin, platform-dispatched
+  by the `/switch-model` command.
+- Worktrees live in a sibling container (`<repo>/../.worktrees/<repo>/<id>`), so
+  allow `~/develop/**` in the global `opencode.jsonc`
+  `permission.external_directory` or each worktree access prompts.
 
 Clear the data-test except keep `templates/` generic; do not commit a target
 project's `.agents/memory/` into this repo.

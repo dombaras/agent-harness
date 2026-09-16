@@ -43,12 +43,17 @@ const PREFIX_FILES = [
 ];
 
 /* Volatile-value patterns. Each is per-run content, never legitimate stable
- * guidance: clock timestamps (a bare date stays allowed), Windows drive or
- * user/home absolute paths (the `\b` keeps URL schemes like `https://` from
- * matching), and opencode session ids. */
+ * guidance: clock timestamps (a bare date stays allowed), machine-specific
+ * absolute paths (Windows drive letters, POSIX user/home dirs, WSL `/mnt/<drive>/`
+ * mounts, and `\\wsl.localhost\` / `\\wsl$\` UNC paths — the `\b` keeps URL
+ * schemes like `https://` from matching), and opencode session ids. */
 const PATTERNS = [
   { name: "clock timestamp", re: /\b\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}/ },
-  { name: "machine-specific absolute path", re: /(?:\b[A-Za-z]:[\\/]|\/(?:Users|home)\/[A-Za-z0-9._-]+\/)/, machinePath: true },
+  {
+    name: "machine-specific absolute path",
+    re: /(?:\b[A-Za-z]:[\\/]|\/(?:Users|home)\/[A-Za-z0-9._-]+\/|\/mnt\/[a-z]\/|wsl(?:\.localhost|\$)[\\/])/i,
+    machinePath: true,
+  },
   { name: "opencode session id", re: /\bses_[A-Za-z0-9]{6,}\b/ },
 ];
 

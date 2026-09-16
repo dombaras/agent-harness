@@ -331,7 +331,13 @@ function mergeGitattributes(target, driverName) {
   const idx = lines.findIndex((l) => l === GITATTRIBUTES_MARKER);
   const kept = idx === -1 ? lines : lines.slice(0, idx);
   while (kept.length && kept[kept.length - 1].trim() === "") kept.pop();
-  const managed = [GITATTRIBUTES_MARKER, `BACKLOG.md merge=${driverName}`, ""];
+  const managed = [
+    GITATTRIBUTES_MARKER,
+    `BACKLOG.md merge=${driverName}`,
+    "*.sh text eol=lf",
+    "*.ps1 text eol=crlf",
+    "",
+  ];
   const out = kept.length ? [...kept, "", ...managed] : [...managed];
   return out.join("\n");
 }
@@ -362,6 +368,15 @@ function runGit(target, args) {
 function isGitRepo(target) {
   const r = runGit(target, ["rev-parse", "--is-inside-work-tree"]);
   return r.ok;
+}
+
+/* WSL mounts Windows drives at `/mnt/<drive>/...` (9p / virtio-fs) — file I/O,
+ * especially node_modules churn, is far slower there than on the ext4
+ * filesystem the WSL checkout lives on. Detect it so a deploy into a
+ * Windows-mount project warns instead of silently crawling. `platform` is
+ * injectable so the check is unit-testable on any host. */
+function isWindowsMount(target, platform = process.platform) {
+  return platform !== "win32" && /^\/mnt\/[a-z]\//i.test(String(target));
 }
 
 // Auto-commit ONLY the harness-owned files an update just changed, so the target
@@ -441,6 +456,12 @@ function backup(target, rel, content) {
 
 async function deploy(target, opts) {
   const { name, domain, yes, dryRun, isUpdate, commit, push } = opts || {};
+  if (isWindowsMount(target)) {
+    console.warn(
+      `  WARNING: target "${target}" is on a Windows drive mount (/mnt/...) — file I/O is ` +
+        `much slower than the WSL ext4 filesystem. Prefer a path under ~/develop.`
+    );
+  }
   const existing = readConfig(target);
   const projectName = name || existing.projectName || path.basename(target);
   const driverName = backlogDriverName(projectName);
@@ -1083,6 +1104,7 @@ module.exports = {
   substitute,
   isMemoryFile,
   isOpencodeJson,
+  isWindowsMount,
   sha256,
   readConfig,
   resolveVars,

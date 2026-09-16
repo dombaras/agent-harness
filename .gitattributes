@@ -1,0 +1,7 @@
+# WSL/Linux boundary: POSIX scripts must stay LF so they run under bash after a
+# Windows-side checkout; PowerShell keeps CRLF for native Windows.
+* text=auto
+*.sh text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.ps1 text eol=crlf

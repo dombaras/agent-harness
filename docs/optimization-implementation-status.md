@@ -25,6 +25,32 @@ anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
 ## What shipped
 
+### `0.1.64` — WSL environment hardening
+
+Not a cost item, but recorded for continuity: with WSL2 as the primary
+environment, close the Windows↔Linux boundary gaps found in review.
+
+- **`test:prefix` now catches WSL machine paths.** The machine-specific-path
+  pattern (`templates/scripts/qa/check-prefix-stability.js`) additionally flags
+  `/mnt/<drive>/` mounts and `\\wsl.localhost\` / `\\wsl$\` UNC paths, so a
+  per-machine path that leaks into an always-loaded file fails the gate instead
+  of silently breaking prompt-cache locality. `locations.md` keeps its
+  machine-path exemption.
+- **LF policy across the boundary.** New repo-root `.gitattributes` pins `*.sh`
+  to LF and `*.ps1` to CRLF; `mergeGitattributes` merges the same `*.sh`/`*.ps1`
+  rules into each deployed project's managed section, so a Windows-side
+  checkout/commit can no longer CRLF `switch-reasoning-model.sh` (which then
+  fails under `bash` with `bad interpreter: ...\r`).
+- **POSIX/PowerShell switch-script parity.** A test locks the `.sh` alias map,
+  its find list, and the `.ps1` alias map together, and the README alias list is
+  corrected (stale `zen`/`opencode`/`pickle` entries dropped).
+- **`/mnt/` deploy warning.** `deploy`/`update` warns when the target is a
+  Windows drive mount (slow 9p/virtio-fs I/O) and points at `~/develop`.
+- **WSL runbook** in the repo `AGENTS.md` (ext4 vs `/mnt`, line endings,
+  external-directory allowlist, SSH) and a README "Running on WSL2" section.
+- Tests: extended the `test:prefix` and `.gitattributes` deploy tests; added a
+  `isWindowsMount` unit test and the switch-script parity test.
+
 ### `0.1.62` — funds guard arms on structured failures only (doc-read false positive)
 
 Driven by LibraryOS F-169: the picked-up row never started because the guard

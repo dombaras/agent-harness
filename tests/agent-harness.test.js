@@ -427,6 +427,40 @@ test("switch-reasoning-model.ps1: surfaces 'current value not in replace list' i
   );
 });
 
+test("switch-reasoning-model.sh: alias map, find list, and the .ps1 twin stay in parity", () => {
+  // The POSIX twin is the active switcher on WSL/Linux. Its find list and alias
+  // map are maintained separately, so lock them together and against the .ps1
+  // twin — otherwise a new alias silently fails to replace on one platform.
+  const sh = read(path.join(h.TEMPLATES_DIR, "scripts", "switch-reasoning-model.sh"));
+  const ps1 = read(path.join(h.TEMPLATES_DIR, "scripts", "switch-reasoning-model.ps1"));
+
+  const caseBlock = (sh.match(/case "\$target_lc" in([\s\S]*?)esac/) || [])[1] || "";
+  const shAliasValues = new Set(
+    [...caseBlock.matchAll(/target_model="([^"$][^"]*)"/g)].map((m) => m[1])
+  );
+
+  const listBlock = (sh.match(/reasoning_models="([\s\S]*?)"/) || [])[1] || "";
+  const shFindList = new Set(
+    listBlock.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  );
+
+  const ps1AliasValues = new Set(
+    [...ps1.matchAll(/^\s*"([^"]+)"\s*=\s*"([^"]+)"/gm)].map((m) => m[2])
+  );
+
+  assert.ok(shAliasValues.size > 0, "parsed the .sh alias map");
+  assert.deepStrictEqual(
+    [...shFindList].sort(),
+    [...shAliasValues].sort(),
+    ".sh find list must equal the .sh alias values (every switchable value is replaceable)"
+  );
+  assert.deepStrictEqual(
+    [...ps1AliasValues].sort(),
+    [...shAliasValues].sort(),
+    ".sh and .ps1 alias maps must expose the same models"
+  );
+});
+
 test("board command is deployed to every project (delegates to the deterministic CLI)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
@@ -2616,6 +2650,8 @@ test("deploy merges .gitattributes + registers the row-aware merge driver", asyn
   assert.ok(ga.includes("* text=auto"), "project .gitattributes entry preserved");
   assert.match(ga, /# agent-harness \(managed below\)/);
   assert.ok(ga.includes("BACKLOG.md merge=backlog-demo"), "merge attribute merged with a per-project driver name");
+  assert.ok(ga.includes("*.sh text eol=lf"), "POSIX scripts pinned to LF across the Windows/WSL boundary");
+  assert.ok(ga.includes("*.ps1 text eol=crlf"), "PowerShell scripts pinned to CRLF for Windows");
 
   const driver = git(target, ["config", "--get", "merge.backlog-demo.driver"]);
   assert.ok(driver && driver.includes("merge-backlog.js"), "merge driver registered in local git config: " + driver);
@@ -2649,6 +2685,14 @@ test("nested harness projects get distinct merge-driver names that don't clobber
   assert.ok(rootDriver && rootDriver.includes("merge-backlog.js"), "root driver registered");
   assert.ok(nestedDriver && nestedDriver.includes("merge-backlog.js"), "nested driver registered");
   assert.notStrictEqual(rootDriver, nestedDriver, "each project's driver points at its own script");
+});
+
+test("isWindowsMount flags WSL Windows-drive mounts only on POSIX hosts", () => {
+  assert.strictEqual(h.isWindowsMount("/mnt/c/develop/FamilyBudget", "linux"), true);
+  assert.strictEqual(h.isWindowsMount("/mnt/d/x", "linux"), true);
+  assert.strictEqual(h.isWindowsMount("/home/ronen/develop/x", "linux"), false);
+  assert.strictEqual(h.isWindowsMount("C:\\develop\\x", "win32"), false);
+  assert.strictEqual(h.isWindowsMount("/mnt/c/develop/x", "win32"), false);
 });
 
 // ---------------------------------------------------------------- depends-on
@@ -3945,6 +3989,17 @@ test("test:prefix passes a clean deploy and fails a volatile value in an always-
   assert.strictEqual(dirty.status, 1, "a clock timestamp in the prefix fails the gate");
   assert.match(dirty.stdout, /clock timestamp/);
   assert.match(dirty.stdout, /AGENTS\.md:\d+/);
+
+  // WSL machine paths (drive mount + UNC) are per-machine and must fail too
+  fs.writeFileSync(path.join(target, "AGENTS.md"), "# Demo\n\nDB at /mnt/c/develop/PublicVirtualLibrary\n", "utf8");
+  const wslMount = gate();
+  assert.strictEqual(wslMount.status, 1, "a WSL /mnt/ path in the prefix fails the gate");
+  assert.match(wslMount.stdout, /machine-specific absolute path/);
+
+  fs.writeFileSync(path.join(target, "AGENTS.md"), "# Demo\n\nShare: \\\\wsl$\\Ubuntu-24.04\\srv\\x\n", "utf8");
+  const wslUnc = gate();
+  assert.strictEqual(wslUnc.status, 1, "a WSL UNC path in the prefix fails the gate");
+  assert.match(wslUnc.stdout, /machine-specific absolute path/);
 
   // a bare historical date is stable context and stays allowed
   fs.writeFileSync(path.join(target, "AGENTS.md"), "# Demo\n\nAs of 2026-09-12 this is fine.\n", "utf8");
