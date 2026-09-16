@@ -110,6 +110,8 @@ function sqlString(value) {
  * `.exe` next to it (or the npm-global module path); on POSIX the shim runs. */
 function resolveOpencode(opts = {}) {
   const platform = opts.platform || process.platform;
+  const win32Paths = platform === "win32";
+  const p = win32Paths ? path.win32 : path;
   const env = opts.env || process.env;
   const exists = opts.exists || fs.existsSync;
   const exec = opts.execFileSync || execFileSync;
@@ -123,14 +125,17 @@ function resolveOpencode(opts = {}) {
     found = null;
   }
   if (!found) return null;
-  if (platform === "win32" && !/\.exe$/i.test(found)) {
+  if (win32Paths && !/\.exe$/i.test(found)) {
     // `where.exe` often lists the extensionless POSIX shim first; CreateProcess
     // cannot run it. Prefer the real exe beside it, then the npm-global module.
+    // Node's host `path` is POSIX when the harness runs under WSL/Linux, so the
+    // win32 branch must use `path.win32` (a Windows path split by the host
+    // module yields "." — F-191-adjacent WSL portability).
     const exe = /\.(cmd|ps1)$/i.test(found) ? found.replace(/\.(cmd|ps1)$/i, ".exe") : null;
     for (const cand of [found + ".exe", exe]) {
       if (cand && exists(cand)) return cand;
     }
-    const npmExe = path.join(path.dirname(found), "node_modules", "opencode-ai", "bin", "opencode.exe");
+    const npmExe = p.join(p.dirname(found), "node_modules", "opencode-ai", "bin", "opencode.exe");
     if (exists(npmExe)) return npmExe;
     return null;
   }
