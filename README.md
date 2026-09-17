@@ -254,12 +254,21 @@ so agents see complete descriptions.
   first. `/next`, `take`, and `worktree` skip or refuse a row whose dependencies aren't
   archived — no more "until F-041" living in prose.
 - **Isolation is a worktree per feature**: `backlog worktree <id>` (from the MAIN tree)
-  creates a `git worktree` + branch and auto-takes the row. Every feature works in its own
-  checkout — `main` stays board + shippable code only — so one session's uncommitted work
-  can't leak into another's pre-push gate. Worktrees land in a single hidden container
-  sibling, `<repo>/../.worktrees/<repo>/<id>`, so the parent folder (e.g. `C:\develop`)
-  only ever holds top-level projects. `backlog archive <id>` removes the shipped
-  feature's worktree + merged branch, so a session cleans up after itself on close.
+  creates a `git worktree` + branch and auto-takes the row. The branch is based on the
+  current upstream (`origin/main`), never a stale local HEAD, and `--no-track` keeps it
+  from silently tracking main. Every feature works in its own checkout — `main` stays
+  board + shippable code only — so one session's uncommitted work can't leak into another's
+  pre-push gate. Worktrees land in a single hidden container sibling,
+  `<repo>/../.worktrees/<repo>/<id>`, so the parent folder (e.g. `C:\develop`) only ever
+  holds top-level projects. `backlog archive <id>` removes the shipped feature's worktree +
+  merged branch, so a session cleans up after itself on close.
+- **Main-checkout freshness**: because a feature's commits reach `origin/main` from its own
+  worktree, the MAIN checkout's board can lag origin until it is pulled. `backlog worktree`
+  and `backlog archive` sync it first — fast-forwarding a clean, strictly-behind branch and
+  *reporting* (never silently rewriting) a diverged one. Symmetrically, `agent-harness
+  update` fast-forwards a stale target before it auto-commits and refuses to commit onto a
+  diverged branch, so a harness `chore` commit can never land on a stale base and split the
+  branch (`--no-fetch` skips the network step for `backlog`).
 - **Row-aware merge driver**: `.gitattributes` routes `BACKLOG.md` through
   `scripts/qa/merge-backlog.js` (wired by `init`/`update`), so two sessions editing
   *disjoint* rows merge by ID instead of conflicting — concurrent take/archive no longer

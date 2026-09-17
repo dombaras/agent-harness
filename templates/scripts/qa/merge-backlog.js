@@ -112,9 +112,13 @@ function sectionBlocks(lines) {
   return blocks;
 }
 
-function decode(v) {
+/* Decode a `<section>\0<row line>` value into a resolved row. The row KEY is
+ * carried through explicitly: `rebuild()` orders and de-dupes by `r.key`, so
+ * dropping it here collapsed every section to a single row (last wins) on any
+ * merge that took the driver path. */
+function decode(key, v) {
   const i = v.indexOf("\u0000");
-  return { section: v.slice(0, i), line: v.slice(i + 1) };
+  return { key, section: v.slice(0, i), line: v.slice(i + 1) };
 }
 
 function priorityRank(line) {
@@ -146,18 +150,18 @@ function merge(baseSrc, oursSrc, theirsSrc) {
     const ov = om.get(k);
     const tv = tm.get(k);
     if (ov === tv) {
-      if (ov !== undefined) resolved.set(k, decode(ov));
+      if (ov !== undefined) resolved.set(k, decode(k, ov));
       // else: deleted in both -> drop
       continue;
     }
     if (ov === bv) {
       // ours unchanged -> take theirs (or deletion)
-      if (tv !== undefined) resolved.set(k, decode(tv));
+      if (tv !== undefined) resolved.set(k, decode(k, tv));
       continue;
     }
     if (tv === bv) {
       // theirs unchanged -> take ours (or deletion)
-      if (ov !== undefined) resolved.set(k, decode(ov));
+      if (ov !== undefined) resolved.set(k, decode(k, ov));
       continue;
     }
     // both sides changed the same row, and differently -> conflict

@@ -7,6 +7,10 @@ WSL2) while verifying that the canonical `BACKLOG.md` can be written concurrentl
 from (a) agent `backlog_*` tools / `scripts/backlog.js` and (b) the superadmin web
 UI (`app/api/admin/backlog/route.ts`, which shells out to the same CLI).
 
+**Item 7 is FIXED in `0.1.68`** — a `merge-backlog.js` data-integrity defect
+found 2026-09-17 in the same project (a conflicting `BACKLOG.md` merge dropped
+nearly every row). Details below.
+
 Every item below is harness-owned (`templates/` and `bin/agent-harness.js`) — fix
 here, bump `package.json`, `npm run lint` + `npm test` green, commit
 `fix: … (0.1.x)`, then deploy with
@@ -300,3 +304,107 @@ In a temp repo with one linked worktree, run `update --target <worktree>` and
 assert `git -C <main> config merge.<driver>.driver` resolves to the **main**
 worktree's `scripts/qa/merge-backlog.js`, then remove the worktree and assert the
 configured path still exists.
+
+---
+
+## 7. `merge-backlog.js` `rebuild()` drops nearly every row — `resolved` values carry no `key`
+
+Severity: **HIGH** — board data integrity; a single conflicting row destroys the
+rest of `BACKLOG.md`.
+
+Status: **FIXED in `0.1.68`** (found 2026-09-17; `decode()` now carries the row
+key through to `rebuild()`, plus multi-row-per-section regression tests).
+`templates/scripts/qa/merge-backlog.js` (identical to the deployed LibraryOS
+twin).
+
+### Symptom
+A `git stash pop` (or any merge) that hits a genuine `BACKLOG.md` row conflict
+leaves the working file **almost empty**. On the WSL LibraryOS clone, syncing local
+`main` with `origin/main` (shipped F-153 archive row vs. an uncommitted
+In-progress row for the same id) produced:
+
+- driver: `merge-backlog: 1 conflicting row(s): F-153`
+- `.gitattributes`-driven `%A` board: **884 lines / 228 rows → 73 lines**
+- only **one** row survived per section; 207 of 216 resolved rows were lost.
+
+Nothing was permanently lost only because a pre-stash copy of the board existed
+(`cp BACKLOG.md` before stashing). A merge with no such backup loses the board.
+
+### Root cause (proven, reproduced)
+`merge()` stores `resolved` values as `decode(v)` = `{ section, line }` — **no
+`key`**:
+
+```js
+function decode(v) {
+  const i = v.indexOf("\u0000");
+  return { section: v.slice(0, i), line: v.slice(i + 1) };   // <-- no key
+}
+// 3 set sites, e.g.:
+resolved.set(k, decode(ov));   // the map key `k` is dropped from the value
+```
+
+But `rebuild()` reads the value's `.key`:
+
+```js
+for (const k of oursOrder.get(section) || []) {
+  const r = rows.find((x) => x.key === k);   // x.key === undefined -> never matches
+  if (r) { seen.add(k); ordered.set(k, r.line); }
+}
+for (const r of rows) if (!seen.has(r.key)) ordered.set(r.key, r.line);  // keyed on undefined
+```
+
+`x.key` / `r.key` are always `undefined`, so the first loop is a no-op and the
+fallback collapses each section's `ordered` Map to a single entry (last row wins).
+`merge()` itself is correct (216 rows resolved, 1 conflict) — the corruption is
+entirely in `rebuild()`.
+
+Instrumented run (base = merge base, ours = 884-line board, theirs = 885-line):
+
+```
+resolved: 216  conflicts: 1
+archive  start=114 del=157 ins=3   885 -> 731    # ins=3 = header+sep+1 row, not 162
+frozen   start=96  del=15  ins=3
+open     start=51  del=40  ins=3
+queued   start=44  del=2   ins=2
+inprogress start=37 del=2  ins=3
+epics    start=18  del=12  ins=3
+mod.rebuild lines: 674 (45 non-empty)
+```
+
+Secondary amplification: the LibraryOS board currently carries ~628 blank lines,
+which `rebuild()` preserves; the conflict branch's `out.replace(/\s*$/, "")` then
+trims the trailing blanks before appending the conflict block, so the on-disk
+artifact collapses to 73 lines. The root cause is the missing key, not the trim.
+
+### Why the tests missed it
+`tests/agent-harness.test.js` merge-backlog tests use fixtures with **at most one
+row per section** and assert "F-001 appears exactly once" / "F-002 appears exactly
+once". A section collapsed to its single row is indistinguishable from a correct
+merge, so `rebuild()`'s row-dropping is invisible. `merge()`'s `resolved` Map is
+asserted; `rebuild()` is never checked for preserving N>1 rows.
+
+### Fix
+Carry the row key into the resolved value so `rebuild()` can key by it. In
+`merge()`:
+
+```js
+const dec = (v) => { const { section, line } = decode(v); return { key: k, section, line }; };
+resolved.set(k, dec(ov));   // at all three set sites
+```
+
+(or, in `rebuild()`, iterate `for (const [k, r] of resolved)` and assign
+`r.key = k` instead of iterating `for (const [, r] of resolved)`). Add `key` to
+the documented shape of a `merge()` resolved value.
+
+### Regression test
+In `agent-harness.test.js`: a board with **multiple rows per section** (e.g. open
+with 2+ and archive with 3+), run `merge()` + `rebuild()`, and assert every input
+row key appears exactly once and no section loses rows. Add an end-to-end driver
+conflict run (both sides change one row) over such a board and assert all
+non-conflicting rows survive in the written `%A`. Keep `npm test` green.
+
+### Acceptance
+A conflicting `BACKLOG.md` merge preserves every non-conflicting row: the written
+board has no fewer data rows than `|(base ∪ ours ∪ theirs) minus conflicts|`, and
+`rebuild()` round-trips a multi-row-per-section board unchanged when both sides
+are equal.

@@ -21,9 +21,11 @@
  *   freeze <id> [--why x] [--reopen x]  -> Frozen (parked)
  *   depends <id> --on <ids|?>           set a row's "Depends on" cell (Open/Queued)
  *   owns <id> --files "glob, glob"      record the files/globs a row owns
- *   worktree <id> [--branch b] [--dir d] [--handoff path]
+ *   worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch]
  *                                       create a git worktree + branch for <id>
  *                                       and record it in the row's Handoff cell.
+ *                                       Branches from the current upstream
+ *                                       (origin/main), not a stale local HEAD.
  *                                       Default location: <repo>/../.worktrees/<repo>/<id>
  *                                       (a single container sibling, so one worktree
  *                                       per feature never pollutes the parent folder).
@@ -38,6 +40,13 @@
  * push when that collision is provable). Run it from the MAIN tree. `archive`
  * reverses it: a shipped feature's worktree + merged branch are removed, so
  * per-feature checkouts never pile up after sessions close.
+ *
+ * Because a feature's commits reach `origin/main` from its own worktree, the
+ * MAIN checkout's board can lag origin until it is pulled. `worktree` and
+ * `archive` therefore sync the main checkout first — fast-forwarding a clean,
+ * strictly-behind branch and reporting (never silently rewriting) a diverged
+ * one — and `worktree` bases the new branch on the current upstream, not a
+ * stale local HEAD. `--no-fetch` skips the network step for offline use.
  */
 const fs = require("fs");
 const path = require("path");
@@ -865,6 +874,56 @@ function cmdOwns(state, argv) {
   return { id, files };
 }
 
+// ---------------------------------------------------------------- main checkout sync
+/* The board is per-checkout: a feature committed + pushed from its own worktree
+ * lands on `origin/main`, but the main checkout's checked-out BACKLOG.md stays
+ * put until it is pulled — so the main tree shows a stale board and, worse, a
+ * later local/auto-commit on that base diverges from origin. `worktree` and
+ * `archive` run from the MAIN tree, so they sync it first: a clean, strictly-
+ * behind branch is fast-forwarded; a diverged branch is reported and left alone.
+ * Best-effort throughout — offline or no-upstream is a quiet no-op. */
+function gitCmd(root, args, opts) {
+  return spawnSync("git", ["-C", root, ...args], {
+    encoding: "utf8",
+    timeout: (opts && opts.timeout) || 0,
+  });
+}
+
+function currentUpstream(root) {
+  const r = gitCmd(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+  return r.status === 0 ? (r.stdout || "").trim() : "";
+}
+
+function refreshMainCheckout(root, opts) {
+  const notes = [];
+  const inside = gitCmd(root, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.status !== 0 || (inside.stdout || "").trim() !== "true") return notes;
+  if (!opts || opts.fetch !== false) {
+    gitCmd(root, ["fetch", "--quiet", "origin"], { timeout: 10000 });
+  }
+  const upstream = currentUpstream(root);
+  if (!upstream) return notes;
+  const counts = gitCmd(root, ["rev-list", "--left-right", "--count", `HEAD...${upstream}`]);
+  if (counts.status !== 0) return notes;
+  const [ahead, behind] = (counts.stdout || "").trim().split(/\s+/).map((n) => parseInt(n, 10) || 0);
+  if (!behind) return notes;
+  if (ahead) {
+    notes.push(`main is ${behind} behind and ${ahead} ahead of ${upstream} — reconcile (git pull --rebase) before trusting this board`);
+    return notes;
+  }
+  // Tracked modifications only: the live `.backlog.lock` DIRECTORY (and other
+  // harness artifacts) are untracked and must not read as "dirty" mid-write.
+  const dirty = gitCmd(root, ["status", "--porcelain", "--untracked-files=no"]);
+  if ((dirty.stdout || "").trim()) {
+    notes.push(`main is ${behind} behind ${upstream} — uncommitted changes present; not fast-forwarding`);
+    return notes;
+  }
+  const ff = gitCmd(root, ["merge", "--ff-only", upstream]);
+  if (ff.status === 0) notes.push(`fast-forwarded main to ${upstream} (${behind} commit(s))`);
+  else notes.push(`main is ${behind} behind ${upstream} — could not fast-forward; reconcile manually`);
+  return notes;
+}
+
 /* Run a project-supplied worktree bootstrap after `git worktree add`, so a fresh
  * checkout is immediately gate-runnable. The harness is project-agnostic, so the
  * setup is a CONVENTION script: `scripts/worktree-setup.js`, looked up in the new
@@ -932,8 +991,14 @@ function cmdWorktree(state, argv) {
     handoff = claimed || existing || `.agents/handoffs/${id}.md`;
   }
 
-  // Create the worktree + branch.
-  const res = spawnSync("git", ["-C", root, "worktree", "add", dir, "-b", branch], { encoding: "utf8" });
+  // Create the worktree + branch from the CURRENT upstream (`origin/main`), not
+  // a possibly-stale local HEAD left behind by another feature's worktree push.
+  // `--no-track` keeps the feature branch from silently tracking main (so a bare
+  // `git push` in the worktree can't target main).
+  const base = currentUpstream(root) || "HEAD";
+  const res = spawnSync("git", ["-C", root, "worktree", "add", "--no-track", "-b", branch, dir, base], {
+    encoding: "utf8",
+  });
   if (res.status !== 0) {
     const err = (res.stderr || res.stdout || "").trim();
     throw new Error(`worktree: git worktree add failed: ${err}`);
@@ -952,7 +1017,7 @@ function cmdWorktree(state, argv) {
     state.lines = setRows(state.lines, "inprogress", inprog);
   }
 
-  return { id, branch, dir: rel };
+  return { id, branch, dir: rel, base };
 }
 
 // ---------------------------------------------------------------- dispatch
@@ -975,7 +1040,8 @@ function formatResult(cmd, out) {
   if (cmd === "priority") return `set ${out.id} -> ${out.priority}`;
   if (cmd === "depends") return `set ${out.id} -> depends on ${out.dependsOn}`;
   if (cmd === "owns") return `recorded ${out.id} owns: ${out.files}`;
-  if (cmd === "worktree") return `isolated ${out.id} -> worktree: ${out.dir} (branch: ${out.branch})`;
+  if (cmd === "worktree")
+    return `isolated ${out.id} -> worktree: ${out.dir} (branch: ${out.branch}${out.base && out.base !== "HEAD" ? `; base: ${out.base}` : ""})`;
   if (cmd === "epic-add") return `added epic ${out.key} (${out.label})`;
   if (cmd === "epic") return `set ${out.id} -> ${out.epic}`;
   return "";
@@ -1002,6 +1068,7 @@ function parseArgs(argv) {
     else if (a === "--on") args.on = argv[++i];
     else if (a === "--files") args.files = argv[++i];
     else if (a === "--take") args.take = true;
+    else if (a === "--no-fetch") args["no-fetch"] = true;
     else if (a === "--all") args.all = true;
     else if (a === "--full") args.full = true;
     else if (a === "--limit") args.limit = argv[++i];
@@ -1026,7 +1093,7 @@ function usage() {
       "  node scripts/backlog.js priority <id> --p P1..P4\n" +
       "  node scripts/backlog.js depends <id> --on <ids|?>\n" +
       "  node scripts/backlog.js owns <id> --files \"glob, glob\"\n" +
-      "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path]\n" +
+      "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch]\n" +
       "  node scripts/backlog.js epic-add <key> --label <x> [--goal <y>]\n" +
       "  node scripts/backlog.js epic <id> --to <key>\n"
   );
@@ -1068,6 +1135,13 @@ function main() {
   // exclusive lock, so two concurrent sessions can't both claim the same row.
   try {
     withLock(root, () => {
+      // `worktree`/`archive` run from the main tree and depend on its board being
+      // current; a feature pushed from its own worktree leaves it behind. Sync it
+      // first (fast-forward when clean and strictly behind), then read the board.
+      let refreshNotes = [];
+      if (cmd === "worktree" || cmd === "archive") {
+        refreshNotes = refreshMainCheckout(root, { fetch: !args["no-fetch"] });
+      }
       const state = readBacklog(root);
       let out;
       if (cmd === "add") out = cmdAdd(state, args);
@@ -1094,6 +1168,7 @@ function main() {
         fs.writeFileSync(state.p, serializeBacklog(state), "utf8");
         console.log(formatResult(cmd, out));
       }
+      for (const note of refreshNotes) console.log(`board: ${note}`);
     });
   } catch (e) {
     console.error(`backlog: ${e.message}`);

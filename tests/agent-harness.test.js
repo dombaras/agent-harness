@@ -1535,6 +1535,77 @@ test("update auto-commit never sweeps a path another session already staged", as
   );
 });
 
+// A local bare `origin`, a `target` clone tracking `main`, and a helper that
+// advances origin from a second clone — the shape a feature-worktree push leaves
+// the main checkout in (behind, with the main checkout never pulled).
+function trackedRepoFixture() {
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q", "-b", "main"]);
+  const target = tmpdir();
+  git(target, ["init", "-q", "-b", "main"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+  git(target, ["remote", "add", "origin", origin]);
+  git(target, ["push", "-q", "-u", "origin", "main"]);
+  const advanceOrigin = (name) => {
+    const other = tmpdir();
+    execFileSync("git", ["clone", "-q", origin, other], { encoding: "utf8" });
+    git(other, ["config", "user.email", "o@o.o"]);
+    git(other, ["config", "user.name", "o"]);
+    fs.writeFileSync(path.join(other, name), "from origin\n", "utf8");
+    git(other, ["add", "-A"]);
+    git(other, ["commit", "-q", "-m", `origin advance (${name})`]);
+    git(other, ["push", "-q", "origin", "main"]);
+  };
+  return { origin, target, advanceOrigin };
+}
+
+test("update fast-forwards a clean stale branch, then commits on the current base", async () => {
+  const { target, advanceOrigin } = trackedRepoFixture();
+  advanceOrigin("origin-only.txt");
+
+  const result = await h.deploy(target, {
+    name: "Demo",
+    yes: true,
+    isUpdate: true,
+    commit: true,
+    push: true,
+  });
+
+  assert.ok(result.syncResult && result.syncResult.synced, "the stale branch was fast-forwarded");
+  const counts = git(target, ["rev-list", "--left-right", "--count", "HEAD...origin/main"])
+    .split(/\s+/)
+    .map((n) => parseInt(n, 10) || 0);
+  assert.strictEqual(counts[1], 0, "target is no longer behind origin/main");
+  assert.strictEqual(
+    git(target, ["rev-parse", "HEAD"]),
+    git(target, ["rev-parse", "origin/main"]),
+    "the harness commit pushed cleanly (no divergence)"
+  );
+  assert.match(git(target, ["log", "--oneline", "-5"]), /origin advance/, "the origin commit is an ancestor");
+});
+
+test("update refuses to commit onto a diverged branch (behind and ahead of origin)", async () => {
+  const { target, advanceOrigin } = trackedRepoFixture();
+  advanceOrigin("origin-only.txt");
+
+  // a local commit on the stale base -> ahead AND behind (diverged)
+  fs.writeFileSync(path.join(target, "local-only.txt"), "mine\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "local work"]);
+
+  await assert.rejects(
+    h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true, push: false }),
+    /diverged/
+  );
+
+  assert.ok(
+    !/chore\(harness\)/.test(git(target, ["log", "--oneline"])),
+    "no harness commit was created on the diverged branch"
+  );
+});
+
 test("update force-adds harness files the project gitignores and still commits", async () => {
   const target = tmpdir();
   git(target, ["init", "-q"]);
@@ -2739,6 +2810,71 @@ test("backlog archive removes the shipped feature's worktree", () => {
   assert.match(a.out, /removed worktree/);
 });
 
+/* A feature-worktree push reaches `origin/main` without updating the main
+ * checkout. These two tests cover the two ways `backlog worktree` handles that:
+ * fast-forward a clean stale main, and base the new branch on origin/main even
+ * when the main checkout's own commits keep it from fast-forwarding. */
+function backlogRepoOnOrigin() {
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q", "-b", "main"]);
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q", "-b", "main"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  git(t, ["remote", "add", "origin", origin]);
+  git(t, ["push", "-q", "-u", "origin", "main"]);
+
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+  git(t, ["add", "BACKLOG.md"]);
+  git(t, ["commit", "-q", "-m", "row"]);
+  git(t, ["push", "-q", "origin", "main"]);
+
+  // advance origin/main from a second clone (the worktree push the main tree misses)
+  const other = tmpdir();
+  execFileSync("git", ["clone", "-q", origin, other], { encoding: "utf8" });
+  git(other, ["config", "user.email", "o@o.o"]);
+  git(other, ["config", "user.name", "o"]);
+  fs.writeFileSync(path.join(other, "origin-only.txt"), "from origin\n", "utf8");
+  git(other, ["add", "-A"]);
+  git(other, ["commit", "-q", "-m", "origin advance"]);
+  git(other, ["push", "-q", "origin", "main"]);
+  return { origin, t };
+}
+
+test("backlog worktree refreshes a clean stale main and bases the branch on origin/main", () => {
+  const { t } = backlogRepoOnOrigin();
+
+  const suffix = path.basename(t);
+  const branch = `b-${suffix}`;
+  const dir = path.join(os.tmpdir(), `wt-sync-${suffix}`);
+  const r = runBacklogCli(t, ["worktree", "F-001", "--branch", branch, "--dir", dir]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /board: fast-forwarded main to origin\/main/);
+  assert.ok(exists(path.join(t, "origin-only.txt")), "main checkout was fast-forwarded");
+  assert.ok(exists(path.join(dir, "origin-only.txt")), "worktree based on origin/main");
+  assert.match(r.out, /base: origin\/main/);
+});
+
+test("backlog worktree bases the branch on origin/main when local main cannot fast-forward", () => {
+  const { t } = backlogRepoOnOrigin();
+
+  // a local commit on the stale base: refresh must report, not rewrite
+  fs.writeFileSync(path.join(t, "local-only.txt"), "mine\n", "utf8");
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "local work"]);
+
+  const suffix = path.basename(t);
+  const branch = `b-${suffix}`;
+  const dir = path.join(os.tmpdir(), `wt-diverge-${suffix}`);
+  const r = runBacklogCli(t, ["worktree", "F-001", "--branch", branch, "--dir", dir]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /board: main is .* behind and .* ahead/);
+  assert.ok(exists(path.join(dir, "origin-only.txt")), "worktree still based on origin/main");
+  assert.ok(!exists(path.join(dir, "local-only.txt")), "worktree does not inherit the diverged local commit");
+});
+
 test("test:concurrency + run-clean are deployed and auto-wired", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
@@ -2846,6 +2982,69 @@ test("merge-backlog exits 1 with conflict markers when both sides change the sam
   assert.match(r.out, /=======/);
   assert.match(r.out, /P1/);
   assert.match(r.out, /P2/);
+});
+
+test("merge-backlog rebuild preserves every row when a section has multiple rows", () => {
+  // Regression for the missing `key` in resolved values: rebuild() keyed by
+  // `r.key` (undefined), so every section collapsed to its last row. Both sides
+  // equal here, so a correct round-trip must keep all rows.
+  const src = board({
+    open: [
+      "| F-001 | P1 | ? | a | ev | ? |",
+      "| F-002 | P2 | ? | b | ev | ? |",
+      "| F-003 | P3 | ? | c | ev | ? |",
+    ],
+    archive: [
+      "| F-010 | ? | x | shipped |",
+      "| F-011 | ? | y | shipped |",
+      "| F-012 | ? | z | shipped |",
+    ],
+  });
+
+  const { resolved, conflicts } = mb.merge(src, src, src);
+  assert.strictEqual(conflicts.length, 0);
+  const out = mb.rebuild(src, resolved);
+  for (const id of ["F-001", "F-002", "F-003", "F-010", "F-011", "F-012"]) {
+    assert.strictEqual((out.match(new RegExp(`\\| ${id} \\|`, "g")) || []).length, 1, `${id} appears exactly once`);
+  }
+});
+
+test("merge-backlog conflict preserves every non-conflicting row in the written board", () => {
+  const base = board({
+    open: [
+      "| F-001 | P3 | ? | a | ev | ? |",
+      "| F-002 | P2 | ? | b | ev | ? |",
+      "| F-003 | P1 | ? | c | ev | ? |",
+    ],
+    archive: ["| F-010 | ? | x | shipped |", "| F-011 | ? | y | shipped |"],
+  });
+  const ours = board({
+    open: [
+      "| F-001 | P1 | ? | a | ev | ? |", // both sides change F-001 -> conflict
+      "| F-002 | P2 | ? | b | ev | ? |",
+      "| F-003 | P1 | ? | c | ev | ? |",
+    ],
+    archive: ["| F-010 | ? | x | shipped |", "| F-011 | ? | y | shipped |"],
+  });
+  const theirs = board({
+    open: [
+      "| F-001 | P2 | ? | a | ev | ? |",
+      "| F-002 | P2 | ? | b | ev | ? |",
+      "| F-003 | P1 | ? | c | ev | ? |",
+    ],
+    archive: ["| F-010 | ? | x | shipped |", "| F-011 | ? | y | shipped |"],
+  });
+
+  const r = runMergeDriver(tmpdir(), base, ours, theirs);
+  assert.strictEqual(r.status, 1, r.err);
+  assert.match(r.out, /<<<<<<< ours/);
+  for (const id of ["F-002", "F-003", "F-010", "F-011"]) {
+    assert.strictEqual(
+      (r.out.match(new RegExp(`\\| ${id} \\|`, "g")) || []).length,
+      1,
+      `non-conflicting ${id} survived the conflict`
+    );
+  }
 });
 
 test("deploy merges .gitattributes + registers the row-aware merge driver", async () => {

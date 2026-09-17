@@ -385,10 +385,11 @@ function registerBacklogMergeDriver(target, driverName) {
 
 // ---------------------------------------------------------------- git helpers
 
-function runGit(target, args) {
+function runGit(target, args, opts) {
   const result = require("child_process").spawnSync("git", args, {
     cwd: target,
     encoding: "utf8",
+    ...(opts && opts.timeout ? { timeout: opts.timeout } : {}),
   });
   return { ok: result.status === 0, status: result.status, out: (result.stdout || "").trim(), err: (result.stderr || "").trim() };
 }
@@ -405,6 +406,60 @@ function isGitRepo(target) {
  * injectable so the check is unit-testable on any host. */
 function isWindowsMount(target, platform = process.platform) {
   return platform !== "win32" && /^\/mnt\/[a-z]\//i.test(String(target));
+}
+
+/* Compare HEAD to its upstream tracking branch after a best-effort fetch. Pure
+ * read — never mutates. `known` is true only when a tracking branch exists and
+ * the ahead/behind counts were read, so a repo without a remote is a no-op. */
+function upstreamState(target) {
+  const st = { upstream: "", ahead: 0, behind: 0, known: false };
+  if (!isGitRepo(target)) return st;
+  runGit(target, ["fetch", "--quiet", "origin"], { timeout: 10000 });
+  const track = runGit(target, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+  if (!track.ok || !track.out) return st;
+  st.upstream = track.out;
+  const counts = runGit(target, ["rev-list", "--left-right", "--count", `HEAD...${st.upstream}`]);
+  if (!counts.ok) return st;
+  const [ahead, behind] = counts.out.split(/\s+/).map((n) => parseInt(n, 10) || 0);
+  st.ahead = ahead || 0;
+  st.behind = behind || 0;
+  st.known = true;
+  return st;
+}
+
+/* Keep the target's branch current before the harness writes or commits onto it.
+ * Feature work committed and pushed from its own `backlog worktree` leaves the
+ * main checkout behind; if `update` then auto-commits a `chore(harness)` commit
+ * on that stale base, the local branch diverges (behind AND ahead of origin) and
+ * the push is rejected. A clean, strictly-behind branch is fast-forwarded so the
+ * deploy lands on the current base; a diverged branch is refused so the operator
+ * reconciles first (`git pull --rebase`) instead of deepening the split. Dry-run
+ * only reports. Returns { blocked, notes, state, synced? }. */
+function syncTargetBranch(target, dryRun) {
+  const notes = [];
+  const st = upstreamState(target);
+  if (!st.known || st.behind === 0) return { blocked: false, notes, state: st };
+  if (st.ahead > 0) {
+    notes.push(
+      `target branch is ${st.behind} behind and ${st.ahead} ahead of ${st.upstream} — ` +
+        `refusing to write/commit onto a diverged branch; reconcile first: git pull --rebase`
+    );
+    return { blocked: true, notes, state: st };
+  }
+  if (dryRun) {
+    notes.push(`would fast-forward ${st.behind} commit(s) to ${st.upstream}`);
+    return { blocked: false, notes, state: st };
+  }
+  const ff = runGit(target, ["merge", "--ff-only", st.upstream]);
+  if (!ff.ok) {
+    notes.push(
+      `target is ${st.behind} behind ${st.upstream} but could not fast-forward ` +
+        `(uncommitted changes overlap) — reconcile first: git pull --rebase`
+    );
+    return { blocked: true, notes, state: st };
+  }
+  notes.push(`fast-forwarded ${st.behind} commit(s) to ${st.upstream}`);
+  return { blocked: false, notes, state: st, synced: true };
 }
 
 // Auto-commit ONLY the harness-owned files an update just changed, so the target
@@ -424,6 +479,19 @@ function commitHarnessChanges(target, changedRels, opts) {
   if (!isGitRepo(target)) {
     out.skipped.push("not a git repo");
     return out;
+  }
+  // Final integrate guard: never create the commit on a stale base. The deploy
+  // path fast-forwards a clean behind branch first; if origin advanced again
+  // mid-deploy, refuse rather than bake in a divergent local commit.
+  if (opts.checkUpstream !== false) {
+    const st = upstreamState(target);
+    if (st.known && st.behind > 0) {
+      out.skipped.push(
+        `branch is ${st.behind} behind ${st.upstream} — not committing (would diverge); ` +
+          `run git pull --rebase and re-run update`
+      );
+      return out;
+    }
   }
   if (changedRels.length === 0) {
     out.skipped.push("no harness files changed");
@@ -514,6 +582,17 @@ async function deploy(target, opts) {
       `"${projectName}" has harness v${existing.version} — NEWER than this CLI (v${PKG.version}). ` +
         `Not downgrading. Publish v${existing.version} (or this CLI) so \`update\` can re-sync from the registry.`
     );
+  }
+
+  // Integrate-early: bring a stale checkout current (or refuse a diverged one)
+  // BEFORE any harness file is written, so the auto-commit below can never land
+  // on the stale base a worktree push left behind. Skipped when this run will
+  // not commit (--no-commit) and reported-only on dry-run.
+  let syncResult = null;
+  if (commit) {
+    syncResult = syncTargetBranch(target, !!dryRun);
+    for (const note of syncResult.notes) console.log(`  ${note}`);
+    if (syncResult.blocked) throw new Error(`"${projectName}": ${syncResult.notes[0]}`);
   }
 
   const previousFiles = existing.files || {};
@@ -663,6 +742,7 @@ async function deploy(target, opts) {
     actions,
     dryRun: !!dryRun,
     commitResult,
+    syncResult,
     isUpdate: !!isUpdate,
     nothingToUpdate,
     priorVersion: existing.version || null,
