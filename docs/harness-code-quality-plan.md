@@ -1,5 +1,9 @@
 # Agent Harness — Root Code-Quality Improvement Plan (post-F-104)
 
+> **Historical (shipped in `0.1.44`).** Kept for design rationale; M1–M7 all
+> shipped (see `docs/optimization-implementation-status.md`). **Not live work.**
+> Current harness open items are tracked in `docs/open-work.md`.
+
 **Status:** implemented in **0.1.44** — see `docs/optimization-implementation-status.md`
 for the standing workflow; this plan documents what shipped and why.
 **Version shipped:** 0.1.44

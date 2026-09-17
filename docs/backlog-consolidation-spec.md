@@ -1,5 +1,11 @@
 # Harness feature spec — canonical single-file backlog (`BACKLOG.md`)
 
+> **Historical (shipped).** This is the 2026-08-30 spec that drove the canonical
+> `BACKLOG.md` board; the capability shipped in the harness shortly after it and
+> has since evolved (board hardening in `0.1.44`/`0.1.65`/`0.1.67`, merge-driver
+> and worktree fixes in `0.1.68`). Kept for design rationale only — **not live
+> work**. Current harness open items are tracked in `docs/open-work.md`.
+
 > Author: LibraryOS orchestrator, 2026-08-30. For the agent implementing this in
 > `@dombaras/agent-harness` (repo `C:\develop\agent-harness`). This spec describes a
 > NEW harness capability; it does not change LibraryOS code paths.

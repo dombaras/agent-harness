@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.65)
+# Agent Harness Optimization — Implementation Status (v0.1.68)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -9,21 +9,59 @@ Purpose: record exactly what shipped, the decisions that changed the plan, and
 where to pick up next session. The harness is a **template/deploy package** —
 anything marked "rule/policy" is agent-facing prose, not mechanically enforced.
 
+**Open work is tracked in [`docs/open-work.md`](open-work.md)** (the harness has
+no `BACKLOG.md`); this doc is the shipped-work record and decision log.
+
 ---
 
 ## Status snapshot
 
 | Item | Value |
 |---|---|
-| Version | `0.1.65` |
-| Shipped this session | `0.1.65` backlog integrity + auto-commit scope + merge-driver hardening (the `docs/backlog-integrity-fixes.md` queue, items 1–6) |
-| Lint / tests | green (`npm run lint`, `npm test` — 177 pass) |
-| LibraryOS | `0.1.62` deployed + pushed (harness auto-commit `443af25`); `model-routing.md` is gitignored/local-only and was updated in place; F-169 (the false-stop victim) itself shipped/archived in-session (`9d45b04`) |
-| FamilyBudget | `0.1.62` deployed (local repo, no remote); routing doc update `8aee12d` |
+| Version | `0.1.68` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7) |
+| Lint / tests | green (`npm run lint`, `npm test` — 185 pass) |
+| LibraryOS | `0.1.68` deployed (`.harness.json`; auto-commit `acb8200`); `model-routing.md` is gitignored/local-only and updated in place |
+| FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
+| Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) |
 
 ---
 
 ## What shipped
+
+### `0.1.68` — integrate-early guard, worktree/main sync, merge-backlog row loss
+
+- **Integrate-early guard.** `update` fetches and fast-forwards a stale target
+  before auto-commit, refuses a diverged branch, and re-checks before committing
+  — no more harness commits on a stale base.
+- **Worktree/main sync.** `backlog worktree` branches from `origin/main`
+  (`--no-track`) instead of stale local `HEAD`; `worktree`/`archive` fast-forward
+  a clean, strictly-behind `main` first (`--no-fetch` to skip).
+- **`merge-backlog` row loss (`backlog-integrity-fixes` item 7).** `decode()`
+  carries the row key so `rebuild()` stops collapsing a section to one row on a
+  conflicting merge.
+- Tests: regression tests for all three.
+
+### `0.1.67` — session leases, worktree bootstrap, nested board merge
+
+- **Session leases.** `context-guard` writes `.serve/sessions/<id>.json`;
+  `test:concurrency` fails when two live primary sessions share one tree (clean
+  or dirty).
+- **Worktree bootstrap.** `backlog worktree` runs a project
+  `scripts/worktree-setup.js`; a fresh worktree links the gitignored trees
+  (root `node_modules`, `mobile/node_modules`, `prisma/generated`, and the
+  harness skills + `model-routing.md`) so the repo gates run in-worktree
+  (extends F-183/F-228).
+- **Nested board merge.** Nested `**/BACKLOG.md` routes through the row-aware
+  merge driver; `check-quality` skips convention-loaded entrypoints (opencode
+  plugins/tools, Next routes/middleware).
+- **`node` resolution fix.** opencode tools resolve a real node via `nodeBin()`
+  (`OPENCODE_NODE` override → `Bun.which` skipping WSL `/mnt` → bare `"node"`)
+  instead of `process.execPath`, which in opencode's compiled-binary runtime is
+  `opencode.exe` (a `0.1.65` regression).
+- devops-engineer skill documents the expand/contract destructive-migration
+  rollout.
+- **`0.1.66` was skipped** — no release; the sequence jumps `0.1.65` → `0.1.67`.
 
 ### `0.1.65` — backlog integrity, auto-commit scope, merge-driver hardening
 
@@ -453,18 +491,31 @@ The loop is closed: observed cost/tokens/turns now join to features, and
   work, so the join is close to complete for new handoffs; historical handoffs
   without it are reported as unmatched, never imputed.
 
-## What's next — measurement only
+## What's next
+
+The harness's canonical open list is [`docs/open-work.md`](open-work.md). Four
+field defects found in LibraryOS were moved here on 2026-09-17 (each a harness
+mechanism, not project code) and archived on the LibraryOS board:
+
+| ID | P | From | Task |
+|---|---|---|---|
+| H-1 | P2 | F-230 | worktree `deploy:uat` Vercel `ENOTDIR` on symlinked `prisma/generated`, and `deploy-env.js` still exits 0 on a failed deploy |
+| H-2 | P2 | F-224 | live QA 401-flake when worktree sessions share one dev DB (`activeSessionId` clobbered mid-run) |
+| H-3 | P3 | F-227 | `check-linger` false LINGER on the multi-block `test:api` script |
+| H-4 | P3 | F-214 | retire the orphaned nested `mobile/` harness install (stale tools point at a dead `scripts/backlog.js`) |
+
+Still open / deferred (details in `open-work.md`):
 
 - **Measurement (start now)**: run `npm run report:cost` monthly (a 2-week window
   is the minimum before drawing conclusions). R2/R3 can be judged on
   post-`0.1.53` data; R9/R10 on post-`0.1.56` data (opportunistic usage and
   recorded escalation evidence). Use `--export` to snapshot each window and
-  compare.
+  compare (H-6).
 - **All remaining D items shipped** (R9, R10, R11, R12, R14 in `0.1.56`).
-  R13 (doc truth) is refreshed by this doc + README; re-check after the next
-  change to the guard thresholds.
 - **Watchlist**: R2's 10–15% soft claim stays unproven until measured; R8
-  (per-dispatch persona dedup) remains deferred; R1 stays dropped.
+  (per-dispatch persona dedup) remains deferred (H-5); R1 stays dropped.
+- **R13 (doc truth)**: refreshed by this doc + README + `open-work.md`; re-check
+  after the next change to the guard thresholds.
 
 ## Gotchas
 
