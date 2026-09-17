@@ -18,6 +18,7 @@ import guard from "../../scripts/qa/context-guard-core.js"
 
 const ORCHESTRATION_REL = path.join(".agents", "memory", "orchestration.md")
 const GUARD_LOG_REL = path.join(".agents", "guard-events.jsonl")
+const LEASE_DIR_REL = path.join(".serve", "sessions")
 
 export const ContextGuard: Plugin = async ({ directory, client }) => {
   const sessions = new Map<string, any>()
@@ -102,6 +103,29 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     }
   }
 
+  /* Per-tree primary-session lease. `test:concurrency` reads `.serve/sessions/`
+   * to fail when two primary sessions share one checkout — a collision that
+   * exists even on a clean tree. Best-effort (never throws into the hook). */
+  const writeLease = (sessionID: string) => {
+    try {
+      const dir = path.join(directory, LEASE_DIR_REL)
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(
+        path.join(dir, `${sessionID}.json`),
+        JSON.stringify({ sessionID, pid: process.pid, startedAt: Date.now() })
+      )
+    } catch {
+      /* lease is best-effort */
+    }
+  }
+  const clearLease = (sessionID: string) => {
+    try {
+      fs.rmSync(path.join(directory, LEASE_DIR_REL, `${sessionID}.json`), { force: true })
+    } catch {
+      /* lease is best-effort */
+    }
+  }
+
   return {
     event: async ({ event }: any) => {
       try {
@@ -112,6 +136,8 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           if (props.info?.id && props.info.parentID) {
             childSessions.add(props.info.id)
             childParent.set(props.info.id, props.info.parentID)
+          } else if (type === "session.created" && props.info?.id) {
+            writeLease(props.info.id)
           }
           return
         }
@@ -119,6 +145,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         if (type === "session.deleted") {
           const id = props.info?.id
           if (id) {
+            clearLease(id)
             childSessions.delete(id)
             childParent.delete(id)
             sessionModel.delete(id)

@@ -700,23 +700,33 @@ test("backlog CLI + custom tools + notify plugin are deployed to every project",
   assert.strictEqual(pkg.scripts["backlog"], "node scripts/backlog.js");
 });
 
-test('opencode tools spawn the running Node (process.execPath), never a bare "node"', () => {
-  // Under WSL interop a bare `"node"` can resolve to the Windows node.exe
-  // (/mnt/c/Program Files/nodejs) against Linux paths. process.execPath is the
-  // exact Node running opencode, so the spawn always targets the right runtime.
+test("opencode tools resolve a real node runtime, never the opencode binary (process.execPath)", () => {
+  // opencode ships as a compiled standalone binary, so inside its runtime
+  // `process.execPath` is the opencode executable (opencode.exe), NOT Node —
+  // spawning it with a script path just re-launches opencode (0.1.65
+  // regression). Tools resolve a real node via nodeBin(): an explicit
+  // OPENCODE_NODE override, the runtime's PATH resolver (skipping WSL /mnt
+  // entries so a native node beats the interop Windows node.exe), then a bare
+  // "node" as the last resort.
   const tools = ["backlog.ts", "checkpoint.ts", "session.ts"];
   for (const f of tools) {
     const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", f));
-    assert.match(src, /process\.execPath/, `${f} must spawn process.execPath`);
-    assert.doesNotMatch(src, /execFileSync\(\s*["']node["']/, `${f} must not spawn a bare "node"`);
+    assert.doesNotMatch(
+      src,
+      /execFileSync\(\s*[^,)]*execPath/,
+      `${f} must not spawn the opencode binary (process.execPath)`
+    );
+    assert.match(src, /execFileSync\(\s*nodeBin\(\)/, `${f} must spawn a resolved node via nodeBin()`);
+    assert.match(src, /\.which\(\s*["']node["']/, `${f} nodeBin must consult the runtime's PATH resolver`);
+    assert.match(src, /OPENCODE_NODE/, `${f} nodeBin must honor the OPENCODE_NODE override`);
   }
-  // static gate over the whole template tree: no tool shells out to a bare node
+  // static gate over the whole template tree: no tool spawns the opencode binary
   const toolDir = path.join(h.TEMPLATES_DIR, ".opencode", "tools");
   for (const f of fs.readdirSync(toolDir).filter((n) => n.endsWith(".ts"))) {
     assert.doesNotMatch(
       read(path.join(toolDir, f)),
-      /execFileSync\(\s*["']node["']/,
-      `${f} must not spawn a bare "node"`
+      /execFileSync\(\s*[^,)]*execPath/,
+      `${f} must not spawn the opencode binary (process.execPath)`
     );
   }
 });
@@ -2536,6 +2546,26 @@ test("test:concurrency warns (exit 0) when a single session is In progress with 
   assert.match(r.out, /1 session In progress/);
 });
 
+test("test:concurrency fails when two live session leases share the tree (clean tree)", () => {
+  const t = scaffoldConcurrencyTarget();
+  writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044"]));
+  const leaseDir = path.join(t, ".serve", "sessions");
+  fs.mkdirSync(leaseDir, { recursive: true });
+  const startedAt = Date.now();
+  for (const id of ["ses_lease_a", "ses_lease_b"]) {
+    fs.writeFileSync(
+      path.join(leaseDir, `${id}.json`),
+      JSON.stringify({ sessionID: id, pid: process.pid, startedAt })
+    );
+  }
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /live sessions share this working tree/);
+  assert.match(r.out, /ses_lease_a/);
+});
+
 test("test:concurrency warns (exit 0) on a dirty tree with no In progress rows", () => {
   const t = scaffoldConcurrencyTarget();
   writeFile(t, "BACKLOG.md", "# BACKLOG\n\n## In progress\n\n| ID | Task | Handoff |\n|----|------|---------|\n\n");
@@ -2628,6 +2658,34 @@ test("backlog worktree isolates a feature into a git worktree + branch and recor
 
   const b = read(path.join(t, "BACKLOG.md"));
   assert.match(b.split("## In progress")[1].split("## Open")[0], new RegExp(`worktree: .*; branch: ${branch}`));
+});
+
+test("backlog worktree runs a project-provided scripts/worktree-setup.js bootstrap", () => {
+  const t = scaffoldBacklogCliTarget();
+  writeFile(
+    t,
+    "scripts/worktree-setup.js",
+    [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      "fs.writeFileSync(path.join(process.argv[2], 'SETUP_RAN'), 'ok');",
+      "process.exit(0);",
+    ].join("\n") + "\n"
+  );
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+
+  const suffix = path.basename(t);
+  const branch = `b-${suffix}`;
+  const dir = path.join(os.tmpdir(), `wt-setup-${suffix}`);
+  const r = runBacklogCli(t, ["worktree", "F-001", "--branch", branch, "--dir", dir]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.ok(exists(path.join(dir, "SETUP_RAN")), "project bootstrap ran inside the new worktree");
 });
 
 test("backlog worktree fails cleanly on an unknown row", () => {
@@ -2804,6 +2862,7 @@ test("deploy merges .gitattributes + registers the row-aware merge driver", asyn
   assert.ok(ga.includes("* text=auto"), "project .gitattributes entry preserved");
   assert.match(ga, /# agent-harness \(managed below\)/);
   assert.ok(ga.includes("BACKLOG.md merge=backlog-demo"), "merge attribute merged with a per-project driver name");
+  assert.ok(ga.includes("**/BACKLOG.md merge=backlog-demo"), "nested boards also route through the merge driver");
   assert.ok(ga.includes("*.sh text eol=lf"), "POSIX scripts pinned to LF across the Windows/WSL boundary");
   assert.ok(ga.includes("*.ps1 text eol=crlf"), "PowerShell scripts pinned to CRLF for Windows");
 
@@ -3593,6 +3652,9 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /guard-events\.jsonl/);
   assert.match(src, /guard-event log write failed/, "a failed guard-log write is surfaced, never silent");
   assert.match(src, /childSessions/, "child sessions are tracked to be excluded from band/loop counting");
+  assert.match(src, /LEASE_DIR_REL/, "writes a per-tree session lease for test:concurrency");
+  assert.match(src, /writeLease/, "primary session creation records the lease");
+  assert.match(src, /clearLease/, "session deletion clears the lease");
   assert.match(src, /childParent/, "child->parent mapping attributes subagent funds errors to the orchestrator");
   assert.match(src, /sessionModel/, "tracks the observed provider/model per session");
   assert.match(src, /modelLabel\(meta\.model\)/, "names the failed provider/model from the dispatch metadata");

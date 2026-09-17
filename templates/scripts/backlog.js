@@ -865,6 +865,31 @@ function cmdOwns(state, argv) {
   return { id, files };
 }
 
+/* Run a project-supplied worktree bootstrap after `git worktree add`, so a fresh
+ * checkout is immediately gate-runnable. The harness is project-agnostic, so the
+ * setup is a CONVENTION script: `scripts/worktree-setup.js`, looked up in the new
+ * worktree first and then in the main checkout (so it works before the script
+ * itself is committed). It receives the worktree path as argv[2]. Best-effort:
+ * a failure warns but never fails the board write. */
+function runWorktreeSetup(mainRoot, dir) {
+  const candidates = [
+    path.join(dir, "scripts", "worktree-setup.js"),
+    path.join(mainRoot, "scripts", "worktree-setup.js"),
+  ];
+  const script = candidates.find((p) => fs.existsSync(p));
+  if (!script) return { ran: false };
+  process.stdout.write(`worktree: running ${path.relative(mainRoot, script)} ${dir}\n`);
+  const res = spawnSync(process.execPath, [script, dir], { cwd: dir, stdio: "inherit" });
+  if (res.status !== 0) {
+    process.stderr.write(
+      `worktree: setup script exited ${res.status === null ? res.signal : res.status} — ` +
+        `the worktree may need manual setup (F-183/F-228).\n`
+    );
+    return { ran: true, ok: false };
+  }
+  return { ran: true, ok: true };
+}
+
 /* Create an isolated `git worktree` + branch for a feature, then record the
  * worktree path + branch in the row's Handoff cell so the board shows WHERE the
  * work happens (and `test:concurrency` can see active sessions are isolated).
@@ -913,6 +938,9 @@ function cmdWorktree(state, argv) {
     const err = (res.stderr || res.stdout || "").trim();
     throw new Error(`worktree: git worktree add failed: ${err}`);
   }
+
+  // Bootstrap the fresh checkout (node_modules / generated client / .env / hooks).
+  runWorktreeSetup(root, dir);
 
   // Record the isolation target in the Handoff cell.
   const rel = path.relative(root, dir) || dir;

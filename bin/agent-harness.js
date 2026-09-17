@@ -334,6 +334,7 @@ function mergeGitattributes(target, driverName) {
   const managed = [
     GITATTRIBUTES_MARKER,
     `BACKLOG.md merge=${driverName}`,
+    `**/BACKLOG.md merge=${driverName}`,
     "*.sh text eol=lf",
     "*.ps1 text eol=crlf",
     "",
@@ -627,6 +628,7 @@ async function deploy(target, opts) {
     !!isUpdate && changedRelsAll.length === 0 && compareVersions(existing.version || "0", PKG.version) === 0;
 
   const config = {
+    ...existing,
     version: PKG.version,
     projectName,
     projectDomain,

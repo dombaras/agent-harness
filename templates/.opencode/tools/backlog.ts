@@ -6,6 +6,28 @@ import path from "node:path"
 // only shell out — they never edit BACKLOG.md themselves, so the agent-side and
 // human-side write-paths share one implementation.
 
+// opencode runs as a compiled standalone binary, so within its runtime
+// `process.execPath` is the opencode executable (opencode.exe), NOT Node —
+// spawning it with a script path just re-launches opencode. Resolve a real
+// Node: an explicit override, then the runtime's PATH resolver (skipping WSL
+// /mnt entries so a native node wins over the interop Windows node.exe), then
+// a bare "node" as the last resort.
+function nodeBin(): string {
+  const override = process.env.OPENCODE_NODE
+  if (override) return override
+  const bun = (globalThis as any).Bun
+  if (bun && typeof bun.which === "function") {
+    const pathEnv = String(process.env.PATH || "")
+    const native =
+      process.platform === "linux"
+        ? pathEnv.split(":").filter((p) => p && !p.startsWith("/mnt/")).join(":")
+        : pathEnv
+    const found = bun.which("node", native ? { PATH: native } : {}) || bun.which("node")
+    if (found) return found
+  }
+  return "node"
+}
+
 function rootOf(context: any): string {
   return (context?.worktree || context?.directory || process.cwd()) as string
 }
@@ -13,7 +35,7 @@ function rootOf(context: any): string {
 function run(context: any, args: string[]): string {
   const script = path.join(rootOf(context), "scripts", "backlog.js")
   try {
-    return execFileSync(process.execPath, [script, ...args], {
+    return execFileSync(nodeBin(), [script, ...args], {
       cwd: rootOf(context),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

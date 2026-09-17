@@ -64,6 +64,41 @@ function dirtyFiles() {
     .map((l) => ({ code: l.slice(0, 2).trim(), file: l.slice(3) }));
 }
 
+/* Live-session leases. The context-guard plugin writes
+ * `.serve/sessions/<sessionID>.json` ({ sessionID, pid, startedAt }) when a
+ * PRIMARY session is created and removes it on delete. Two or more live leases
+ * in THIS tree mean two primary sessions share one checkout — a collision that
+ * exists even on a clean tree (and that the dirty-tree heuristics above cannot
+ * see). A crashed session's lease is ignored because its pid is dead. */
+function liveLeases() {
+  const dir = path.join(root, ".serve", "sessions");
+  if (!fs.existsSync(dir)) return [];
+  const now = Date.now();
+  const FRESH_MS = 12 * 60 * 60 * 1000;
+  const live = [];
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith(".json")) continue;
+    let rec;
+    try {
+      rec = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+    } catch {
+      continue;
+    }
+    const fresh = typeof rec.startedAt === "number" && now - rec.startedAt < FRESH_MS;
+    let alive = false;
+    if (typeof rec.pid === "number") {
+      try {
+        process.kill(rec.pid, 0);
+        alive = true;
+      } catch {
+        alive = false;
+      }
+    }
+    if (alive && fresh) live.push(rec.sessionID || f.replace(/\.json$/, ""));
+  }
+  return live;
+}
+
 /* Split a markdown table row on unescaped `|` — shared with backlog.js and the
  * other board gates via board-lib.js (one home for the row parser). */
 
@@ -141,6 +176,20 @@ if (!insideGitRepo()) {
   console.log("  \u26a0 not a git repo \u2014 concurrency gate skipped");
   console.log("\nRESULT: skipped (0 failures)");
   process.exit(0);
+}
+
+/* Independent of dirtiness: refuse two live primary sessions sharing one tree. */
+const leases = liveLeases();
+if (leases.length > 1) {
+  console.log(`  \u2717 ${leases.length} live sessions share this working tree: ${leases.join(", ")}`);
+  console.log(
+    "\nRESULT: 1 FAILURE(S) \u2014 isolate, stash, or commit before push"
+  );
+  console.log(
+    "         Two primary sessions must not share one checkout. Each session starts\n" +
+      "         its own feature worktree (backlog worktree <id>) and works there."
+  );
+  process.exit(1);
 }
 
 const dirty = dirtyFiles();

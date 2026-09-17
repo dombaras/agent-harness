@@ -38,6 +38,17 @@ const root = path.resolve(__dirname, "..", "..");
 const CODE_EXT = /\.(?:[cm]?[jt]sx?|js)$/;
 const IGNORE_DIRS = new Set(["node_modules", ".next", ".git", ".worktrees", ".harness-backup", "dist", "build", ".turbo", ".expo"]);
 
+/* Convention-loaded entrypoints: their exports are consumed by a framework
+ * runtime (opencode discovers `.opencode/plugins|tools` by convention; Next.js
+ * discovers `route|page|layout|...` and `middleware|instrumentation`), so the
+ * zero-consumer scan cannot see an importer and would flag them as dead. Skip
+ * P1 for these; P3 (size) still applies. */
+const CONVENTION_ENTRY =
+  /(?:^|\/)(?:\.opencode\/(?:plugins|tools)\/|app\/(?:.*\/)?(?:route|page|layout|loading|error|not-found|template|default)\.(?:[cm]?[jt]sx?)$|middleware\.[cm]?[jt]sx?$|instrumentation\.[cm]?[jt]sx?$)/;
+function isConventionEntry(rel) {
+  return CONVENTION_ENTRY.test(String(rel).replace(/\\/g, "/"));
+}
+
 const args = process.argv.slice(2);
 function flag(name, def) {
   const i = args.indexOf("--" + name);
@@ -205,6 +216,11 @@ for (const rel of codeChanged) {
 for (const rel of codeChanged) {
   const p = path.join(root, rel);
   if (!fs.existsSync(p)) continue;
+  if (isConventionEntry(rel)) {
+    warnings.push(`${rel}: convention-loaded entrypoint — zero-consumer scan skipped`);
+    console.log("  \u26a0 " + warnings[warnings.length - 1]);
+    continue;
+  }
   const src = fs.readFileSync(p, "utf8");
   if (/\bexport\s*\*\s*from\b/.test(src)) {
     warnings.push(`${rel}: re-exports via \`export *\` \u2014 zero-consumer scan skipped for it`);

@@ -1,7 +1,8 @@
 # Harness fix queue — backlog integrity, auto-commit scoping, and WSL/merge-driver hardening
 
 Status: **FIXED in `0.1.65`** (all six items; `npm run lint` + `npm test` green,
-177 pass). Found 2026-09-16 in the LibraryOS project (`~/develop/PublicVirtualLibrary`,
+177 pass) — **except item 4, whose `process.execPath` fix was a regression;
+corrected in `0.1.67` (see item 4).** Found 2026-09-16 in the LibraryOS project (`~/develop/PublicVirtualLibrary`,
 WSL2) while verifying that the canonical `BACKLOG.md` can be written concurrently
 from (a) agent `backlog_*` tools / `scripts/backlog.js` and (b) the superadmin web
 UI (`app/api/admin/backlog/route.ts`, which shells out to the same CLI).
@@ -137,24 +138,57 @@ LibraryOS WSL checkout: the dev server's PATH had `/usr/local/bin` first (Linux
 node won), but the Windows dir was present right after, so the ordering alone was
 load-bearing.
 
-### Fix
-Use `process.execPath` — the exact Node running opencode — instead of `"node"` in
-all three tool files:
+### Fix (0.1.65) — WRONG, reverted in 0.1.67
+`0.1.65` used `process.execPath` in all three tool files:
 
 ```ts
-execFileSync(process.execPath, [script, ...args], { … })
+execFileSync(process.execPath, [script, ...args], { … })   // WRONG
 ```
 
-`templates/.opencode/tools/*` is the harness-owned surface. The project-owned
-companion is the LibraryOS web route `app/api/admin/backlog/route.ts` (it also
-shells `execFileSync("node", …)`); the same `process.execPath` change belongs
-there and in any similar project shell-outs — note that `scripts/reports-sync.ts`
-in the project already uses the correct `process.execPath` pattern.
+**Why it broke:** `process.execPath` is only Node when the host process *is*
+Node. opencode ships as a **compiled standalone Bun binary** — on the WSL
+LibraryOS install the npm `opencode-ai` bin is
+`lib/node_modules/opencode-ai/bin/opencode.exe` (an ELF executable), and
+`/proc/<opencode-pid>/exe` confirms the running process is that file. Inside
+opencode's tool runtime `process.execPath` is therefore `opencode.exe`, so every
+`backlog_*` / `checkpoint_*` / `session_info` call spawned
+`opencode.exe scripts/backlog.js …` and re-launched opencode instead of running
+the script — the tools were dead until the agent fell back to
+`node scripts/backlog.js` by hand (observed 2026-09-17).
+
+### Correct fix (0.1.67)
+Resolve a **real** Node at runtime, never the host binary:
+
+```ts
+function nodeBin(): string {
+  const override = process.env.OPENCODE_NODE
+  if (override) return override
+  const bun = (globalThis as any).Bun
+  if (bun && typeof bun.which === "function") {
+    const pathEnv = String(process.env.PATH || "")
+    const native = process.platform === "linux"
+      ? pathEnv.split(":").filter((p) => p && !p.startsWith("/mnt/")).join(":")
+      : pathEnv
+    const found = bun.which("node", native ? { PATH: native } : {}) || bun.which("node")
+    if (found) return found
+  }
+  return "node"
+}
+```
+
+`OPENCODE_NODE` is an explicit escape hatch; `Bun.which` finds node on PATH and
+skips WSL `/mnt/*` (9p/interop) entries so the native Linux node wins over the
+Windows `node.exe`; the bare `"node"` fallback preserves the pre-0.1.65
+behavior. `templates/.opencode/tools/*` is the harness-owned surface. The
+project-owned companion is the LibraryOS web route
+`app/api/admin/backlog/route.ts` (it also shells out); a project shell-out is
+correct as long as the process executing it *is* Node (a Next.js route runs
+under Node, so `process.execPath` there is fine).
 
 ### Regression
-Add a unit test that asserts the spawned executable is `process.execPath` (stub
-`execFileSync`), or a static grep gate over `templates/**` that fails on
-`execFileSync("node"`.
+Static gate over `templates/.opencode/tools/**`: every tool must call
+`execFileSync(nodeBin(), …)` and must **not** reference `process.execPath`.
+(`tests/agent-harness.test.js` — "opencode tools resolve a real node runtime".)
 
 ---
 

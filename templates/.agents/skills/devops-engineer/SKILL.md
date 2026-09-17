@@ -22,11 +22,27 @@ You own deployment, scheduling, secrets, and build/release pipelines — not app
 - **Environment promotion (dev → uat → prod)**: deploy via the project's `deploy:uat` / `deploy:prod` scripts (see `.agents/memory/environments.md`). Forward only code + `prisma migrate deploy` + idempotent seeds; **never** dump/restore a database across environments.
 - **Mobile releases**: `eas build`, TestFlight, Play internal track.
 
+## Migrations — expand/contract (non-negotiable)
+
+A **contract migration** (DROP COLUMN/TABLE/TYPE/CONSTRAINT, RENAME, TRUNCATE,
+SET NOT NULL) must never run before the app that stops using the removed object
+is live — otherwise the running app 500s with P2022 (the 2026-09-16 F-129
+half-deploy). `deploy:uat` enforces this: `scripts/qa/check-migration-safety.js`
+scans **pending** migrations and refuses destructive statements unless
+`ALLOW_CONTRACT_MIGRATIONS=1` is set.
+
+Two-phase rollout:
+1. **Expand:** ship the code that stops referencing the dropped object *without*
+   the destructive migration; deploy and verify it is live.
+2. **Contract:** commit the destructive migration and deploy it with
+   `ALLOW_CONTRACT_MIGRATIONS=1 npm run deploy:uat` (this asserts phase 1 is live).
+
 ## Rules
 
 - Verify cron cadence is idempotent before deploying (reconciliation-based, safe on duplicate/missed runs).
 - Update `.agents/memory/locations.md` if you add a new deploy/env/scheduler target.
 - `prisma migrate dev` is development-only; uat/prod take `prisma migrate deploy`.
+- A destructive migration ships in two phases (above) — never bundled ahead of the app.
 - After a uat deploy, verify the forward boundary is clean (`npm run test:data-hygiene -- --env uat`) before handing back.
 - Production deploys are human-gated — never run `deploy:prod` as part of a normal task unless explicitly told.
 - Refer `npm audit` to `qa-runner` under Tier 6 (`npm run test:security`) rather than running it yourself when it's QA context.
