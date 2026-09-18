@@ -748,6 +748,44 @@ function parseWorktree(handoff) {
   return { rel: m[1].trim(), branch: m[2].trim() };
 }
 
+/* A session that creates its worktree mid-session keeps `context.worktree`
+ * pinned to the MAIN tree (`context.worktree` is fixed at launch), so the
+ * `backlog_*` tools would keep writing the board to main while the feature lives
+ * in the worktree. When the calling tool forwards its session id
+ * (`HARNESS_SESSION_ID`), `worktree` records the target under the gitignored
+ * `.serve/sessions/` container and `archive` clears it; the tools read it back
+ * and root board/handoff/telemetry ops in the worktree. */
+function sessionWorktreeFile(root, sessionID) {
+  return path.join(root, ".serve", "sessions", `${sessionID}.worktree`);
+}
+
+function readSessionWorktree(root, sessionID) {
+  if (!sessionID) return null;
+  try {
+    return fs.readFileSync(sessionWorktreeFile(root, sessionID), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionWorktree(root, sessionID, dir) {
+  if (!sessionID) return;
+  const file = sessionWorktreeFile(root, sessionID);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, dir, "utf8");
+}
+
+function clearSessionWorktree(root, sessionID, onlyDir) {
+  if (!sessionID) return;
+  const cur = readSessionWorktree(root, sessionID);
+  if (onlyDir && cur !== path.resolve(onlyDir)) return;
+  try {
+    fs.rmSync(sessionWorktreeFile(root, sessionID), { force: true });
+  } catch {
+    /* best-effort */
+  }
+}
+
 /* Best-effort cleanup of a shipped feature's isolation: remove its worktree
  * checkout (the folder that would otherwise hang around) and, if the branch was
  * merged, delete it. Never blocks the board write — a dirty/locked worktree is
@@ -784,6 +822,9 @@ function cmdArchive(state, argv) {
   // up after each session.
   const wt = found.key === "inprogress" ? parseWorktree(found.cells[3]) : null;
   const cleanup = wt ? cleanupWorktree(path.dirname(state.p), wt.rel, wt.branch) : [];
+  if (wt) {
+    clearSessionWorktree(path.dirname(state.p), process.env.HARNESS_SESSION_ID, path.resolve(path.dirname(state.p), wt.rel));
+  }
 
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
   state.lines = setRows(state.lines, found.key, srcRows);
@@ -1021,6 +1062,10 @@ function cmdWorktree(state, argv) {
     inprog[idx] = [id, inprog[idx][1], inprog[idx][2], handoffCell];
     state.lines = setRows(state.lines, "inprogress", inprog);
   }
+
+  // Root this session's tool calls in the worktree even though opencode's
+  // `context.worktree` stays pinned to the main tree it launched in.
+  writeSessionWorktree(root, process.env.HARNESS_SESSION_ID, dir);
 
   return { id, branch, dir: rel, dirAbs: dir, base };
 }

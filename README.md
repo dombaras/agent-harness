@@ -267,8 +267,12 @@ so agents see complete descriptions.
   `<repo>/../.worktrees/<repo>/<id>`, so the parent folder (e.g. `C:\develop`) only ever
   holds top-level projects. Pass `--open` to launch the agent CLI *in the new worktree*
   after the board is written, so the session is root-scoped there and its lease + gates
-  never land in `main`. `backlog archive <id>` removes the shipped feature's worktree +
-  merged branch, so a session cleans up after itself on close.
+  never land in `main`. If the worktree is instead created **mid-session** (no `--open`),
+  the tools forward their session id and the CLI records the target at
+  `.serve/sessions/<id>.worktree`; `backlog_*`, `checkpoint_*`, and `session_info` then
+  follow the session into the worktree, and `archive` clears the pointer. `backlog archive
+  <id>` removes the shipped feature's worktree + merged branch, so a session cleans up
+  after itself on close.
 - **Main-checkout freshness**: because a feature's commits reach `origin/main` from its own
   worktree, the MAIN checkout's board can lag origin until it is pulled. `backlog worktree`
   and `backlog archive` sync it first — fast-forwarding a clean, strictly-behind branch and

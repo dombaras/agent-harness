@@ -2710,6 +2710,21 @@ test("test:concurrency --prune clears dead/recycled/stale leases", () => {
   assert.ok(!exists(path.join(t, ".serve", "sessions", "ses_dead.json")), "dead lease removed");
 });
 
+test("lease-lib clearLease/prune also drop the session worktree pointer", () => {
+  const t = tmpdir();
+  leaseLib.writeLease(t, "ses_ptr");
+  fs.writeFileSync(path.join(t, ".serve", "sessions", "ses_ptr.worktree"), "/tmp/somewhere");
+  leaseLib.clearLease(t, "ses_ptr");
+  assert.ok(!exists(path.join(t, ".serve", "sessions", "ses_ptr.json")), "lease removed");
+  assert.ok(!exists(path.join(t, ".serve", "sessions", "ses_ptr.worktree")), "pointer removed with the lease");
+
+  // prune drops the pointer for a dead session too.
+  writeRawLease(t, "ses_dead_ptr", { pid: 999999, startedAt: Date.now(), heartbeatAt: Date.now() });
+  fs.writeFileSync(path.join(t, ".serve", "sessions", "ses_dead_ptr.worktree"), "/tmp/gone");
+  leaseLib.pruneLeases(t);
+  assert.ok(!exists(path.join(t, ".serve", "sessions", "ses_dead_ptr.worktree")), "stale pointer pruned");
+});
+
 test("test:concurrency lists stale leases but does not fail a clean tree", () => {
   const t = scaffoldConcurrencyTarget();
   for (const id of ["ses_lease_a", "ses_lease_b"]) leaseLib.writeLease(t, id);
@@ -2920,6 +2935,43 @@ test("backlog archive removes the shipped feature's worktree", () => {
   assert.match(a.out, /removed worktree/);
 });
 
+test("backlog worktree records a session worktree pointer the tools read; archive clears it", () => {
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+
+  // The tools forward the session id via HARNESS_SESSION_ID; a session that
+  // creates its worktree mid-session gets its board/handoff ops rerooted there.
+  const sessionID = "ses_mid_worktree";
+  const dir = path.join(os.tmpdir(), `wt-mid-${path.basename(t)}`);
+  const run = (args) => {
+    const res = spawnSync(process.execPath, ["scripts/backlog.js", ...args], {
+      cwd: t,
+      encoding: "utf8",
+      env: { ...process.env, HARNESS_SESSION_ID: sessionID },
+    });
+    return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+  };
+
+  const w = run(["worktree", "F-001", "--branch", `mid-${path.basename(t)}`, "--dir", dir]);
+  assert.strictEqual(w.status, 0, w.out);
+  const pointer = path.join(t, ".serve", "sessions", `${sessionID}.worktree`);
+  assert.ok(exists(pointer), "session worktree pointer written");
+  assert.strictEqual(read(pointer).trim(), dir, "pointer holds the absolute worktree path");
+
+  // Another session's pointer must survive this session's archive.
+  fs.writeFileSync(path.join(t, ".serve", "sessions", "ses_other.worktree"), "/tmp/elsewhere");
+
+  const a = run(["archive", "F-001"]);
+  assert.strictEqual(a.status, 0, a.out);
+  assert.ok(!exists(pointer), "archive clears this session's pointer");
+  assert.ok(exists(path.join(t, ".serve", "sessions", "ses_other.worktree")), "other sessions' pointers untouched");
+});
+
 /* A feature-worktree push reaches `origin/main` without updating the main
  * checkout. These two tests cover the two ways `backlog worktree` handles that:
  * fast-forward a clean stale main, and base the new branch on origin/main even
@@ -2998,6 +3050,10 @@ test("test:concurrency + run-clean are deployed and auto-wired", async () => {
   const tools = read(path.join(target, ".opencode", "tools", "backlog.ts"));
   assert.match(tools, /export const worktree\b/, "backlog_worktree tool deployed");
   assert.match(tools, /worktree/, "worktree tool shells out to the CLI");
+  // Mid-session worktree isolation: the tools reroot to the worktree the CLI
+  // recorded for this session (`.serve/sessions/<id>.worktree`).
+  assert.match(tools, /HARNESS_SESSION_ID/, "tools forward their session id to the CLI");
+  assert.match(tools, /\.worktree/, "tools read the session worktree pointer");
 });
 
 // ---------------------------------------------------------------- row-aware merge driver

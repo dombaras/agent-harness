@@ -1,5 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
 import { execFileSync } from "node:child_process"
+import fs from "node:fs"
 import path from "node:path"
 
 // Thin wrappers around the deterministic `scripts/checkpoint.js` CLI. The tool
@@ -29,15 +30,28 @@ function nodeBin(): string {
   return "node"
 }
 
+// Follow a mid-session worktree (recorded by `backlog worktree` under
+// `.serve/sessions/`) so the handoff is written where the feature actually
+// lives, not the tree the session launched in. See tools/backlog.ts.
 function rootOf(context: any): string {
-  return (context?.worktree || context?.directory || process.cwd()) as string
+  const base = (context?.worktree || context?.directory || process.cwd()) as string
+  const sessionID = context?.sessionID ? String(context.sessionID) : ""
+  if (!sessionID) return base
+  try {
+    const rec = fs.readFileSync(path.join(base, ".serve", "sessions", `${sessionID}.worktree`), "utf8").trim()
+    if (rec && fs.existsSync(path.join(rec, ".agents"))) return rec
+  } catch {
+    /* no mid-session worktree recorded for this session */
+  }
+  return base
 }
 
 function run(context: any, args: string[]): string {
-  const script = path.join(rootOf(context), "scripts", "checkpoint.js")
+  const root = rootOf(context)
+  const script = path.join(root, "scripts", "checkpoint.js")
   try {
     return execFileSync(nodeBin(), [script, ...args], {
-      cwd: rootOf(context),
+      cwd: root,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     })

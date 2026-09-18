@@ -154,10 +154,14 @@ function touchLease(root, sessionID) {
 }
 
 function clearLease(root, sessionID) {
-  try {
-    fs.rmSync(path.join(leaseDir(root), `${sessionID}.json`), { force: true });
-  } catch {
-    /* best-effort */
+  // Also drop the session's mid-session worktree pointer (`.worktree`), so a
+  // closed session can't leave the tools rooted in a worktree it no longer owns.
+  for (const ext of [".json", ".worktree"]) {
+    try {
+      fs.rmSync(path.join(leaseDir(root), `${sessionID}${ext}`), { force: true });
+    } catch {
+      /* best-effort */
+    }
   }
 }
 
@@ -169,6 +173,9 @@ function pruneLeases(root, opts = {}) {
     if (status.live) continue;
     try {
       fs.rmSync(rec.file, { force: true });
+      if (rec.name) {
+        fs.rmSync(path.join(leaseDir(root), rec.name.replace(/\.json$/, ".worktree")), { force: true });
+      }
       removed.push({ sessionID: rec.sessionID || rec.name, reason: status.reason, pid: rec.pid });
     } catch {
       /* best-effort */

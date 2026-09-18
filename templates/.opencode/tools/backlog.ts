@@ -1,5 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
 import { execFileSync } from "node:child_process"
+import fs from "node:fs"
 import path from "node:path"
 
 // Thin wrappers around the deterministic `scripts/backlog.js` CLI. The tools
@@ -28,17 +29,33 @@ function nodeBin(): string {
   return "node"
 }
 
+// opencode pins `context.worktree` to the tree the session launched in, so a
+// worktree created MID-session (`backlog worktree` without `--open`) would
+// leave every later call writing the board to main. The CLI records that
+// worktree against the session id under `.serve/sessions/`; prefer it when it
+// still points at a real checkout. `--open` sessions already root there.
 function rootOf(context: any): string {
-  return (context?.worktree || context?.directory || process.cwd()) as string
+  const base = (context?.worktree || context?.directory || process.cwd()) as string
+  const sessionID = context?.sessionID ? String(context.sessionID) : ""
+  if (!sessionID) return base
+  try {
+    const rec = fs.readFileSync(path.join(base, ".serve", "sessions", `${sessionID}.worktree`), "utf8").trim()
+    if (rec && fs.existsSync(path.join(rec, "BACKLOG.md"))) return rec
+  } catch {
+    /* no mid-session worktree recorded for this session */
+  }
+  return base
 }
 
 function run(context: any, args: string[]): string {
-  const script = path.join(rootOf(context), "scripts", "backlog.js")
+  const root = rootOf(context)
+  const script = path.join(root, "scripts", "backlog.js")
   try {
     return execFileSync(nodeBin(), [script, ...args], {
-      cwd: rootOf(context),
+      cwd: root,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, HARNESS_SESSION_ID: String(context?.sessionID || "") },
     })
   } catch (e: any) {
     return `backlog: ${e.message}\n${e.stderr || ""}`

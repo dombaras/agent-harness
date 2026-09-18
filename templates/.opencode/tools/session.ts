@@ -1,5 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
 import { execFileSync } from "node:child_process"
+import fs from "node:fs"
 import path from "node:path"
 
 // `session_info` — the join key between this session's handoff and observed
@@ -35,15 +36,28 @@ function nodeBin(): string {
   return "node"
 }
 
+// Scope telemetry to the checkout the session is actually working in — a
+// mid-session worktree recorded under `.serve/sessions/` wins over the tree
+// opencode launched in. See tools/backlog.ts.
 function rootOf(context: any): string {
-  return (context?.worktree || context?.directory || process.cwd()) as string
+  const base = (context?.worktree || context?.directory || process.cwd()) as string
+  const sessionID = context?.sessionID ? String(context.sessionID) : ""
+  if (!sessionID) return base
+  try {
+    const rec = fs.readFileSync(path.join(base, ".serve", "sessions", `${sessionID}.worktree`), "utf8").trim()
+    if (rec && fs.existsSync(rec)) return rec
+  } catch {
+    /* no mid-session worktree recorded for this session */
+  }
+  return base
 }
 
 function observed(context: any, sessionID: string): any | null {
-  const script = path.join(rootOf(context), "scripts", "qa", "provider-stats.js")
+  const root = rootOf(context)
+  const script = path.join(root, "scripts", "qa", "provider-stats.js")
   try {
-    const out = execFileSync(nodeBin(), [script, "--session", sessionID, "--json", "--root", rootOf(context)], {
-      cwd: rootOf(context),
+    const out = execFileSync(nodeBin(), [script, "--session", sessionID, "--json", "--root", root], {
+      cwd: root,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 60000,

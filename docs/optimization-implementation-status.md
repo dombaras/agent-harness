@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.72)
+# Agent Harness Optimization — Implementation Status (v0.1.73)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -18,9 +18,9 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.72` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout) |
-| Lint / tests | green (`npm run lint`, `npm test` — 197 pass) |
+| Version | `0.1.73` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer) |
+| Lint / tests | green (`npm run lint`, `npm test` — 199 pass) |
 | LibraryOS | `0.1.72` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) + the `ship` command (H-10) |
@@ -28,6 +28,32 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 ---
 
 ## What shipped
+
+### `0.1.73` — mid-session worktree tool rooting (session pointer)
+
+Process finding (harness session, 2026-09-18, H-12): opencode pins
+`context.worktree` to the tree the session launched in. When a session started in
+`main` created its feature worktree **mid-session** (`backlog worktree <id>`
+without `--open`), every `backlog_*` tool call still resolved the root to main, so
+board/handoff ops landed there while the feature code lived in the worktree. The
+documented `--open` path (a fresh CLI rooted in the worktree) worked; the
+mid-session path did not. The session had to drive board ops through
+`node scripts/backlog.js` with cwd inside the worktree.
+
+- **CLI session pointer** (`scripts/backlog.js`): when the calling tool forwards
+  its session id (`HARNESS_SESSION_ID`), `worktree` records the absolute target at
+  `.serve/sessions/<id>.worktree` (gitignored), and `archive` clears it when it
+  removes the matching worktree.
+- **Tools reroot** (`tools/{backlog,checkpoint,session}.ts`): `rootOf()` prefers
+  the recorded worktree when it still exists (validated against `BACKLOG.md` /
+  `.agents` / the directory itself), so board, handoff, and telemetry ops follow
+  the session into its worktree; `--open` sessions already root there.
+- **Lease cleanup** (`scripts/qa/lease-lib.js`): `clearLease` and `pruneLeases`
+  drop the session's `.worktree` pointer alongside its lease, so a closed/crashed
+  session can't leave the tools rooted in a worktree it no longer owns.
+- **Tests:** +2 (CLI records/clears the pointer and leaves other sessions'
+  pointers alone; lease-lib clears/prunes the pointer), plus deployed-tool
+  assertions that the session id is forwarded and the pointer is read. 199 pass.
 
 ### `0.1.72` — branch-switch guard (the direct-push-to-main class)
 
