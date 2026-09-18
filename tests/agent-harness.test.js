@@ -2633,15 +2633,18 @@ test("test:concurrency warns (exit 0) when a single session is In progress with 
   assert.match(r.out, /1 session In progress/);
 });
 
-test("test:concurrency fails when two live session leases share the tree (clean tree)", () => {
+test("test:concurrency warns (exit 0) on two live leases sharing a clean tree (0.1.70)", () => {
   const t = scaffoldConcurrencyTarget();
   writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044"]));
   for (const id of ["ses_lease_a", "ses_lease_b"]) leaseLib.writeLease(t, id);
   git(t, ["add", "-A"]);
   git(t, ["commit", "-q", "-m", "seed"]);
   const r = runConcurrencyGate(t);
-  assert.strictEqual(r.status, 1, r.out);
+  // A clean tree has no WIP to collide over: the lease census is advisory and
+  // must never fail a legitimate push (the trap this fixes).
+  assert.strictEqual(r.status, 0, r.out);
   assert.match(r.out, /live sessions share this working tree/);
+  assert.match(r.out, /working tree clean/);
   assert.match(r.out, /ses_lease_a/);
   assert.match(r.out, /pid \d+/); // per-lease diagnostics, not just opaque ids
 });
@@ -2707,14 +2710,14 @@ test("test:concurrency --prune clears dead/recycled/stale leases", () => {
   assert.ok(!exists(path.join(t, ".serve", "sessions", "ses_dead.json")), "dead lease removed");
 });
 
-test("test:concurrency lists stale leases but only fails on live ones", () => {
+test("test:concurrency lists stale leases but does not fail a clean tree", () => {
   const t = scaffoldConcurrencyTarget();
   for (const id of ["ses_lease_a", "ses_lease_b"]) leaseLib.writeLease(t, id);
   writeRawLease(t, "ses_dead", { pid: 999999, startedAt: Date.now(), heartbeatAt: Date.now() });
   git(t, ["add", "-A"]);
   git(t, ["commit", "-q", "-m", "seed"]);
   const r = runConcurrencyGate(t);
-  assert.strictEqual(r.status, 1, r.out);
+  assert.strictEqual(r.status, 0, r.out);
   assert.match(r.out, /stale lease\(s\) present but ignored/);
   assert.match(r.out, /--prune/);
 });

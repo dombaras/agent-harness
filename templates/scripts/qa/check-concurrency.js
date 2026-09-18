@@ -25,10 +25,16 @@
  * files are contended (owned by 2+ rows, or a mix of different sessions) and
  * passes when every dirty file is cleanly owned by a single session.
  *
- * It also refuses two live primary sessions sharing one checkout, read from the
+ * It also reports the live primary sessions sharing this checkout, read from the
  * `.serve/sessions/` leases the context-guard plugin writes (`lease-lib.js` owns
  * the liveness rules: alive pid + matching process birth token + fresh
- * heartbeat, so recycled pids and closed TUIs no longer block a push).
+ * heartbeat, so recycled pids and closed TUIs no longer block a push). That
+ * report is ADVISORY: two live sessions on one checkout is a workflow smell, but
+ * a clean tree has no WIP to collide over, so the lease count never fails a push
+ * by itself — only a dirty tree with provably contended files does. (A hard
+ * "2+ live leases" failure here stranded legitimate clean-tree finalizations
+ * behind unrelated sessions; the push gate's job is provable contention, not
+ * census.)
  *
  * The fix the message points at is either isolation (`backlog worktree <id>`, or
  * `--open` to root the session there), ownership declaration (`backlog owns <id>
@@ -173,30 +179,29 @@ if (process.argv.slice(2).includes("--prune")) {
   process.exit(0);
 }
 
-/* Independent of dirtiness: refuse two live primary sessions sharing one tree.
- * Only leases whose pid is alive AND matches the recorded process birth token
- * AND has a fresh heartbeat count — a recycled pid (the 0.1.67 bug) or a lease
- * leaked by a closed TUI no longer blocks an innocent push. */
+/* Live primary sessions sharing one tree are ADVISORY, never a clean-tree push
+ * blocker. Only leases whose pid is alive AND matches the recorded process birth
+ * token AND has a fresh heartbeat count — a recycled pid (the 0.1.67 bug) or a
+ * lease leaked by a closed TUI is not live. The hard failure lives on provable
+ * contention below (dirty tree + overlapping ownership), not on a session count:
+ * a clean tree has no WIP for another session's work to leak into, so it always
+ * pushes. */
 const all = allLeases();
 const live = all.filter((r) => leases.leaseStatus(r).live);
+const ghosts = all.filter((r) => !leases.leaseStatus(r).live);
+if (ghosts.length) {
+  console.log(
+    `  \u2139 ${ghosts.length} stale lease(s) present but ignored \u2014 clear them with ` +
+      `\`node scripts/qa/check-concurrency.js --prune\`.`
+  );
+}
 if (live.length > 1) {
-  console.log(`  \u2717 ${live.length} live sessions share this working tree:`);
+  console.log(`  \u26a0 ${live.length} live sessions share this working tree (advisory report):`);
   for (const r of live) console.log(`      ${leases.describeLease(r)}`);
-  const ghosts = all.filter((r) => !leases.leaseStatus(r).live);
-  if (ghosts.length) {
-    console.log(
-      `  \u2139 ${ghosts.length} stale lease(s) present but ignored \u2014 clear them with ` +
-        `\`node scripts/qa/check-concurrency.js --prune\`.`
-    );
-  }
   console.log(
-    "\nRESULT: 1 FAILURE(S) \u2014 isolate, stash, or commit before push"
+    "    Two primary sessions on one checkout should isolate: start each in its own\n" +
+      "    feature worktree (`backlog worktree <id> --open`). A clean tree still pushes."
   );
-  console.log(
-    "         Two primary sessions must not share one checkout. Start each session in\n" +
-      "         its own feature worktree (`backlog worktree <id> --open`) and work there."
-  );
-  process.exit(1);
 }
 
 const dirty = dirtyFiles();

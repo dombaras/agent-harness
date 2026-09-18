@@ -18,16 +18,45 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.69` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open` |
+| Version | `0.1.70` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys) |
 | Lint / tests | green (`npm run lint`, `npm test` — 191 pass) |
 | LibraryOS | `0.1.68` deployed (`.harness.json`; auto-commit `acb8200`); `0.1.69` pending deploy; `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
-| Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) |
+| Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) + the `ship` command (H-10) |
 
 ---
 
 ## What shipped
+
+### `0.1.70` — advisory session leases + remote-integration DoD
+
+Field defect: a clean-tree finalization was refused because **two other live
+sessions merely shared the checkout**. `check-concurrency.js` hard-failed on
+`live > 1` *before* it inspected the tree, so a session with a committed, clean,
+ready-to-push branch was blocked by unrelated sessions — the agent then had to
+isolate into a throwaway `*-push` worktree, where `deploy:uat` refuses to run
+(`.git` is a file), stranding the push/deploy as a handoff. The push gate's job
+is provable contention, not a session census.
+
+- **`check-concurrency.js`: lease census is advisory.** A clean tree **always**
+  pushes; live sessions are reported (with per-lease pid/age/reason and a
+  "isolate next time" nudge) but never fail it. Only the dirty-tree ownership
+  analysis fails — i.e. a provable collision. `--prune` and the recycled/dead/
+  stale liveness rules are unchanged.
+- **Remote-integration Definition of Done.** The rules now end a code session at
+  **push the branch + open a PR** (never `git push origin main`); landing is a
+  serialized **merge train**; **CI owns the deploy** of the merged SHA to UAT.
+  `AGENTS.md` §7 steps 6-7, `00-operating.md` laws 8-9 + DoD + checklist, and the
+  root summary were rewritten. The worker/integrator split is the point: the
+  worker never has to reach a privileged shared `main` checkout to be "done".
+- Tests: the two lease-gate tests updated to the new contract (clean tree = exit
+  0 + advisory report); 191 pass.
+
+The project-side pipeline this DoD targets lives in LibraryOS (not shipped by the
+harness): `.github/workflows/ci.yml`, `.github/workflows/merge-train.yml`,
+`.github/workflows/deploy-uat.yml`, plus `DEPLOY_CI` mode in
+`scripts/deploy-env.js`. Whether CI can host the harness gates depends on H-9.
 
 ### `0.1.69` — session-lease liveness, `worktree --open`
 
