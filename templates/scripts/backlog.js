@@ -1156,10 +1156,17 @@ function openWorktreeSession(dir, command) {
  * any session pointer that referenced it. Worktrees with uncommitted work or an
  * unmerged branch are reported and left alone (zero data loss). This is the
  * convergence path for worktrees whose session ended without an `archive`
- * (archive only cleans the row it ships). */
+ * (archive only cleans the row it ships).
+ *
+ * Named branches (`worktree-prune <branch...>`) are pruned explicitly: this is
+ * the escape hatch for SQUASH merges, whose commits are not ancestors of the
+ * upstream, so `git branch --merged` can never classify them as merged even
+ * though the content is fully landed. Explicit names still require a clean
+ * checkout and never touch the main tree. */
 function cmdWorktreePrune(state, argv) {
   const root = path.dirname(state.p);
   const notes = [];
+  const explicit = new Set((argv._ || []).map((s) => String(s).trim()).filter(Boolean));
   const inside = gitCmd(root, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.status !== 0) return { notes: ["not a git repo — nothing to prune"] };
   const list = gitCmd(root, ["worktree", "list", "--porcelain"]);
@@ -1172,15 +1179,15 @@ function cmdWorktreePrune(state, argv) {
       cur = { path: line.slice("worktree ".length).trim(), branch: "" };
       entries.push(cur);
     } else if (cur && line.startsWith("branch ")) {
-      cur.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+      cur.branch = line.slice("branch ".length).replace(/^branch\s+/, "").replace(/^refs\/heads\//, "").trim();
     }
   }
   const main = mainWorktreeRoot(root) || root;
   const upstream = argv["no-fetch"] ? currentUpstream(root) : (refreshMainCheckout(root, { fetch: true }), currentUpstream(root));
-  // Without an upstream there is no trustworthy "merged" reference, so pruning
-  // could delete unmerged work — refuse rather than guess.
-  if (!upstream) {
-    return { notes: ["no upstream tracking branch — cannot determine merged branches; nothing pruned"], pruned: 0 };
+  // Without an upstream there is no trustworthy "merged" reference — refuse
+  // rather than guess, UNLESS the caller named the branches explicitly.
+  if (!upstream && explicit.size === 0) {
+    return { notes: ["no upstream tracking branch — cannot determine merged branches; name them explicitly to prune"], pruned: 0 };
   }
   const mergedOut = upstream ? gitCmd(root, ["branch", "--merged", upstream]) : null;
   const merged = new Set(
@@ -1191,6 +1198,7 @@ function cmdWorktreePrune(state, argv) {
           .filter(Boolean)
       : []
   );
+  const matched = new Set();
 
   let pruned = 0;
   for (const e of entries) {
@@ -1200,13 +1208,17 @@ function cmdWorktreePrune(state, argv) {
       notes.push(`kept ${label} (detached HEAD)`);
       continue;
     }
+    if (explicit.has(e.branch)) matched.add(e.branch);
     const dirty = gitCmd(e.path, ["status", "--porcelain"]);
     if ((dirty.stdout || "").trim()) {
       notes.push(`kept ${label} (uncommitted work)`);
       continue;
     }
-    if (upstream && !merged.has(e.branch)) {
-      notes.push(`kept ${label} (branch ${e.branch} not merged into ${upstream})`);
+    const isMerged = explicit.has(e.branch) || merged.has(e.branch);
+    if (!isMerged) {
+      notes.push(
+        `kept ${label} (branch ${e.branch} not merged into ${upstream || "upstream"} — name it to prune a squash-merged branch)`
+      );
       continue;
     }
     const rm = gitCmd(main, ["worktree", "remove", e.path]);
@@ -1218,6 +1230,9 @@ function cmdWorktreePrune(state, argv) {
     clearSessionWorktree(main, process.env.HARNESS_SESSION_ID, e.path);
     notes.push(`pruned ${label} (${e.branch})`);
     pruned += 1;
+  }
+  for (const name of explicit) {
+    if (!matched.has(name)) notes.push(`no linked worktree on branch ${name}`);
   }
   if (!notes.length) notes.push("no linked worktrees to consider");
   return { notes, pruned };
@@ -1299,7 +1314,7 @@ function usage() {
       "  node scripts/backlog.js depends <id> --on <ids|?>\n" +
       "  node scripts/backlog.js owns <id> --files \"glob, glob\"\n" +
       "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch] [--open]\n" +
-      "  node scripts/backlog.js worktree-prune [--no-fetch]\n" +
+      "  node scripts/backlog.js worktree-prune [<branch>...] [--no-fetch]\n" +
       "  node scripts/backlog.js epic-add <key> --label <x> [--goal <y>]\n" +
       "  node scripts/backlog.js epic <id> --to <key>\n"
   );

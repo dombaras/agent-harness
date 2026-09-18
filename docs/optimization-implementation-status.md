@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.75)
+# Agent Harness Optimization — Implementation Status (v0.1.76)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -18,16 +18,27 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.75` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push) |
-| Lint / tests | green (`npm run lint`, `npm test` — 211 pass) |
-| LibraryOS | `0.1.75` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
+| Version | `0.1.76` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches |
+| Lint / tests | green (`npm run lint`, `npm test` — 212 pass) |
+| LibraryOS | `0.1.76` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) + the `ship` command (H-10) |
 
 ---
 
 ## What shipped
+
+### `0.1.76` — worktree-prune explicit escape hatch (squash merges)
+
+Field finding (LibraryOS cleanup): the merge train lands PRs with a **squash**
+merge, so a feature branch's commits are never ancestors of `main` and
+`git branch --merged` can never classify it as merged — `backlog worktree-prune`
+kept every already-landed worktree, so they pile up anyway. `worktree-prune
+<branch...>` now prunes explicitly named branches (still requiring a clean
+checkout and never touching the main tree), and it runs with no upstream
+configured when names are given. Regression test: a non-ancestor branch is kept
+unnamed and pruned when named. 212 pass.
 
 ### `0.1.75` — test:integrate targets the canonical branch
 

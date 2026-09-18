@@ -5214,6 +5214,38 @@ test("worktree-prune removes a merged clean worktree and keeps an unmerged one",
   assert.match(res.stdout, /not merged into/);
 });
 
+test("worktree-prune <branch> prunes a squash-merged branch that ancestry cannot detect", () => {
+  // Squash merges leave the branch commits out of main, so `git branch --merged`
+  // never sees them; naming the branch is the explicit escape hatch.
+  const { target } = trackedRepoFixture();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"), path.join(target, "scripts", "backlog.js"));
+  copyBoardLib(target);
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(target, "BACKLOG.md"));
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed harness scripts"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  const wt = path.join(tmpdir(), "wt-squash");
+  git(target, ["branch", "feat-squash", "main"]);
+  git(target, ["worktree", "add", wt, "feat-squash"]);
+  fs.writeFileSync(path.join(wt, "feat.txt"), "x\n", "utf8");
+  execFileSync("git", ["-C", wt, "add", "-A"], { encoding: "utf8" });
+  execFileSync("git", ["-C", wt, "commit", "-q", "-m", "feat-squash work"], { encoding: "utf8" });
+
+  // unnamed: not an ancestor of main -> kept
+  let res = spawnSync(process.execPath, ["scripts/backlog.js", "worktree-prune"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /kept wt-squash/);
+  assert.ok(exists(wt), "unmerged-ancestry worktree kept by default");
+
+  // explicit name -> pruned (still requires a clean checkout)
+  res = spawnSync(process.execPath, ["scripts/backlog.js", "worktree-prune", "feat-squash"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /pruned wt-squash/);
+  assert.ok(!exists(wt), "explicitly named worktree pruned");
+});
+
 test("backlog-notify summarizes the worktree/depends/owns tools too", () => {
   const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "backlog-notify.ts"));
   assert.match(src, /backlog_worktree/);
