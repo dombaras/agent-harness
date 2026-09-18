@@ -5307,3 +5307,40 @@ test("deploy ships the ship command and wires npm run ship", async () => {
   const pkg = JSON.parse(read(path.join(target, "package.json")));
   assert.strictEqual(pkg.scripts.ship, "node scripts/ship.js");
 });
+
+test("test:qa-plan treats harness-shipped top-level scripts as tooling, not uncovered app code", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-qa-plan.js"),
+    path.join(target, "scripts", "qa", "check-qa-plan.js")
+  );
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: target });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: target });
+  fs.writeFileSync(path.join(target, "app.js"), "// app\n", "utf8");
+  execFileSync("git", ["add", "-A"], { cwd: target });
+  execFileSync("git", ["commit", "-q", "-m", "base"], { cwd: target });
+
+  // A plain harness update ships a new top-level CLI — it must not require a
+  // project QA plan (it is harness tooling, guarded by the harness's own suite).
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "ship.js"),
+    path.join(target, "scripts", "ship.js")
+  );
+  const res = spawnSync(process.execPath, ["scripts/qa/check-qa-plan.js", "--base", "HEAD"], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /scripts\/ship\.js \(harness\/tooling/);
+
+  // A genuine new application code path still fails the gate.
+  fs.writeFileSync(path.join(target, "feature.js"), "// feature\n", "utf8");
+  const res2 = spawnSync(process.execPath, ["scripts/qa/check-qa-plan.js", "--base", "HEAD"], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  assert.strictEqual(res2.status, 1, res2.stdout + res2.stderr);
+  assert.match(res2.stdout, /feature\.js NOT covered/);
+});
