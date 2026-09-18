@@ -3541,6 +3541,44 @@ test("test:integrate fails behind upstream and passes when up to date", () => {
   assert.match(r.out, /git rebase/);
 });
 
+test("test:integrate targets origin/main, not the branch's own remote (post-rebase force-push)", () => {
+  // Regression: a feature branch tracks `origin/<feature>`. After
+  // `git rebase origin/main` the branch is ahead of its stale remote and behind
+  // nothing on main — but the old gate compared HEAD to `@{u}` and demanded a
+  // rebase that had just been done, blocking every legitimate force-push.
+  const dir = tmpdir();
+  const remote = path.join(dir, "remote.git");
+  execFileSync("git", ["init", "--bare", "-q", "-b", "main", remote]);
+
+  const work = path.join(dir, "work");
+  fs.mkdirSync(work);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: work });
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: work });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: work });
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd: work });
+  fs.mkdirSync(path.join(work, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-integrate.js"),
+    path.join(work, "scripts", "qa", "check-integrate.js")
+  );
+  writeFile(work, "f.txt", "v1\n");
+  execFileSync("git", ["add", "-A"], { cwd: work });
+  execFileSync("git", ["commit", "-q", "-m", "one"], { cwd: work });
+  execFileSync("git", ["push", "-q", "-u", "origin", "main"], { cwd: work });
+
+  execFileSync("git", ["checkout", "-q", "-b", "f-x"], { cwd: work });
+  writeFile(work, "f.txt", "v2\n");
+  execFileSync("git", ["commit", "-q", "-am", "two"], { cwd: work });
+  execFileSync("git", ["push", "-q", "-u", "origin", "f-x"], { cwd: work });
+
+  // rewrite the branch (amend) -> now ahead of the stale origin/f-x, behind main 0
+  execFileSync("git", ["commit", "-q", "--amend", "-m", "two rewritten"], { cwd: work });
+
+  const r = runIntegrateGate(work);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /up to date with origin\/main/);
+});
+
 test("test:integrate is wired into package.json scripts", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });

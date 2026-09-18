@@ -46,14 +46,29 @@ if (!insideGitRepo()) {
 
 // Best-effort fetch (never blocks the gate on network/auth failure).
 try {
-  git(["fetch", "--quiet"]);
+  git(["fetch", "--quiet", "origin"]);
 } catch (_) {
-  /* offline — rely on the local upstream ref */
+  /* offline — rely on the local remote refs */
 }
 
-const upstream = (git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]) || "").trim();
+/* The integration TARGET is the canonical branch (`origin/main`), NOT the
+ * branch's own upstream (`@{u}` = `origin/<feature>`). Comparing HEAD to the
+ * branch's own remote falsely fails every legitimate post-rebase force-push:
+ * after `git rebase origin/main`, HEAD is ahead of the stale `origin/<feature>`
+ * and the gate demanded a rebase that had just been done, blocking the push.
+ * Fall back to `@{u}` only when the canonical branch cannot be determined. */
+function integrationTarget() {
+  const sym = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (sym) return sym.trim();
+  for (const name of ["origin/main", "origin/master"]) {
+    if (git(["rev-parse", "--verify", "--quiet", name])) return name;
+  }
+  return (git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]) || "").trim();
+}
+
+const upstream = integrationTarget();
 if (!upstream) {
-  console.log("  \u26a0 no upstream tracking branch configured \u2014 integrate gate skipped");
+  console.log("  \u26a0 no canonical branch / upstream configured \u2014 integrate gate skipped");
   console.log("\nRESULT: skipped (0 failures)");
   process.exit(0);
 }

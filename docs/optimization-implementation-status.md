@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.74)
+# Agent Harness Optimization — Implementation Status (v0.1.75)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -18,16 +18,28 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.74` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence) |
-| Lint / tests | green (`npm run lint`, `npm test` — 210 pass) |
-| LibraryOS | `0.1.74` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
+| Version | `0.1.75` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push) |
+| Lint / tests | green (`npm run lint`, `npm test` — 211 pass) |
+| LibraryOS | `0.1.75` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) + the `ship` command (H-10) |
 
 ---
 
 ## What shipped
+
+### `0.1.75` — test:integrate targets the canonical branch
+
+Field friction (LibraryOS cleanup, 2026-09-18): landing the four open-PR feature
+branches required a rebase-then-force-push. The pre-push `test:integrate` gate
+compared `HEAD` to the branch's own upstream (`@{u}` = `origin/f-225`), so after
+a legitimate `git rebase origin/main` the branch was ahead of its now-stale
+remote and the gate demanded another rebase — blocking the push. The integration
+target is `origin/main` (`origin/HEAD`), never the branch's own remote; `@{u}`
+is used only as a last-resort fallback when the canonical branch can't be
+resolved. Regression test added (amended feature branch, up to date with main →
+green). 211 pass.
 
 ### `0.1.74` — deploy hardening + board/lifecycle convergence
 
