@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.68)
+# Agent Harness Optimization — Implementation Status (v0.1.69)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -18,16 +18,42 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.68` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7) |
-| Lint / tests | green (`npm run lint`, `npm test` — 185 pass) |
-| LibraryOS | `0.1.68` deployed (`.harness.json`; auto-commit `acb8200`); `model-routing.md` is gitignored/local-only and updated in place |
+| Version | `0.1.69` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open` |
+| Lint / tests | green (`npm run lint`, `npm test` — 191 pass) |
+| LibraryOS | `0.1.68` deployed (`.harness.json`; auto-commit `acb8200`); `0.1.69` pending deploy; `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) |
 
 ---
 
 ## What shipped
+
+### `0.1.69` — session-lease liveness, `worktree --open`
+
+Field defect: `0.1.67` leases stored only `{sessionID, pid, startedAt}`, so a
+**recycled pid** (the OS handing a dead session's pid to a new opencode) or a
+session closed without a `session.deleted` event stayed "live" for up to 12h and
+blocked an innocent push (`test:concurrency` reported 7 live sessions when only
+3–4 were real).
+
+- **Shared `lease-lib.js`.** One home for the lease format + liveness rules, used
+  by the context-guard plugin (writer) and `check-concurrency.js` (reader). A
+  lease now carries `bootId` + `/proc/<pid>/stat` starttime (a process **birth
+  token**) and a `heartbeatAt`; liveness requires an alive pid **and** a matching
+  birth token **and** a fresh heartbeat. Dead, recycled, and stale leases no
+  longer count (Linux/WSL; elsewhere it falls back to pid + heartbeat).
+- **Heartbeat + startup sweep.** The plugin touches the lease on every message /
+  tool call and prunes dead/recycled/stale leases at load, so closed sessions
+  self-clean. `check-concurrency.js --prune` does the same on demand, and the
+  failure output now prints per-lease pid/age/reason.
+- **`backlog worktree <id> --open`.** Launches the agent CLI *inside* the new
+  worktree after the board is written (lock released first), so the session's
+  lease + gates are scoped to the worktree instead of `main` — the structural
+  fix for "three sessions share one checkout". Override with `--open-cmd` /
+  `HARNESS_OPEN_CMD`.
+- Tests: +17 (recycled/dead/stale leases, `--prune`, `--open`, plus the updated
+  plugin source-contract).
 
 ### `0.1.68` — integrate-early guard, worktree/main sync, merge-backlog row loss
 

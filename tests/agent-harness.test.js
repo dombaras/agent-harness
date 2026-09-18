@@ -743,12 +743,15 @@ function scaffoldBacklogCliTarget() {
   return target;
 }
 
-/* Copy the shared row-primitive module next to the standalone board scripts
- * (backlog.js at scripts/, the QA gates at scripts/qa/) that now require it. */
+/* Copy the shared standalone modules next to the board scripts (backlog.js at
+ * scripts/, the QA gates at scripts/qa/) that require them: board-lib.js (row
+ * primitive) and lease-lib.js (session-lease liveness). */
 function copyBoardLib(target) {
   const dir = path.join(target, "scripts", "qa");
   fs.mkdirSync(dir, { recursive: true });
-  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-lib.js"), path.join(dir, "board-lib.js"));
+  for (const name of ["board-lib.js", "lease-lib.js"]) {
+    fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "qa", name), path.join(dir, name));
+  }
 }
 
 function runBacklogCli(target, args) {
@@ -2563,18 +2566,31 @@ function scaffoldConcurrencyTarget() {
     path.join(target, "scripts", "qa", "check-concurrency.js")
   );
   copyBoardLib(target);
+  // `.serve/` is clone-locally excluded in a real project; mirror that so lease
+  // files don't register as dirty working-tree changes.
+  fs.writeFileSync(path.join(target, ".gitignore"), ".serve/\n");
   git(target, ["init", "-q"]);
   git(target, ["config", "user.email", "t@t.t"]);
   git(target, ["config", "user.name", "t"]);
   return target;
 }
 
-function runConcurrencyGate(target) {
-  const res = spawnSync(process.execPath, ["scripts/qa/check-concurrency.js"], {
+function runConcurrencyGate(target, args = []) {
+  const res = spawnSync(process.execPath, ["scripts/qa/check-concurrency.js", ...args], {
     cwd: target,
     encoding: "utf8",
   });
   return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+/* The template lease-lib, required in-process so tests can mint real leases
+ * (with the test process's birth token) and assert the gate's verdict. */
+const leaseLib = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"));
+
+function writeRawLease(target, id, rec) {
+  const dir = path.join(target, ".serve", "sessions");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ sessionID: id, ...rec }));
 }
 
 function backlogWithInProgress(ids) {
@@ -2620,21 +2636,87 @@ test("test:concurrency warns (exit 0) when a single session is In progress with 
 test("test:concurrency fails when two live session leases share the tree (clean tree)", () => {
   const t = scaffoldConcurrencyTarget();
   writeFile(t, "BACKLOG.md", backlogWithInProgress(["F-044"]));
-  const leaseDir = path.join(t, ".serve", "sessions");
-  fs.mkdirSync(leaseDir, { recursive: true });
-  const startedAt = Date.now();
-  for (const id of ["ses_lease_a", "ses_lease_b"]) {
-    fs.writeFileSync(
-      path.join(leaseDir, `${id}.json`),
-      JSON.stringify({ sessionID: id, pid: process.pid, startedAt })
-    );
-  }
+  for (const id of ["ses_lease_a", "ses_lease_b"]) leaseLib.writeLease(t, id);
   git(t, ["add", "-A"]);
   git(t, ["commit", "-q", "-m", "seed"]);
   const r = runConcurrencyGate(t);
   assert.strictEqual(r.status, 1, r.out);
   assert.match(r.out, /live sessions share this working tree/);
   assert.match(r.out, /ses_lease_a/);
+  assert.match(r.out, /pid \d+/); // per-lease diagnostics, not just opaque ids
+});
+
+test("test:concurrency ignores a lease whose pid was recycled (0.1.67 false positive)", () => {
+  const t = scaffoldConcurrencyTarget();
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  // Same live pid, different process incarnation: birth token must reject it.
+  const tok = leaseLib.birthToken(process.pid);
+  const token =
+    tok.procStart != null
+      ? { bootId: tok.bootId, procStart: String(Number(tok.procStart) + 1) }
+      : { bootId: "some-other-boot", procStart: "1" };
+  writeRawLease(t, "ses_recycled", { pid: process.pid, startedAt: Date.now(), heartbeatAt: Date.now(), ...token });
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /working tree clean/);
+});
+
+test("test:concurrency ignores a lease whose pid is dead", () => {
+  const t = scaffoldConcurrencyTarget();
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  writeRawLease(t, "ses_dead", { pid: 999999, startedAt: Date.now(), heartbeatAt: Date.now() });
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /working tree clean/);
+});
+
+test("test:concurrency ignores a lease with a stale heartbeat", () => {
+  const t = scaffoldConcurrencyTarget();
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  leaseLib.writeLease(t, "ses_stale");
+  // Backdate the heartbeat well past the freshness window.
+  const p = path.join(t, ".serve", "sessions", "ses_stale.json");
+  const rec = JSON.parse(read(p));
+  rec.heartbeatAt = Date.now() - 13 * 60 * 60 * 1000;
+  fs.writeFileSync(p, JSON.stringify(rec));
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /working tree clean/);
+});
+
+test("test:concurrency --prune clears dead/recycled/stale leases", () => {
+  const t = scaffoldConcurrencyTarget();
+  writeRawLease(t, "ses_dead", { pid: 999999, startedAt: Date.now(), heartbeatAt: Date.now() });
+  const tok = leaseLib.birthToken(process.pid);
+  writeRawLease(t, "ses_recycled", {
+    pid: process.pid,
+    startedAt: Date.now(),
+    heartbeatAt: Date.now(),
+    bootId: tok.bootId,
+    procStart: String(Number(tok.procStart || "1") + 1),
+  });
+  leaseLib.writeLease(t, "ses_live");
+  const r = runConcurrencyGate(t, ["--prune"]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /removed ses_dead/);
+  assert.match(r.out, /removed ses_recycled/);
+  assert.ok(exists(path.join(t, ".serve", "sessions", "ses_live.json")), "live lease kept");
+  assert.ok(!exists(path.join(t, ".serve", "sessions", "ses_dead.json")), "dead lease removed");
+});
+
+test("test:concurrency lists stale leases but only fails on live ones", () => {
+  const t = scaffoldConcurrencyTarget();
+  for (const id of ["ses_lease_a", "ses_lease_b"]) leaseLib.writeLease(t, id);
+  writeRawLease(t, "ses_dead", { pid: 999999, startedAt: Date.now(), heartbeatAt: Date.now() });
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  const r = runConcurrencyGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /stale lease\(s\) present but ignored/);
+  assert.match(r.out, /--prune/);
 });
 
 test("test:concurrency warns (exit 0) on a dirty tree with no In progress rows", () => {
@@ -2764,6 +2846,31 @@ test("backlog worktree fails cleanly on an unknown row", () => {
   const r = runBacklogCli(t, ["worktree", "F-999"]);
   assert.strictEqual(r.status, 1, r.out);
   assert.match(r.out, /no row F-999/);
+});
+
+test("backlog worktree --open launches the agent CLI inside the new worktree", () => {
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+
+  const dir = path.join(os.tmpdir(), `wt-open-${path.basename(t)}`);
+  // Stub the agent binary: it writes a marker relative to its cwd, proving the
+  // launch inherited the worktree as the session root.
+  const stub = "node -e \"require('fs').writeFileSync('OPENED_IN_WORKTREE','ok')\"";
+  const res = spawnSync(
+    process.execPath,
+    ["scripts/backlog.js", "worktree", "F-001", "--branch", `bo-${path.basename(t)}`, "--dir", dir, "--open"],
+    { cwd: t, encoding: "utf8", env: { ...process.env, HARNESS_OPEN_CMD: stub } }
+  );
+  const out = (res.stdout || "") + (res.stderr || "");
+  assert.strictEqual(res.status, 0, out);
+  assert.match(out, /isolated F-001/);
+  assert.match(out, /opening/);
+  assert.ok(exists(path.join(dir, "OPENED_IN_WORKTREE")), "launcher ran with cwd = worktree");
 });
 
 test("backlog worktree defaults to a .worktrees/<repo>/<slug> container, not a repo sibling", () => {
@@ -3851,9 +3958,11 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /guard-events\.jsonl/);
   assert.match(src, /guard-event log write failed/, "a failed guard-log write is surfaced, never silent");
   assert.match(src, /childSessions/, "child sessions are tracked to be excluded from band/loop counting");
-  assert.match(src, /LEASE_DIR_REL/, "writes a per-tree session lease for test:concurrency");
+  assert.match(src, /lease-lib\.js/, "leases use the shared liveness lib test:concurrency also reads");
   assert.match(src, /writeLease/, "primary session creation records the lease");
   assert.match(src, /clearLease/, "session deletion clears the lease");
+  assert.match(src, /touchLease/, "activity heartbeats the lease so a live-but-quiet session stays live");
+  assert.match(src, /pruneLeases/, "startup sweep clears crashed/closed sessions' leases");
   assert.match(src, /childParent/, "child->parent mapping attributes subagent funds errors to the orchestrator");
   assert.match(src, /sessionModel/, "tracks the observed provider/model per session");
   assert.match(src, /modelLabel\(meta\.model\)/, "names the failed provider/model from the dispatch metadata");

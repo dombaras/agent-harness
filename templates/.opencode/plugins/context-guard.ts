@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import fs from "node:fs"
 import path from "node:path"
 import guard from "../../scripts/qa/context-guard-core.js"
+import leases from "../../scripts/qa/lease-lib.js"
 
 // Mechanical half of the context budget: read the project-owned thresholds from
 // `.agents/memory/orchestration.md` and nudge the PRIMARY orchestrator session as
@@ -18,7 +19,7 @@ import guard from "../../scripts/qa/context-guard-core.js"
 
 const ORCHESTRATION_REL = path.join(".agents", "memory", "orchestration.md")
 const GUARD_LOG_REL = path.join(".agents", "guard-events.jsonl")
-const LEASE_DIR_REL = path.join(".serve", "sessions")
+
 
 export const ContextGuard: Plugin = async ({ directory, client }) => {
   const sessions = new Map<string, any>()
@@ -105,25 +106,41 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
 
   /* Per-tree primary-session lease. `test:concurrency` reads `.serve/sessions/`
    * to fail when two primary sessions share one checkout — a collision that
-   * exists even on a clean tree. Best-effort (never throws into the hook). */
+   * exists even on a clean tree. The lease carries a process birth token
+   * (bootId + /proc starttime) and a heartbeat, both defined in lease-lib.js, so
+   * a recycled pid or a closed TUI can't masquerade as a live session.
+   * Best-effort (never throws into the hook). */
   const writeLease = (sessionID: string) => {
     try {
-      const dir = path.join(directory, LEASE_DIR_REL)
-      fs.mkdirSync(dir, { recursive: true })
-      fs.writeFileSync(
-        path.join(dir, `${sessionID}.json`),
-        JSON.stringify({ sessionID, pid: process.pid, startedAt: Date.now() })
-      )
+      leases.writeLease(directory, sessionID)
     } catch {
       /* lease is best-effort */
     }
   }
   const clearLease = (sessionID: string) => {
     try {
-      fs.rmSync(path.join(directory, LEASE_DIR_REL, `${sessionID}.json`), { force: true })
+      leases.clearLease(directory, sessionID)
     } catch {
       /* lease is best-effort */
     }
+  }
+  const touchLease = (sessionID: string) => {
+    try {
+      leases.touchLease(directory, sessionID)
+    } catch {
+      /* lease is best-effort */
+    }
+  }
+
+  // Sweep leases left by crashed/closed sessions so they can never block the
+  // concurrency gate. Runs once per plugin load (best-effort).
+  try {
+    const pruned = leases.pruneLeases(directory)
+    if (pruned.length) {
+      void report(`pruned ${pruned.length} stale session lease(s) in this tree`)
+    }
+  } catch {
+    /* best-effort */
   }
 
   return {
@@ -173,6 +190,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
             }
           }
           if (!isPrimary(sid)) return
+          touchLease(sid)
           if (info?.role === "user") {
             // The user is speaking (usually the top-up-complete message):
             // release the funds stop so work can resume.
@@ -215,6 +233,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     "tool.execute.before": async (input: any, output: any) => {
       try {
         if (!isPrimary(input?.sessionID)) return
+        touchLease(input.sessionID)
         const note = guard.noteToolCall(
           stateFor(input.sessionID),
           input?.tool,
@@ -239,6 +258,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     "tool.execute.after": async (input: any, output: any) => {
       try {
         if (!isPrimary(input?.sessionID)) return
+        touchLease(input.sessionID)
         // Only structured failure evidence may arm the stop (core gate): a
         // successful read/grep/dispatch returning the harness's own docs — which
         // quote the trigger phrases — must never pause a healthy session.

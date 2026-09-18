@@ -260,7 +260,9 @@ so agents see complete descriptions.
   board + shippable code only — so one session's uncommitted work can't leak into another's
   pre-push gate. Worktrees land in a single hidden container sibling,
   `<repo>/../.worktrees/<repo>/<id>`, so the parent folder (e.g. `C:\develop`) only ever
-  holds top-level projects. `backlog archive <id>` removes the shipped feature's worktree +
+  holds top-level projects. Pass `--open` to launch the agent CLI *in the new worktree*
+  after the board is written, so the session is root-scoped there and its lease + gates
+  never land in `main`. `backlog archive <id>` removes the shipped feature's worktree +
   merged branch, so a session cleans up after itself on close.
 - **Main-checkout freshness**: because a feature's commits reach `origin/main` from its own
   worktree, the MAIN checkout's board can lag origin until it is pulled. `backlog worktree`
@@ -300,7 +302,13 @@ so agents see complete descriptions.
   owned files declared (`.agents/memory/owned-files.md`), it fails *exactly* when
   a dirty file is owned by two In-progress rows (or a tree mixes two sessions'
   WIP). The shared `BACKLOG.md` itself is treated as owned by every In-progress
-  row, so a dirty board under 2+ active sessions is a hard failure.
+  row, so a dirty board under 2+ active sessions is a hard failure. It also
+  refuses two live *primary sessions* on one checkout via `.serve/sessions/`
+  leases written by the context-guard plugin — liveness requires the pid **and** a
+  matching process birth token (`bootId` + `/proc` starttime) **and** a fresh
+  heartbeat, so a recycled pid or a closed TUI can't masquerade as a live session.
+  `node scripts/qa/check-concurrency.js --prune` clears dead/recycled/stale leases
+  (the plugin also sweeps at startup).
 - `npm run test:integrate` — pre-push rebase check: fails when the current branch
   is behind `origin/main`, reminding you to `git rebase` and re-run the board +
   concurrency gates before pushing, so conflicts surface early.

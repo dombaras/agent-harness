@@ -21,7 +21,7 @@
  *   freeze <id> [--why x] [--reopen x]  -> Frozen (parked)
  *   depends <id> --on <ids|?>           set a row's "Depends on" cell (Open/Queued)
  *   owns <id> --files "glob, glob"      record the files/globs a row owns
- *   worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch]
+ *   worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch] [--open]
  *                                       create a git worktree + branch for <id>
  *                                       and record it in the row's Handoff cell.
  *                                       Branches from the current upstream
@@ -29,6 +29,9 @@
  *                                       Default location: <repo>/../.worktrees/<repo>/<id>
  *                                       (a single container sibling, so one worktree
  *                                       per feature never pollutes the parent folder).
+ *                                       --open launches the agent CLI in the new
+ *                                       worktree after the board is written (so
+ *                                       the session's lease + gates scope there).
  *
  * Every mutation writes well-formed rows that `npm run test:backlog` accepts:
  * priority P1..P4, non-empty evidence/handoff/reopen, unique IDs, and
@@ -37,9 +40,11 @@
  * `worktree` is the harness's isolation primitive: concurrent sessions should
  * each claim a separate `git worktree` + branch so one session's uncommitted
  * work can never leak into another's pre-push gate (`test:concurrency` fails a
- * push when that collision is provable). Run it from the MAIN tree. `archive`
- * reverses it: a shipped feature's worktree + merged branch are removed, so
- * per-feature checkouts never pile up after sessions close.
+ * push when that collision is provable). Run it from the MAIN tree — or with
+ * `--open`, which also launches the agent CLI in the new worktree so the session
+ * is root-scoped there and never writes a `main` lease. `archive` reverses it: a
+ * shipped feature's worktree + merged branch are removed, so per-feature
+ * checkouts never pile up after sessions close.
  *
  * Because a feature's commits reach `origin/main` from its own worktree, the
  * MAIN checkout's board can lag origin until it is pulled. `worktree` and
@@ -1017,7 +1022,25 @@ function cmdWorktree(state, argv) {
     state.lines = setRows(state.lines, "inprogress", inprog);
   }
 
-  return { id, branch, dir: rel, base };
+  return { id, branch, dir: rel, dirAbs: dir, base };
+}
+
+/* `worktree --open` makes the new worktree the session root: launch the agent
+ * CLI with its cwd set to the worktree, so the context-guard plugin's lease
+ * lands in the worktree's `.serve/sessions/` (not main's) and `test:concurrency`
+ * sees one session per checkout. Runs AFTER the board lock is released — the
+ * launched session can be long-lived, and holding the lock would freeze the
+ * board. Override the binary with `--open-cmd` or `HARNESS_OPEN_CMD` (tests). */
+function openWorktreeSession(dir, command) {
+  const bin = command || process.env.HARNESS_OPEN_CMD || "opencode";
+  const label = path.basename(dir);
+  process.stdout.write(`worktree: opening ${bin} in ${dir} (session root = ${label})\n`);
+  const res = spawnSync(bin, { cwd: dir, stdio: "inherit", shell: true, encoding: "utf8" });
+  if (res.error) {
+    process.stderr.write(`worktree: could not launch ${bin}: ${res.error.message}\n`);
+    process.exitCode = 1;
+  }
+  return res.status === null ? 1 : res.status;
 }
 
 // ---------------------------------------------------------------- dispatch
@@ -1068,6 +1091,8 @@ function parseArgs(argv) {
     else if (a === "--on") args.on = argv[++i];
     else if (a === "--files") args.files = argv[++i];
     else if (a === "--take") args.take = true;
+    else if (a === "--open") args.open = true;
+    else if (a === "--open-cmd") args["open-cmd"] = argv[++i];
     else if (a === "--no-fetch") args["no-fetch"] = true;
     else if (a === "--all") args.all = true;
     else if (a === "--full") args.full = true;
@@ -1093,7 +1118,7 @@ function usage() {
       "  node scripts/backlog.js priority <id> --p P1..P4\n" +
       "  node scripts/backlog.js depends <id> --on <ids|?>\n" +
       "  node scripts/backlog.js owns <id> --files \"glob, glob\"\n" +
-      "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch]\n" +
+      "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch] [--open]\n" +
       "  node scripts/backlog.js epic-add <key> --label <x> [--goal <y>]\n" +
       "  node scripts/backlog.js epic <id> --to <key>\n"
   );
@@ -1133,6 +1158,7 @@ function main() {
 
   // Mutating commands read-modify-write BACKLOG.md (or owned-files.md) under an
   // exclusive lock, so two concurrent sessions can't both claim the same row.
+  let worktreeOut = null;
   try {
     withLock(root, () => {
       // `worktree`/`archive` run from the main tree and depend on its board being
@@ -1168,11 +1194,17 @@ function main() {
         fs.writeFileSync(state.p, serializeBacklog(state), "utf8");
         console.log(formatResult(cmd, out));
       }
+      if (cmd === "worktree") worktreeOut = out;
       for (const note of refreshNotes) console.log(`board: ${note}`);
     });
   } catch (e) {
     console.error(`backlog: ${e.message}`);
     process.exitCode = 1;
+  }
+
+  // The lock is released; now make the worktree the interactive session root.
+  if (cmd === "worktree" && args.open && worktreeOut) {
+    openWorktreeSession(worktreeOut.dirAbs, args["open-cmd"]);
   }
 }
 

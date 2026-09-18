@@ -1,6 +1,6 @@
 {
   "name": "@dombaras/agent-harness",
-  "version": "0.1.68",
+  "version": "0.1.69",
   "description": "Reusable multi-agent harness for AI-assisted development: personas, skills, operating rules, model routing, and QA gates. Deploy into any project with `npx @dombaras/agent-harness init`.",
   "bin": {
     "agent-harness": "bin/agent-harness.js"
@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "test": "node --test",
-    "lint": "node --check bin/agent-harness.js && node --check templates/scripts/backlog.js && node --check templates/scripts/checkpoint.js && node --check templates/scripts/agent-report.js && node --check templates/scripts/serve.js && node --check templates/scripts/qa/check-dispatch-config.js && node --check templates/scripts/qa/governance.js && node --check templates/scripts/qa/check-qa-plan.js && node --check templates/scripts/qa/check-qa-scripts.js && node --check templates/scripts/qa/check-backlog.js && node --check templates/scripts/qa/board-lib.js && node --check templates/scripts/qa/check-quality.js && node --check templates/scripts/qa/check-product.js && node --check templates/scripts/qa/check-docs.js && node --check templates/scripts/qa/check-concurrency.js && node --check templates/scripts/qa/check-integrate.js && node --check templates/scripts/qa/merge-backlog.js && node --check templates/scripts/qa/run-clean.js && node --check templates/scripts/qa/check-test-wiring.js && node --check templates/scripts/qa/check-linger.js && node --check templates/scripts/qa/check-prefix-stability.js && node --check templates/scripts/qa/hash-file.js && node --check templates/scripts/qa/context-guard-core.js && node --check templates/scripts/qa/provider-stats.js"
+    "lint": "node --check bin/agent-harness.js && node --check templates/scripts/backlog.js && node --check templates/scripts/checkpoint.js && node --check templates/scripts/agent-report.js && node --check templates/scripts/serve.js && node --check templates/scripts/qa/check-dispatch-config.js && node --check templates/scripts/qa/governance.js && node --check templates/scripts/qa/check-qa-plan.js && node --check templates/scripts/qa/check-qa-scripts.js && node --check templates/scripts/qa/check-backlog.js && node --check templates/scripts/qa/board-lib.js && node --check templates/scripts/qa/lease-lib.js && node --check templates/scripts/qa/check-quality.js && node --check templates/scripts/qa/check-product.js && node --check templates/scripts/qa/check-docs.js && node --check templates/scripts/qa/check-concurrency.js && node --check templates/scripts/qa/check-integrate.js && node --check templates/scripts/qa/merge-backlog.js && node --check templates/scripts/qa/run-clean.js && node --check templates/scripts/qa/check-test-wiring.js && node --check templates/scripts/qa/check-linger.js && node --check templates/scripts/qa/check-prefix-stability.js && node --check templates/scripts/qa/hash-file.js && node --check templates/scripts/qa/context-guard-core.js && node --check templates/scripts/qa/provider-stats.js"
   },
   "keywords": [
     "opencode",

@@ -25,14 +25,22 @@
  * files are contended (owned by 2+ rows, or a mix of different sessions) and
  * passes when every dirty file is cleanly owned by a single session.
  *
- * The fix the message points at is either isolation (`backlog worktree <id>`),
- * ownership declaration (`backlog owns <id> --files ...`), or committing/stashing
- * the foreign work. Exit 0 unless the collision is provable.
+ * It also refuses two live primary sessions sharing one checkout, read from the
+ * `.serve/sessions/` leases the context-guard plugin writes (`lease-lib.js` owns
+ * the liveness rules: alive pid + matching process birth token + fresh
+ * heartbeat, so recycled pids and closed TUIs no longer block a push).
+ *
+ * The fix the message points at is either isolation (`backlog worktree <id>`, or
+ * `--open` to root the session there), ownership declaration (`backlog owns <id>
+ * --files ...`), committing/stashing the foreign work, or — for leases only —
+ * `node scripts/qa/check-concurrency.js --prune`. Exit 0 unless the collision is
+ * provable.
  */
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { splitCells } = require("./board-lib.js");
+const leases = require("./lease-lib.js");
 
 const root = path.resolve(__dirname, "..", "..");
 
@@ -65,38 +73,15 @@ function dirtyFiles() {
 }
 
 /* Live-session leases. The context-guard plugin writes
- * `.serve/sessions/<sessionID>.json` ({ sessionID, pid, startedAt }) when a
- * PRIMARY session is created and removes it on delete. Two or more live leases
- * in THIS tree mean two primary sessions share one checkout — a collision that
- * exists even on a clean tree (and that the dirty-tree heuristics above cannot
- * see). A crashed session's lease is ignored because its pid is dead. */
-function liveLeases() {
-  const dir = path.join(root, ".serve", "sessions");
-  if (!fs.existsSync(dir)) return [];
-  const now = Date.now();
-  const FRESH_MS = 12 * 60 * 60 * 1000;
-  const live = [];
-  for (const f of fs.readdirSync(dir)) {
-    if (!f.endsWith(".json")) continue;
-    let rec;
-    try {
-      rec = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
-    } catch {
-      continue;
-    }
-    const fresh = typeof rec.startedAt === "number" && now - rec.startedAt < FRESH_MS;
-    let alive = false;
-    if (typeof rec.pid === "number") {
-      try {
-        process.kill(rec.pid, 0);
-        alive = true;
-      } catch {
-        alive = false;
-      }
-    }
-    if (alive && fresh) live.push(rec.sessionID || f.replace(/\.json$/, ""));
-  }
-  return live;
+ * `.serve/sessions/<sessionID>.json` when a PRIMARY session is created, removes
+ * it on delete, and heartbeats it on activity. Two or more live leases in THIS
+ * tree mean two primary sessions share one checkout — a collision that exists
+ * even on a clean tree (and that the dirty-tree heuristics above cannot see).
+ * The liveness rules (pid + process birth token + heartbeat) live in
+ * `lease-lib.js` so the writer and this reader can never disagree. A lease for a
+ * dead or recycled pid, or a stale heartbeat, is not live. */
+function allLeases() {
+  return leases.readLeases(root);
 }
 
 /* Split a markdown table row on unescaped `|` — shared with backlog.js and the
@@ -178,16 +163,38 @@ if (!insideGitRepo()) {
   process.exit(0);
 }
 
-/* Independent of dirtiness: refuse two live primary sessions sharing one tree. */
-const leases = liveLeases();
-if (leases.length > 1) {
-  console.log(`  \u2717 ${leases.length} live sessions share this working tree: ${leases.join(", ")}`);
+/* `--prune` clears dead / recycled / stale leases so a crashed session can never
+ * block the gate (the plugin also sweeps on startup). */
+if (process.argv.slice(2).includes("--prune")) {
+  const removed = leases.pruneLeases(root);
+  for (const r of removed) console.log(`  - removed ${r.sessionID} (pid ${r.pid}, ${r.reason})`);
+  if (!removed.length) console.log("  no dead/recycled/stale leases to prune");
+  console.log(`\nRESULT: pruned ${removed.length} stale lease(s)`);
+  process.exit(0);
+}
+
+/* Independent of dirtiness: refuse two live primary sessions sharing one tree.
+ * Only leases whose pid is alive AND matches the recorded process birth token
+ * AND has a fresh heartbeat count — a recycled pid (the 0.1.67 bug) or a lease
+ * leaked by a closed TUI no longer blocks an innocent push. */
+const all = allLeases();
+const live = all.filter((r) => leases.leaseStatus(r).live);
+if (live.length > 1) {
+  console.log(`  \u2717 ${live.length} live sessions share this working tree:`);
+  for (const r of live) console.log(`      ${leases.describeLease(r)}`);
+  const ghosts = all.filter((r) => !leases.leaseStatus(r).live);
+  if (ghosts.length) {
+    console.log(
+      `  \u2139 ${ghosts.length} stale lease(s) present but ignored \u2014 clear them with ` +
+        `\`node scripts/qa/check-concurrency.js --prune\`.`
+    );
+  }
   console.log(
     "\nRESULT: 1 FAILURE(S) \u2014 isolate, stash, or commit before push"
   );
   console.log(
-    "         Two primary sessions must not share one checkout. Each session starts\n" +
-      "         its own feature worktree (backlog worktree <id>) and works there."
+    "         Two primary sessions must not share one checkout. Start each session in\n" +
+      "         its own feature worktree (`backlog worktree <id> --open`) and work there."
   );
   process.exit(1);
 }
