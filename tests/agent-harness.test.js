@@ -5293,7 +5293,8 @@ test("[drift-guard] ship integrates, pushes, opens the PR, and enqueues the land
   assert.match(src, /rebase/, "rebases on origin/<base>");
   assert.match(src, /--force-with-lease/, "only force-pushes an already-pushed branch");
   assert.match(src, /gh", \["pr", "create"/, "opens the PR");
-  assert.match(src, /--add-label/, "applies the landing label");
+  assert.match(src, /issues\/\$\{pr\.number\}\/labels/, "applies the landing label via the REST API");
+  assert.match(src, /repoSlug/, "resolves owner/repo for the REST label call");
   assert.match(src, /merge-train/, "defaults the landing label to merge-train");
   assert.match(src, /resolveLabel/, "label is resolvable per project");
   // gh unavailable must not be a silent success.

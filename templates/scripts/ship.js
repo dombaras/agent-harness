@@ -134,18 +134,35 @@ function usage() {
   );
 }
 
-/* Ensure the label exists in the repo (create-if-missing), then apply it. */
-function applyLabel(root, prNumber, label) {
-  const listed = out("gh", ["label", "list", "--json", "name", "--limit", "200", "--jq", ".[].name"], { cwd: root });
-  const exists = listed.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).includes(label);
+/* owner/repo from the origin remote (for REST calls that avoid the deprecated
+ * Projects (classic) GraphQL mutation in `gh pr edit --add-label`). */
+function repoSlug(root) {
+  const url = out("git", ["remote", "get-url", "origin"], { cwd: root });
+  const m = url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/);
+  return m ? m[1] : null;
+}
+
+/* Ensure the label exists in the repo (create only if missing, never mutate an
+ * existing label), then apply it. Uses the REST API — `gh pr edit --add-label`
+ * fails on gh versions whose GraphQL query still asks for Projects (classic). */
+function applyLabel(root, pr, label) {
+  const slug = repoSlug(root);
+  if (!slug) return false;
+  const exists =
+    spawnSync("gh", ["api", `repos/${slug}/labels/${encodeURIComponent(label)}`], {
+      cwd: root,
+      stdio: "ignore",
+    }).status === 0;
   if (!exists) {
     console.log(`\n[label] "${label}" does not exist — creating it.`);
     if (!run("gh", ["label", "create", label, "--color", "FBCA04", "--description", "Serialized landing queue (agent-harness ship)"], { cwd: root })) {
       return false;
     }
   }
-  if (!run("gh", ["pr", "edit", String(prNumber), "--add-label", label], { cwd: root })) return false;
-  const labels = out("gh", ["pr", "view", String(prNumber), "--json", "labels", "--jq", ".labels[].name"], { cwd: root });
+  if (!run("gh", ["api", `repos/${slug}/issues/${pr.number}/labels`, "-f", `labels[]=${label}`], { cwd: root })) {
+    return false;
+  }
+  const labels = out("gh", ["api", `repos/${slug}/issues/${pr.number}/labels`, "--jq", ".[].name"], { cwd: root });
   return labels.split(/\r?\n/).map((s) => s.trim()).includes(label);
 }
 
@@ -235,10 +252,13 @@ function main() {
 
   const label = resolveLabel(root, args.label);
   if (label && !args["no-label"]) {
-    if (!applyLabel(root, pr.number, label)) {
+    if (!pr.number) {
+      return fail(`ship: could not resolve the PR number for ${pr.url} — apply the label manually.`);
+    }
+    if (!applyLabel(root, pr, label)) {
       return fail(
         `ship: PR ${pr.url} is open but the label "${label}" could not be applied.\n` +
-          `      Apply it manually: gh pr edit ${pr.number} --add-label ${label}`
+          `      Apply it manually: gh api repos/<owner>/<repo>/issues/${pr.number}/labels -f "labels[]=${label}"`
       );
     }
     console.log(`\n[label] applied "${label}" — PR #${pr.number} is queued for the merge train.`);
