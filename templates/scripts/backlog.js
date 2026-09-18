@@ -56,7 +56,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
-const { splitCells, isSep, formatRow } = require("./qa/board-lib.js");
+const { splitCells, isSep, formatRow, findCycle } = require("./qa/board-lib.js");
 
 const PRIORITIES = { P1: 0, P2: 1, P3: 2, P4: 3 };
 
@@ -409,6 +409,34 @@ function blockedBy(lines, cells, key) {
   return dep.split(/[\s,]+/).filter(Boolean).filter((d) => !isArchived(lines, d));
 }
 
+/* The dependency graph over Open/Queued rows: id -> [ids it depends on]. */
+function dependencyGraph(lines) {
+  const graph = new Map();
+  for (const key of ["open", "queued"]) {
+    for (const r of getRows(lines, key)) {
+      const id = (r.cells[0] || "").trim();
+      if (!id) continue;
+      const dep = dependsOf(r.cells, key);
+      graph.set(id, !dep || dep === "?" ? [] : dep.split(/[\s,]+/).filter(Boolean));
+    }
+  }
+  return graph;
+}
+
+/* Reject a mutation that would introduce a dependency cycle. `extra` is the
+ * row being (re)written: { id, deps }. The DFS lives in board-lib.js so the
+ * write path and `test:backlog` share one implementation. */
+function assertNoCycle(lines, extra) {
+  const graph = dependencyGraph(lines);
+  if (extra) graph.set(extra.id, extra.deps);
+  const cycle = findCycle(graph);
+  if (cycle) {
+    throw new Error(
+      `dependency cycle: ${cycle.join(" -> ")} — a cycle leaves every row in it permanently blocked.`
+    );
+  }
+}
+
 /* ---------------------------------------------------------------- owned-files registry */
 /* `.agents/memory/owned-files.md` maps an active row -> the files/globs it owns,
  * powering the cross-session overlap check in `test:concurrency`. */
@@ -560,11 +588,13 @@ function cmdAdd(state, argv) {
   }
   const dependsOn = argv["depends-on"] || "?";
   const known = getAllIds(state.lines);
-  for (const d of dependsOn.split(/[\s,]+/).filter(Boolean)) {
-    if (d !== "?" && !known.has(d)) throw new Error(`add: depends on unknown row ${d}.`);
+  const deps = dependsOn.split(/[\s,]+/).filter(Boolean).filter((d) => d !== "?");
+  for (const d of deps) {
+    if (!known.has(d)) throw new Error(`add: depends on unknown row ${d}.`);
   }
   const id = argv.id || nextId(state.lines);
   if (getAllIds(state.lines).has(id)) throw new Error(`add: duplicate ID ${id}.`);
+  assertNoCycle(state.lines, { id, deps });
 
   const openRows = getRows(state.lines, "open").map((r) => r.cells);
   const merged = insertOpen(openRows, [id, priority, epic, task, evidence, dependsOn]);
@@ -789,15 +819,24 @@ function clearSessionWorktree(root, sessionID, onlyDir) {
 /* Best-effort cleanup of a shipped feature's isolation: remove its worktree
  * checkout (the folder that would otherwise hang around) and, if the branch was
  * merged, delete it. Never blocks the board write — a dirty/locked worktree is
- * left in place with a warning rather than force-discarded (zero data loss). */
-function cleanupWorktree(root, rel, branch) {
+ * left in place with a warning rather than force-discarded (zero data loss), and
+ * a worktree the archiving session is standing in is never yanked out from under
+ * it. */
+function cleanupWorktree(root, rel, branch, opts) {
   const abs = path.resolve(root, rel);
   const notes = [];
-  const rm = spawnSync("git", ["-C", root, "worktree", "remove", abs], { encoding: "utf8" });
-  if (rm.status === 0) {
-    notes.push(`removed worktree ${rel}`);
+  const skipRemove = !!(opts && opts.skipRemove);
+  if (skipRemove) {
+    notes.push(
+      `worktree ${rel} left in place (in use by this session) — remove it from the main tree: git worktree remove ${rel}`
+    );
   } else {
-    notes.push(`worktree ${rel} left in place (${(rm.stderr || rm.stdout || "not a worktree").trim()})`);
+    const rm = spawnSync("git", ["-C", root, "worktree", "remove", abs], { encoding: "utf8" });
+    if (rm.status === 0) {
+      notes.push(`removed worktree ${rel}`);
+    } else {
+      notes.push(`worktree ${rel} left in place (${(rm.stderr || rm.stdout || "not a worktree").trim()})`);
+    }
   }
   if (branch) {
     const del = spawnSync("git", ["-C", root, "branch", "-d", branch], { encoding: "utf8" });
@@ -819,11 +858,22 @@ function cmdArchive(state, argv) {
 
   // A shipped feature no longer needs its isolated checkout: remove the worktree
   // (and merged branch) it recorded in its Handoff cell, so worktrees don't pile
-  // up after each session.
+  // up after each session. Never remove a worktree the archiving process is
+  // inside (that would delete the running session's cwd), and clear the session
+  // pointer from BOTH the launch tree and the worktree it points at (the pointer
+  // was written by whichever tree `backlog worktree` ran in).
   const wt = found.key === "inprogress" ? parseWorktree(found.cells[3]) : null;
-  const cleanup = wt ? cleanupWorktree(path.dirname(state.p), wt.rel, wt.branch) : [];
+  let cleanup = [];
   if (wt) {
-    clearSessionWorktree(path.dirname(state.p), process.env.HARNESS_SESSION_ID, path.resolve(path.dirname(state.p), wt.rel));
+    const cur = path.dirname(state.p);
+    const wtAbs = path.resolve(cur, wt.rel);
+    const cwd = process.cwd();
+    const inside = cwd === wtAbs || cwd.startsWith(wtAbs + path.sep);
+    const sid = process.env.HARNESS_SESSION_ID;
+    clearSessionWorktree(cur, sid, wtAbs);
+    const main = mainWorktreeRoot(cur);
+    if (main && path.resolve(main) !== path.resolve(cur)) clearSessionWorktree(main, sid, wtAbs);
+    cleanup = cleanupWorktree(cur, wt.rel, wt.branch, { skipRemove: inside });
   }
 
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
@@ -896,6 +946,7 @@ function cmdDepends(state, argv) {
   for (const d of deps) {
     if (!known.has(d)) throw new Error(`depends: ${id} references unknown row ${d}.`);
   }
+  assertNoCycle(state.lines, { id, deps });
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
   const newRow = found.cells.slice();
   newRow[5] = on || "?";
@@ -938,6 +989,17 @@ function gitCmd(root, args, opts) {
 function currentUpstream(root) {
   const r = gitCmd(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
   return r.status === 0 ? (r.stdout || "").trim() : "";
+}
+
+/* The MAIN worktree's path (first entry of `git worktree list --porcelain`), or
+ * null. Used to clear a session's `.worktree` pointer from the tree the pointer
+ * was actually written in — a linked feature worktree's git dir cannot see the
+ * main tree's `.serve/`. */
+function mainWorktreeRoot(root) {
+  const r = gitCmd(root, ["worktree", "list", "--porcelain"]);
+  if (r.status !== 0) return null;
+  const first = (r.stdout || "").split(/\r?\n/).find((l) => l.startsWith("worktree "));
+  return first ? first.slice("worktree ".length).trim() : null;
 }
 
 function refreshMainCheckout(root, opts) {
@@ -1088,6 +1150,79 @@ function openWorktreeSession(dir, command) {
   return res.status === null ? 1 : res.status;
 }
 
+/* `worktree-prune` — converge the worktree set: remove every linked worktree
+ * (outside the main tree) whose branch is already merged into the current
+ * upstream AND whose checkout is clean, then delete the merged branch and clear
+ * any session pointer that referenced it. Worktrees with uncommitted work or an
+ * unmerged branch are reported and left alone (zero data loss). This is the
+ * convergence path for worktrees whose session ended without an `archive`
+ * (archive only cleans the row it ships). */
+function cmdWorktreePrune(state, argv) {
+  const root = path.dirname(state.p);
+  const notes = [];
+  const inside = gitCmd(root, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.status !== 0) return { notes: ["not a git repo — nothing to prune"] };
+  const list = gitCmd(root, ["worktree", "list", "--porcelain"]);
+  if (list.status !== 0) return { notes: ["could not list worktrees"] };
+
+  const entries = [];
+  let cur = null;
+  for (const line of (list.stdout || "").split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      cur = { path: line.slice("worktree ".length).trim(), branch: "" };
+      entries.push(cur);
+    } else if (cur && line.startsWith("branch ")) {
+      cur.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+    }
+  }
+  const main = mainWorktreeRoot(root) || root;
+  const upstream = argv["no-fetch"] ? currentUpstream(root) : (refreshMainCheckout(root, { fetch: true }), currentUpstream(root));
+  // Without an upstream there is no trustworthy "merged" reference, so pruning
+  // could delete unmerged work — refuse rather than guess.
+  if (!upstream) {
+    return { notes: ["no upstream tracking branch — cannot determine merged branches; nothing pruned"], pruned: 0 };
+  }
+  const mergedOut = upstream ? gitCmd(root, ["branch", "--merged", upstream]) : null;
+  const merged = new Set(
+    mergedOut && mergedOut.status === 0
+      ? (mergedOut.stdout || "")
+          .split(/\r?\n/)
+          .map((l) => l.replace(/^[*+ ]+/, "").trim())
+          .filter(Boolean)
+      : []
+  );
+
+  let pruned = 0;
+  for (const e of entries) {
+    const label = path.basename(e.path);
+    if (path.resolve(e.path) === path.resolve(main)) continue; // never the main tree
+    if (!e.branch) {
+      notes.push(`kept ${label} (detached HEAD)`);
+      continue;
+    }
+    const dirty = gitCmd(e.path, ["status", "--porcelain"]);
+    if ((dirty.stdout || "").trim()) {
+      notes.push(`kept ${label} (uncommitted work)`);
+      continue;
+    }
+    if (upstream && !merged.has(e.branch)) {
+      notes.push(`kept ${label} (branch ${e.branch} not merged into ${upstream})`);
+      continue;
+    }
+    const rm = gitCmd(main, ["worktree", "remove", e.path]);
+    if (rm.status !== 0) {
+      notes.push(`could not remove ${label}: ${(rm.stderr || rm.stdout || "").trim()}`);
+      continue;
+    }
+    gitCmd(root, ["branch", "-d", e.branch]);
+    clearSessionWorktree(main, process.env.HARNESS_SESSION_ID, e.path);
+    notes.push(`pruned ${label} (${e.branch})`);
+    pruned += 1;
+  }
+  if (!notes.length) notes.push("no linked worktrees to consider");
+  return { notes, pruned };
+}
+
 // ---------------------------------------------------------------- dispatch
 
 function formatResult(cmd, out) {
@@ -1164,6 +1299,7 @@ function usage() {
       "  node scripts/backlog.js depends <id> --on <ids|?>\n" +
       "  node scripts/backlog.js owns <id> --files \"glob, glob\"\n" +
       "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch] [--open]\n" +
+      "  node scripts/backlog.js worktree-prune [--no-fetch]\n" +
       "  node scripts/backlog.js epic-add <key> --label <x> [--goal <y>]\n" +
       "  node scripts/backlog.js epic <id> --to <key>\n"
   );
@@ -1226,6 +1362,7 @@ function main() {
       else if (cmd === "depends") out = cmdDepends(state, args);
       else if (cmd === "owns") out = cmdOwns(state, args);
       else if (cmd === "worktree") out = cmdWorktree(state, args);
+      else if (cmd === "worktree-prune") out = cmdWorktreePrune(state, args);
       else if (cmd === "epic-add") out = cmdEpicAdd(state, args);
       else if (cmd === "epic") out = cmdEpic(state, args);
       else {
@@ -1233,7 +1370,9 @@ function main() {
         process.exitCode = 1;
         return;
       }
-      if (cmd === "owns") {
+      if (cmd === "worktree-prune") {
+        for (const note of out.notes) console.log(`worktree-prune: ${note}`);
+      } else if (cmd === "owns") {
         console.log(formatResult(cmd, out));
       } else {
         fs.writeFileSync(state.p, serializeBacklog(state), "utf8");
@@ -1281,4 +1420,6 @@ module.exports = {
   readEpics,
   toBoardJson,
   withLock,
+  dependencyGraph,
+  findCycle,
 };

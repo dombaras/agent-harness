@@ -77,6 +77,54 @@ test("version is bumped whenever harness-owned files change (repo hygiene)", () 
     released,
     `harness files changed (${harnessOwned.join(", ")}) but package.json version is still "${h.PKG.version}" (last released "${released}") — bump it`
   );
+
+  // Committed-history check: the diff check above only sees UNCOMMITTED work, so
+  // a harness change committed without a version bump passed silently (the
+  // recurring "forgot to bump package.json" miss). Walk history: since the last
+  // commit that changed package.json's version, no commit may touch bin/ or
+  // templates/ — the bump must ship in the same commit as (or after) the change.
+  let history = [];
+  try {
+    history = execFileSync("git", ["log", "--format=%H", "--", "package.json"], { encoding: "utf8" })
+      .split(/\r?\n/)
+      .filter(Boolean);
+  } catch {
+    history = [];
+  }
+  const versionAt = (ref) => {
+    try {
+      return JSON.parse(execFileSync("git", ["show", `${ref}:package.json`], { encoding: "utf8" })).version;
+    } catch {
+      return null;
+    }
+  };
+  let lastBump = null;
+  for (const sha of history) {
+    const v = versionAt(sha);
+    const prior = versionAt(`${sha}^`);
+    if (v && v !== prior) {
+      lastBump = sha;
+      break;
+    }
+  }
+  if (lastBump) {
+    let after = [];
+    try {
+      after = execFileSync("git", ["log", "--format=%H", "--no-merges", `${lastBump}..HEAD`, "--", "bin/", "templates/"], {
+        encoding: "utf8",
+      })
+        .split(/\r?\n/)
+        .filter(Boolean);
+    } catch {
+      after = [];
+    }
+    assert.strictEqual(
+      after.length,
+      0,
+      `${after.length} harness-file commit(s) landed after the last package.json version bump (${lastBump.slice(0, 7)}) — ` +
+        `bump package.json in the same change`
+    );
+  }
 });
 
 test("listFiles enumerates the full template tree", () => {
@@ -708,6 +756,19 @@ test("opencode tools resolve a real node runtime, never the opencode binary (pro
   // OPENCODE_NODE override, the runtime's PATH resolver (skipping WSL /mnt
   // entries so a native node beats the interop Windows node.exe), then a bare
   // "node" as the last resort.
+  // One home for the plumbing: nodeBin + the mid-session-worktree reroot live in
+  // scripts/qa/tool-lib.js; every tool delegates to it (no private copies that
+  // drift — backlog/checkpoint/session previously disagreed on the root marker).
+  const lib = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "tool-lib.js"));
+  assert.doesNotMatch(
+    lib,
+    /execFileSync\(\s*[^,)]*execPath/,
+    "tool-lib must never spawn the opencode binary (process.execPath)"
+  );
+  assert.match(lib, /execFileSync\(\s*nodeBin\(\)/, "tool-lib spawns a resolved node via nodeBin()");
+  assert.match(lib, /\.which\(\s*["']node["']/, "nodeBin must consult the runtime's PATH resolver");
+  assert.match(lib, /OPENCODE_NODE/, "nodeBin must honor the OPENCODE_NODE override");
+
   const tools = ["backlog.ts", "checkpoint.ts", "session.ts"];
   for (const f of tools) {
     const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", f));
@@ -716,9 +777,10 @@ test("opencode tools resolve a real node runtime, never the opencode binary (pro
       /execFileSync\(\s*[^,)]*execPath/,
       `${f} must not spawn the opencode binary (process.execPath)`
     );
-    assert.match(src, /execFileSync\(\s*nodeBin\(\)/, `${f} must spawn a resolved node via nodeBin()`);
-    assert.match(src, /\.which\(\s*["']node["']/, `${f} nodeBin must consult the runtime's PATH resolver`);
-    assert.match(src, /OPENCODE_NODE/, `${f} nodeBin must honor the OPENCODE_NODE override`);
+    assert.doesNotMatch(src, /function nodeBin\s*\(/, `${f} must not carry a private nodeBin copy`);
+    assert.doesNotMatch(src, /function rootOf\s*\(/, `${f} must not carry a private rootOf copy`);
+    assert.match(src, /tool-lib\.js/, `${f} must use the shared tool-lib`);
+    assert.match(src, /toolLib\.runScript\(|toolLib\.sessionRoot\(/, `${f} must delegate to tool-lib`);
   }
   // static gate over the whole template tree: no tool spawns the opencode binary
   const toolDir = path.join(h.TEMPLATES_DIR, ".opencode", "tools");
@@ -4907,3 +4969,216 @@ test("checkpoint CLI, tools, commands, and report:cost are deployed and stay har
   assert.match(read(path.join(target, "scripts", "checkpoint.js")), /resume/, "checkpoint.js restored on update");
 });
 
+
+// ---------------------------------------------------------------- deploy hardening (branch guard / package.json / lock / gitattributes)
+
+test("deploy refuses to auto-commit onto a non-default branch; --allow-branch overrides", async () => {
+  const { target } = trackedRepoFixture();
+  git(target, ["checkout", "-q", "-b", "feature/stray"]);
+
+  await assert.rejects(
+    h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true, push: false }),
+    /non-default branch|canonical/
+  );
+  assert.ok(!/chore\(harness\)/.test(git(target, ["log", "--oneline"])), "no harness commit on the stray branch");
+
+  const result = await h.deploy(target, {
+    name: "Demo",
+    yes: true,
+    isUpdate: true,
+    commit: true,
+    push: false,
+    allowBranch: true,
+  });
+  assert.strictEqual(result.commitResult.committed, true, "--allow-branch lets the commit through");
+  assert.ok(result.branchGuard && result.branchGuard.overridden, "the override is reported in the result");
+});
+
+test("mergePackageJson preserves project indentation and is a byte no-op when complete", async () => {
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "package.json"),
+    '{\n    "name": "app",\n    "version": "1.2.3",\n    "scripts": {\n        "start": "node ."\n    }\n}\n',
+    "utf8"
+  );
+
+  const first = h.mergePackageJson(target);
+  assert.strictEqual(first.changed, true);
+  assert.match(first.text, /^    "name": "app"/m, "4-space indentation preserved");
+  assert.match(first.text, /"test:dispatch":/);
+
+  // deploy writes it; a second merge on the deployed file is a true no-op
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false, commit: false });
+  const current = read(path.join(target, "package.json"));
+  const second = h.mergePackageJson(target);
+  assert.strictEqual(second.changed, false, "no missing scripts -> no change");
+  assert.strictEqual(second.text, current, "returns byte-identical text");
+  assert.match(read(path.join(target, "package.json")), /^    "name": "app"/m, "deploy kept the project indent");
+});
+
+test("deploy never rewrites or clobbers an unparseable package.json", async () => {
+  const target = tmpdir();
+  const jsonc = '{\n  // project uses JSONC\n  "name": "app"\n}\n';
+  fs.writeFileSync(path.join(target, "package.json"), jsonc, "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false, commit: false });
+  assert.strictEqual(read(path.join(target, "package.json")), jsonc, "unparseable package.json left untouched");
+});
+
+test("gitattributes merge uses begin/end markers and preserves a project tail", () => {
+  const t = tmpdir();
+  fs.writeFileSync(
+    path.join(t, ".gitattributes"),
+    "*.md text\n# agent-harness (managed below)\nBACKLOG.md merge=old-driver\n*.sh text eol=lf\n# agent-harness (managed end)\n# project entries (must survive)\n*.log -diff\n",
+    "utf8"
+  );
+  const out = h.mergeGitattributes(t, "backlog-demo");
+  assert.doesNotMatch(out, /merge=old-driver/, "old managed block removed");
+  assert.match(out, /BACKLOG\.md merge=backlog-demo/);
+  assert.match(out, /# project entries \(must survive\)/, "project entry after the managed block survives");
+  assert.match(out, /\*\.log -diff/);
+
+  // legacy block (begin marker only, no end marker) is removed to EOF
+  const legacy = tmpdir();
+  fs.writeFileSync(
+    path.join(legacy, ".gitattributes"),
+    "*.md text\n# agent-harness (managed below)\nBACKLOG.md merge=old-driver\n",
+    "utf8"
+  );
+  const out2 = h.mergeGitattributes(legacy, "backlog-demo");
+  assert.doesNotMatch(out2, /merge=old-driver/);
+  assert.match(out2, /\*\.md text/);
+});
+
+test("deploy excludes the transient deploy lock clone-locally", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false, commit: false });
+  assert.match(read(path.join(target, ".git", "info", "exclude")), /\.harness\.lock\//);
+});
+
+// ---------------------------------------------------------------- tool-lib + lease-lib
+
+test("tool-lib is the single source for node resolution and the mid-session worktree reroot", () => {
+  const toolLib = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "tool-lib.js"));
+  const prev = process.env.OPENCODE_NODE;
+  process.env.OPENCODE_NODE = "/custom/node";
+  assert.strictEqual(toolLib.nodeBin(), "/custom/node", "OPENCODE_NODE override honored");
+  if (prev === undefined) delete process.env.OPENCODE_NODE;
+  else process.env.OPENCODE_NODE = prev;
+
+  const base = tmpdir();
+  const wt = path.join(base, "worktree");
+  fs.mkdirSync(wt, { recursive: true });
+  fs.writeFileSync(path.join(wt, "BACKLOG.md"), "board\n", "utf8");
+  fs.mkdirSync(path.join(base, ".serve", "sessions"), { recursive: true });
+  fs.writeFileSync(path.join(base, ".serve", "sessions", "s1.worktree"), wt, "utf8");
+
+  assert.strictEqual(
+    toolLib.sessionRoot({ worktree: base, sessionID: "s1" }, "BACKLOG.md"),
+    wt,
+    "recorded mid-session worktree wins while its marker exists"
+  );
+  assert.strictEqual(
+    toolLib.sessionRoot({ worktree: base, sessionID: "nope" }, "BACKLOG.md"),
+    base,
+    "no pointer -> launch tree"
+  );
+});
+
+test("lease liveness is injectable and touchLease re-creates a missing lease", () => {
+  const leases = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"));
+  const now = Date.now();
+  const rec = {
+    sessionID: "s",
+    pid: process.pid,
+    bootId: leases.bootId(),
+    procStart: leases.processStart(process.pid),
+    startedAt: now,
+    heartbeatAt: now,
+  };
+  assert.strictEqual(leases.leaseStatus(rec, { now }).live, true, "fresh lease is live");
+  const stale = leases.leaseStatus(rec, { now: now + leases.DEFAULT_MAX_AGE_MS + 1000 });
+  assert.strictEqual(stale.live, false);
+  assert.strictEqual(stale.reason, "stale", "a lease is stale past the freshness window");
+
+  const root = tmpdir();
+  leases.writeLease(root, "s1");
+  const file = path.join(leases.leaseDir(root), "s1.json");
+  assert.ok(exists(file));
+  fs.rmSync(file);
+  leases.touchLease(root, "s1");
+  assert.ok(exists(file), "touchLease re-creates a pruned/missing lease");
+});
+
+// ---------------------------------------------------------------- board hardening (cycles / worktree prune)
+
+test("backlog rejects a dependency cycle (self and mutual) instead of silently blocking forever", () => {
+  const t = scaffoldBacklogCliTarget();
+  runBacklogCli(t, ["add", "a", "--p", "P1"]); // F-001
+  runBacklogCli(t, ["add", "b", "--p", "P1"]); // F-002
+  assert.strictEqual(runBacklogCli(t, ["depends", "F-001", "--on", "F-002"]).status, 0);
+
+  const self = runBacklogCli(t, ["depends", "F-001", "--on", "F-001"]);
+  assert.strictEqual(self.status, 1, self.out);
+  assert.match(self.out, /cycle/);
+
+  const mutual = runBacklogCli(t, ["depends", "F-002", "--on", "F-001"]);
+  assert.strictEqual(mutual.status, 1, mutual.out);
+  assert.match(mutual.out, /cycle/);
+});
+
+test("test:backlog fails a board containing a dependency cycle", () => {
+  const t = scaffoldBacklogTarget(`# BACKLOG — canonical task list
+
+## Open
+
+| ID | P | Epic | Task | Evidence | Depends on |
+|----|---|------|------|----------|------------|
+| F-001 | P2 | ? | a | ev | F-002 |
+| F-002 | P2 | ? | b | ev | F-001 |
+`);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /dependency cycle/);
+});
+
+test("worktree-prune removes a merged clean worktree and keeps an unmerged one", () => {
+  const { target } = trackedRepoFixture();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"), path.join(target, "scripts", "backlog.js"));
+  copyBoardLib(target);
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(target, "BACKLOG.md"));
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed harness scripts"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  const mergedWt = path.join(tmpdir(), "wt-merged");
+  git(target, ["branch", "feat-merged", "main"]);
+  git(target, ["worktree", "add", mergedWt, "feat-merged"]);
+  fs.writeFileSync(path.join(mergedWt, "merged.txt"), "merged\n", "utf8");
+  execFileSync("git", ["-C", mergedWt, "add", "-A"], { encoding: "utf8" });
+  execFileSync("git", ["-C", mergedWt, "commit", "-q", "-m", "feat-merged work"], { encoding: "utf8" });
+  git(target, ["merge", "--ff-only", "feat-merged"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  const openWt = path.join(tmpdir(), "wt-open");
+  git(target, ["branch", "feat-open", "main"]);
+  git(target, ["worktree", "add", openWt, "feat-open"]);
+  fs.writeFileSync(path.join(openWt, "open.txt"), "open\n", "utf8");
+  execFileSync("git", ["-C", openWt, "add", "-A"], { encoding: "utf8" });
+  execFileSync("git", ["-C", openWt, "commit", "-q", "-m", "feat-open work"], { encoding: "utf8" });
+
+  const res = spawnSync(process.execPath, ["scripts/backlog.js", "worktree-prune"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /pruned wt-merged/);
+  assert.ok(!exists(mergedWt), "merged worktree removed");
+  assert.ok(exists(openWt), "unmerged worktree kept");
+  assert.match(res.stdout, /not merged into/);
+});
+
+test("backlog-notify summarizes the worktree/depends/owns tools too", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "backlog-notify.ts"));
+  assert.match(src, /backlog_worktree/);
+  assert.match(src, /backlog_depends/);
+  assert.match(src, /backlog_owns/);
+});

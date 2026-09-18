@@ -24,7 +24,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { splitCells } = require("./board-lib.js");
+const { splitCells, findCycle } = require("./board-lib.js");
 
 const root = path.resolve(__dirname, "..", "..");
 
@@ -335,6 +335,21 @@ if (totalRows > 0) {
       }
     }
   }
+
+  // ---- Dependency cycles are permanently blocking -------------------------
+  const graph = new Map();
+  for (const { id, dep } of dependsRows) {
+    if (!id) continue;
+    const raw = (dep || "").trim();
+    graph.set(id, !raw || raw === "?" ? [] : raw.split(/[\s,]+/).filter(Boolean));
+  }
+  const cycle = findCycle(graph);
+  check(
+    !cycle,
+    cycle
+      ? `dependency cycle: ${cycle.join(" -> ")} — every row in the cycle is permanently blocked`
+      : "no dependency cycles among Open/Queued rows"
+  );
 } else {
   check(true, "empty board (no Open/In progress/Frozen/Archive rows yet) — valid for a fresh project");
 }

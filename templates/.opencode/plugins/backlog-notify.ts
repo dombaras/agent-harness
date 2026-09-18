@@ -22,6 +22,12 @@ function summarize(name: string, args: any): string {
       return `moved ${args?.id ?? ""} to epic ${args?.to ?? ""}`
     case "backlog_epic_add":
       return `added epic "${args?.key ?? ""}"`
+    case "backlog_worktree":
+      return `isolated ${args?.id ?? ""} in a worktree`
+    case "backlog_depends":
+      return `set ${args?.id ?? ""} depends on ${args?.on ?? ""}`
+    case "backlog_owns":
+      return `recorded files owned by ${args?.id ?? ""}`
     case "backlog_list":
       return "listed the board"
     default:

@@ -242,20 +242,43 @@ const HARNESS_SCRIPTS = {
   serve: "node scripts/serve.js",
 };
 
+/* Detect a project's own indentation so a merge never reformats package.json
+ * (a deploy that only normalizes whitespace still counts as a change and would
+ * be swept into the `chore(harness)` auto-commit). */
+function detectIndent(text) {
+  const m = String(text).match(/^([ \t]+)"/m);
+  return m ? m[1] : "  ";
+}
+
 // Merge harness gate scripts into the project's existing package.json, preserving
 // every other script. ADD-ONLY: an existing script is never overwritten, so a
-// project's deliberate customization of a gate survives re-deploys. Returns
-// { text, hadPkg }.
+// project's deliberate customization of a gate survives re-deploys. When every
+// harness script is already present this is a NO-OP (returns the byte-identical
+// current text, `changed:false`) so the file is not rewritten/re-committed for
+// formatting. Returns { text, hadPkg, changed, unparseable }.
 function mergePackageJson(target) {
   const p = path.join(target, "package.json");
   const hadPkg = fs.existsSync(p);
-  const existing = hadPkg ? safeJson(fs.readFileSync(p, "utf8"), {}) : {};
-  const scripts = Object.assign({}, existing.scripts || {});
-  for (const [name, cmd] of Object.entries(HARNESS_SCRIPTS)) {
-    if (!(name in scripts)) scripts[name] = cmd;
+  if (!hadPkg) {
+    return { text: JSON.stringify({ scripts: { ...HARNESS_SCRIPTS } }, null, 2) + "\n", hadPkg, changed: true };
   }
+  const current = fs.readFileSync(p, "utf8");
+  const existing = safeJson(current, null);
+  if (existing == null || typeof existing !== "object" || Array.isArray(existing)) {
+    // Never clobber a package.json we cannot parse (JSONC / hand-edited).
+    return { text: current, hadPkg, changed: false, unparseable: true };
+  }
+  const scripts = Object.assign({}, existing.scripts || {});
+  let added = false;
+  for (const [name, cmd] of Object.entries(HARNESS_SCRIPTS)) {
+    if (!(name in scripts)) {
+      scripts[name] = cmd;
+      added = true;
+    }
+  }
+  if (!added) return { text: current, hadPkg, changed: false };
   const merged = { ...existing, scripts };
-  return { text: JSON.stringify(merged, null, 2) + "\n", hadPkg };
+  return { text: JSON.stringify(merged, null, detectIndent(current)) + "\n", hadPkg, changed: true };
 }
 
 /* Harness local-only ignore entries: rollback artifacts, the transient board
@@ -272,6 +295,7 @@ function mergePackageJson(target) {
 const HARNESS_IGNORE_MARKER = "# agent-harness (managed below)";
 const HARNESS_IGNORE_ENTRIES = [
   ".harness-backup/",
+  ".harness.lock/",
   ".backlog.lock",
   ".serve/",
   ".agents/guard-events.jsonl",
@@ -314,6 +338,7 @@ function mergeGitInfoExclude(target) {
  * name and registers its own `merge.<driver>.driver`, so one project's `update`
  * can never clobber the other's driver registration. */
 const GITATTRIBUTES_MARKER = "# agent-harness (managed below)";
+const GITATTRIBUTES_END = "# agent-harness (managed end)";
 
 function slugify(s) {
   const slug = String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -324,19 +349,33 @@ function backlogDriverName(projectName) {
   return `backlog-${slugify(projectName)}`;
 }
 
+/* Remove a previously-managed block. New files carry an explicit end marker, so
+ * any project entry after it is preserved. A legacy file (begin marker only,
+ * written by <=0.1.73) has its block removed to EOF — the block was always
+ * appended last, so this matches the old behaviour with no data loss for real
+ * files while new merges can never truncate a trailing project entry. */
+function stripGitattributesBlock(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const begin = lines.findIndex((l) => l === GITATTRIBUTES_MARKER);
+  if (begin === -1) return lines;
+  const end = lines.findIndex((l, i) => i > begin && l === GITATTRIBUTES_END);
+  if (end === -1) return lines.slice(0, begin);
+  return [...lines.slice(0, begin), ...lines.slice(end + 1)];
+}
+
 function mergeGitattributes(target, driverName) {
   const p = path.join(target, ".gitattributes");
   const existing = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
-  const lines = existing.split(/\r?\n/);
-  const idx = lines.findIndex((l) => l === GITATTRIBUTES_MARKER);
-  const kept = idx === -1 ? lines : lines.slice(0, idx);
+  const kept = stripGitattributesBlock(existing);
   while (kept.length && kept[kept.length - 1].trim() === "") kept.pop();
+  while (kept.length && kept[0].trim() === "") kept.shift();
   const managed = [
     GITATTRIBUTES_MARKER,
     `BACKLOG.md merge=${driverName}`,
     `**/BACKLOG.md merge=${driverName}`,
     "*.sh text eol=lf",
     "*.ps1 text eol=crlf",
+    GITATTRIBUTES_END,
     "",
   ];
   const out = kept.length ? [...kept, "", ...managed] : [...managed];
@@ -397,6 +436,92 @@ function runGit(target, args, opts) {
 function isGitRepo(target) {
   const r = runGit(target, ["rev-parse", "--is-inside-work-tree"]);
   return r.ok;
+}
+
+/* The currently checked-out branch, or "" when detached / not a repo. */
+function currentBranch(target) {
+  const r = runGit(target, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (!r.ok || !r.out || r.out === "HEAD") return "";
+  return r.out;
+}
+
+/* The repo's canonical branch: `origin/HEAD` (set by clone) when available,
+ * else `main` or `master` when one exists remotely/locally. Null when it cannot
+ * be determined (e.g. a local-only repo with no remote), so a project without a
+ * remote is never blocked. */
+function defaultBranch(target) {
+  const sym = runGit(target, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (sym.ok && sym.out) return sym.out.replace(/^origin\//, "");
+  for (const name of ["main", "master"]) {
+    if (runGit(target, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${name}`]).ok) return name;
+    if (runGit(target, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`]).ok) return name;
+  }
+  return null;
+}
+
+/* Cross-process deploy lock (an exclusive `.harness.lock` DIRECTORY, the same
+ * atomic primitive the board lock uses). Two `update` runs against one target —
+ * or an update racing a worktree push — must not interleave their read-modify-
+ * write of `.harness.json` and the harness tree. The holder's pid is published
+ * inside the directory; a missing/unparseable pid is treated as held (creator
+ * mid-setup), and a provably-dead pid is broken. No-op outside a git repo. */
+const DEPLOY_LOCK = ".harness.lock";
+function pidAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+async function withDeployLock(target, fn) {
+  if (!isGitRepo(target)) return fn();
+  const lockPath = path.join(target, DEPLOY_LOCK);
+  const pidPath = path.join(lockPath, "pid");
+  const deadline = Date.now() + 15000;
+  let acquired = false;
+  while (!acquired) {
+    try {
+      fs.mkdirSync(lockPath);
+      acquired = true;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      let holder = NaN;
+      try {
+        holder = parseInt(fs.readFileSync(pidPath, "utf8"), 10);
+      } catch {
+        /* creator mid-setup — held, never stale */
+      }
+      if (Number.isFinite(holder) && holder > 0 && !pidAlive(holder)) {
+        try {
+          fs.rmSync(lockPath, { recursive: true, force: true });
+        } catch {
+          /* vanished — retry */
+        }
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          "agent-harness: timed out waiting for the deploy lock — another update is writing this target."
+        );
+      }
+      sleepMs(25);
+    }
+  }
+  try {
+    fs.writeFileSync(pidPath, String(process.pid));
+    return await fn();
+  } finally {
+    try {
+      fs.rmSync(lockPath, { recursive: true, force: true });
+    } catch {
+      /* best-effort release */
+    }
+  }
 }
 
 /* WSL mounts Windows drives at `/mnt/<drive>/...` (9p / virtio-fs) — file I/O,
@@ -557,7 +682,7 @@ function backup(target, rel, content) {
 }
 
 async function deploy(target, opts) {
-  const { name, domain, yes, dryRun, isUpdate, commit, push } = opts || {};
+  const { name, domain, yes, dryRun, isUpdate, commit, push, allowBranch } = opts || {};
   if (isWindowsMount(target)) {
     console.warn(
       `  WARNING: target "${target}" is on a Windows drive mount (/mnt/...) — file I/O is ` +
@@ -573,6 +698,12 @@ async function deploy(target, opts) {
   }
   const VARIABLES = { PROJECT_NAME: projectName, PROJECT_DOMAIN: projectDomain };
 
+  // All writes/commits run under a per-target deploy lock (a no-op outside a git
+  // repo and on dry-run) so two updates can never interleave their read-modify-
+  // write of .harness.json / the harness tree.
+  const runDeploy = async () => {
+  const existing = readConfig(target);
+
   // Refuse to downgrade: the target's deployed harness is newer than this CLI.
   // This is how the "I updated from a local checkout that I never published"
   // mistake surfaces instead of silently writing older templates over a newer
@@ -582,6 +713,38 @@ async function deploy(target, opts) {
       `"${projectName}" has harness v${existing.version} — NEWER than this CLI (v${PKG.version}). ` +
         `Not downgrading. Publish v${existing.version} (or this CLI) so \`update\` can re-sync from the registry.`
     );
+  }
+
+  // Branch guard: never auto-commit/push harness files onto a non-default
+  // branch. A deploy run from a feature branch (or a main checkout a session
+  // left on a chore branch) would strand the harness commit off `main` and the
+  // canonical branch would silently stay stale — the LibraryOS 2026-09-18 case
+  // (harness 0.1.73 landed on `origin/chore/archive-f-244`, main stuck at
+  // 0.1.72). Skipped when undeterminable (no remote) or when not committing.
+  let branchGuard = null;
+  if (commit) {
+    const cur = currentBranch(target);
+    const def = defaultBranch(target);
+    const hasHead = runGit(target, ["rev-parse", "--verify", "--quiet", "HEAD"]).ok;
+    if (!cur && hasHead) {
+      if (!allowBranch) {
+        throw new Error(
+          `"${projectName}" is in detached HEAD — refusing to auto-commit/push harness files. ` +
+            `Check out ${def || "the canonical branch"} (git switch ${def || "main"}) and re-run, or pass --allow-branch.`
+        );
+      }
+    } else if (def && cur !== def) {
+      if (!allowBranch) {
+        throw new Error(
+          `"${projectName}" is on branch \`${cur}\`, not the canonical \`${def}\` — refusing to ` +
+            `auto-commit/push harness files onto a non-default branch (they would be stranded off ` +
+            `\`${def}\` and its harness version would stay stale). Switch to \`${def}\` ` +
+            `(git switch ${def}) and re-run \`update\`, or pass --allow-branch to override.`
+        );
+      }
+      branchGuard = { branch: cur, defaultBranch: def, overridden: true };
+      console.warn(`  WARNING: deploying onto non-default branch \`${cur}\` (--allow-branch).`);
+    }
   }
 
   // Integrate-early: bring a stale checkout current (or refuse a diverged one)
@@ -600,16 +763,18 @@ async function deploy(target, opts) {
   const manifest = {};
 
   // Auto-wire harness gate scripts into the target package.json (merged, add-only).
+  // A no-op merge leaves the file byte-identical so its own formatting is never
+  // rewritten/re-committed; an unparseable package.json is preserved untouched.
   {
-    const { text, hadPkg } = mergePackageJson(target);
+    const { text, hadPkg, changed, unparseable } = mergePackageJson(target);
     const key = "package.json";
     const targetAbs = path.join(target, "package.json");
-    const current = hadPkg ? fs.readFileSync(targetAbs, "utf8") : null;
-    if (!hadPkg) actions.push({ rel: key, kind: "create" });
-    else if (current !== text) actions.push({ rel: key, kind: "merge" });
+    if (unparseable) actions.push({ rel: key, kind: "preserve" });
+    else if (!hadPkg) actions.push({ rel: key, kind: "create" });
+    else if (changed) actions.push({ rel: key, kind: "merge" });
     else actions.push({ rel: key, kind: "unchanged" });
     manifest[key] = sha256(text);
-    if (!dryRun) {
+    if (!dryRun && (changed || !hadPkg)) {
       fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
       fs.writeFileSync(targetAbs, text, "utf8");
     }
@@ -743,10 +908,15 @@ async function deploy(target, opts) {
     dryRun: !!dryRun,
     commitResult,
     syncResult,
+    branchGuard,
     isUpdate: !!isUpdate,
     nothingToUpdate,
     priorVersion: existing.version || null,
   };
+  };
+
+  // A dry-run must write nothing — not even the lock dir.
+  return dryRun ? runDeploy() : withDeployLock(target, runDeploy);
 }
 
 function summarize(actions) {
@@ -788,6 +958,15 @@ function printSummary(result, isUpdate) {
  * failed `npm publish` (401/404 auth/permission) never leaves the developer
  * staring at a raw npm error — it points them at `npm login`. */
 function printUnpublishedWarning() {
+  // The authoritative workflow (AGENTS.md) deploys from a local git checkout of
+  // this repo, where being ahead of the registry is expected and publishing is
+  // optional — warning there is noise (and costs a blocking `npm view`). Only an
+  // installed (npm/npx) copy is expected to match the latest published version.
+  try {
+    if (fs.existsSync(path.join(__dirname, "..", ".git"))) return;
+  } catch (_) {
+    /* treat as installed */
+  }
   const published = publishedLatestVersion();
   if (published == null || published === "" || published === PKG.version) return;
   const cmp = compareVersions(PKG.version, published);
@@ -834,7 +1013,10 @@ function printUsage() {
       `  init and update auto-commit only the harness files they create/change\n` +
       `  (chore(harness): ...) and push to origin by default. Use --no-commit to\n` +
       `  skip commit+push, or --no-push to commit but not push. Your unrelated\n` +
-      `  uncommitted work is never staged.\n` +
+      `  uncommitted work is never staged. The target must be on its canonical\n` +
+      `  branch (origin/HEAD, else main/master) or the commit is refused, so a\n` +
+      `  harness update can never be stranded off main — pass --allow-branch to\n` +
+      `  override deliberately.\n` +
       `\n` +
       `  migrate-backlog consolidates any live \`.agents/features/INDEX.md\` F-rows and\n` +
       `  \`.agents/memory/todo.md\` into the canonical BACKLOG.md, then rewrites those\n` +
@@ -1104,6 +1286,7 @@ async function init(target, flags) {
     isUpdate: false,
     commit: !flags["--no-commit"],
     push: !flags["--no-commit"] && !flags["--no-push"],
+    allowBranch: !!flags["--allow-branch"],
   });
   printSummary(result, false);
   printCommitResult(result);
@@ -1121,6 +1304,7 @@ async function update(target, flags) {
     isUpdate: true,
     commit: !flags["--no-commit"],
     push: !flags["--no-commit"] && !flags["--no-push"],
+    allowBranch: !!flags["--allow-branch"],
   });
   printSummary(result, true);
   printUnpublishedWarning();
@@ -1157,7 +1341,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--target" || a === "--name" || a === "--domain") flags[a] = argv[++i];
     else if (a === "--dry-run" || a === "--yes" || a === "-y") flags[a] = true;
-    else if (a === "--no-commit" || a === "--no-push") flags[a] = true;
+    else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch") flags[a] = true;
   }
   return flags;
 }
@@ -1221,6 +1405,13 @@ module.exports = {
   isOpencodeJson,
   isWindowsMount,
   resolveDriverRoot,
+  currentBranch,
+  defaultBranch,
+  detectIndent,
+  mergePackageJson,
+  mergeGitattributes,
+  stripGitattributesBlock,
+  withDeployLock,
   sha256,
   readConfig,
   resolveVars,

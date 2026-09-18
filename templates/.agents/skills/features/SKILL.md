@@ -79,7 +79,8 @@ Fields (keep each terse):
 - **Evidence** — a pointer to evidence (file, log, ticket, the user's words), never a re-derivation.
 - **Depends on** — comma-separated row IDs that must be archived before this row is picked up
   (`?` when none). `/next`/`take`/`worktree` skip or refuse a row whose dependencies aren't
-  archived — set it with `backlog depends <id> --on <ids>`.
+  archived — set it with `backlog depends <id> --on <ids>`. A dependency cycle is rejected
+  (and fails `test:backlog`), since every row in a cycle is permanently blocked.
 - **Handoff** — the `.agents/handoffs/<id>.md` session working this row (In progress only).
 - **Status ladder** — `backlog → ready → in-progress → testing → shipped → archived`, plus
   `frozen`. Section = status: `backlog`/`ready` → `Open`, `in-progress`/`testing` →

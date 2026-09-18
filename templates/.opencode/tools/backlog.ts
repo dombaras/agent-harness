@@ -1,65 +1,18 @@
 import { tool } from "@opencode-ai/plugin"
-import { execFileSync } from "node:child_process"
-import fs from "node:fs"
-import path from "node:path"
+import toolLib from "../../scripts/qa/tool-lib.js"
 
 // Thin wrappers around the deterministic `scripts/backlog.js` CLI. The tools
 // only shell out — they never edit BACKLOG.md themselves, so the agent-side and
-// human-side write-paths share one implementation.
-
-// opencode runs as a compiled standalone binary, so within its runtime
-// `process.execPath` is the opencode executable (opencode.exe), NOT Node —
-// spawning it with a script path just re-launches opencode. Resolve a real
-// Node: an explicit override, then the runtime's PATH resolver (skipping WSL
-// /mnt entries so a native node wins over the interop Windows node.exe), then
-// a bare "node" as the last resort.
-function nodeBin(): string {
-  const override = process.env.OPENCODE_NODE
-  if (override) return override
-  const bun = (globalThis as any).Bun
-  if (bun && typeof bun.which === "function") {
-    const pathEnv = String(process.env.PATH || "")
-    const native =
-      process.platform === "linux"
-        ? pathEnv.split(":").filter((p) => p && !p.startsWith("/mnt/")).join(":")
-        : pathEnv
-    const found = bun.which("node", native ? { PATH: native } : {}) || bun.which("node")
-    if (found) return found
-  }
-  return "node"
-}
-
-// opencode pins `context.worktree` to the tree the session launched in, so a
-// worktree created MID-session (`backlog worktree` without `--open`) would
-// leave every later call writing the board to main. The CLI records that
-// worktree against the session id under `.serve/sessions/`; prefer it when it
-// still points at a real checkout. `--open` sessions already root there.
-function rootOf(context: any): string {
-  const base = (context?.worktree || context?.directory || process.cwd()) as string
-  const sessionID = context?.sessionID ? String(context.sessionID) : ""
-  if (!sessionID) return base
-  try {
-    const rec = fs.readFileSync(path.join(base, ".serve", "sessions", `${sessionID}.worktree`), "utf8").trim()
-    if (rec && fs.existsSync(path.join(rec, "BACKLOG.md"))) return rec
-  } catch {
-    /* no mid-session worktree recorded for this session */
-  }
-  return base
-}
+// human-side write-paths share one implementation. node resolution and the
+// mid-session-worktree reroot live in scripts/qa/tool-lib.js (one home, shared
+// with the checkpoint/session tools).
 
 function run(context: any, args: string[]): string {
-  const root = rootOf(context)
-  const script = path.join(root, "scripts", "backlog.js")
-  try {
-    return execFileSync(nodeBin(), [script, ...args], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, HARNESS_SESSION_ID: String(context?.sessionID || "") },
-    })
-  } catch (e: any) {
-    return `backlog: ${e.message}\n${e.stderr || ""}`
-  }
+  return toolLib.runScript(context, "scripts/backlog.js", args, {
+    marker: "BACKLOG.md",
+    label: "backlog",
+    env: { HARNESS_SESSION_ID: String(context?.sessionID || "") },
+  })
 }
 
 export const list = tool({
@@ -199,17 +152,21 @@ export const worktree = tool({
   args: {
     id: tool.schema.string().describe("row ID, e.g. F-060"),
     branch: tool.schema.string().describe("branch name (defaults to the lowercased id)"),
+    dir: tool.schema.string().describe("worktree directory (defaults to <repo>/../.worktrees/<repo>/<id>)"),
+    handoff: tool.schema.string().describe("session handoff path recorded in the row (optional)"),
   },
   async execute(args, context) {
     const argv = ["worktree", args.id]
     if (args.branch) argv.push("--branch", args.branch)
+    if (args.dir) argv.push("--dir", args.dir)
+    if (args.handoff) argv.push("--handoff", args.handoff)
     return run(context, argv)
   },
 })
 
 export const depends = tool({
   description:
-    "Set/clear a BACKLOG.md row's \"Depends on\" cell (Open/Queued only) — a comma-separated list of row IDs that must be archived before this row is picked up. next/take/worktree skip or refuse a row whose dependencies aren't archived.",
+    "Set/clear a BACKLOG.md row's \"Depends on\" cell (Open/Queued only) — a comma-separated list of row IDs that must be archived before this row is picked up. next/take/worktree skip or refuse a row whose dependencies aren't archived. A dependency cycle is rejected.",
   args: {
     id: tool.schema.string().describe("row ID, e.g. F-052"),
     on: tool.schema.string().describe("comma-separated row IDs it depends on, or ? to clear"),

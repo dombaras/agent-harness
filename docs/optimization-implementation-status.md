@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.73)
+# Agent Harness Optimization — Implementation Status (v0.1.74)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -18,16 +18,74 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.73` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer) |
-| Lint / tests | green (`npm run lint`, `npm test` — 199 pass) |
-| LibraryOS | `0.1.72` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
+| Version | `0.1.74` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence) |
+| Lint / tests | green (`npm run lint`, `npm test` — 210 pass) |
+| LibraryOS | `0.1.74` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) + the `ship` command (H-10) |
 
 ---
 
 ## What shipped
+
+### `0.1.74` — deploy hardening + board/lifecycle convergence
+
+A full harness self-review (code management, deployment, session lifecycle)
+after a run of nearly-every-session fixes. The individual mechanisms were sound;
+the gaps were in the deploy pipeline's branch awareness and in lifecycle
+convergence.
+
+**Deployment**
+- **Canonical-branch guard** (`bin/agent-harness.js`): `update`/`init` now
+  resolve the default branch (`origin/HEAD`, else `main`/`master`) and refuse to
+  auto-commit/push harness files from any other branch (or a detached HEAD),
+  unless `--allow-branch` is passed. Field evidence: LibraryOS's main checkout
+  was left on `chore/archive-f-244`, so the `0.1.73` deploy commit landed on
+  `origin/chore/archive-f-244` and `main`/`origin/main` stayed at `0.1.72` — the
+  same stale-base failure as `0.1.68`, on the branch axis.
+- **Deploy lock** (`withDeployLock`): an exclusive `.harness.lock` directory
+  serializes concurrent `update`s against one target (dead-pid breaking, 15s
+  timeout); the lock is clone-locally excluded.
+- **`package.json` no-clobber** (`mergePackageJson`): preserves the project's own
+  indentation, returns the byte-identical current text when every harness script
+  is already present (no reformat-only re-commit), and never rewrites an
+  unparseable (JSONC/hand-edited) file.
+- **`.gitattributes` begin/end markers**: the managed block can no longer
+  truncate a project entry appended after the marker (the `.gitignore` F-020
+  class, closed for gitattributes too).
+- **npm-published warning** is skipped when the CLI runs from a local git
+  checkout — the authoritative workflow per `AGENTS.md` — so it no longer warns
+  on every local update or pays a blocking `npm view`.
+- **Version-bump gate with teeth**: the hygiene test no longer only inspects
+  uncommitted diffs; it fails when any commit after the last `package.json`
+  version bump touched `bin/` or `templates/`.
+
+**Sessions / worktrees**
+- **`backlog worktree-prune`**: removes linked worktrees whose branch is merged
+  into the upstream *and* whose checkout is clean; keeps unmerged/dirty ones and
+  refuses to guess when there is no upstream. Closes the "worktrees pile up after
+  sessions end without `archive`" gap (LibraryOS had 4 live worktrees).
+- **`archive` safety**: never removes the worktree the archiving process is
+  standing in; clears the session `.worktree` pointer from both the launch tree
+  and the worktree it references (the pointer lives in whichever tree `worktree`
+  ran in).
+- **Lease convergence**: the heartbeat freshness window is 4h (was 12h), and
+  `touchLease` re-creates a missing lease so a session that outlives the window
+  re-arms on first activity instead of running unleased.
+
+**Board**
+- **Dependency cycles** are rejected on `add`/`depends` and fail `test:backlog`
+  (a cycle previously left every member permanently blocked with no signal). The
+  DFS lives in `board-lib.js` so the write path and the gate share it.
+- **Tool plumbing** (`scripts/qa/tool-lib.js`): `nodeBin()` + the mid-session
+  worktree reroot + `runScript()` now live in one module the three tools import,
+  replacing three divergent copies (the harness's own P4 one-home-per-fact rule).
+- `backlog-notify` summarizes the `worktree`/`depends`/`owns` tool calls too.
+
+Tests: +11 (branch guard, package.json formatting/no-clobber, gitattributes
+markers, lock exclusion, tool-lib, lease recreation, dependency cycles, gate
+cycle, worktree-prune, notify). 210 pass.
 
 ### `0.1.73` — mid-session worktree tool rooting (session pointer)
 

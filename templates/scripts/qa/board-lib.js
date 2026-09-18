@@ -60,4 +60,37 @@ function formatRow(cells) {
   return "| " + cells.map(sanitizeCell).join(" | ") + " |";
 }
 
-module.exports = { splitCells, isSep, sanitizeCell, formatRow };
+/* Return a cycle (as an `A -> B -> A` id list) in a dependency graph
+ * (Map<id, string[]>), or null. A cycle leaves every member permanently
+ * "blocked" with no mechanical signal, so the board write path and the gate
+ * both reject it. Pure — shared by backlog.js and check-backlog.js. */
+function findCycle(graph) {
+  const WHITE = 0;
+  const GRAY = 1;
+  const BLACK = 2;
+  const color = new Map();
+  const stack = [];
+  let cycle = null;
+  const visit = (node) => {
+    color.set(node, GRAY);
+    stack.push(node);
+    for (const dep of graph.get(node) || []) {
+      if (!graph.has(dep)) continue; // unknown/archived refs are handled elsewhere
+      const c = color.get(dep) || WHITE;
+      if (c === GRAY) {
+        cycle = stack.slice(stack.indexOf(dep)).concat(dep);
+        return true;
+      }
+      if (c === WHITE && visit(dep)) return true;
+    }
+    stack.pop();
+    color.set(node, BLACK);
+    return false;
+  };
+  for (const node of graph.keys()) {
+    if ((color.get(node) || WHITE) === WHITE && visit(node)) break;
+  }
+  return cycle;
+}
+
+module.exports = { splitCells, isSep, sanitizeCell, formatRow, findCycle };

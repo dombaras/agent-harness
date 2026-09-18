@@ -27,7 +27,14 @@
 const fs = require("fs");
 const path = require("path");
 
-const DEFAULT_MAX_AGE_MS = 12 * 60 * 60 * 1000; // heartbeat freshness window
+/* Heartbeat freshness window. A session that ended without a
+ * `session.deleted` event (TUI closed, server still alive) stops heartbeating,
+ * so this window is the sole convergence bound for an abandoned lease. It is
+ * deliberately long enough that a genuinely active session — which heartbeats
+ * on every event/tool call — is never mistaken for stale, and short enough that
+ * an abandoned lease does not block the concurrency gate / branch-switch guard
+ * for most of a day. */
+const DEFAULT_MAX_AGE_MS = 4 * 60 * 60 * 1000; // 4h heartbeat freshness window
 
 let cachedBootId;
 function bootId() {
@@ -141,7 +148,10 @@ function writeLease(root, sessionID, meta = {}) {
   return rec;
 }
 
-/* Refresh the heartbeat so an active-but-quiet session stays live. */
+/* Refresh the heartbeat so an active-but-quiet session stays live. If the lease
+ * is missing (never created, pruned as stale, or lost) it is RE-CREATED: a
+ * session that comes back after the freshness window must re-arm its lease on
+ * its first activity, not run unleased. */
 function touchLease(root, sessionID) {
   const file = path.join(leaseDir(root), `${sessionID}.json`);
   try {
@@ -149,7 +159,11 @@ function touchLease(root, sessionID) {
     rec.heartbeatAt = Date.now();
     fs.writeFileSync(file, JSON.stringify(rec));
   } catch {
-    /* best-effort; a missing lease is re-created on session.created */
+    try {
+      writeLease(root, sessionID);
+    } catch {
+      /* best-effort */
+    }
   }
 }
 
