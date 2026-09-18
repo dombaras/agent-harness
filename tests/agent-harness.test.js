@@ -5252,3 +5252,58 @@ test("backlog-notify summarizes the worktree/depends/owns tools too", () => {
   assert.match(src, /backlog_depends/);
   assert.match(src, /backlog_owns/);
 });
+
+function initShipRepo() {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts"), { recursive: true });
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"), path.join(target, "scripts", "ship.js"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target, encoding: "utf8" });
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: target });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: target });
+  fs.writeFileSync(path.join(target, "README.md"), "x\n", "utf8");
+  execFileSync("git", ["add", "-A"], { cwd: target });
+  execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: target });
+  return target;
+}
+
+function runShipCli(target, args) {
+  const res = spawnSync(process.execPath, ["scripts/ship.js", ...args], { cwd: target, encoding: "utf8" });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("ship refuses to ship the integration branch (main)", () => {
+  const target = initShipRepo();
+  const res = runShipCli(target, ["--no-gate"]);
+  assert.strictEqual(res.status, 1, res.out);
+  assert.match(res.out, /refusing to ship/);
+});
+
+test("ship refuses a dirty tree rather than shipping WIP", () => {
+  const target = initShipRepo();
+  execFileSync("git", ["checkout", "-q", "-b", "f-dirty"], { cwd: target });
+  fs.writeFileSync(path.join(target, "README.md"), "changed\n", "utf8");
+  const res = runShipCli(target, ["--no-gate"]);
+  assert.strictEqual(res.status, 1, res.out);
+  assert.match(res.out, /uncommitted tracked changes/);
+});
+
+test("[drift-guard] ship integrates, pushes, opens the PR, and enqueues the landing label", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
+  assert.match(src, /git fetch|fetch", "origin/, "integrates early");
+  assert.match(src, /rebase/, "rebases on origin/<base>");
+  assert.match(src, /--force-with-lease/, "only force-pushes an already-pushed branch");
+  assert.match(src, /gh", \["pr", "create"/, "opens the PR");
+  assert.match(src, /--add-label/, "applies the landing label");
+  assert.match(src, /merge-train/, "defaults the landing label to merge-train");
+  assert.match(src, /resolveLabel/, "label is resolvable per project");
+  // gh unavailable must not be a silent success.
+  assert.match(src, /is unavailable — the PR was NOT opened/);
+});
+
+test("deploy ships the ship command and wires npm run ship", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  assert.ok(exists(path.join(target, "scripts", "ship.js")), "scripts/ship.js deployed");
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts.ship, "node scripts/ship.js");
+});

@@ -224,6 +224,7 @@ function mergeOpencodeJson(target, variables) {
 // These gates ship with the harness, so a deploy wires them up like opencode.json.
 const HARNESS_SCRIPTS = {
   backlog: "node scripts/backlog.js",
+  ship: "node scripts/ship.js",
   "test:dispatch": "node scripts/qa/check-dispatch-config.js",
   "test:governance": "node scripts/qa/governance.js",
   "test:qa-plan": "node scripts/qa/check-qa-plan.js",
