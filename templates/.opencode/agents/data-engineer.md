@@ -2,6 +2,7 @@
 description: Use for catalog/data ingestion and entity resolution — external-source ingestion, canonical-record dedup, external service telemetry.
 mode: subagent
 model: opencode-go/deepseek-v4.1-flash
+variant: low
 steps: 40
 permission:
   edit:

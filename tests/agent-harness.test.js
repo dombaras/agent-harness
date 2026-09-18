@@ -3823,6 +3823,24 @@ test("context-guard injected text is byte-stable per band and never interpolated
   assert.ok(cg.LOOP_TEXT.startsWith("CONTEXT GUARD"));
 });
 
+test("context-guard composes band + funds + loop text in order (or null)", () => {
+  const thresholds = cg.parseThresholds("");
+  const state = cg.createSessionState();
+  assert.strictEqual(cg.composeGuardText(state, thresholds), null, "nothing to say -> null");
+
+  state.turns = 50;
+  assert.strictEqual(cg.composeGuardText(state, thresholds), cg.BAND_TEXT.warning);
+
+  state.turns = 60;
+  state.fundsPending = true;
+  state.fundsNotice = cg.fundsText("deepseek/deepseek-v4-pro", "tool:task");
+  state.loopPending = true;
+  const composed = cg.composeGuardText(state, thresholds);
+  assert.ok(composed.startsWith(cg.BAND_TEXT.checkpoint), "band leads");
+  assert.ok(composed.includes(state.fundsNotice), "funds stop is included");
+  assert.ok(composed.endsWith(cg.LOOP_TEXT), "loop rule trails");
+});
+
 test("context-guard counts assistant turns once and reports band/request crossings", () => {
   const thresholds = cg.parseThresholds("");
   const state = cg.createSessionState();
@@ -3950,11 +3968,16 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
     "event:",
     '"tool.execute.before"',
     '"tool.execute.after"',
-    '"experimental.chat.system.transform"',
+    '"experimental.chat.messages.transform"',
     '"permission.ask"',
   ]) {
     assert.ok(src.includes(hook), `hook ${hook} present`);
   }
+  assert.doesNotMatch(
+    src,
+    /"experimental\.chat\.system\.transform"/,
+    "the guard must never mutate the system prompt on a band crossing (it evicts the provider prompt cache)"
+  );
   assert.match(src, /orchestration\.md/, "thresholds come from the project memory file");
   assert.match(src, /parseThresholds/, "parses thresholds at runtime");
   assert.match(src, /file\.watcher\.updated/, "invalidates the threshold cache on edits");
@@ -3971,14 +3994,89 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /modelLabel\(meta\.model\)/, "names the failed provider/model from the dispatch metadata");
   assert.match(src, /fundsText/, "injects an attributed funds-stop notice");
   assert.match(src, /fundsArmText/, "the tool-result funds scan is gated to structured failure evidence");
-  assert.match(src, /bandText/, "injects the core's byte-stable band text");
+  assert.match(src, /composeGuardText/, "composes the core's byte-stable guard text");
+  assert.match(src, /messages\.push/, "appends the guard text as a tail message, never the system prompt");
+  assert.match(src, /synthetic: true/, "the injected tail message is marked synthetic");
+  assert.match(src, /GUARD_MESSAGE_ID/, "a stable id replaces the tail message in place on re-request");
   assert.match(src, /fundsError/, "detects provider funds/quota errors mechanically");
-  assert.match(src, /FUNDS_TEXT/, "injects the hard funds-stop rule");
   assert.match(src, /session\.error/, "also watches provider session errors");
   assert.match(src, /fundsPending = false/, "a user message releases the funds stop");
   assert.match(src, /doom_loop/, "builds on the built-in doom-loop permission");
   assert.doesNotMatch(src, /identical_tool_calls\s*[:=]\s*\d/, "no hardcoded loop threshold");
   assert.doesNotMatch(src, /(?:===|==|>=|>)\s*(?:50|60|80|100)\b/, "no hardcoded turn band numbers");
+});
+
+test("context-guard injects at the conversation tail and never mutates the cached prefix", async () => {
+  const { pathToFileURL } = require("node:url");
+  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
+  const mod = await import(pathToFileURL(pluginPath).href);
+  const plugin = await mod.ContextGuard({
+    directory: tmpdir(),
+    client: { app: { log: async () => {} } },
+  });
+
+  const sid = "ses_guard_primary";
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: sid } } } });
+  // Cross the first band (checkpoint warning at turn 50).
+  for (let i = 1; i <= 50; i++) {
+    await plugin.event({
+      event: {
+        type: "message.updated",
+        properties: { info: { id: "m" + i, role: "assistant", sessionID: sid } },
+      },
+    });
+  }
+
+  const messages = [
+    { info: { role: "user", sessionID: sid }, parts: [{ type: "text", text: "hello" }] },
+    { info: { role: "assistant", sessionID: sid }, parts: [{ type: "text", text: "working" }] },
+    { info: { role: "user", sessionID: sid }, parts: [{ type: "text", text: "continue" }] },
+  ];
+  const before = JSON.parse(JSON.stringify(messages));
+  const output = { messages };
+  await plugin["experimental.chat.messages.transform"]({}, output);
+
+  assert.strictEqual(messages.length, before.length + 1, "one synthetic guard message is appended");
+  assert.deepStrictEqual(
+    messages.slice(0, before.length),
+    before,
+    "the entire stored transcript is byte-identical — the provider prompt cache survives"
+  );
+  const injected = messages[messages.length - 1];
+  assert.strictEqual(injected.info.role, "user");
+  assert.strictEqual(injected.info.synthetic, true);
+  assert.strictEqual(injected.parts.length, 1);
+  assert.match(injected.parts[0].text, /CONTEXT GUARD/);
+  assert.match(injected.parts[0].text, /checkpoint warning/);
+
+  // A re-request in the same turn must update in place, never stack duplicates.
+  await plugin["experimental.chat.messages.transform"]({}, output);
+  assert.strictEqual(messages.length, before.length + 1, "no duplicate guard message");
+
+  // Crossing the next band updates the tail message while the prefix stays put.
+  for (let i = 51; i <= 60; i++) {
+    await plugin.event({
+      event: {
+        type: "message.updated",
+        properties: { info: { id: "m" + i, role: "assistant", sessionID: sid } },
+      },
+    });
+  }
+  await plugin["experimental.chat.messages.transform"]({}, output);
+  assert.strictEqual(messages.length, before.length + 1);
+  assert.match(messages[messages.length - 1].parts[0].text, /soft turn budget reached/);
+  assert.deepStrictEqual(messages.slice(0, before.length), before, "prefix still byte-identical");
+
+  // A child/subagent session is never nudged.
+  await plugin.event({
+    event: {
+      type: "session.created",
+      properties: { info: { id: "ses_guard_child", parentID: sid } },
+    },
+  });
+  const childMessages = [{ info: { role: "user", sessionID: "ses_guard_child" }, parts: [] }];
+  await plugin["experimental.chat.messages.transform"]({}, { messages: childMessages });
+  assert.strictEqual(childMessages.length, 1, "subagent sessions get no guard message");
 });
 
 test("funds scan trusts only structured failure evidence — docs quoting the rule never arm the stop", () => {
@@ -4030,7 +4128,7 @@ test("context-guard plugin + core deploy, stay harness-owned, and the guard log 
   assert.ok(exists(corePath), "guard core deployed");
   const plugin = read(path.join(target, ".opencode", "plugins", "context-guard.ts"));
   assert.match(plugin, /tool\.execute\.before/);
-  assert.match(plugin, /experimental\.chat\.system\.transform/);
+  assert.match(plugin, /experimental\.chat\.messages\.transform/);
 
   const exclude = read(path.join(target, ".git", "info", "exclude"));
   assert.ok(exclude.includes(".agents/guard-events.jsonl"), "runtime guard log is excluded clone-locally");

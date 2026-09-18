@@ -136,12 +136,17 @@ unit, compact deterministic checkpoints into the session's `.agents/handoffs/<id
 when a session nears its budget (see `orchestration.md`), and a fresh context that
 resumes from the checkpoint instead of replaying the transcript. The
 **`context-guard` plugin** makes the turn bands mechanical: it parses
-`orchestration.md` at runtime (thresholds are never hardcoded) and injects a
-byte-stable checkpoint warning / soft-budget / new-context nudge into the primary
-orchestrator session as it crosses them, flags repeated identical tool calls with
-the recovery rule (building on the runtime's own `doom_loop` permission), and
-records band/loop/request crossings in `.agents/guard-events.jsonl` (local-only,
-excluded clone-locally). Every handoff can
+`orchestration.md` at runtime (thresholds are never hardcoded) and nudges the
+primary orchestrator session as it crosses them, flags repeated identical tool
+calls with the recovery rule (building on the runtime's own `doom_loop`
+permission), and records band/loop/request crossings in
+`.agents/guard-events.jsonl` (local-only, excluded clone-locally). The nudge is
+injected **cache-safely**: it is appended as a synthetic tail message via
+`experimental.chat.messages.transform`, never written into the system prompt — a
+system-prompt change on a band crossing evicts the provider's entire prompt cache
+and re-bills the whole transcript at full input price (measured: every full-price
+re-read landed on turn 50/60/80/100). Appending at the tail keeps the cached
+prefix byte-stable. Every handoff can
 carry a `## Session metadata` block (`session`, `work_type`, `outcome`,
 `termination_reason`, `checkpoint_count`, `model_escalation_evidence` —
 controlled vocabularies, never fabricated) that `npm run report` aggregates

@@ -6,8 +6,12 @@ import leases from "../../scripts/qa/lease-lib.js"
 
 // Mechanical half of the context budget: read the project-owned thresholds from
 // `.agents/memory/orchestration.md` and nudge the PRIMARY orchestrator session as
-// it crosses them — injected text is constant per band so the cache-friendly
-// prefix stays byte-stable. Also counts identical tool+args calls (loop
+// it crosses them. The nudge is injected into the conversation TAIL via
+// `experimental.chat.messages.transform`, never the system prompt: changing the
+// system prefix on a band crossing evicts the provider's whole prompt cache and
+// re-bills the entire transcript at full input price (measured: every full-price
+// re-read landed on turn 50/60/80/100). Appending at the tail keeps the cached
+// prefix byte-stable. Also counts identical tool+args calls (loop
 // detector) and records crossings in `.agents/guard-events.jsonl` (local-only,
 // excluded clone-locally) so telemetry exists before a full provider-stats pass does.
 // It also hard-stops on provider funds/quota errors (see model-routing.md
@@ -19,6 +23,12 @@ import leases from "../../scripts/qa/lease-lib.js"
 
 const ORCHESTRATION_REL = path.join(".agents", "memory", "orchestration.md")
 const GUARD_LOG_REL = path.join(".agents", "guard-events.jsonl")
+
+/* Stable id for the synthetic tail message the guard injects. The transform is
+ * per-request (never persisted), so this only needs to be stable within one
+ * request-building pass — where it lets a re-request replace the message in
+ * place instead of stacking duplicates. */
+const GUARD_MESSAGE_ID = "context-guard"
 
 
 export const ContextGuard: Plugin = async ({ directory, client }) => {
@@ -273,19 +283,45 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       }
     },
 
-    "experimental.chat.system.transform": async (input: any, output: any) => {
+    // Cache-safe nudge injection: a synthetic user message appended to the TAIL
+    // of the request, so the leading system prompt / transcript prefix is
+    // byte-identical between turns and the provider's prompt cache survives a
+    // band crossing. Never touch `output.system` here.
+    //
+    // Two opencode behaviours shape this (verified live against 1.18.31):
+    //   - the transform is per-request and is NOT persisted, so the stored
+    //     transcript (and thus the cached prefix) is untouched;
+    //   - a synthetic *part* appended to the last message is stripped before the
+    //     provider sees it, but a whole synthetic *message* (the compaction-
+    //     continue shape) is forwarded — hence `messages.push`, not `parts.push`.
+    "experimental.chat.messages.transform": async (_input: any, output: any) => {
       try {
-        if (!isPrimary(input?.sessionID) || !Array.isArray(output?.system)) return
-        const state = stateFor(input.sessionID)
-        const texts: string[] = []
-        const band = guard.turnBand(state.turns, loadThresholds().turns)
-        if (band) texts.push(guard.bandText(band))
-        if (state.fundsPending) texts.push(state.fundsNotice || guard.FUNDS_TEXT)
-        if (state.loopPending) texts.push(guard.LOOP_TEXT)
-        for (const text of texts) {
-          const already = output.system.some((s: string) => typeof s === "string" && s.includes(text))
-          if (!already) output.system.push(text)
+        const messages = output?.messages
+        if (!Array.isArray(messages) || messages.length === 0) return
+        // The hook carries no sessionID; it belongs to the last message in the
+        // request (its own session). Child/subagent requests are skipped.
+        let sid: string | null = null
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const id = messages[i]?.info?.sessionID
+          if (typeof id === "string" && id.length > 0) {
+            sid = id
+            break
+          }
         }
+        if (!isPrimary(sid)) return
+        const text = guard.composeGuardText(stateFor(sid), loadThresholds())
+        if (!text) return
+        const last = messages[messages.length - 1]
+        if (last?.info?.id === GUARD_MESSAGE_ID) {
+          // Same turn, re-request (e.g. a band advanced): update in place.
+          const part = (last.parts || []).find((p: any) => p?.type === "text")
+          if (part && part.text !== text) part.text = text
+          return
+        }
+        messages.push({
+          info: { id: GUARD_MESSAGE_ID, role: "user", sessionID: sid, synthetic: true },
+          parts: [{ type: "text", text, synthetic: true }],
+        })
       } catch {
         /* never break a request */
       }

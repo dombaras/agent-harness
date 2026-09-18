@@ -166,6 +166,29 @@ function bandText(band) {
   return BAND_TEXT[band] || null;
 }
 
+/* The ordered guard texts a request should carry: the highest reached turn band,
+ * then the funds stop, then the loop-recovery rule. Pure, so the plugin stays a
+ * thin IO layer and the composition is unit-testable. Returns [] when there is
+ * nothing to say. */
+function guardTexts(state, thresholds) {
+  const texts = [];
+  const band = turnBand(state?.turns, thresholds?.turns);
+  if (band) {
+    const text = bandText(band);
+    if (text) texts.push(text);
+  }
+  if (state?.fundsPending) texts.push(state.fundsNotice || FUNDS_TEXT);
+  if (state?.loopPending) texts.push(LOOP_TEXT);
+  return texts;
+}
+
+/* The single block injected into the conversation TAIL (never the system prompt,
+ * so the cached prefix stays byte-stable). Null when there is nothing to inject. */
+function composeGuardText(state, thresholds) {
+  const texts = guardTexts(state, thresholds);
+  return texts.length ? texts.join("\n\n") : null;
+}
+
 function requestLevel(tokens, request) {
   if (!Number.isFinite(tokens)) return null;
   let level = null;
@@ -323,6 +346,8 @@ module.exports = {
   parseThresholds,
   turnBand,
   bandText,
+  guardTexts,
+  composeGuardText,
   requestLevel,
   requestTokensOf,
   stableStringify,

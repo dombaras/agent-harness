@@ -18,9 +18,9 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.70` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys) |
-| Lint / tests | green (`npm run lint`, `npm test` — 191 pass) |
+| Version | `0.1.71` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas |
+| Lint / tests | green (`npm run lint`, `npm test` — 193 pass) |
 | LibraryOS | `0.1.68` deployed (`.harness.json`; auto-commit `acb8200`); `0.1.69` pending deploy; `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) + the `ship` command (H-10) |
@@ -28,6 +28,43 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 ---
 
 ## What shipped
+
+### `0.1.71` — cache-safe context-guard + reasoning-effort cap (cost follow-up)
+
+A fresh session-store analysis (2026-09-16 → 09-18; 173 sessions, ~$9.5) found the
+biggest single avoidable cost was **the guard's own nudges**: every full-price
+re-read landed on turn **50/60/80/100**, and the counts matched
+`.agents/guard-events.jsonl` exactly (warning 26, checkpoint 22, new-context 12,
+hard 8). The old `experimental.chat.system.transform` wrote the per-band text into
+the **system prompt**, so each band crossing changed the leading prefix and evicted
+the provider's prompt cache — 68 events × 9.93M tokens re-billed at full input
+price instead of cache-read = ~$1.46 (≈15% of the window). This also violated
+`orchestration.md`'s own "keep the stable leading context byte-stable" rule.
+
+- **Tail injection, not system injection.** `context-guard.ts` now uses
+  `experimental.chat.messages.transform` and appends a synthetic **user message**
+  at the tail (`messages.push`), leaving `output.system` and every stored message
+  byte-identical. Live-verified against opencode 1.18.31: the transform is
+  per-request and not persisted (no DB bloat, prefix unchanged); a synthetic
+  *part* appended to the last message is **stripped** before the provider sees it,
+  while a whole synthetic *message* (the compaction-continue shape) is forwarded —
+  hence the message-level injection. A stable `GUARD_MESSAGE_ID` replaces the tail
+  message in place on a re-request so bands never stack.
+- **`context-guard-core.js`** gains `guardTexts` / `composeGuardText` (ordered
+  band → funds → loop) so composition is pure and unit-tested; the funds stop and
+  loop-recovery rule ride the same tail message.
+- **Reasoning-effort cap.** `deepseek-v4.1-flash` exposes effort
+  `low/high/max`; the mechanical engineering personas (`qa-runner`,
+  `devops-engineer`, `frontend-engineer`, `data-engineer`, `mobile-engineer`,
+  `diagnostics-expert`) now pin `variant: low` in their frontmatter (confirmed
+  recorded on the session model: `"variant":"low"`). The pro architect tier and
+  `build` stay at default — `build` is the largest single reasoning burner and a
+  blind cut would risk the orchestrator, so it is left for a measured follow-up.
+- **Tests:** core composition; the behavior test loads the real plugin and asserts
+  the whole stored transcript is byte-identical, exactly one synthetic tail
+  message is appended, a band change updates it in place, and child sessions are
+  never nudged; the source contract forbids `experimental.chat.system.transform`.
+  193 pass.
 
 ### `0.1.70` — advisory session leases + remote-integration DoD
 
@@ -566,6 +603,12 @@ Still open / deferred (details in `open-work.md`):
   post-`0.1.53` data; R9/R10 on post-`0.1.56` data (opportunistic usage and
   recorded escalation evidence). Use `--export` to snapshot each window and
   compare (H-6).
+- **`0.1.71` verification (next long session)**: confirm on a real session that
+  crosses turn 50 that the `step-finish` `input` at turns 50/60/80/100 no longer
+  spikes (it should stay tiny with a high `cache.read`), and compare the
+  engineering-tier reasoning tokens before/after `variant: low` in
+  `report:cost`. The write to the provider was validated live (tail message
+  reaches the model) but the cache-saving is only provable on a band crossing.
 - **All remaining D items shipped** (R9, R10, R11, R12, R14 in `0.1.56`).
 - **Watchlist**: R2's 10–15% soft claim stays unproven until measured; R8
   (per-dispatch persona dedup) remains deferred (H-5); R1 stays dropped.
