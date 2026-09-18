@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.69)
+# Agent Harness Optimization — Implementation Status (v0.1.72)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -18,16 +18,41 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.71` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas |
-| Lint / tests | green (`npm run lint`, `npm test` — 193 pass) |
-| LibraryOS | `0.1.68` deployed (`.harness.json`; auto-commit `acb8200`); `0.1.69` pending deploy; `model-routing.md` is gitignored/local-only and updated in place |
+| Version | `0.1.72` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout) |
+| Lint / tests | green (`npm run lint`, `npm test` — 197 pass) |
+| LibraryOS | `0.1.72` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) + the `ship` command (H-10) |
 
 ---
 
 ## What shipped
+
+### `0.1.72` — branch-switch guard (the direct-push-to-main class)
+
+Field incident (LibraryOS, 2026-09-18): two primary sessions shared the main
+checkout. Session B ran `git checkout main` (a board sync) while session A was
+mid-task on `docs/f-239-record-landing`; HEAD moved under A, and A's later bare
+`git commit` + `git push` landed `5549e4a` **directly on main**. The pre-push
+hook never switches branches — the collision was the shared tree, which `0.1.70`
+had made **advisory** on a clean tree.
+
+- **`context-guard-core.js` `branchSwitch(command)`** — a pure parser that finds a
+  HEAD move in a shell command: `git checkout`/`git switch` in command position,
+  skipping `&&`/`;`/pipe segments, env assignments, wrappers, and redirections; it
+  treats any `--` and `.`/`./x` as file restores (never a switch). `branchSwitchText`
+  is the deterministic block message.
+- **`context-guard.ts` `tool.execute.before`** — when a branch switch is detected
+  and another **live** primary lease shares the checkout (`lease-lib.js` liveness),
+  the hook `throw`s, so opencode aborts the tool call; the guard is deliberately
+  placed OUTSIDE the loop-guard's swallow-everything `try/catch`. The second session
+  must isolate (`backlog worktree <id> --open`). File restores, solo checkouts, and
+  dead-pid leases are never blocked.
+- **Tests:** parser truth table (the exact incident command; restore/non-command
+  negative cases), the message contract, and a behavior test that loads the real
+  plugin and asserts it rejects the switch with another live lease, allows it solo,
+  and ignores a dead-pid lease. 197 pass.
 
 ### `0.1.71` — cache-safe context-guard + reasoning-effort cap (cost follow-up)
 

@@ -3930,6 +3930,49 @@ test("context-guard events are one JSON object per line with a leading ts", () =
   assert.ok(!Number.isNaN(Date.parse(parsed.ts)));
 });
 
+test("branch-switch guard detects a HEAD move (the 2026-09-18 direct-push-to-main shape)", () => {
+  // The exact LibraryOS incident command: session B switched main under session A.
+  assert.deepStrictEqual(
+    cg.branchSwitch("cd /home/ronen/develop/PublicVirtualLibrary && git checkout main 2>&1 | tail -2 && git pull --ff-only 2>&1 | tail -2"),
+    { ref: "main" }
+  );
+  assert.deepStrictEqual(cg.branchSwitch("git checkout -b docs/f-239-record-landing"), { ref: "docs/f-239-record-landing" });
+  assert.deepStrictEqual(cg.branchSwitch("git switch main"), { ref: "main" });
+  assert.deepStrictEqual(cg.branchSwitch("git switch -c feat/x"), { ref: "feat/x" });
+  assert.deepStrictEqual(cg.branchSwitch("git -C /repo checkout develop"), { ref: "develop" });
+  assert.deepStrictEqual(cg.branchSwitch("git checkout -"), { ref: "-" });
+  assert.deepStrictEqual(cg.branchSwitch("git checkout --detach HEAD"), { ref: "HEAD" });
+});
+
+test("branch-switch guard ignores file restores and non-command-position mentions", () => {
+  for (const command of [
+    "git checkout -- BACKLOG.md .agents/memory/owned-files.md",
+    "git checkout HEAD -- CHANGELOG.md",
+    "git checkout .",
+    "git checkout -- .",
+    "git checkout main -- file.txt",
+    "git checkout", // lists status
+    "git restore --staged .",
+    'echo "git checkout main"',
+    'grep -rn "git checkout main" scripts/',
+    "npm run test:quick",
+  ]) {
+    assert.strictEqual(cg.branchSwitch(command), null, `not a branch switch: ${command}`);
+  }
+  assert.strictEqual(cg.branchSwitch(""), null);
+  assert.strictEqual(cg.branchSwitch(null), null);
+});
+
+test("branch-switch guard message names the ref + live sessions and points at isolation", () => {
+  const text = cg.branchSwitchText("main", ["ses_A", "ses_B"]);
+  assert.match(text, /\bmain\b/);
+  assert.match(text, /ses_A/);
+  assert.match(text, /ses_B/);
+  assert.match(text, /backlog worktree/);
+  assert.match(cg.branchSwitchText(null, []), /another branch/);
+  assert.match(cg.branchSwitchText(null, []), /another primary session/);
+});
+
 test("context-guard recognizes provider funds/quota errors (hard stop) and ignores ordinary failures", () => {
   assert.strictEqual(cg.fundsError("Error: Insufficient balance"), true);
   assert.strictEqual(cg.fundsError("provider error: insufficient funds"), true);
@@ -3989,6 +4032,9 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /clearLease/, "session deletion clears the lease");
   assert.match(src, /touchLease/, "activity heartbeats the lease so a live-but-quiet session stays live");
   assert.match(src, /pruneLeases/, "startup sweep clears crashed/closed sessions' leases");
+  assert.match(src, /branchSwitch\(/, "detects a branch-switch command via the shared core");
+  assert.match(src, /branchSwitchText/, "the block message comes from the shared core");
+  assert.match(src, /throw new Error\(message\)/, "the branch guard THROWS to abort the switch");
   assert.match(src, /childParent/, "child->parent mapping attributes subagent funds errors to the orchestrator");
   assert.match(src, /sessionModel/, "tracks the observed provider/model per session");
   assert.match(src, /modelLabel\(meta\.model\)/, "names the failed provider/model from the dispatch metadata");
@@ -4077,6 +4123,68 @@ test("context-guard injects at the conversation tail and never mutates the cache
   const childMessages = [{ info: { role: "user", sessionID: "ses_guard_child" }, parts: [] }];
   await plugin["experimental.chat.messages.transform"]({}, { messages: childMessages });
   assert.strictEqual(childMessages.length, 1, "subagent sessions get no guard message");
+});
+
+test("branch-switch plugin guard aborts a HEAD move only while another live session shares the checkout", async () => {
+  const { pathToFileURL } = require("node:url");
+  const leases = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"));
+  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
+  const mod = await import(pathToFileURL(pluginPath).href);
+  const client = { app: { log: async () => {} } };
+
+  // Two primary sessions in one checkout: another live lease is present.
+  const shared = tmpdir();
+  leases.writeLease(shared, "ses_other", {});
+  const plugin = await mod.ContextGuard({ directory: shared, client });
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: "ses_me" } } } });
+
+  await assert.rejects(
+    plugin["tool.execute.before"](
+      { tool: "bash", sessionID: "ses_me", callID: "c1" },
+      { args: { command: "cd /repo && git checkout main 2>&1 | tail -2" } }
+    ),
+    /SESSION GUARD[\s\S]*ses_other[\s\S]*backlog worktree/,
+    "the switch is aborted (thrown) while another live session shares the tree"
+  );
+
+  // File restores and non-git commands are never blocked.
+  for (const command of ["git checkout -- BACKLOG.md", "git restore --staged .", "npm run test:quick"]) {
+    await plugin["tool.execute.before"](
+      { tool: "bash", sessionID: "ses_me", callID: "c2" },
+      { args: { command } }
+    );
+  }
+
+  // Solo checkout: the same switch is allowed.
+  const solo = tmpdir();
+  const soloPlugin = await mod.ContextGuard({ directory: solo, client });
+  await soloPlugin.event({ event: { type: "session.created", properties: { info: { id: "ses_solo" } } } });
+  await soloPlugin["tool.execute.before"](
+    { tool: "bash", sessionID: "ses_solo", callID: "c3" },
+    { args: { command: "git checkout main" } }
+  );
+
+  // A dead-pid lease is not live, so it must not block an innocent switch.
+  const dead = tmpdir();
+  const deadDir = path.join(dead, ".serve", "sessions");
+  fs.mkdirSync(deadDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(deadDir, "ses_dead.json"),
+    JSON.stringify({
+      sessionID: "ses_dead",
+      pid: 99999999,
+      bootId: leases.bootId(),
+      procStart: "1",
+      startedAt: Date.now(),
+      heartbeatAt: Date.now(),
+    })
+  );
+  const deadPlugin = await mod.ContextGuard({ directory: dead, client });
+  await deadPlugin.event({ event: { type: "session.created", properties: { info: { id: "ses_d" } } } });
+  await deadPlugin["tool.execute.before"](
+    { tool: "bash", sessionID: "ses_d", callID: "c4" },
+    { args: { command: "git switch main" } }
+  );
 });
 
 test("funds scan trusts only structured failure evidence — docs quoting the rule never arm the stop", () => {

@@ -332,6 +332,133 @@ function formatGuardEvent(event) {
   return JSON.stringify({ ts: new Date().toISOString(), ...event }) + "\n";
 }
 
+// ------------------------------------------------------- branch-switch guard
+/* A shared checkout's HEAD can be moved out from under a running session by
+ * another primary session in the SAME tree (`git checkout <branch>` /
+ * `git switch`). The session that was mid-task then commits and pushes on the
+ * wrong branch. LibraryOS 2026-09-18: session A's `docs/f-239-record-landing`
+ * was replaced by session B's `git checkout main`, and A's later bare
+ * `git commit` + `git push` landed directly on main. The plugin blocks a branch
+ * switch while another LIVE primary lease shares this checkout, forcing the
+ * second session to isolate (`backlog worktree <id> --open`) first.
+ *
+ * `branchSwitch` is the pure parser; the plugin owns the lease census and the
+ * throw. It scans only COMMAND POSITION git (never an argument to echo/grep)
+ * and treats any `--` as a path restore (`git checkout -- <paths>`), so the
+ * everyday file-restore forms never false-positive. It is deliberately
+ * conservative: a single positional without `--` (`git checkout main`,
+ * `git checkout .`) is treated as a HEAD move, because in a two-session tree
+ * even an in-place restore is a collision worth isolating for. */
+const GIT_WRAPPERS = new Set(["sudo", "env", "nohup", "time", "command", "exec"]);
+
+/* Flags whose presence makes `git checkout` a branch/HEAD move rather than a
+ * path restore. `-` is `git checkout -` (switch to the previous branch). */
+const BRANCH_CHECKOUT_FLAGS = new Set([
+  "-b",
+  "-B",
+  "--orphan",
+  "--detach",
+  "--track",
+  "-t",
+  "--guess",
+  "--no-guess",
+  "-",
+]);
+
+const GIT_GLOBAL_WITH_ARG = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
+
+function tokenize(segment) {
+  const tokens = [];
+  const re = /"((?:\\.|[^"\\])*)"|'([^']*)'|([^\s]+)/g;
+  let m;
+  while ((m = re.exec(String(segment || "")))) tokens.push(m[1] ?? m[2] ?? m[3]);
+  return tokens;
+}
+
+function isRedirection(token) {
+  return /^\d*[<>]/.test(token) || token === "&>" || token === ">&";
+}
+
+function basename(token) {
+  const parts = String(token || "").split(/[\\/]/);
+  return parts[parts.length - 1];
+}
+
+/* The git subcommand in command position of one shell segment, or null. Env
+ * assignments and the common wrappers (`sudo git ...`) are skipped; any `-C`/
+ * `--git-dir`/... global option is stepped over (the guard deliberately does not
+ * chase them, so a foreign-repo checkout is never mis-blocked). */
+function gitSubcommand(tokens) {
+  let i = 0;
+  while (i < tokens.length) {
+    const base = basename(tokens[i]);
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]) || GIT_WRAPPERS.has(base)) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  if (i >= tokens.length || basename(tokens[i]) !== "git") return null;
+  let j = i + 1;
+  while (j < tokens.length) {
+    const t = tokens[j];
+    if (GIT_GLOBAL_WITH_ARG.has(t)) {
+      j += 2;
+      continue;
+    }
+    if (/^--(git-dir|work-tree|namespace|exec-path)=/.test(t)) {
+      j += 1;
+      continue;
+    }
+    if (t.startsWith("-")) {
+      j += 1;
+      continue;
+    }
+    return { subcommand: t, args: tokens.slice(j + 1) };
+  }
+  return null;
+}
+
+function firstPositional(args) {
+  for (const a of args) {
+    if (a === "-") return "-";
+    if (a.startsWith("-") || isRedirection(a)) continue;
+    return a;
+  }
+  return null;
+}
+
+/* { ref } when the shell command moves the checked-out branch, else null. */
+function branchSwitch(command) {
+  for (const segment of String(command || "").split(/\r?\n|&&|\|\||;|\|/)) {
+    const found = gitSubcommand(tokenize(segment));
+    if (!found) continue;
+    const { subcommand, args } = found;
+    if (subcommand === "switch") return { ref: firstPositional(args) };
+    if (subcommand !== "checkout") continue;
+    if (args.includes("--")) continue; // `... -- <path>` is a restore
+    if (args.some((a) => BRANCH_CHECKOUT_FLAGS.has(a))) return { ref: firstPositional(args) };
+    const positionals = args.filter((a) => !a.startsWith("-") && !isRedirection(a));
+    if (positionals.length !== 1) continue; // 0 args lists status; 2+ is `<tree> <path>`
+    const only = positionals[0];
+    // `.`/`..`/`./x` are unambiguously paths, never branch names.
+    if (only === "." || only === ".." || only.startsWith("./") || only.startsWith("../")) continue;
+    return { ref: only };
+  }
+  return null;
+}
+
+/* The error the plugin throws to abort the switch. Names the branch and the
+ * other live sessions so the fix (isolate) is mechanical. */
+function branchSwitchText(ref, others) {
+  const target = ref ? `\`${ref}\`` : "another branch";
+  const who =
+    Array.isArray(others) && others.length
+      ? others.map((s) => `\`${s}\``).join(", ")
+      : "another primary session";
+  return `SESSION GUARD — blocked a branch switch to ${target}: ${who} is live in the same checkout. Two primary sessions must not share one working tree — the switch would move HEAD under the other session, which could then commit/push on the wrong branch (the 2026-09-18 direct-push-to-main incident). Isolate first: run \`backlog worktree <id> --open\` from the MAIN tree and work in that worktree, or let the other session finish. The switch was NOT executed.`;
+}
+
 module.exports = {
   DEFAULT_TURNS,
   DEFAULT_STUCK,
@@ -358,4 +485,6 @@ module.exports = {
   noteAssistant,
   noteToolCall,
   formatGuardEvent,
+  branchSwitch,
+  branchSwitchText,
 };

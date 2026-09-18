@@ -33,6 +33,7 @@ were archived on that project's board and now live here.
 |---|---|---|---|---|---|
 | H-7 | P3 | docs | Refresh the status doc (v0.1.65 → v0.1.68) and record the skipped `0.1.66` version; label the historical strategy docs. | harness | 2026-09-17 |
 | H-8 | P2 | sessions | `0.1.67` session leases had no process identity: a recycled pid or a session closed without `session.deleted` stayed "live" up to 12h and blocked `test:concurrency` (LibraryOS saw 7 "live" sessions vs 3–4 real, incl. `UU BACKLOG.md` from a concurrent merge). Fix: shared `lease-lib.js` with a birth token (`bootId` + `/proc` starttime) + heartbeat, plugin startup sweep, `check-concurrency --prune`, and `backlog worktree --open` to root a session in its worktree. | harness | 2026-09-18 |
+| H-11 | P1 | sessions | A branch switch in a shared checkout moves HEAD under another live primary session; the displaced session then commits/pushes on the wrong branch (LibraryOS 2026-09-18: session B's `git checkout main` → session A's `git push` landed `5549e4a` directly on main). `0.1.72` adds `branchSwitch()` in `context-guard-core.js` + a `tool.execute.before` guard that throws — aborting the switch — whenever another live primary lease shares the checkout, so the second session must isolate (`backlog worktree <id> --open`). | harness | 2026-09-18 |
 
 ## Not tracked here
 

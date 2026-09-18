@@ -20,6 +20,9 @@ import leases from "../../scripts/qa/lease-lib.js"
 // errors to the orchestrator *with the failing provider/model* — the top-up
 // target comes from observed dispatch metadata (task `metadata.model` or the
 // child assistant message `providerID/modelID`), never a guess.
+// It also blocks a branch switch (`git checkout`/`git switch`) while another
+// live primary session shares the same checkout — see the branch-switch guard
+// on `tool.execute.before` (the 2026-09-18 direct-push-to-main incident).
 
 const ORCHESTRATION_REL = path.join(".agents", "memory", "orchestration.md")
 const GUARD_LOG_REL = path.join(".agents", "guard-events.jsonl")
@@ -241,6 +244,36 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     },
 
     "tool.execute.before": async (input: any, output: any) => {
+      // Branch-switch guard. This MUST throw to abort the tool call, so it lives
+      // OUTSIDE the swallow-everything loop-guard try/catch below. It is armed
+      // only when another LIVE primary lease shares this checkout: a
+      // `git checkout`/`git switch` here would move HEAD under that session,
+      // which could then commit/push on the wrong branch (LibraryOS 2026-09-18).
+      if (isPrimary(input?.sessionID)) {
+        let target: any = null
+        try {
+          target = guard.branchSwitch(output?.args?.command)
+        } catch {
+          target = null
+        }
+        if (target) {
+          let others: any[] = []
+          try {
+            others = leases
+              .liveLeases(directory)
+              .filter((r: any) => r.sessionID !== input.sessionID)
+          } catch {
+            others = []
+          }
+          if (others.length > 0) {
+            const ids = others.map((r: any) => r.sessionID)
+            logEvent({ kind: "branch-switch", sessionID: input.sessionID, ref: target.ref, others: ids })
+            const message = guard.branchSwitchText(target.ref, ids)
+            await report(message)
+            throw new Error(message)
+          }
+        }
+      }
       try {
         if (!isPrimary(input?.sessionID)) return
         touchLease(input.sessionID)
