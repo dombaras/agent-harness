@@ -18,10 +18,10 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.81` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out) |
-| Lint / tests | green (`npm run lint`, `npm test` — 222 pass) |
-| LibraryOS | `0.1.81` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
+| Version | `0.1.87` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget) |
+| Lint / tests | green (`npm run lint`, `npm test` — 261 pass) |
+| LibraryOS | `0.1.87` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) + the `ship` command (H-10) |
 
@@ -155,6 +155,48 @@ give the cycle an automatic way to continue.
 - Tests: +14 (pressure combination + request-crossing injection, material
   classification, no-state + same-failure detectors, run-loop decisions, resume
   metric). 245 pass.
+
+### `0.1.87` — one-call `finalize` + fresh-context `/finish` (the deploy tail cannot be starved)
+
+Field finding (LibraryOS F-257, 2026-09-19): after implementation + live QA were
+green, the orchestrator session hit the soft turn budget (`soft_turn_budget` 60;
+it ran 63 turns / ~130K request tokens) and, per the guard, checkpointed and
+stopped at the phase boundary — leaving `docs/CHANGELOG`, `backlog_archive`,
+commit, and `ship` + watch to a "next bounded session". Ten prior releases
+(`0.1.77`…`0.1.86`) had hardened `ship` and the checkpoint/board convergence, but
+all of them improved the tail *once it was reached*: none let the tail run inside
+one tool call or reached it from a fresh context automatically, so a human stayed
+the resume button and the "implemented but not deployed" loop recurred.
+
+- **`scripts/finalize.js` + `npm run finalize`** (`--feature <id>`, `--closed`,
+  `--watch-only`, `--dry-run`): the deterministic finalization tail in one
+  blocking command — archive the row (idempotent), commit the board + CHANGELOG +
+  handoff, then shell out to `ship` (rebase → gates → push → PR → landing label →
+  watch to landed + CI + UAT deploy). Because it is a single running tool call,
+  the guard's "let the current step finish" rule covers the entire tail even at
+  the hard ceiling; re-running is safe (already landed ⇒ exit 0, enqueued ⇒
+  `--watch-only`). `HARNESS_SCRIPTS` wires it and `doctor` reports it.
+- **`/finish <id>` command** (`.opencode/command/finish.md`): the deliberate short
+  fresh context — print the checkpoint, dispatch ONE `docs` subagent for the
+  CHANGELOG, then run `npm run finalize`. It cannot be starved by the
+  implementation budget.
+- **Guard finalization carve-out** (`context-guard-core.js`): the checkpoint /
+  new-context / hard band texts now say: if only the tail remains, run
+  `npm run finalize` ONCE and let it complete — do not stop; the resume path is
+  `finalize --watch-only`.
+- **Auto-resume reaches finalization** (`run-loop.js`): a resumed phase whose
+  checkpoint shows implementation complete resumes with the `finalizePrompt`
+  (straight to `npm run finalize`) instead of the generic "gates, commit, ship".
+- **Rules**: `00-operating.md` §8 / Definition of Done / session checklist and
+  `templates/AGENTS.md` / `next.md` / `resume.md` now define done as `finalize`
+  exit 0 and forbid checkpoint-and-stop once only the tail remains.
+- Tests: +10 (finalize archive + commit + ship, idempotence, dry-run, main
+  refusal, branch→id, drift-guard, guard carve-out, run-loop finalize prompt,
+  deploy wiring). 261 pass.
+
+Live proof (same session): LibraryOS F-257 `npm run finalize -- --feature F-257`
+→ PR #26 merged `7e85e4d` → CI green + Deploy UAT green → exit 0, main
+fast-forwarded + board reconciled, worktree pruned.
 
 ### `0.1.73` — mid-session worktree tool rooting (session pointer)
 
