@@ -5397,6 +5397,7 @@ test("ship --watch-only fails when the post-merge deploy is red", () => {
 test("[drift-guard] ship runs the process gates itself and fails closed without a deploy workflow", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
   assert.match(src, /PROCESS_GATES/, "process gates are owned by ship, not only the git hook");
+  assert.match(src, /prePushInstalled\(root\)/, "process gates run only when no pre-push hook is installed");
   assert.match(src, /test:qa-plan -- --base=origin\//, "qa-plan is diff-scoped to the integration base");
   assert.match(src, /--allow-no-deploy/, "explicit opt-out exists");
   assert.match(src, /no CI\/deploy workflow was detected/, "no-deploy is fail-closed by default");

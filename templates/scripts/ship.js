@@ -352,18 +352,24 @@ const PROCESS_GATES = [
   "test:quality",
 ];
 
-/* Default gate commands: the integration gate is the one-shot; the process
- * gates always run when the project defines them. `test:qa-plan` is diff-scoped
- * and must compare against the integration base — `--base=HEAD` would be a
- * trivially empty diff. */
+/* Default gate commands. `test:integrate` is the harness one-shot. The process
+ * gates are run by `ship` ONLY when no pre-push hook is installed: when a hook
+ * exists, `git push` runs the project's own battery (which may deliberately
+ * exclude a gate that is red pending another fix), and duplicating it would both
+ * double the cost and impose a gate the project chose not to enforce yet. With no
+ * hook, `ship` owns the process gates so a missing hook cannot silently drop
+ * them. `test:qa-plan` is diff-scoped and must compare against the integration
+ * base — `--base=HEAD` would be a trivially empty diff. */
 function defaultGates(root, base) {
   const scripts = projectScripts(root);
   const gates = [];
   if (scripts["test:integrate"]) gates.push("npm run test:integrate");
-  for (const name of PROCESS_GATES) {
-    if (scripts[name]) gates.push(`npm run ${name}`);
+  if (!prePushInstalled(root)) {
+    for (const name of PROCESS_GATES) {
+      if (scripts[name]) gates.push(`npm run ${name}`);
+    }
+    if (scripts["test:qa-plan"]) gates.push(`npm run test:qa-plan -- --base=origin/${base}`);
   }
-  if (scripts["test:qa-plan"]) gates.push(`npm run test:qa-plan -- --base=origin/${base}`);
   return gates;
 }
 
