@@ -110,6 +110,52 @@ Tests: +11 (branch guard, package.json formatting/no-clobber, gitattributes
 markers, lock exclusion, tool-lib, lease recreation, dependency cycles, gate
 cycle, worktree-prune, notify). 210 pass.
 
+### `0.1.85` — end-to-end delivery tuning: context-pressure nudges, stuck detectors, auto-resume
+
+Field finding (LibraryOS F-256, 2026-09-19): a single `"Pull next item and start
+working"` orchestrator ran the whole cycle in one transcript, was warned at turn
+50, wrote **five** checkpoints, then stopped at the soft budget **before** wiring
+the test / QA / gates / ship — "Checkpointed and pausing at the soft turn budget
+(count 5)". The guard optimized turns (a proxy) and stopped mid-phase; it never
+injected the request-token signal it already measured, and the model could not
+spawn its own fresh primary context, so "prefer a fresh bounded context" was an
+unactionable stop. This change makes the guard drive the real cost signal, stop
+at a boundary instead of mid-step, detect the dawdle, right-size the ceremony, and
+give the cycle an automatic way to continue.
+
+- **Context-pressure nudges** (`context-guard-core.js`): `pressureBand()` now
+  takes the stronger of the turn band and the request-token band
+  (`warn`→warning, `checkpoint`→checkpoint, `intervene`→new-context). The request
+  thresholds were previously telemetry-only; a bloated context now nudges on the
+  same turn it is observed, without waiting for a turn threshold.
+- **Phase-boundary, one-shot nudges** (`BAND_TEXT`): imperative — "checkpoint
+  ONCE … then STOP at the current phase boundary … do not write a second
+  checkpoint in this transcript". The F-256 five-checkpoint spin is named and
+  forbidden. The `ship` watch remains the finalization step.
+- **Stuck detectors** (`noteAssistant`/`noteToolCall`/`noteToolResult`): whole
+  turns with no material file/state change arm
+  `no_state_change_turns` (a dispatch or a file-mutating tool counts as
+  progress); repeated failures sharing a signature arm `same_failure_turns`
+  (distinct from `identical_tool_calls` — same failure, different args). Both
+  inject a recovery rule and log `no_state` / `failure` guard events.
+- **Auto-resume runner** (`scripts/qa/run-loop.js` + `agent-harness run`): chains
+  bounded contexts for one work unit. It runs the next-item workflow, and whenever
+  a phase ends with the feature not landed it launches a fresh `opencode run`
+  session whose message resumes from the checkpoint only. Stops on landed
+  (archived row / shipped outcome), the phase cap, an empty queue, or a failed
+  unlanded phase. The decision core is pure and unit-tested; `--dry-run` prints
+  the phase plan.
+- **Right-size ceremony**: `/next` now requires an explicit
+  `execution_mode: direct | dispatched` line *before* dispatching, with
+  single-surface fixes directed to the main model (the F-256 four-persona
+  one-file fix is cited). `00-operating.md` matches.
+- **E2E telemetry** (`provider-stats.js` + `agent-report.js`): mid-cycle context
+  resets (resume/checkpoint sessions) are surfaced as the metric the runner
+  should trend to zero, and per-feature `checkpoint_count` is printed.
+- Tests: +14 (pressure combination + request-crossing injection, material
+  classification, no-state + same-failure detectors, run-loop decisions, resume
+  metric). 245 pass.
+
 ### `0.1.73` — mid-session worktree tool rooting (session pointer)
 
 Process finding (harness session, 2026-09-18, H-12): opencode pins

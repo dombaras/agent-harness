@@ -11,9 +11,11 @@ import leases from "../../scripts/qa/lease-lib.js"
 // system prefix on a band crossing evicts the provider's whole prompt cache and
 // re-bills the entire transcript at full input price (measured: every full-price
 // re-read landed on turn 50/60/80/100). Appending at the tail keeps the cached
-// prefix byte-stable. Also counts identical tool+args calls (loop
-// detector) and records crossings in `.agents/guard-events.jsonl` (local-only,
-// excluded clone-locally) so telemetry exists before a full provider-stats pass does.
+// prefix byte-stable. Also counts identical tool+args calls (loop detector),
+// whole turns with no material file/state change (no-state detector), and
+// repeated failures sharing a signature (same-failure detector), and records
+// crossings in `.agents/guard-events.jsonl` (local-only, excluded clone-locally)
+// so telemetry exists before a full provider-stats pass does.
 // It also hard-stops on provider funds/quota errors (see model-routing.md
 // "Provider funds stop") so a failed dispatch can never silently degrade inline.
 // Child sessions (subagent dispatches) are tracked to attribute their funds
@@ -226,6 +228,15 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
               tokens: note.requestTokens,
             })
           }
+          if (note.noStateChanged) {
+            logEvent({
+              kind: "no_state",
+              sessionID: info.sessionID,
+              turn: note.turns,
+              noStateTurns: note.noStateTurns,
+            })
+            await report(`turn ${note.turns}: no material state change across several turns`)
+          }
           return
         }
 
@@ -302,15 +313,48 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       try {
         if (!isPrimary(input?.sessionID)) return
         touchLease(input.sessionID)
-        // Only structured failure evidence may arm the stop (core gate): a
+        // Only structured failure evidence may arm the funds stop (core gate): a
         // successful read/grep/dispatch returning the harness's own docs — which
         // quote the trigger phrases — must never pause a healthy session.
-        const text = guard.fundsArmText(input?.tool, output)
-        if (!text || !guard.fundsError(text)) return
-        const meta = output?.metadata || {}
-        const label =
-          guard.modelLabel(meta.model) || sessionModel.get(String(meta.sessionId || "")) || null
-        await armFunds(input.sessionID, label, `tool:${input?.tool}`)
+        const armed = guard.fundsArmText(input?.tool, output)
+        if (armed && guard.fundsError(armed)) {
+          const meta = output?.metadata || {}
+          const label =
+            guard.modelLabel(meta.model) || sessionModel.get(String(meta.sessionId || "")) || null
+          await armFunds(input.sessionID, label, `tool:${input?.tool}`)
+          return
+        }
+        // Same-failure detector: a failed call (a thrown error, or a bash
+        // non-zero exit) records a failure signature; any success clears it.
+        // Distinct from the identical-call counter — the same failure can
+        // repeat with different arguments.
+        const tool = input?.tool
+        const exit = output?.metadata?.exit
+        const failed =
+          !!output?.error || (String(tool || "") === "bash" && Number.isFinite(exit) && exit !== 0)
+        const failureText = output?.error
+          ? String(output.error)
+          : failed && typeof output?.output === "string"
+            ? output.output
+            : ""
+        const note = guard.noteToolResult(
+          stateFor(input.sessionID),
+          tool,
+          output?.args,
+          !failed,
+          failureText,
+          loadThresholds().stuck
+        )
+        if (note.firstFlag) {
+          logEvent({
+            kind: "failure",
+            sessionID: input.sessionID,
+            tool: String(tool || ""),
+            count: note.count,
+            keyHash: note.keyHash,
+          })
+          await report(`same failure repeated x${note.count} (${tool})`)
+        }
       } catch {
         /* never break the tool call */
       }

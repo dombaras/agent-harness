@@ -42,24 +42,52 @@ const TURN_BANDS = [
   ["checkpoint_warning_turn", "warning"],
 ];
 
+/* Severity order for combining signals. A band is "higher" when its rank is
+ * greater, so the strongest pressure — turn count OR request context — wins. */
+const BAND_RANK = Object.freeze({ warning: 1, checkpoint: 2, "new-context": 3, hard: 4 });
+
 const REQUEST_LEVELS = ["observe", "warn", "checkpoint", "intervene"];
+
+/* Request-context pressure mapped onto the SAME bands as turns, so the nudge
+ * text is driven by whichever signal is louder. Turn count is a coarse proxy for
+ * transcript growth; request context is the real cost driver (~97% cache reads,
+ * so cost ≈ Σ context × turns). `observe` is telemetry only. */
+const REQUEST_BAND = Object.freeze({
+  observe: null,
+  warn: "warning",
+  checkpoint: "checkpoint",
+  intervene: "new-context",
+});
 
 /* Injected text is CONSTANT per band — never interpolated with the turn count —
  * so the appended system tail stays byte-stable and cache-friendly (the guard
  * must not turn every request into a fresh cache write). */
 const BAND_TEXT = Object.freeze({
   warning:
-    "CONTEXT GUARD — checkpoint warning: the orchestrator is approaching its turn budget (`checkpoint_warning_turn` in `.agents/memory/orchestration.md`). Finish the current step, then write compact deterministic state to `.agents/handoffs/<feature-id>.md` before starting more work.",
+    "CONTEXT GUARD — checkpoint warning: the orchestrator is approaching its turn/context budget (`checkpoint_warning_turn` and the request-token levels in `.agents/memory/orchestration.md`). Finish the current phase step, then write ONE compact deterministic checkpoint to `.agents/handoffs/<feature-id>.md`. Do not start a new phase in this transcript.",
   checkpoint:
-    "CONTEXT GUARD — soft turn budget reached: checkpoint now — task id/feature/objective/phase, completed and active dispatches, files changed, contracts, known facts, decisions, risks, next_action — into `.agents/handoffs/<feature-id>.md`, and prefer a fresh bounded context over continuing this transcript. If the current step is the `ship` watch, that is the finalization step: let it run to completion — never replace it with `ship --no-watch` to escape the budget, and resume a deliberate pause only with `ship --watch-only`.",
+    "CONTEXT GUARD — soft turn budget reached: checkpoint ONCE now — task id/feature/objective/phase, completed and active dispatches, files changed, contracts, known facts, decisions, risks, next_action — into `.agents/handoffs/<feature-id>.md`, then STOP this transcript at the current phase boundary; a fresh bounded context resumes from the checkpoint. Do not begin the next phase here, and do not write a second checkpoint in this transcript. If the current step is the `ship` watch, that is the finalization step: let it run to completion — never replace it with `ship --no-watch` to escape the budget, and resume a deliberate pause only with `ship --watch-only`.",
   "new-context":
-    "CONTEXT GUARD — strong new-context preference: do not keep growing this transcript. Checkpoint, then continue in a fresh bounded context that reads the checkpoint plus the current task only — never the replayed transcript.",
+    "CONTEXT GUARD — strong new-context preference: do not keep growing this transcript. Checkpoint once now, then continue only in a fresh bounded context that reads the checkpoint plus the current task — never the replayed transcript.",
   hard:
-    "CONTEXT GUARD — hard safety ceiling reached: stop starting new work, checkpoint, and finish. A running tool call still completes — never kill it mid-operation. If that running step is the `ship` watch, allow it to finish and report the landed SHA; a stopped watch is a pending landing, resumable only with `ship --watch-only`.",
+    "CONTEXT GUARD — hard safety ceiling reached: stop starting new work, checkpoint once, and finish. A running tool call still completes — never kill it mid-operation. If that running step is the `ship` watch, allow it to finish and report the landed SHA; a stopped watch is a pending landing, resumable only with `ship --watch-only`.",
 });
 
 const LOOP_TEXT =
   "CONTEXT GUARD — repeated identical tool call detected (`identical_tool_calls` in `.agents/memory/orchestration.md`). Do not repeat it again: change instructions, context, model, decomposition, or diagnostics — or report the blocker. A retry must materially change something.";
+
+/* No-material-progress nudge. The F-256 pause showed the orchestrator writing
+ * five checkpoints while warned and then stopping mid-phase; a checkpoint with
+ * no code/state change is not progress. Armed when whole turns pass with no
+ * file/state mutation (`no_state_change_turns`). */
+const NO_STATE_TEXT =
+  "CONTEXT GUARD — no material state change detected across several turns (`no_state_change_turns` in `.agents/memory/orchestration.md`). Stop re-reading or re-checkpointing and make a materially changing action: edit code, run the failing gate with NEW diagnostics, change the decomposition/model — or report the blocker. Another checkpoint with no state change is not progress.";
+
+/* Same-failure nudge. Distinct from `identical_tool_calls`: the failure is the
+ * same even when the arguments differ. Armed when the same failure signature
+ * repeats across tool calls (`same_failure_turns`). */
+const FAILURE_TEXT =
+  "CONTEXT GUARD — the same failure is repeating (`same_failure_turns` in `.agents/memory/orchestration.md`). Do not retry the identical action: change instructions, context, model, decomposition, or diagnostics — or report the blocker. A second attempt must materially change something.";
 
 /* Provider funds/quota failures are a hard stop in `.agents/memory/model-routing.md`:
  * the harness must pause and wait for the user's top-up instead of degrading
@@ -132,6 +160,22 @@ const EXEMPT_TOOLS = new Set(["todowrite", "question", "task", "batch", "backlog
 
 const SERVE_POLL = /serve\.js\s+(list|status)\b/;
 
+/* A tool call that MATERIALLY changes repository state (as opposed to a read,
+ * grep, test run, or dispatch). Used only by the no-state-change detector: a
+ * whole turn with none of these is spinning, and the recovery nudge fires. A
+ * `task` dispatch counts as material — a subagent that edits files is progress
+ * even though the orchestrator's own tool arguments changed nothing. */
+const MATERIAL_TOOLS = new Set(["write", "edit", "patch", "multiedit", "apply_patch", "task"]);
+const MATERIAL_BASH_RE =
+  /(^|[^a-z])(git\s+(commit|push|apply|am|merge|rebase|cherry-pick|stash|add)\b)|\|\s*tee\b|\bsed\s+-i\b|\b(rm|mv|cp|mkdir|touch)\b|>>?\s*[^&\s]|\bnpm\s+(install|ci|i)\b/;
+
+function isMaterial(tool, args) {
+  const name = String(tool || "").toLowerCase();
+  if (MATERIAL_TOOLS.has(name)) return true;
+  if (name === "bash") return MATERIAL_BASH_RE.test(String(args?.command || ""));
+  return false;
+}
+
 /* Parse the machine-read values out of `orchestration.md`. Only the table row
  * SHAPES matter — `| \`key\` | 60 | ... |` for turn/stuck keys and
  * `| warn | 80K | ... |` for request levels. Anything missing falls back to the
@@ -162,6 +206,23 @@ function turnBand(turn, turns) {
   return null;
 }
 
+function bandRank(band) {
+  return BAND_RANK[band] || 0;
+}
+
+function requestBand(level) {
+  return REQUEST_BAND[level] || null;
+}
+
+/* The band the session should act on: the stronger of the turn band and the
+ * request-context band. Either signal alone can trigger the nudge, so a small
+ * turn count with a bloated context is caught just as a long transcript is. */
+function pressureBand(state, thresholds) {
+  const turn = turnBand(state?.turns, thresholds?.turns);
+  const req = requestBand(state?.requestLevel);
+  return bandRank(req) > bandRank(turn) ? req : turn;
+}
+
 function bandText(band) {
   return BAND_TEXT[band] || null;
 }
@@ -172,12 +233,14 @@ function bandText(band) {
  * nothing to say. */
 function guardTexts(state, thresholds) {
   const texts = [];
-  const band = turnBand(state?.turns, thresholds?.turns);
+  const band = pressureBand(state, thresholds);
   if (band) {
     const text = bandText(band);
     if (text) texts.push(text);
   }
   if (state?.fundsPending) texts.push(state.fundsNotice || FUNDS_TEXT);
+  if (state?.failurePending) texts.push(FAILURE_TEXT);
+  if (state?.noStatePending) texts.push(NO_STATE_TEXT);
   if (state?.loopPending) texts.push(LOOP_TEXT);
   return texts;
 }
@@ -259,13 +322,26 @@ function createSessionState() {
     loopPending: false,
     fundsPending: false,
     fundsNotice: null,
+    // no-state-change detector
+    materialSeen: false,
+    noStateTurns: 0,
+    noStatePending: false,
+    // same-failure detector
+    lastFailureKey: null,
+    consecutiveFailures: 0,
+    failurePending: false,
+    failureFlagged: false,
   };
 }
 
 /* Record an assistant message. `message.updated` fires repeatedly per message,
  * so dedupe by id; a new id is one orchestrator turn. Returns the transitions
- * (band + request level) for the plugin to log — never the raw every-request
- * state, so the JSONL only carries crossings. */
+ * (band + request level + no-state) for the plugin to log — never the raw
+ * every-request state, so the JSONL only carries crossings.
+ *
+ * A new turn also FINALIZES the previous turn's materiality: its tool calls
+ * have all run by now, so `materialSeen` is authoritative for that turn. Whole
+ * turns without a material change arm the no-state nudge. */
 function noteAssistant(state, message, thresholds) {
   const out = {
     newTurn: false,
@@ -275,21 +351,35 @@ function noteAssistant(state, message, thresholds) {
     requestLevel: state.requestLevel,
     requestChanged: false,
     requestTokens: null,
+    noStateChanged: false,
+    noStatePending: state.noStatePending,
+    noStateTurns: state.noStateTurns,
   };
   const id = message?.id;
   if (!id || state.assistantIds.has(id)) return out;
+  const priorTurns = state.turns;
   state.assistantIds.add(id);
   state.turns += 1;
   out.newTurn = true;
   out.turns = state.turns;
 
-  const band = turnBand(state.turns, thresholds?.turns);
-  if (band !== state.band) {
-    state.band = band;
-    out.band = band;
-    out.bandChanged = true;
+  if (priorTurns > 0) {
+    if (state.materialSeen) state.noStateTurns = 0;
+    else state.noStateTurns += 1;
+    state.materialSeen = false;
+    const nsThreshold = Number.isFinite(thresholds?.stuck?.no_state_change_turns)
+      ? thresholds.stuck.no_state_change_turns
+      : 4;
+    if (state.noStateTurns >= nsThreshold && !state.noStatePending) {
+      state.noStatePending = true;
+      out.noStateChanged = true;
+    }
   }
+  out.noStatePending = state.noStatePending;
+  out.noStateTurns = state.noStateTurns;
 
+  // Request tokens/level first, then derive the combined pressure band so a
+  // context-token crossing is reflected on the same turn it is observed.
   const tokens = requestTokensOf(message);
   if (tokens != null) state.requestTokens = tokens;
   out.requestTokens = state.requestTokens;
@@ -298,6 +388,13 @@ function noteAssistant(state, message, thresholds) {
     state.requestLevel = level;
     out.requestLevel = level;
     out.requestChanged = true;
+  }
+
+  const band = pressureBand(state, thresholds);
+  if (band !== state.band) {
+    state.band = band;
+    out.band = band;
+    out.bandChanged = true;
   }
   return out;
 }
@@ -308,9 +405,15 @@ function noteAssistant(state, message, thresholds) {
  * identical call repeats and clears on the next materially different call, so
  * the recovery rule is injected exactly while the loop persists. */
 function noteToolCall(state, tool, args, stuck) {
+  const material = isMaterial(tool, args);
+  if (material) {
+    state.materialSeen = true;
+    state.noStateTurns = 0;
+    state.noStatePending = false;
+  }
   const exempt = isLoopExempt(tool, args);
   if (exempt) {
-    return { counted: false, count: 0, loop: false, firstFlag: false, keyHash: null };
+    return { counted: false, count: 0, loop: false, firstFlag: false, keyHash: null, material };
   }
   const key = loopKey(tool, args);
   const count = (state.toolCounts.get(key) || 0) + 1;
@@ -323,7 +426,40 @@ function noteToolCall(state, tool, args, stuck) {
     firstFlag = true;
   }
   state.loopPending = loop;
-  return { counted: true, count, loop, firstFlag, keyHash: shortHash(key) };
+  return { counted: true, count, loop, firstFlag, keyHash: shortHash(key), material };
+}
+
+/* Track tool-call failures. Distinct from the identical-call counter: the same
+ * failure can repeat with different arguments. A success clears the streak; the
+ * first time the same failure signature reaches `same_failure_turns` the
+ * recovery nudge is armed (and reported once). Pure; the plugin supplies
+ * `failureText` from structured tool-result evidence. */
+function noteToolResult(state, tool, args, ok, failureText, stuck) {
+  const out = { failed: !ok, count: 0, pending: false, firstFlag: false, keyHash: null };
+  if (ok) {
+    state.lastFailureKey = null;
+    state.consecutiveFailures = 0;
+    state.failurePending = false;
+    state.failureFlagged = false;
+    return out;
+  }
+  const key = String(tool || "") + ":" + shortHash(String(failureText || "").slice(0, 2000));
+  if (key === state.lastFailureKey) state.consecutiveFailures += 1;
+  else {
+    state.lastFailureKey = key;
+    state.consecutiveFailures = 1;
+  }
+  const threshold = Number.isFinite(stuck?.same_failure_turns) ? stuck.same_failure_turns : 3;
+  const pending = state.consecutiveFailures >= threshold;
+  out.count = state.consecutiveFailures;
+  out.keyHash = shortHash(key);
+  out.pending = pending;
+  if (pending && !state.failureFlagged) {
+    state.failureFlagged = true;
+    out.firstFlag = true;
+  }
+  state.failurePending = pending;
+  return out;
 }
 
 /* One JSON object per line — the Phase B telemetry substrate, read without a
@@ -464,14 +600,21 @@ module.exports = {
   DEFAULT_STUCK,
   DEFAULT_REQUEST,
   BAND_TEXT,
+  NO_STATE_TEXT,
+  FAILURE_TEXT,
   LOOP_TEXT,
   FUNDS_TEXT,
+  BAND_RANK,
+  REQUEST_BAND,
   fundsText,
   fundsError,
   fundsArmText,
   modelLabel,
   parseThresholds,
   turnBand,
+  bandRank,
+  requestBand,
+  pressureBand,
   bandText,
   guardTexts,
   composeGuardText,
@@ -480,10 +623,12 @@ module.exports = {
   stableStringify,
   shortHash,
   isLoopExempt,
+  isMaterial,
   loopKey,
   createSessionState,
   noteAssistant,
   noteToolCall,
+  noteToolResult,
   formatGuardEvent,
   branchSwitch,
   branchSwitchText,

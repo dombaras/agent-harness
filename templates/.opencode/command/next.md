@@ -16,11 +16,21 @@ Pull the next item off the Queue and start working on it — no confirmation nee
    worktree + branch and records it in the row's Handoff cell; the row is already
    In progress from step 1). Every feature works in its own worktree — `main` stays
    board + shippable code only.
-4. Do the work under the standard protocol (`.agents/rules/00-operating.md` §Step Zero):
-   dispatch personas via the `task` tool, author the feature doc chain
-   (`product-manager` -> intent, `system-architect` -> scope, `planner` -> plan,
-   `qa-architect` -> tests) by dispatching each author persona directly, and produce a QA plan.
-   Right-size ceremony to the blast radius.
+4. **Right-size the ceremony BEFORE you dispatch** — state the decision in one
+   line so it is auditable (put the same `execution_mode:` line in the handoff):
+   - **single-surface / single-file** (rename, typo, constant, one-line doc, CSS,
+     config, a self-contained client-side fix): `execution_mode: direct` —
+     implement on the main model, run the targeted gate, and write the QA plan
+     yourself if `qa-architect` isn't warranted. Do NOT author the full doc chain;
+     four personas on a one-file fix is exactly the budget blowout this rule
+     prevents (F-256 dispatched product-manager + planner + mobile-engineer +
+     qa-architect for a client-only cover fix and hit the soft turn budget before
+     shipping).
+   - **multi-surface** (auth/DB/API/flow-siblings/new subsystem): author the doc
+     chain by dispatching each author persona **directly** — `product-manager` ->
+     intent, `system-architect` -> scope (HIGH-risk only), `planner` -> plan,
+     `qa-architect` -> tests — and produce a QA plan.
+   Then do the work under the standard protocol (`.agents/rules/00-operating.md` §Step Zero).
 5. Integrate early: before pushing, `git rebase main` and re-run
    `npm run test:backlog` + `npm run test:concurrency` so board/code conflicts surface
    now, not at the merge.

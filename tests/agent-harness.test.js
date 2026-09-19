@@ -4054,19 +4054,34 @@ test("context-guard counts assistant turns once and reports band/request crossin
   assert.strictEqual(note.newTurn, false, "same message id is not a second turn");
   assert.strictEqual(state.turns, 1);
 
+  // A request-context crossing arms the SAME warning band a turn crossing would.
   note = cg.noteAssistant(state, msg("m2", { input: 20000, cache: { read: 70000, write: 1000 } }), thresholds);
   assert.strictEqual(note.requestTokens, 91000);
   assert.strictEqual(note.requestLevel, "warn");
   assert.strictEqual(note.requestChanged, true);
+  assert.strictEqual(note.band, "warning", "context pressure arms the warning band without 50 turns");
+  assert.strictEqual(note.bandChanged, true);
 
   for (let i = 3; i <= 50; i++) note = cg.noteAssistant(state, msg("m" + i, null), thresholds);
   assert.strictEqual(state.turns, 50);
   assert.strictEqual(note.band, "warning");
-  assert.strictEqual(note.bandChanged, true);
+  assert.strictEqual(note.bandChanged, false, "the same band is not re-reported");
 
   note = cg.noteAssistant(state, msg("m51", null), thresholds);
   assert.strictEqual(note.newTurn, true);
-  assert.strictEqual(note.bandChanged, false, "the same band is not re-reported");
+
+  // Turn-only pressure crosses warning at the threshold and checkpoint after it.
+  const turnsOnly = cg.createSessionState();
+  let t;
+  for (let i = 1; i <= 50; i++) t = cg.noteAssistant(turnsOnly, msg("t" + i, null), thresholds);
+  assert.strictEqual(t.band, "warning");
+  assert.strictEqual(t.bandChanged, true);
+  t = cg.noteAssistant(turnsOnly, msg("t51", null), thresholds);
+  assert.strictEqual(t.band, "warning");
+  assert.strictEqual(t.bandChanged, false);
+  for (let i = 52; i <= 60; i++) t = cg.noteAssistant(turnsOnly, msg("t" + i, null), thresholds);
+  assert.strictEqual(t.band, "checkpoint");
+  assert.strictEqual(t.bandChanged, true);
 });
 
 test("context-guard counts identical tool calls cumulatively and flags the breach once", () => {
@@ -4113,6 +4128,97 @@ test("context-guard excludes legitimate polling/glue repeats from the loop count
   }
   assert.strictEqual(state.toolCounts.size, 0);
   assert.strictEqual(state.loopPending, false);
+});
+
+test("context-guard combines turn and request-token pressure (strongest wins)", () => {
+  const thresholds = cg.parseThresholds("");
+  assert.strictEqual(cg.bandRank(cg.requestBand("observe")), 0);
+  assert.strictEqual(cg.requestBand("warn"), "warning");
+  assert.strictEqual(cg.requestBand("checkpoint"), "checkpoint");
+  assert.strictEqual(cg.requestBand("intervene"), "new-context");
+
+  const state = cg.createSessionState();
+  state.turns = 1;
+  state.requestLevel = "checkpoint";
+  assert.strictEqual(cg.pressureBand(state, thresholds), "checkpoint", "context pressure alone drives the band");
+  state.turns = 80;
+  assert.strictEqual(cg.pressureBand(state, thresholds), "new-context", "the stronger of the two signals wins");
+  state.requestLevel = null;
+  assert.strictEqual(cg.pressureBand(state, thresholds), "new-context", "turn pressure alone still drives the band");
+});
+
+test("context-guard injects the checkpoint nudge on a request-token crossing", () => {
+  const thresholds = cg.parseThresholds("");
+  const state = cg.createSessionState();
+  // 130K request context crosses the `checkpoint` request level (120K) on turn 1.
+  cg.noteAssistant(
+    state,
+    { id: "r1", role: "assistant", tokens: { input: 30000, cache: { read: 100000 } } },
+    thresholds
+  );
+  assert.strictEqual(state.turns, 1);
+  assert.strictEqual(state.requestLevel, "checkpoint");
+  assert.strictEqual(cg.composeGuardText(state, thresholds), cg.BAND_TEXT.checkpoint);
+});
+
+test("context-guard classifies material vs read-only tool calls", () => {
+  assert.strictEqual(cg.isMaterial("edit", { filePath: "x" }), true);
+  assert.strictEqual(cg.isMaterial("write", { filePath: "x" }), true);
+  assert.strictEqual(cg.isMaterial("task", { prompt: "do" }), true);
+  assert.strictEqual(cg.isMaterial("bash", { command: "git commit -m x" }), true);
+  assert.strictEqual(cg.isMaterial("bash", { command: "echo hi > out.txt" }), true);
+  assert.strictEqual(cg.isMaterial("bash", { command: "npm run test:quick" }), false);
+  assert.strictEqual(cg.isMaterial("read", { filePath: "x" }), false);
+  assert.strictEqual(cg.isMaterial("grep", { pattern: "x" }), false);
+});
+
+test("context-guard flags whole turns with no material state change (no-state detector)", () => {
+  const thresholds = cg.parseThresholds("");
+  const stuck = thresholds.stuck;
+  const state = cg.createSessionState();
+  const turn = (id) => cg.noteAssistant(state, { id, role: "assistant", tokens: null }, thresholds);
+
+  turn("n1");
+  cg.noteToolCall(state, "read", { filePath: "a.ts" }, stuck);
+  turn("n2");
+  cg.noteToolCall(state, "grep", { pattern: "x" }, stuck);
+  turn("n3");
+  cg.noteToolCall(state, "bash", { command: "npm run test:quick" }, stuck);
+  turn("n4");
+  const note = turn("n5");
+  assert.strictEqual(state.noStateTurns, 4);
+  assert.strictEqual(note.noStateChanged, true);
+  assert.strictEqual(cg.composeGuardText(state, thresholds), cg.NO_STATE_TEXT);
+  assert.ok(note.noStateTurns >= 4);
+
+  // A material edit clears the streak and the nudge.
+  cg.noteToolCall(state, "edit", { filePath: "a.ts", oldString: "a", newString: "b" }, stuck);
+  assert.strictEqual(state.noStatePending, false);
+  assert.strictEqual(state.noStateTurns, 0);
+  assert.strictEqual(cg.composeGuardText(state, thresholds), null);
+});
+
+test("context-guard flags the same failure signature repeating (same-failure detector)", () => {
+  const stuck = cg.parseThresholds("").stuck;
+  const state = cg.createSessionState();
+  let note = cg.noteToolResult(state, "bash", { command: "npm test" }, false, "Error: boom", stuck);
+  assert.strictEqual(note.count, 1);
+  note = cg.noteToolResult(state, "bash", { command: "npm test -- x" }, false, "Error: boom", stuck);
+  assert.strictEqual(note.count, 2);
+  assert.strictEqual(note.firstFlag, false);
+  note = cg.noteToolResult(state, "bash", { command: "npm test -- y" }, false, "Error: boom", stuck);
+  assert.strictEqual(note.count, 3);
+  assert.strictEqual(note.firstFlag, true);
+  assert.strictEqual(state.failurePending, true);
+  assert.ok(cg.composeGuardText(state, cg.parseThresholds("")).includes(cg.FAILURE_TEXT));
+
+  // A success clears it.
+  cg.noteToolResult(state, "bash", { command: "npm test -- z" }, true, "", stuck);
+  assert.strictEqual(state.failurePending, false);
+  assert.strictEqual(state.consecutiveFailures, 0);
+  // A different failure restarts the count.
+  note = cg.noteToolResult(state, "bash", {}, false, "Error: other", stuck);
+  assert.strictEqual(note.count, 1);
 });
 
 test("context-guard events are one JSON object per line with a leading ts", () => {
@@ -4577,6 +4683,17 @@ test("provider-stats aggregates primary + subagent groups, cache share, percenti
 
   assert.strictEqual(agg.modelMix[0].sessions, 2, "model mix counts the subagent sessions too");
   assert.strictEqual(agg.modelMix[0].cost, 0.75);
+});
+
+test("provider-stats surfaces mid-cycle resume sessions (the E2E context-reset metric)", () => {
+  const sessions = [
+    ps.mapSessionRow({ id: "ses_r1", title: "Resuming F-256 from checkpoint", cost: 0.1, time_created: 1, time_updated: 2 }),
+    ps.mapSessionRow({ id: "ses_r2", title: "Pull next backlog item", cost: 0.2, time_created: 3, time_updated: 4 }),
+  ];
+  const agg = ps.aggregateSessions(sessions, {});
+  assert.strictEqual(agg.resumes.count, 1);
+  assert.strictEqual(agg.resumes.sessions[0].id, "ses_r1");
+  assert.match(agg.resumes.sessions[0].title, /Resuming/);
 });
 
 test("provider-stats collects by project id (worktree-aware) and detects canonical identical calls", () => {
@@ -5578,6 +5695,37 @@ test("agent-harness doctor surfaces a pending landing (enqueued, not confirmed)"
   assert.match(out, /--watch-only/, "the exact resume command is printed");
 });
 
+test("agent-harness run --dry-run prints the phase plan from the board state", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, ".agents", "handoffs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, "BACKLOG.md"),
+    [
+      "# Backlog",
+      "",
+      "## In progress",
+      "",
+      "| ID | Epic | Task | Handoff |",
+      "|----|------|------|---------|",
+      "| F-256 | user-flows | cover sync | .agents/handoffs/F-256.md |",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  const cli = path.join(__dirname, "..", "bin", "agent-harness.js");
+  const res = spawnSync(
+    process.execPath,
+    [cli, "run", "--target", target, "--dry-run", "--max-phases", "2"],
+    { encoding: "utf8" }
+  );
+  const out = (res.stdout || "") + (res.stderr || "");
+  assert.strictEqual(res.status, 0, out);
+  assert.match(out, /phase 1\/2: starting the next-item workflow/);
+  assert.match(out, /phase 2\/2: resuming F-256/);
+  assert.match(out, /checkpoint\.js resume --feature F-256/, "the resume prompt reads the checkpoint only");
+  assert.match(out, /run: stop — phase cap reached \(2\)/, "a dry-run cap is a plan, not a failure");
+});
+
 test("deploy seeds the CI/CD release scaffold create-if-missing and wires test:push-refs", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
@@ -5673,4 +5821,105 @@ test("test:docs accepts a squash-merged commit that ships its own changelog delt
   const r = runDocsGate(t);
   assert.strictEqual(r.status, 0, r.out);
   assert.match(r.out, /recorded/);
+});
+
+// ---------------------------------------------------------------- run-loop (E2E auto-resume)
+
+const runLoop = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "run-loop.js"));
+
+const RUN_BACKLOG = [
+  "# Backlog",
+  "",
+  "## In progress",
+  "",
+  "| ID | Epic | Task | Handoff |",
+  "|----|------|------|---------|",
+  "| F-256 | user-flows | cover sync | .agents/handoffs/F-256.md |",
+  "",
+  "## Archive (shipped · done)",
+  "",
+  "| ID | Epic | Task | Closed |",
+  "|---|---|---|---|",
+  "| F-255 | x | y | 2026-09-18 |",
+  "",
+].join("\n");
+
+test("run-loop parses the board and handoff state deterministically", () => {
+  assert.strictEqual(runLoop.inProgressFeature(RUN_BACKLOG), "F-256");
+  assert.strictEqual(runLoop.isArchived(RUN_BACKLOG, "F-255"), true);
+  assert.strictEqual(runLoop.isArchived(RUN_BACKLOG, "F-256"), false);
+  assert.strictEqual(runLoop.isArchived(RUN_BACKLOG, null), false);
+  assert.strictEqual(runLoop.isArchived(RUN_BACKLOG, "F-2.5"), false, "the id is escaped, never a regex");
+  assert.strictEqual(runLoop.inProgressFeature(""), null);
+  assert.strictEqual(
+    runLoop.handoffOutcome("## Session metadata\n\n- outcome: shipped\n- work_type: bugfix\n"),
+    "shipped"
+  );
+  assert.strictEqual(runLoop.handoffOutcome("## Dispatch log\n"), null);
+});
+
+test("run-loop starts the next-item workflow on phase 0", () => {
+  const d = runLoop.decideRunLoop({ backlogText: RUN_BACKLOG, handoffText: "", feature: null, phasesRun: 0 });
+  assert.strictEqual(d.action, "resume");
+  assert.strictEqual(d.feature, null);
+  assert.match(d.prompt, /next item off the Queue/);
+});
+
+test("run-loop stops when the queue is empty and resumes the In-progress feature", () => {
+  const empty = runLoop.decideRunLoop({ backlogText: "# Backlog\n", handoffText: "", feature: null, phasesRun: 0 });
+  assert.strictEqual(empty.action, "resume", "phase 0 always attempts the next-item workflow");
+
+  const resume = runLoop.decideRunLoop({ backlogText: RUN_BACKLOG, handoffText: "", feature: null, phasesRun: 1, lastExit: 0 });
+  assert.strictEqual(resume.action, "resume");
+  assert.strictEqual(resume.feature, "F-256");
+  assert.match(resume.prompt, /F-256/);
+  assert.match(resume.prompt, /checkpoint\.js resume/);
+  assert.match(resume.prompt, /npm run ship/);
+
+  const stuck = runLoop.decideRunLoop({
+    backlogText: "# Backlog\n## In progress\n\n| ID | Epic | Task | Handoff |\n|--|--|--|--|\n",
+    handoffText: "",
+    feature: null,
+    phasesRun: 1,
+    lastExit: 0,
+  });
+  assert.strictEqual(stuck.action, "stop");
+  assert.match(stuck.reason, /no In-progress feature/);
+});
+
+test("run-loop treats an archived row or shipped outcome as landed", () => {
+  const archived = runLoop.decideRunLoop({
+    backlogText: RUN_BACKLOG,
+    handoffText: "",
+    feature: "F-255",
+    phasesRun: 1,
+    lastExit: 1,
+  });
+  assert.strictEqual(archived.action, "done", "landed wins even after a non-zero phase exit");
+  assert.match(archived.reason, /archived/);
+
+  const shipped = runLoop.decideRunLoop({
+    backlogText: "# Backlog\n",
+    handoffText: "## Session metadata\n\n- outcome: shipped\n",
+    feature: "F-256",
+    phasesRun: 2,
+  });
+  assert.strictEqual(shipped.action, "done");
+  assert.match(shipped.reason, /shipped/);
+});
+
+test("run-loop stops at the phase cap and on a failed unlanded phase", () => {
+  const cap = runLoop.decideRunLoop({ backlogText: RUN_BACKLOG, handoffText: "", feature: "F-256", phasesRun: 3, maxPhases: 3 });
+  assert.strictEqual(cap.action, "stop");
+  assert.match(cap.reason, /phase cap/);
+
+  const failed = runLoop.decideRunLoop({ backlogText: RUN_BACKLOG, handoffText: "", feature: "F-256", phasesRun: 1, lastExit: 2 });
+  assert.strictEqual(failed.action, "stop");
+  assert.match(failed.reason, /exited 2/);
+});
+
+test("run-loop resume prompt never depends on the TUI command surface", () => {
+  const prompt = runLoop.resumePrompt("F-256");
+  assert.match(prompt, /do not replay any previous transcript/);
+  assert.doesNotMatch(prompt, /^\/resume/, "run mode receives a message, not a slash command");
 });

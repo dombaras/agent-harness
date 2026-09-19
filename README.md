@@ -141,12 +141,15 @@ main context from growing unbounded: one bounded orchestration lifecycle per wor
 unit, compact deterministic checkpoints into the session's `.agents/handoffs/<id>.md`
 when a session nears its budget (see `orchestration.md`), and a fresh context that
 resumes from the checkpoint instead of replaying the transcript. The
-**`context-guard` plugin** makes the turn bands mechanical: it parses
+**`context-guard` plugin** makes the budgets mechanical: it parses
 `orchestration.md` at runtime (thresholds are never hardcoded) and nudges the
-primary orchestrator session as it crosses them, flags repeated identical tool
-calls with the recovery rule (building on the runtime's own `doom_loop`
-permission), and records band/loop/request crossings in
-`.agents/guard-events.jsonl` (local-only, excluded clone-locally). The nudge is
+primary orchestrator session as it crosses them — turn bands AND request-token
+levels (whichever is stronger), flags repeated identical tool calls, whole turns
+with no material state change, and repeated failures sharing a signature, and
+records band/request/loop/no-state/failure crossings in
+`.agents/guard-events.jsonl` (local-only, excluded clone-locally). At the
+checkpoint band the nudge is imperative: write ONE checkpoint, then stop at the
+current **phase boundary** — a fresh bounded context resumes from it. The nudge is
 injected **cache-safely**: it is appended as a synthetic tail message via
 `experimental.chat.messages.transform`, never written into the system prompt — a
 system-prompt change on a band crossing evicts the provider's entire prompt cache
@@ -162,11 +165,22 @@ telemetry loop: the `session_info` tool returns the primary session id, and
 `agent-report` joins it to observed provider data
 (`scripts/qa/provider-stats.js` reads the local opencode store, including
 registered git worktrees) — totals, model mix by tier, cache-read share, P50/P90
-cost and turns, >60-turn sessions, identical-call loop candidates, and **cost per
-shipped feature** (primary session + its subagent sessions = one feature run).
+cost and turns, >60-turn sessions, identical-call loop candidates, mid-cycle
+context resets (resume/checkpoint sessions), and **cost per shipped feature**
+(primary session + its subagent sessions = one feature run).
 A primary session observed on an `escalation_models:` model is flagged when no
 `model_escalation_evidence` / `## Escalations` reason is recorded — escalation is
 visible, never assumed. Nothing is inferred from text length.
+
+**End-to-end auto-resume (`agent-harness run`)** — chains bounded orchestration
+contexts so a full delivery cycle (pick → plan → implement → QA → gates → ship →
+land → UAT deploy) completes without a manual resume per phase. It runs the
+next-item workflow, and whenever a phase ends with the feature not landed, it
+launches a fresh opencode session that resumes from the checkpoint only. It stops
+on landed (archived row or shipped outcome), the phase cap, an empty queue, or a
+failed phase that did not land. The decision core
+(`scripts/qa/run-loop.js`) is pure and unit-tested; `--dry-run` prints the phase
+plan.
 
 ## Model routing & enforcement
 

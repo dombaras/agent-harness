@@ -445,6 +445,7 @@ if (json) {
     if (f.meta.work_type) metaBits.push(`work_type: ${f.meta.work_type}`);
     if (f.meta.outcome) metaBits.push(`outcome: ${f.meta.outcome}`);
     if (f.meta.termination_reason) metaBits.push(`termination_reason: ${f.meta.termination_reason}`);
+    if (f.meta.checkpoint_count) metaBits.push(`checkpoints: ${f.meta.checkpoint_count}`);
     if (metaBits.length) console.log(`    metadata: ${metaBits.join(" · ")}`);
   }
 
@@ -479,6 +480,13 @@ if (json) {
         `  Primary sessions over ${provider.aggregates.sessionsOverTurnBudget.threshold} turns: ${provider.aggregates.sessionsOverTurnBudget.count}` +
           ` · identical-call loops (>= ${provider.aggregates.loopCandidates.threshold}x): ${provider.aggregates.loopCandidates.count}`
       );
+      if (provider.aggregates.resumes) {
+        const r = provider.aggregates.resumes;
+        const sample = r.sessions.slice(0, 3).map((s) => s.title.slice(0, 40)).join("; ");
+        console.log(
+          `  Mid-cycle context resets (resume/checkpoint sessions): ${r.count}` + (sample ? ` — ${sample}` : "")
+        );
+      }
       if (provider.aggregates.topSessions.length) {
         console.log("  Top primary sessions by cost:");
         for (const s of provider.aggregates.topSessions) {

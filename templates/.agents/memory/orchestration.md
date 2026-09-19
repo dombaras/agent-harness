@@ -20,7 +20,9 @@ below says "see `.agents/memory/orchestration.md`", resolve the number here.
 
 ## Request-context thresholds (observe → warn → checkpoint → intervene)
 
-Apply where the provider exposes request-token size; otherwise treat as guidance.
+Driven by the request-token size the provider reports (input + cache read/write).
+These now inject the same nudges as the turn bands, so context pressure is caught
+even when the turn count is low.
 
 | Level | Request tokens (approx) | Behavior |
 |---|---|---|
@@ -66,14 +68,25 @@ session:
   current turn has reached wins; the hard band is an injected nudge, not a
   mechanical block — `agent.build.steps` already ends the turn);
 - **request levels** — `observe` / `warn` / `checkpoint` / `intervene` crossings
-  from provider token data are recorded (telemetry only, no injection);
-- **loops** — `identical_tool_calls` arms the recovery nudge on repeated
-  tool+args calls (the runtime's own `doom_loop` permission also arms it).
+  from provider token data are injected too, mapped onto the same bands
+  (`warn` → warning, `checkpoint` → checkpoint, `intervene` → new-context). The
+  guard acts on whichever signal is stronger (turn count OR request context), so
+  a bloated context is caught without waiting for a turn threshold;
+- **phase boundary, not mid-step** — at the checkpoint band the nudge is
+  imperative: write ONE checkpoint, then STOP at the current phase boundary (a
+  fresh bounded context resumes from the checkpoint). It never asks for a second
+  checkpoint in the same transcript. `agent-harness run` can chain those phases
+  automatically instead of requiring a manual `/resume`;
+- **loops / stuck** — `identical_tool_calls` arms the recovery nudge on repeated
+  tool+args calls (the runtime's own `doom_loop` permission also arms it);
+  `no_state_change_turns` arms it when whole turns pass with no material
+  file/state change (a checkpoint with no progress is not progress); and
+  `same_failure_turns` arms it when the same failure signature repeats across
+  calls (same failure, different arguments).
 
-It appends threshold/loop events to `.agents/guard-events.jsonl` (local-only,
-gitignored). Keep the table row shapes above; a missing row falls back to the
-documented default. `same_failure_turns` and `no_state_change_turns` remain
-advisory prose — they need worktree state the plugin does not poll.
+It appends threshold/loop/no-state/failure events to `.agents/guard-events.jsonl`
+(local-only, gitignored). Keep the table row shapes above; a missing row falls
+back to the documented default.
 
 ## Policy notes
 

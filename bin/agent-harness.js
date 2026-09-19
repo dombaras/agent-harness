@@ -1050,8 +1050,16 @@ function printUsage() {
       `  files as pointers. Idempotent: re-running never duplicates rows or deletes a\n` +
       `  source before BACKLOG.md is written and verified.\n` +
       `\n` +
+      `  run chains bounded orchestration contexts for end-to-end delivery: it runs\n` +
+      `  the next-item workflow, then relaunches a fresh opencode session that resumes\n` +
+      `  from the checkpoint whenever a phase ends before the feature is landed. It\n` +
+      `  stops on landed (archived / shipped outcome), the phase cap, an empty queue,\n` +
+      `  or a failed phase that did not land. --dry-run prints the phase plan.\n` +
+      `\n` +
       `  agent-harness list\n` +
       `  agent-harness doctor [--target <dir>]   # readiness of the ship/deploy cycle\n` +
+      `  agent-harness run [--target <dir>] [--feature <id>] [--prompt <text>]\n` +
+      `                     [--max-phases <n>] [--opencode <path>] [--dry-run]\n` +
       `  agent-harness --version | -v\n` +
       `  agent-harness --help | -h\n`
   );
@@ -1490,6 +1498,75 @@ async function update(target, flags) {
   printCommitResult(result);
 }
 
+// ---------------------------------------------------------------- run (E2E auto-resume)
+
+/* Chain bounded orchestration contexts for one work unit: run the next-item
+ * workflow, and whenever a phase ends with the feature not landed, relaunch a
+ * fresh opencode session that resumes from the checkpoint only — the automatic
+ * half of the "prefer a fresh bounded context" policy. Stops on landed, the
+ * phase cap, an empty queue, or a failed phase that did not land. The decision
+ * core is pure (`templates/scripts/qa/run-loop.js`) and unit-tested; this
+ * function owns only IO + the subprocess. */
+function runCommand(target, flags) {
+  const loop = require(path.join(TEMPLATES_DIR, "scripts", "qa", "run-loop.js"));
+  const { resolveOpencode } = require(path.join(TEMPLATES_DIR, "scripts", "qa", "provider-stats.js"));
+  const backlogPath = path.join(target, "BACKLOG.md");
+  const handoffDir = path.join(target, ".agents", "handoffs");
+  const maxPhases = parseInt(flags["--max-phases"], 10) || 4;
+  const dryRun = !!flags["--dry-run"];
+  const opencode = flags["--opencode"] || resolveOpencode();
+  if (!dryRun && !opencode) {
+    console.error("run: opencode CLI not found — install it, or pass --opencode <path>.");
+    process.exitCode = 1;
+    return;
+  }
+  const readIf = (p) => {
+    try {
+      return fs.readFileSync(p, "utf8");
+    } catch (_) {
+      return "";
+    }
+  };
+  const readHandoff = (feature) => (feature ? readIf(path.join(handoffDir, feature + ".md")) : "");
+
+  console.log(`agent-harness run — target ${target} (max ${maxPhases} phase(s))`);
+  let feature = flags["--feature"] || null;
+  let prompt = flags["--prompt"] || null;
+  let phasesRun = 0;
+  let lastExit = null;
+
+  while (true) {
+    const decision = loop.decideRunLoop({
+      backlogText: readIf(backlogPath),
+      handoffText: readHandoff(feature),
+      feature,
+      phasesRun,
+      maxPhases,
+      lastExit,
+    });
+    if (decision.action !== "resume") {
+      console.log(`\nrun: ${decision.action} — ${decision.reason}`);
+      // A dry-run that reaches the phase cap is a plan, not a failure.
+      if (decision.action === "stop" && !dryRun) process.exitCode = 1;
+      break;
+    }
+    const phase = phasesRun + 1;
+    // The first phase uses the explicit /next-style prompt; later phases resume.
+    const message = phasesRun === 0 && prompt ? prompt : decision.prompt;
+    console.log(`\n── phase ${phase}/${maxPhases}: ${decision.reason} ──`);
+    if (dryRun) {
+      console.log(`  [dry-run] would run: ${opencode || "opencode"} run <prompt>`);
+      console.log(`  [dry-run] prompt: ${message}`);
+    } else {
+      const r = spawnSync(opencode, ["run", message], { cwd: target, stdio: "inherit" });
+      lastExit = r.status == null ? 1 : r.status;
+    }
+    feature = decision.feature || feature;
+    phasesRun = phase;
+    prompt = decision.prompt;
+  }
+}
+
 function printCommitResult(result) {
   const c = result.commitResult;
   if (!c) return;
@@ -1516,9 +1593,18 @@ function printCommitResult(result) {
 
 function parseArgs(argv) {
   const flags = {};
+  const valueFlags = new Set([
+    "--target",
+    "--name",
+    "--domain",
+    "--feature",
+    "--prompt",
+    "--max-phases",
+    "--opencode",
+  ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--target" || a === "--name" || a === "--domain") flags[a] = argv[++i];
+    if (valueFlags.has(a)) flags[a] = argv[++i];
     else if (a === "--dry-run" || a === "--yes" || a === "-y") flags[a] = true;
     else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch") flags[a] = true;
   }
@@ -1571,6 +1657,9 @@ function main() {
     case "doctor":
       doctor(target);
       break;
+    case "run":
+      runCommand(target, flags);
+      break;
     default:
       console.error(`Unknown command: ${cmd}\n`);
       printUsage();
@@ -1606,6 +1695,7 @@ module.exports = {
   mapIndexRow,
   printPersonas,
   doctor,
+  runCommand,
   TEMPLATES_DIR,
   CONFIG_FILE,
   BACKUP_DIR,

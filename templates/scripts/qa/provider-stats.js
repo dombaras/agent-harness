@@ -471,6 +471,13 @@ function aggregateSessions(sessions, opts = {}) {
     cost: sessions.filter((s) => opportunisticModels.has(s.model)).reduce((a, s) => a + s.cost, 0),
   };
 
+  /* Mid-cycle context resets: a primary session whose title says it resumed a
+   * checkpoint. This is the E2E proxy for "the feature needed more than one
+   * bounded context" — the metric the auto-resume runner should trend to zero
+   * (or absorb automatically). Observed provider data (the session title), never
+   * inferred. */
+  const resumeList = groupList.filter((g) => /resum|checkpoint/i.test(g.title || ""));
+
   const loopCandidates = sessions
     .filter((s) => s.maxIdentical >= (Number.isFinite(stuck.identical_tool_calls) ? stuck.identical_tool_calls : 3))
     .map((s) => ({
@@ -517,6 +524,15 @@ function aggregateSessions(sessions, opts = {}) {
       threshold: Number.isFinite(stuck.identical_tool_calls) ? stuck.identical_tool_calls : 3,
       count: loopCandidates.length,
       sessions: loopCandidates.slice(0, 10),
+    },
+    resumes: {
+      count: resumeList.length,
+      sessions: resumeList.slice(0, 10).map((g) => ({
+        id: g.rootId,
+        title: g.title,
+        cost: g.cost,
+        turns: g.turns,
+      })),
     },
     groups: Object.fromEntries(groupList.map((g) => [g.rootId, { cost: g.cost, turns: g.turns, totalTurns: g.totalTurns, sessions: g.sessions, tokens: g.tokens, rootModel: g.rootModel, models: g.models }])),
   };
