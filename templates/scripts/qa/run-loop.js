@@ -83,6 +83,45 @@ function resumePrompt(feature) {
   );
 }
 
+/* The finalization-phase instruction: implementation + verification are done, so
+ * the fresh context must NOT re-run the doc chain or the gates — it only has to
+ * land the change. `npm run finalize` archives, commits, ships, and watches in
+ * one blocking call, which is short enough to survive any remaining budget. */
+function finalizePrompt(feature) {
+  return (
+    `Finalize the bounded work unit ${feature} — implementation + verification are ` +
+    `already complete; do NOT replay the doc chain, re-read the transcript, or re-run ` +
+    `the full gates. Run \`node scripts/checkpoint.js resume --feature ${feature}\` to ` +
+    `read the state, ensure the CHANGELOG entry exists (one \`docs\` dispatch if it is ` +
+    `missing), then run \`npm run finalize -- --feature ${feature}\` ONCE and let it ` +
+    `run to completion: it archives the row, commits the tail, ships the branch, and ` +
+    `watches the merge train + CI + UAT deploy. If it pauses enqueued, resume with ` +
+    `\`npm run finalize -- --feature ${feature} --watch-only\`.`
+  );
+}
+
+/* The checkpoint's `phase` / `next_action` values, when recorded. Used to send a
+ * resumed context straight to finalization instead of the generic resume. */
+function checkpointPhase(handoffText) {
+  const block = sectionText(handoffText, "Checkpoint");
+  const m = block.match(/^-\s*phase:\s*(.+)$/im);
+  return m ? m[1].trim() : null;
+}
+
+function checkpointNextAction(handoffText) {
+  const block = sectionText(handoffText, "Checkpoint");
+  const m = block.match(/^-\s*next_action:\s*(.+)$/im);
+  return m ? m[1].trim() : null;
+}
+
+/* True when the checkpoint shows only the deterministic tail remains: the phase
+ * names a verify/finalize/ship state, or next_action points at archive/ship. */
+function finalizationReady(handoffText) {
+  const phase = String(checkpointPhase(handoffText) || "");
+  const next = String(checkpointNextAction(handoffText) || "");
+  return /(final|verif|ship|deploy|done|complete)/i.test(phase) || /(finaliz|ship|deploy|archive)/i.test(next);
+}
+
 function initialPrompt() {
   return (
     "Pull the next item off the Queue and start working on it — no confirmation " +
@@ -130,7 +169,12 @@ function decideRunLoop(input) {
 
   if (phasesRun === 0) {
     return feature
-      ? { action: "resume", reason: `starting on ${feature}`, feature, prompt: resumePrompt(feature) }
+      ? {
+          action: "resume",
+          reason: `starting on ${feature}`,
+          feature,
+          prompt: finalizationReady(input.handoffText) ? finalizePrompt(feature) : resumePrompt(feature),
+        }
       : {
           action: "resume",
           reason: "starting the next-item workflow",
@@ -147,11 +191,14 @@ function decideRunLoop(input) {
       feature: null,
     };
   }
+  const finalizing = finalizationReady(input.handoffText);
   return {
     action: "resume",
-    reason: `resuming ${next} in a fresh bounded context`,
+    reason: finalizing
+      ? `finalizing ${next} in a fresh bounded context (implementation complete)`
+      : `resuming ${next} in a fresh bounded context`,
     feature: next,
-    prompt: resumePrompt(next),
+    prompt: finalizing ? finalizePrompt(next) : resumePrompt(next),
   };
 }
 
@@ -163,6 +210,10 @@ module.exports = {
   handoffOutcome,
   DONE_OUTCOMES,
   resumePrompt,
+  finalizePrompt,
+  checkpointPhase,
+  checkpointNextAction,
+  finalizationReady,
   initialPrompt,
   decideRunLoop,
 };

@@ -34,7 +34,11 @@ Pull the next item off the Queue and start working on it — no confirmation nee
 5. Integrate early: before pushing, `git rebase main` and re-run
    `npm run test:backlog` + `npm run test:concurrency` so board/code conflicts surface
    now, not at the merge.
-6. Close by moving shipped rows In progress -> Archive (`backlog_archive`), recording the
-   dispatch log in the handoff file, and committing + pushing (including the BACKLOG.md delta).
+6. Close with the one-call finalize: `npm run finalize -- --feature <id>` — it
+   archives the row, commits the board + CHANGELOG + handoff, ships the branch
+   (rebase, gates, push, PR, landing label), and watches to landed + UAT deploy.
+   If only this tail remains when the context budget hits, run `finalize` (or
+   `/finish <id>`) once instead of stopping — it is a single blocking call and
+   cannot be starved by the budget.
 
 Report the picked row (ID, epic, task) as the first line of your reply.

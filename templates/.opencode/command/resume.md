@@ -17,8 +17,13 @@ Resume the named work unit from its deterministic checkpoint.
 3. Do NOT replay or re-read the previous transcript/history. Read only the files
    the checkpoint's `next_action` / `active` entries require, plus the normal
    session-start memory files.
-4. Continue from `next_action`, then update the checkpoint (`checkpoint_write`)
-   as work progresses and close the session normally (handoff + board write-back).
+4. Continue from `next_action`. When implementation + verification are complete
+   and only the finalization tail remains, do NOT checkpoint-and-stop: run
+   `npm run finalize -- --feature <id>` ONCE (or `/finish <id>`) and let it run
+   to completion — it archives, commits, ships, and watches to landed + UAT
+   deploy in a single blocking call. Otherwise update the checkpoint
+   (`checkpoint_write`) as work progresses and close the session normally
+   (handoff + board write-back).
 
 If the feature has no checkpoint, say so and STOP — do not reconstruct state by
 guessing.

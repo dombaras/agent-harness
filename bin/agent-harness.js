@@ -239,6 +239,7 @@ function mergeOpencodeJson(target, variables) {
 const HARNESS_SCRIPTS = {
   backlog: "node scripts/backlog.js",
   ship: "node scripts/ship.js",
+  finalize: "node scripts/finalize.js",
   "test:dispatch": "node scripts/qa/check-dispatch-config.js",
   "test:governance": "node scripts/qa/governance.js",
   "test:qa-plan": "node scripts/qa/check-qa-plan.js",
@@ -1052,9 +1053,12 @@ function printUsage() {
       `\n` +
       `  run chains bounded orchestration contexts for end-to-end delivery: it runs\n` +
       `  the next-item workflow, then relaunches a fresh opencode session that resumes\n` +
-      `  from the checkpoint whenever a phase ends before the feature is landed. It\n` +
-      `  stops on landed (archived / shipped outcome), the phase cap, an empty queue,\n` +
-      `  or a failed phase that did not land. --dry-run prints the phase plan.\n` +
+      `  from the checkpoint whenever a phase ends before the feature is landed. A\n` +
+      `  resumed phase whose checkpoint shows implementation complete goes straight to\n` +
+      `  \`npm run finalize -- --feature <id>\` (one call: archive + commit + ship +\n` +
+      `  watch to landed + UAT deploy). It stops on landed (archived / shipped\n` +
+      `  outcome), the phase cap, an empty queue, or a failed phase that did not land.\n` +
+      `  --dry-run prints the phase plan.\n` +
       `\n` +
       `  agent-harness list\n` +
       `  agent-harness doctor [--target <dir>]   # readiness of the ship/deploy cycle\n` +
@@ -1203,12 +1207,19 @@ function doctor(target) {
 
   if (config.shipLabel) add("ok", "ship label", config.shipLabel);
   if (Array.isArray(config.shipWatchWorkflows)) add("ok", "ship watch", config.shipWatchWorkflows.join(", ") || "(none)");
+  add(
+    fs.existsSync(path.join(target, "scripts", "finalize.js")) ? "ok" : "warn",
+    "finalize command",
+    fs.existsSync(path.join(target, "scripts", "finalize.js"))
+      ? "`npm run finalize` available (archive + commit + ship + watch in one call)"
+      : "missing — re-run `agent-harness update` to deploy scripts/finalize.js"
+  );
 
   for (const p of readPendingShips(target)) {
     add(
       "warn",
       `pending landing #${p.pr}`,
-      `"${p.branch}" was enqueued but never confirmed landed/deployed — resume: npm run ship -- --watch-only`
+      `"${p.branch}" was enqueued but never confirmed landed/deployed — resume: npm run finalize -- --feature <id> --watch-only (or npm run ship -- --watch-only)`
     );
   }
 

@@ -4065,12 +4065,15 @@ test("context-guard injected text is byte-stable per band and never interpolated
 test("context-guard forbids escaping the finalization watch via --no-watch", () => {
   // The F-246 stop: at the checkpoint band the orchestrator chose `ship --no-watch`
   // to dodge the turn budget and handed off, reporting "not done". The band text
-  // must now name the watch as the finalization step and the resume path.
-  assert.match(cg.BAND_TEXT.checkpoint, /ship` watch/, "checkpoint names the ship watch");
-  assert.match(cg.BAND_TEXT.checkpoint, /ship --no-watch/, "checkpoint forbids the --no-watch escape");
+  // must now name the watch as the finalization step, the one-call finalize, and
+  // the resume path.
+  assert.match(cg.BAND_TEXT.checkpoint, /`ship`\/`finalize` watch/, "checkpoint names the ship/finalize watch");
+  assert.match(cg.BAND_TEXT.checkpoint, /--no-watch/, "checkpoint forbids the --no-watch escape");
   assert.match(cg.BAND_TEXT.checkpoint, /--watch-only/, "checkpoint names the resume path");
-  assert.match(cg.BAND_TEXT.hard, /ship` watch/, "hard band also allows the running watch to finish");
+  assert.match(cg.BAND_TEXT.checkpoint, /npm run finalize/, "checkpoint names the one-call finalizer");
+  assert.match(cg.BAND_TEXT.hard, /`ship`\/`finalize` watch/, "hard band also allows the running watch to finish");
   assert.match(cg.BAND_TEXT.hard, /pending landing/, "hard band warns a stopped watch is a pending landing");
+  assert.match(cg.BAND_TEXT.hard, /npm run finalize/, "hard band names the one-call finalizer");
 });
 
 test("context-guard composes band + funds + loop text in order (or null)", () => {
@@ -6150,4 +6153,175 @@ test("run-loop resume prompt never depends on the TUI command surface", () => {
   const prompt = runLoop.resumePrompt("F-256");
   assert.match(prompt, /do not replay any previous transcript/);
   assert.doesNotMatch(prompt, /^\/resume/, "run mode receives a message, not a slash command");
+});
+
+test("run-loop sends an implementation-complete checkpoint straight to finalization", () => {
+  const complete = [
+    "# handoff",
+    "",
+    "## Checkpoint (resume)",
+    "",
+    "- feature: F-257",
+    "- phase: verification complete",
+    "- next_action: archive and ship",
+    "",
+  ].join("\n");
+  assert.strictEqual(runLoop.finalizationReady(complete), true);
+  assert.strictEqual(runLoop.finalizationReady("## Checkpoint\n\n- phase: implementing\n"), false);
+
+  const resumed = runLoop.decideRunLoop({
+    backlogText: RUN_BACKLOG,
+    handoffText: complete,
+    feature: "F-257",
+    phasesRun: 1,
+    lastExit: 0,
+  });
+  assert.strictEqual(resumed.action, "resume");
+  assert.match(resumed.reason, /finalizing F-257/);
+  assert.match(resumed.prompt, /npm run finalize -- --feature F-257/);
+  assert.doesNotMatch(resumed.prompt, /Continue from its next_action through gates/);
+
+  const midWork = runLoop.decideRunLoop({
+    backlogText: RUN_BACKLOG,
+    handoffText: "## Checkpoint\n\n- phase: implementing\n",
+    feature: "F-256",
+    phasesRun: 1,
+    lastExit: 0,
+  });
+  assert.match(midWork.prompt, /npm run ship/, "mid-work resume keeps the generic ship instruction");
+});
+
+// ---------------------------------------------------------------- finalize (one-call tail)
+
+const finalizeModule = require(path.join(h.TEMPLATES_DIR, "scripts", "finalize.js"));
+
+function scaffoldFinalizeTarget() {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  for (const rel of ["scripts/backlog.js", "scripts/finalize.js", "scripts/qa/run-loop.js"]) {
+    fs.copyFileSync(path.join(h.TEMPLATES_DIR, rel), path.join(target, rel));
+  }
+  copyBoardLib(target);
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(target, "BACKLOG.md"));
+  // A stand-in ship that records its argv and exits 0: isolates finalize's own
+  // archive/commit/idempotence logic from the network.
+  fs.writeFileSync(
+    path.join(target, "scripts", "ship.js"),
+    '"use strict";\nconst fs=require("fs"),path=require("path");\n' +
+      'fs.appendFileSync(path.join(__dirname,"..",".git","ship-args"), process.argv.slice(2).join(" ")+"\\n");\n',
+    "utf8"
+  );
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: target });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: target });
+  execFileSync("git", ["add", "-A"], { cwd: target });
+  execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: target });
+  // A real In-progress row via the CLI, so the parser sees the real table shape.
+  const added = spawnSync(process.execPath, ["scripts/backlog.js", "add", "book sharing control", "--p", "P1"], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  const id = (added.stdout.match(/\b(F-\d+)\b/) || [])[1];
+  assert.ok(id, "test scaffold could not add a row: " + added.stdout + added.stderr);
+  spawnSync(process.execPath, ["scripts/backlog.js", "take", id], { cwd: target, encoding: "utf8" });
+  fs.mkdirSync(path.join(target, ".agents", "handoffs"), { recursive: true });
+  fs.writeFileSync(path.join(target, ".agents", "handoffs", id + ".md"), "## Session metadata\n\n- outcome: shipped\n", "utf8");
+  execFileSync("git", ["add", "-A"], { cwd: target });
+  execFileSync("git", ["commit", "-q", "-m", "seed row"], { cwd: target });
+  execFileSync("git", ["checkout", "-q", "-b", "f-" + id.replace(/^F-/, "")], { cwd: target });
+  return { target, id };
+}
+
+function runFinalizeCli(target, args) {
+  const res = spawnSync(process.execPath, ["scripts/finalize.js", ...args], { cwd: target, encoding: "utf8" });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("finalize archives the row, commits the tail, then ships (one deterministic call)", () => {
+  const { target, id } = scaffoldFinalizeTarget();
+  const r = runFinalizeCli(target, ["--feature", id]);
+  assert.strictEqual(r.status, 0, r.out);
+
+  const board = read(path.join(target, "BACKLOG.md"));
+  const archive = board.split("## Archive")[1] || "";
+  assert.match(archive, new RegExp("\\|\\s*" + id + "\\s*\\|"), "row moved to Archive");
+  assert.strictEqual(git(target, ["status", "--porcelain"]), "", "finalization tail committed");
+  assert.ok(exists(path.join(target, ".git", "ship-args")), "ship was invoked");
+  const subject = execFileSync("git", ["log", "-1", "--format=%s"], { cwd: target, encoding: "utf8" }).trim();
+  assert.match(subject, new RegExp("chore\\(" + id + "\\): finalize"));
+});
+
+test("finalize is idempotent — re-running never duplicates the row or re-archives", () => {
+  const { target, id } = scaffoldFinalizeTarget();
+  assert.strictEqual(runFinalizeCli(target, ["--feature", id]).status, 0);
+  const r2 = runFinalizeCli(target, ["--feature", id]);
+  assert.strictEqual(r2.status, 0, r2.out);
+  const board = read(path.join(target, "BACKLOG.md"));
+  const archive = board.split("## Archive")[1] || "";
+  assert.strictEqual(
+    (archive.match(new RegExp("\\|\\s*" + id + "\\s*\\|", "g")) || []).length,
+    1,
+    "exactly one Archive row, no duplicate"
+  );
+  const inProgress = (board.split("## In progress")[1] || "").split(/^## /m)[0];
+  assert.doesNotMatch(inProgress, new RegExp("\\|\\s*" + id + "\\s*\\|"), "not left In progress");
+});
+
+test("finalize --dry-run plans without touching the board or shipping", () => {
+  const { target, id } = scaffoldFinalizeTarget();
+  const before = read(path.join(target, "BACKLOG.md"));
+  const r = runFinalizeCli(target, ["--feature", id, "--dry-run"]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /dry run/);
+  assert.strictEqual(read(path.join(target, "BACKLOG.md")), before, "board untouched");
+  assert.ok(!exists(path.join(target, ".git", "ship-args")), "ship not invoked");
+});
+
+test("finalize refuses the integration branch", () => {
+  const { target } = scaffoldFinalizeTarget();
+  execFileSync("git", ["checkout", "-q", "main"], { cwd: target });
+  const r = runFinalizeCli(target, ["--feature", "F-999"]);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /refusing to finalize/);
+});
+
+test("finalize derives the feature id from an f-<n> branch", () => {
+  assert.strictEqual(finalizeModule.featureFromBranch("f-257"), "F-257");
+  assert.strictEqual(finalizeModule.featureFromBranch("feat/F-12-x"), "F-12");
+  assert.strictEqual(finalizeModule.featureFromBranch("f-watch"), null);
+});
+
+test("[drift-guard] finalize collapses archive + commit + ship into one call", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "finalize.js"));
+  assert.match(src, /scripts", "ship\.js"/, "shells out to the real ship");
+  assert.match(src, /"archive", feature/, "archives the row by id");
+  assert.match(src, /git", \["add", "-A"\]/, "commits the finalization tail");
+  assert.match(src, /--watch-only/, "resumes a paused watch");
+});
+
+test("context-guard carries the finalization carve-out (run finalize, do not stop)", () => {
+  const core = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"));
+  assert.match(core, /FINALIZATION CARVE-OUT/);
+  assert.match(core, /npm run finalize -- --feature/);
+  const guard = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"));
+  assert.match(guard.BAND_TEXT.checkpoint, /npm run finalize/);
+  assert.match(guard.BAND_TEXT.hard, /npm run finalize/);
+});
+
+test("finalize command + script are deployed and wired", async () => {
+  const t = await scaffoldGatedTarget();
+  assert.ok(exists(path.join(t, "scripts", "finalize.js")), "scripts/finalize.js deployed");
+  assert.ok(exists(path.join(t, ".opencode", "command", "finish.md")), "/finish command deployed");
+  const pkg = JSON.parse(read(path.join(t, "package.json")));
+  assert.strictEqual(pkg.scripts.finalize, "node scripts/finalize.js", "npm run finalize wired");
+  const doctorOut = [];
+  // doctor must report the finalize command is available.
+  const orig = console.log;
+  console.log = (...a) => doctorOut.push(a.join(" "));
+  try {
+    h.doctor(t);
+  } finally {
+    console.log = orig;
+  }
+  assert.match(doctorOut.join("\n"), /finalize command/);
 });
