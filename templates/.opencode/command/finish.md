@@ -1,5 +1,5 @@
 ---
-description: Finalize a feature in a fresh bounded context — write the changelog, then archive + commit + ship + watch to landed and UAT deploy.
+description: Finalize a feature in a fresh bounded context — write the changelog, then archive + commit + land on main + confirm CI.
 ---
 
 Finalize the named work unit. Implementation + verification are expected to be
@@ -22,12 +22,15 @@ is deliberately short and cannot be starved by the implementation budget.
    npm run finalize -- --feature <id>
    ```
    It archives the row, commits the board + CHANGELOG + handoff, then ships the
-   branch (rebase, gates, push, PR, landing label) and watches the merge train →
-   CI → UAT deploy. Exits 0 only when the change is landed and deployed.
-5. If it pauses after enqueue (a deliberate `--no-watch` or a timeout), resume:
+   branch (rebase, gates, direct fast-forward push to main) and waits for CI to
+   go green on the landed SHA. There is no PR, label, or merge train; the deploy
+   runs after CI. Exits 0 only when the change is landed and CI is green.
+5. If it stops after landing before CI is confirmed (a deliberate `--no-ci-wait`
+   or a timeout), check and re-run — `finalize` is idempotent:
    ```
-   npm run finalize -- --feature <id> --watch-only
+   gh run list --workflow CI --commit <landed-sha>
+   npm run finalize -- --feature <id>
    ```
 6. Record the dispatch log + session metadata in the handoff and report
-   value-first. "Gates green" or "PR opened" is not done — only a landed PR with
-   a green UAT deploy is.
+   value-first. "Gates green" or "pushed" is not done — only a landed change with
+   green CI is.

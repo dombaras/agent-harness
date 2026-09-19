@@ -4062,18 +4062,15 @@ test("context-guard injected text is byte-stable per band and never interpolated
   assert.ok(cg.LOOP_TEXT.startsWith("CONTEXT GUARD"));
 });
 
-test("context-guard forbids escaping the finalization watch via --no-watch", () => {
-  // The F-246 stop: at the checkpoint band the orchestrator chose `ship --no-watch`
-  // to dodge the turn budget and handed off, reporting "not done". The band text
-  // must now name the watch as the finalization step, the one-call finalize, and
-  // the resume path.
-  assert.match(cg.BAND_TEXT.checkpoint, /`ship`\/`finalize` watch/, "checkpoint names the ship/finalize watch");
-  assert.match(cg.BAND_TEXT.checkpoint, /--no-watch/, "checkpoint forbids the --no-watch escape");
-  assert.match(cg.BAND_TEXT.checkpoint, /--watch-only/, "checkpoint names the resume path");
+test("context-guard finalization carve-out lands directly and confirms CI (no watch escape)", () => {
+  // The tail is one call now: run `finalize` once, land on main, confirm CI.
+  // There is no `--no-watch` escape and no merge-train watch to babysit.
+  assert.match(cg.BAND_TEXT.checkpoint, /FINALIZATION CARVE-OUT/, "checkpoint names the carve-out");
   assert.match(cg.BAND_TEXT.checkpoint, /npm run finalize/, "checkpoint names the one-call finalizer");
-  assert.match(cg.BAND_TEXT.hard, /`ship`\/`finalize` watch/, "hard band also allows the running watch to finish");
-  assert.match(cg.BAND_TEXT.hard, /pending landing/, "hard band warns a stopped watch is a pending landing");
+  assert.match(cg.BAND_TEXT.checkpoint, /lands the branch directly on main/, "checkpoint says the branch lands on main");
+  assert.doesNotMatch(cg.BAND_TEXT.checkpoint, /--no-watch|--watch-only|merge train/, "no watch escape remains");
   assert.match(cg.BAND_TEXT.hard, /npm run finalize/, "hard band names the one-call finalizer");
+  assert.match(cg.BAND_TEXT.hard, /lands the branch directly on main/, "hard band says the branch lands on main");
 });
 
 test("context-guard composes band + funds + loop text in order (or null)", () => {
@@ -5569,28 +5566,25 @@ test("ship still refuses a non-handoff dirty file alongside a dirty handoff", ()
   assert.match(res.out, /uncommitted tracked changes/);
 });
 
-test("[drift-guard] ship integrates, pushes, opens the PR, and enqueues the landing label", () => {
+test("[drift-guard] ship integrates, lands HEAD on main directly, and has no PR/label/watch path", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
   assert.match(src, /git fetch|fetch", "origin/, "integrates early");
   assert.match(src, /rebase/, "rebases on origin/<base>");
-  assert.match(src, /--force-with-lease/, "only force-pushes an already-pushed branch");
-  assert.match(src, /pr", "create"/, "opens the PR");
-  assert.match(src, /issues\/\$\{pr\.number\}\/labels/, "applies the landing label via the REST API");
-  assert.match(src, /repoSlug/, "resolves owner/repo for the REST label call");
-  assert.match(src, /merge-train/, "defaults the landing label to merge-train");
-  assert.match(src, /resolveLabel/, "label is resolvable per project");
-  // gh unavailable must not be a silent success.
-  assert.match(src, /is unavailable — the PR was NOT opened/);
+  assert.match(src, /push", "origin", `HEAD:\$\{base\}`/, "lands HEAD directly on the integration branch");
+  assert.match(src, /MAX_LAND_ATTEMPTS/, "has a bounded concurrent-landing retry");
+  assert.match(src, /non-fast-forward|fetch first|\[rejected\]/, "recognizes a concurrent landing");
+  assert.doesNotMatch(src, /pr", "create"/, "never opens a PR");
+  assert.doesNotMatch(src, /merge-train/, "no merge train");
+  assert.doesNotMatch(src, /--watch-only/, "no PR watch resume path");
 });
 
-test("[drift-guard] ship watches the PR to landing + CI/UAT deploy so a session can finish the whole loop", () => {
+test("[drift-guard] ship waits for green CI on the landed SHA (deploy runs after CI)", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
-  assert.match(src, /waitForMerge/, "waits for the merge train to land the PR");
-  assert.match(src, /waitWorkflow/, "waits for the post-merge workflows on the merged SHA");
-  assert.match(src, /\["workflow",\s*"run",\s*"merge-train\.yml"/, "can nudge the merge train once");
-  assert.match(src, /--watch-only/, "has a resume/watch-only mode");
-  assert.match(src, /shipWatchWorkflows/, "watch workflows are project-configurable");
-  assert.match(src, /DONE — landed/, "reports completion only after the loop is green");
+  assert.match(src, /function waitCi/, "waits for the CI run on the landed SHA");
+  assert.match(src, /function ciWorkflow/, "resolves the CI workflow by name");
+  assert.match(src, /--no-ci-wait/, "has an explicit opt-out");
+  assert.match(src, /concluded "\$\{run\.conclusion\}"/, "reports a red CI as a blocker");
+  assert.doesNotMatch(src, /waitForMerge|waitWorkflow/, "no merge-train/deploy watch remains");
 });
 
 /* A fake `gh` for the watch tests: answers --version, pr list/view, and run list
@@ -5619,59 +5613,96 @@ function writeGhStub(target, state) {
   return ghPath;
 }
 
-function runShipWatch(target, ghPath, extraEnv, cwd) {
-  const res = spawnSync(process.execPath, ["scripts/ship.js", "--watch-only", "--no-nudge"], {
-    cwd: cwd || target,
+function runShip(target, ghPath, extraEnv) {
+  const res = spawnSync(process.execPath, ["scripts/ship.js", "--no-gate"], {
+    cwd: target,
     encoding: "utf8",
     env: {
       ...process.env,
       HARNESS_SHIP_GH_BIN: ghPath,
-      HARNESS_SHIP_WATCH_NO_SLEEP: "1",
-      HARNESS_SHIP_WATCH_TIMEOUT_MS: "5000",
+      HARNESS_SHIP_CI_NO_SLEEP: "1",
+      HARNESS_SHIP_CI_TIMEOUT_MS: "5000",
       ...(extraEnv || {}),
     },
   });
   return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
 }
 
-test("ship --watch-only drives the loop to landing + green CI/deploy", () => {
+function initShipRepoWithOrigin() {
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q", "-b", "main"]);
   const target = initShipRepo();
-  execFileSync("git", ["checkout", "-q", "-b", "f-watch"], { cwd: target });
-  const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: target, encoding: "utf8" }).trim();
+  git(target, ["remote", "add", "origin", origin]);
+  git(target, ["push", "-q", "-u", "origin", "main"]);
+  return { origin, target };
+}
+
+function commitCiWorkflow(target) {
   fs.mkdirSync(path.join(target, ".github", "workflows"), { recursive: true });
   fs.writeFileSync(path.join(target, ".github", "workflows", "ci.yml"), "name: CI\non: push\n", "utf8");
-  fs.writeFileSync(path.join(target, ".github", "workflows", "deploy-uat.yml"), "name: Deploy UAT\non: push\n", "utf8");
-  const ghPath = writeGhStub(target, { prState: "MERGED", sha });
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "ci"]);
+}
 
-  const res = runShipWatch(target, ghPath);
+test("ship lands the feature branch directly on origin/main and confirms CI", () => {
+  const { origin, target } = initShipRepoWithOrigin();
+  execFileSync("git", ["checkout", "-q", "-b", "f-land"], { cwd: target });
+  fs.writeFileSync(path.join(target, "feature.txt"), "feature\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "feat: land"]);
+  commitCiWorkflow(target);
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: target, encoding: "utf8" }).trim();
+  const ghPath = writeGhStub(target, { sha, runConclusion: "success" });
+
+  const res = runShip(target, ghPath);
   assert.strictEqual(res.status, 0, res.out);
-  assert.match(res.out, /merged \(SHA/);
-  assert.match(res.out, /CI green on/);
-  assert.match(res.out, /Deploy UAT green on/);
-  assert.match(res.out, /DONE — landed/);
+  assert.match(res.out, /landed f-land -> origin\/main/);
+  assert.match(res.out, /CI green/);
+  const originMain = execFileSync("git", ["--git-dir", origin, "rev-parse", "main"], {
+    encoding: "utf8",
+  }).trim();
+  assert.strictEqual(originMain, sha, "origin/main points at the landed feature commit");
 });
 
-test("ship --watch-only fails closed when the PR never lands", () => {
-  const target = initShipRepo();
-  execFileSync("git", ["checkout", "-q", "-b", "f-stall"], { cwd: target });
-  const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: target, encoding: "utf8" }).trim();
-  const ghPath = writeGhStub(target, { prState: "OPEN", sha });
+test("ship rebases onto a concurrently-advanced origin/main and still lands", () => {
+  const { origin, target } = initShipRepoWithOrigin();
+  execFileSync("git", ["checkout", "-q", "-b", "f-race"], { cwd: target });
+  fs.writeFileSync(path.join(target, "feature.txt"), "feature\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "feat: race"]);
+  commitCiWorkflow(target);
 
-  const res = runShipWatch(target, ghPath, { HARNESS_SHIP_WATCH_TIMEOUT_MS: "80" });
-  assert.strictEqual(res.status, 1, res.out);
-  assert.match(res.out, /ENQUEUED, not landed/);
-  assert.match(res.out, /--watch-only/);
+  // Another session lands on origin/main after our base.
+  const other = tmpdir();
+  execFileSync("git", ["clone", "-q", origin, other], { encoding: "utf8" });
+  git(other, ["config", "user.email", "o@o.o"]);
+  git(other, ["config", "user.name", "o"]);
+  fs.writeFileSync(path.join(other, "other.txt"), "other\n", "utf8");
+  git(other, ["add", "-A"]);
+  git(other, ["commit", "-q", "-m", "other landing"]);
+  git(other, ["push", "-q", "origin", "main"]);
+
+  const ghPath = writeGhStub(target, { sha: "0000000", runConclusion: "success" });
+  const res = runShip(target, ghPath);
+  assert.strictEqual(res.status, 0, res.out);
+  const log = execFileSync("git", ["--git-dir", origin, "log", "--oneline", "main"], {
+    encoding: "utf8",
+  });
+  assert.match(log, /feat: race/, "our feature landed");
+  assert.match(log, /other landing/, "the concurrent landing is preserved");
 });
 
-test("ship --watch-only fails when the post-merge deploy is red", () => {
-  const target = initShipRepo();
+test("ship exits non-zero when CI is red on the landed SHA", () => {
+  const { target } = initShipRepoWithOrigin();
   execFileSync("git", ["checkout", "-q", "-b", "f-red"], { cwd: target });
+  fs.writeFileSync(path.join(target, "feature.txt"), "f\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "feat: red"]);
+  commitCiWorkflow(target);
   const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: target, encoding: "utf8" }).trim();
-  fs.mkdirSync(path.join(target, ".github", "workflows"), { recursive: true });
-  fs.writeFileSync(path.join(target, ".github", "workflows", "ci.yml"), "name: CI\non: push\n", "utf8");
-  const ghPath = writeGhStub(target, { prState: "MERGED", sha, runConclusion: "failure" });
+  const ghPath = writeGhStub(target, { sha, runConclusion: "failure" });
 
-  const res = runShipWatch(target, ghPath);
+  const res = runShip(target, ghPath);
   assert.strictEqual(res.status, 1, res.out);
   assert.match(res.out, /concluded "failure"/);
 });
@@ -5779,7 +5810,7 @@ test("merge-backlog reconcile refuses a genuine same-row conflict", () => {
   assert.deepStrictEqual(r.conflicts, ["F-257"]);
 });
 
-test("ship --watch-only reconciles a dirty main board and fast-forwards", () => {
+test("ship reconciles a dirty main board and fast-forwards after landing", () => {
   const origin = tmpdir();
   git(origin, ["init", "--bare", "-q", "-b", "main"]);
   const target = initShipRepo();
@@ -5793,7 +5824,6 @@ test("ship --watch-only reconciles a dirty main board and fast-forwards", () => 
   execFileSync("git", ["-C", target, "worktree", "add", "-q", "-b", "f-rec", wt, "HEAD"], { encoding: "utf8" });
   fs.mkdirSync(path.join(wt, ".github", "workflows"), { recursive: true });
   fs.writeFileSync(path.join(wt, ".github", "workflows", "ci.yml"), "name: CI\non: push\n", "utf8");
-  fs.writeFileSync(path.join(wt, ".github", "workflows", "deploy-uat.yml"), "name: Deploy UAT\non: push\n", "utf8");
 
   // The landed upstream archived F-255; the local working board still shows it
   // In progress plus a local-only F-258 — the "row stuck In progress" state.
@@ -5808,9 +5838,9 @@ test("ship --watch-only reconciles a dirty main board and fast-forwards", () => 
   fs.writeFileSync(path.join(target, "BACKLOG.md"), BOARD_OURS, "utf8");
 
   const sha = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  const ghPath = writeGhStub(target, { prState: "MERGED", sha });
+  const ghPath = writeGhStub(target, { sha, runConclusion: "success" });
 
-  const res = runShipWatch(target, ghPath, {}, wt);
+  const res = runShip(wt, ghPath);
   assert.strictEqual(res.status, 0, res.out);
   assert.match(res.out, /reconciled its board/);
   const board = read(path.join(target, "BACKLOG.md"));
@@ -5823,17 +5853,16 @@ test("ship --watch-only reconciles a dirty main board and fast-forwards", () => 
   );
 });
 
-test("ship --watch-only fast-forwards the main checkout so the board converges", () => {
+test("ship fast-forwards the main checkout so the board converges after landing", () => {
   const { target } = initShipRepoOnOrigin();
   const wt = path.join(os.tmpdir(), `ship-conv-${path.basename(target)}`);
   execFileSync("git", ["-C", target, "worktree", "add", "-q", "-b", "f-conv", wt, "HEAD"], { encoding: "utf8" });
   fs.mkdirSync(path.join(wt, ".github", "workflows"), { recursive: true });
   fs.writeFileSync(path.join(wt, ".github", "workflows", "ci.yml"), "name: CI\non: push\n", "utf8");
-  fs.writeFileSync(path.join(wt, ".github", "workflows", "deploy-uat.yml"), "name: Deploy UAT\non: push\n", "utf8");
   const sha = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  const ghPath = writeGhStub(target, { prState: "MERGED", sha });
+  const ghPath = writeGhStub(target, { sha, runConclusion: "success" });
 
-  const res = runShipWatch(target, ghPath, {}, wt);
+  const res = runShip(wt, ghPath);
   assert.strictEqual(res.status, 0, res.out);
   assert.match(res.out, /fast-forwarded the main checkout/);
   const mainHead = execFileSync("git", ["-C", target, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -5842,60 +5871,27 @@ test("ship --watch-only fast-forwards the main checkout so the board converges",
   assert.ok(exists(path.join(target, "origin-only.txt")), "the origin-only commit is now in the main checkout");
 });
 
-test("[drift-guard] ship leaves a pending-landing ledger and converges main, never a silent 'shipped'", () => {
+test("[drift-guard] ship converges the main checkout after landing (never a reset)", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
   assert.match(src, /function convergeMainCheckout/, "the main checkout is converged after landing");
   assert.match(src, /merge", "--ff-only", upstream/, "convergence is a fast-forward, never a reset");
   assert.match(src, /function reconcileDirtyBoard/, "a routine dirty board is reconciled before the fast-forward");
   assert.match(src, /isHandoffPath/, "a budget-pause handoff checkpoint is auto-committed, not a dirty-tree abort");
-  assert.match(src, /phase: "enqueued"/, "the enqueue writes a pending-landing ledger");
-  assert.match(src, /ENQUEUED — NOT DONE/, "the no-watch epilogue says the task is not done");
-  assert.match(src, /landed: false,[\s\S]*watched: false/, "the ledger records watched:false while pending");
+  assert.doesNotMatch(src, /writeShipLedger|phase: "enqueued"|ENQUEUED — NOT DONE/, "no pending-landing ledger remains");
 });
 
-test("[drift-guard] ship runs the process gates itself and fails closed without a deploy workflow", () => {
+test("[drift-guard] ship runs the process gates itself; CI is the post-land gate", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
   assert.match(src, /PROCESS_GATES/, "process gates are owned by ship, not only the git hook");
   assert.match(src, /prePushInstalled\(root\)/, "process gates run only when no pre-push hook is installed");
   assert.match(src, /test:qa-plan -- --base=origin\//, "qa-plan is diff-scoped to the integration base");
-  assert.match(src, /--allow-no-deploy/, "explicit opt-out exists");
-  assert.match(src, /no CI\/deploy workflow was detected/, "no-deploy is fail-closed by default");
-  assert.match(src, /hasCiWorkflow/, "a merge-train label requires a CI workflow");
-  assert.match(src, /writeShipLedger/, "a resume/audit ledger is written");
+  assert.doesNotMatch(src, /--allow-no-deploy/, "no deploy-label fail-closed branch remains");
+  assert.doesNotMatch(src, /writeShipLedger|hasCiWorkflow/, "no label/ledger machinery remains");
 });
 
 test("harness maintenance push uses --no-verify so project hooks never strand it", () => {
   const src = read(path.join(__dirname, "..", "bin", "agent-harness.js"));
   assert.match(src, /\["push", "--no-verify", "origin", "HEAD"\]/);
-});
-
-test("check-push-refs refuses a direct push to main and allows a feature branch", () => {
-  const target = tmpdir();
-  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
-  fs.copyFileSync(
-    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-push-refs.js"),
-    path.join(target, "scripts", "qa", "check-push-refs.js")
-  );
-  const run = (input, env) =>
-    spawnSync(process.execPath, ["scripts/qa/check-push-refs.js"], {
-      cwd: target,
-      encoding: "utf8",
-      input,
-      env: { ...process.env, ...(env || {}) },
-    });
-
-  const blocked = run("refs/heads/feat abc123 refs/heads/main def456\n");
-  assert.strictEqual(blocked.status, 1, blocked.stdout + blocked.stderr);
-  assert.match(blocked.stdout, /refusing to push refs\/heads\/main/);
-
-  const allowed = run("refs/heads/feat abc123 refs/heads/feat def456\n");
-  assert.strictEqual(allowed.status, 0, allowed.stdout + allowed.stderr);
-  assert.match(allowed.stdout, /no integration-branch ref/);
-
-  const override = run("refs/heads/x abc123 refs/heads/main def456\n", {
-    HARNESS_ALLOW_MAIN_PUSH: "1",
-  });
-  assert.strictEqual(override.status, 0, override.stdout + override.stderr);
 });
 
 test("agent-harness doctor reports release-cycle readiness", () => {
@@ -5908,22 +5904,6 @@ test("agent-harness doctor reports release-cycle readiness", () => {
   assert.match(out, /agent-harness doctor/);
   assert.match(out, /CI workflow/);
   assert.match(out, /failure\(s\), \d+ warning\(s\)/);
-});
-
-test("agent-harness doctor surfaces a pending landing (enqueued, not confirmed)", () => {
-  const target = tmpdir();
-  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
-  fs.mkdirSync(path.join(target, ".serve"), { recursive: true });
-  fs.writeFileSync(
-    path.join(target, ".serve", "ship-23.json"),
-    JSON.stringify({ pr: 23, branch: "f-246", landed: false, watched: false, phase: "enqueued" }),
-    "utf8"
-  );
-  const cli = path.join(__dirname, "..", "bin", "agent-harness.js");
-  const res = spawnSync(process.execPath, [cli, "doctor", "--target", target], { encoding: "utf8" });
-  const out = (res.stdout || "") + (res.stderr || "");
-  assert.match(out, /pending landing #23/, "the unlanded enqueue is surfaced");
-  assert.match(out, /--watch-only/, "the exact resume command is printed");
 });
 
 test("agent-harness run --dry-run prints the phase plan from the board state", () => {
@@ -5957,12 +5937,11 @@ test("agent-harness run --dry-run prints the phase plan from the board state", (
   assert.match(out, /run: stop — phase cap reached \(2\)/, "a dry-run cap is a plan, not a failure");
 });
 
-test("deploy seeds the CI/CD release scaffold create-if-missing and wires test:push-refs", async () => {
+test("deploy seeds the CI/CD release scaffold create-if-missing (no merge train)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
   for (const rel of [
     ".github/workflows/ci.yml",
-    ".github/workflows/merge-train.yml",
     ".github/workflows/deploy-uat.yml",
     ".github/workflows/uat-health.yml",
     ".husky/pre-push",
@@ -5971,8 +5950,9 @@ test("deploy seeds the CI/CD release scaffold create-if-missing and wires test:p
   ]) {
     assert.ok(exists(path.join(target, rel)), `${rel} deployed`);
   }
+  assert.ok(!exists(path.join(target, ".github", "workflows", "merge-train.yml")), "no merge-train workflow deployed");
   const pkg = JSON.parse(read(path.join(target, "package.json")));
-  assert.strictEqual(pkg.scripts["test:push-refs"], "node scripts/qa/check-push-refs.js");
+  assert.ok(!("test:push-refs" in pkg.scripts), "no direct-main-push guard wired");
 
   // Project-owned afterwards: an update must never clobber an edited workflow.
   fs.writeFileSync(path.join(target, ".github", "workflows", "ci.yml"), "name: Mine\n", "utf8");
@@ -6105,7 +6085,7 @@ test("run-loop stops when the queue is empty and resumes the In-progress feature
   assert.strictEqual(resume.feature, "F-256");
   assert.match(resume.prompt, /F-256/);
   assert.match(resume.prompt, /checkpoint\.js resume/);
-  assert.match(resume.prompt, /npm run ship/);
+  assert.match(resume.prompt, /npm run finalize/);
 
   const stuck = runLoop.decideRunLoop({
     backlogText: "# Backlog\n## In progress\n\n| ID | Epic | Task | Handoff |\n|--|--|--|--|\n",
@@ -6188,7 +6168,7 @@ test("run-loop sends an implementation-complete checkpoint straight to finalizat
     phasesRun: 1,
     lastExit: 0,
   });
-  assert.match(midWork.prompt, /npm run ship/, "mid-work resume keeps the generic ship instruction");
+  assert.match(midWork.prompt, /npm run finalize/, "mid-work resume points at the finalize command");
 });
 
 // ---------------------------------------------------------------- finalize (one-call tail)
@@ -6291,12 +6271,13 @@ test("finalize derives the feature id from an f-<n> branch", () => {
   assert.strictEqual(finalizeModule.featureFromBranch("f-watch"), null);
 });
 
-test("[drift-guard] finalize collapses archive + commit + ship into one call", () => {
+test("[drift-guard] finalize collapses archive + commit + land into one call", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "finalize.js"));
   assert.match(src, /scripts", "ship\.js"/, "shells out to the real ship");
   assert.match(src, /"archive", feature/, "archives the row by id");
   assert.match(src, /git", \["add", "-A"\]/, "commits the finalization tail");
-  assert.match(src, /--watch-only/, "resumes a paused watch");
+  assert.match(src, /landedAlready\(base\)/, "idempotence checks the branch is landed on main");
+  assert.doesNotMatch(src, /--watch-only|prState/, "no PR watch resume path remains");
 });
 
 test("context-guard carries the finalization carve-out (run finalize, do not stop)", () => {

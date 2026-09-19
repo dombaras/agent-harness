@@ -1,9 +1,9 @@
 name: CI
 
-# The gate every PR and every merge to the integration branch must pass. This is
-# the required check the merge train reads (`statusCheckRollup`): a PR with no CI
-# check can never be picked, so a project using the merge train MUST have this
-# workflow.
+# The gate on the integration branch: every direct landing on `main` must pass,
+# and the UAT deploy is triggered only when this workflow succeeds on `main`
+# (`workflow_run` in deploy-uat.yml). A pull request also runs it if one is ever
+# opened, but the normal cycle lands straight to main.
 #
 # Scope: project-owned gates. The harness-owned process gates (test:governance,
 # test:qa-plan, test:docs, ...) live in the gitignored harness tree; extend the

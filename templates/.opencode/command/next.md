@@ -31,12 +31,13 @@ Pull the next item off the Queue and start working on it — no confirmation nee
      intent, `system-architect` -> scope (HIGH-risk only), `planner` -> plan,
      `qa-architect` -> tests — and produce a QA plan.
    Then do the work under the standard protocol (`.agents/rules/00-operating.md` §Step Zero).
-5. Integrate early: before pushing, `git rebase main` and re-run
-   `npm run test:backlog` + `npm run test:concurrency` so board/code conflicts surface
-   now, not at the merge.
+5. Integrate early: before landing, `git fetch origin && git rebase origin/main`
+   and re-run `npm run test:backlog` + `npm run test:concurrency` so board/code
+   conflicts surface now, not at the land.
 6. Close with the one-call finalize: `npm run finalize -- --feature <id>` — it
-   archives the row, commits the board + CHANGELOG + handoff, ships the branch
-   (rebase, gates, push, PR, landing label), and watches to landed + UAT deploy.
+   archives the row, commits the board + CHANGELOG + handoff, lands the branch on
+   main (rebase, gates, direct fast-forward push; a concurrent landing is retried),
+   and waits for green CI. The deploy runs after CI.
    If only this tail remains when the context budget hits, run `finalize` (or
    `/finish <id>`) once instead of stopping — it is a single blocking call and
    cannot be starved by the budget.

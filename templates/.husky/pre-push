@@ -15,11 +15,7 @@ case "$(uname -s)" in
   *)                    NPM=npm ;;
 esac
 
-# 1. Local floor: never push the integration branch directly. Landing is the
-#    merge train's job (`npm run ship`). Escape hatch: HARNESS_ALLOW_MAIN_PUSH=1.
-node scripts/qa/check-push-refs.js
-
-# 2. Process gates (harness-owned). `--if-present` so a project that has not
+# 1. Process gates (harness-owned). `--if-present` so a project that has not
 #    wired a gate yet is not blocked by its absence.
 $NPM run --if-present test:dispatch
 $NPM run --if-present test:governance
@@ -32,7 +28,7 @@ $NPM run --if-present test:product
 $NPM run --if-present test:docs
 $NPM run --if-present test:quality
 
-# 3. Project test gates (project-owned; edit for your stack).
+# 2. Project test gates (project-owned; edit for your stack).
 $NPM run --if-present lint:hooks
 $NPM run --if-present test:schema
 $NPM run --if-present test:quick

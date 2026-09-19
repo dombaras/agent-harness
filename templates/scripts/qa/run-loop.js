@@ -53,7 +53,7 @@ function inProgressFeature(backlogText) {
 }
 
 /* A feature is landed once `backlog_archive` moved its row into the Archive
- * section (the ship watch + archive are the completion contract). */
+ * section (the archive is the completion contract). */
 function isArchived(backlogText, feature) {
   if (!feature) return false;
   const archive = sectionText(backlogText, "Archive");
@@ -78,15 +78,17 @@ function resumePrompt(feature) {
     `Resume the bounded work unit ${feature} from its checkpoint only. ` +
     `Run \`node scripts/checkpoint.js resume --feature ${feature}\` and treat that ` +
     `block as the full state of the work — do not replay any previous transcript. ` +
-    `Continue from its next_action through gates, commit, and \`npm run ship\` ` +
-    `(watch to landed + UAT deploy), then record the handoff and archive the row.`
+    `Continue from its next_action through the gates, then run ` +
+    `\`npm run finalize -- --feature ${feature}\` (archive + commit + land on main + ` +
+    `confirm green CI), and record the handoff.`
   );
 }
 
 /* The finalization-phase instruction: implementation + verification are done, so
  * the fresh context must NOT re-run the doc chain or the gates — it only has to
- * land the change. `npm run finalize` archives, commits, ships, and watches in
- * one blocking call, which is short enough to survive any remaining budget. */
+ * land the change. `npm run finalize` archives, commits, lands the branch on
+ * main, and confirms CI in one blocking call, which is short enough to survive
+ * any remaining budget. */
 function finalizePrompt(feature) {
   return (
     `Finalize the bounded work unit ${feature} — implementation + verification are ` +
@@ -94,9 +96,8 @@ function finalizePrompt(feature) {
     `the full gates. Run \`node scripts/checkpoint.js resume --feature ${feature}\` to ` +
     `read the state, ensure the CHANGELOG entry exists (one \`docs\` dispatch if it is ` +
     `missing), then run \`npm run finalize -- --feature ${feature}\` ONCE and let it ` +
-    `run to completion: it archives the row, commits the tail, ships the branch, and ` +
-    `watches the merge train + CI + UAT deploy. If it pauses enqueued, resume with ` +
-    `\`npm run finalize -- --feature ${feature} --watch-only\`.`
+    `run to completion: it archives the row, commits the tail, lands the branch ` +
+    `directly on main, and waits for green CI. The deploy runs after CI.`
   );
 }
 
@@ -126,7 +127,7 @@ function initialPrompt() {
   return (
     "Pull the next item off the Queue and start working on it — no confirmation " +
     "needed; this is the explicit go. Follow .opencode/command/next.md, report the " +
-    "picked row first, and work it through to a shipped branch."
+    "picked row first, and work it through to a landed change."
   );
 }
 

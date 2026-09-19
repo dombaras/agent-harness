@@ -18,17 +18,54 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.87` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget) |
-| Lint / tests | green (`npm run lint`, `npm test` — 261 pass) |
-| LibraryOS | `0.1.87` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
+| Version | `0.1.88` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget); `0.1.88` direct-land cycle — `ship` fast-forward pushes `HEAD:main` (bounded retry) and waits for green CI, `deploy-uat` runs after CI success; PR/landing-label/merge-train/watch and the `check-push-refs` guard removed |
+| Lint / tests | green (`npm run lint`, `npm test` — 259 pass) |
+| LibraryOS | `0.1.88` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
-| Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) + the `ship` command (H-10) |
+| Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) |
 
 ---
 
 ## What shipped
 
+### `0.1.88` — direct-land cycle (remove the async PR/merge-train/watch tail)
+
+Design correction after the F-237 recurrence. `0.1.87` collapsed the tail into
+one call but kept the *asynchronous* landing — push a branch, open a PR, apply a
+landing label, wait for a serialized merge train, wait for post-merge CI, wait for
+the UAT deploy. That 10–20 minute, multi-system wait is what kept stranding a
+bounded orchestrator context, and the machinery built to babysit it (ledger,
+`--watch-only`, pending-landing `doctor` warnings, label fail-closed) became its
+own failure surface.
+
+The fix is to make landing **synchronous and simple** again, while keeping the
+isolation that actually fixed the 2026-09-18 two-agent incident:
+
+- **`ship.js` is now a direct lander.** `git fetch origin` → `git rebase
+  origin/main` → branch gates → `git push origin HEAD:main` (fast-forward). A
+  concurrent landing is normal git contention: the push is rejected
+  non-fast-forward and `ship` re-fetches, rebases, and retries (bounded,
+  `MAX_LAND_ATTEMPTS`). It then waits (bounded) for **CI to go green on the landed
+  SHA**. No PR, no label, no merge train, no deploy watch.
+- **`finalize.js`** keeps its one-call contract (archive → commit → ship). Its
+  idempotence is now "is HEAD already an ancestor of `origin/main`"; `--watch-only`
+  and the `gh pr state` check are gone.
+- **`deploy-uat.yml`** now triggers on the `CI` workflow **completing successfully
+  on `main`** (`workflow_run`), so a landing deploys only after CI is green —
+  decision: "deploy only after CI green". `ci.yml` is unchanged in scope.
+- **Removed entirely**: `.github/workflows/merge-train.yml`, the pre-push
+  `check-push-refs` guard (`test:push-refs`), the landing-label resolution, the
+  pending-landing ledger, and the `--watch-only` / `--no-watch` / `--allow-no-deploy`
+  surfaces. The per-feature worktree + session-lease + branch-switch guards stay —
+  those are what fixed the real incident.
+- **Docs/rules/commands/doctor** rewritten to the direct-land DoD ("done when
+  landed on `main` and CI is green"; the deploy follows CI).
+
+Trade-off accepted deliberately (one-person shop): a direct push means CI is a
+post-land gate, not a pre-merge one; the local pre-push battery + `ship`'s own
+process gates run before the push, and CI + the scheduled UAT health probe are the
+backstops. 259 pass, lint green.
 ### `0.1.76` — worktree-prune explicit escape hatch (squash merges)
 
 Field finding (LibraryOS cleanup): the merge train lands PRs with a **squash**

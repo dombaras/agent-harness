@@ -51,11 +51,10 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.opencode/tools/checkpoint.ts` | `checkpoint_write` / `checkpoint_resume` tools (shell out to `scripts/checkpoint.js`) | harness (overwrite) |
 | `.opencode/command/checkpoint.md`, `.opencode/command/resume.md` | mid-session checkpoint + bounded resume-from-checkpoint commands | harness (overwrite) |
 | `scripts/checkpoint.js` | deterministic checkpoint write/replace/read for one session handoff (no timestamps, `unknown` for absent state) | harness (overwrite) |
-| `scripts/ship.js` | deterministic branch finalizer (`npm run ship`): rebase on `origin/main`, branch gates, push, PR, landing label, then watch the merge + post-merge CI/UAT deploy to completion | harness (overwrite) |
+| `scripts/ship.js` | deterministic branch lander (`npm run ship`): rebase on `origin/main`, branch gates, direct fast-forward push of `HEAD:main`, then wait for green CI on the landed SHA | harness (overwrite) |
 | `scripts/qa/check-prefix-stability.js` | `test:prefix` gate — fails a volatile value (clock timestamp, machine path, session id) in the always-loaded prompt prefix | harness (overwrite) |
-| `scripts/qa/check-push-refs.js` | `test:push-refs` pre-push guard — refuses a direct push to `main`/`master` (branch protection is unavailable on private repos without a paid plan) | harness (overwrite) |
-| `.github/workflows/{ci,merge-train,deploy-uat,uat-health}.yml` | CI gate, serialized merge train, artifact deploy, health probe — the self-contained release cycle `ship` drives | **project** (create-if-missing) |
-| `.husky/pre-push` | pre-push battery (push-refs guard + harness process gates + project test gates) | **project** (create-if-missing) |
+| `.github/workflows/{ci,deploy-uat,uat-health}.yml` | CI gate, CI-triggered artifact deploy, health probe — the self-contained release cycle `ship` drives | **project** (create-if-missing) |
+| `.husky/pre-push` | pre-push battery (harness process gates + project test gates) | **project** (create-if-missing) |
 | `.vercelignore` | keeps worktree symlinks (`node_modules`, `prisma/generated`) out of the remote build | **project** (create-if-missing) |
 | `docs/ci-cd-pipeline.md` | the pipeline reference (setup, secrets/variables, rollback) | **project** (create-if-missing) |
 | `scripts/agent-report.js` | deterministic dispatch report (`--cost` joins observed provider telemetry; `--json` schema `agent-report/1`) | harness (overwrite) |
@@ -407,7 +406,7 @@ npx @dombaras/agent-harness update --target /path/to/project
 - Overwrites harness-owned files, preserves `.agents/memory/*`, `.agents/reviews/*`, `.agents/handoffs/*`, `.agents/qa-plans/*`, and `BACKLOG.md`.
 - Auto-wires the harness gate scripts (`test:dispatch`, `test:governance`,
   `test:qa-plan`, `test:backlog`, `test:product`, `test:docs`, `test:quality`,
-  `test:wiring`, `test:linger`, `test:prefix`, `test:push-refs`) plus the `report`,
+  `test:wiring`, `test:linger`, `test:prefix`) plus the `report`,
   `report:cost`, `checkpoint`, and `serve` helpers into the target's `package.json`
   (merged, add-only).
 - **Auto-commits** the harness files it changed (`chore(harness): @dombaras/agent-harness
@@ -454,26 +453,26 @@ npx @dombaras/agent-harness update --target /path/to/project
 ### Release cycle & `doctor`
 
 `init` seeds a working CI/CD release scaffold create-if-missing (never overwritten,
-so your edits survive `update`): the CI gate, the serialized merge train, the
-artifact deploy, the UAT health probe, `.husky/pre-push` (push-refs guard +
-process gates), `.vercelignore`, and `docs/ci-cd-pipeline.md`. The cycle is:
+so your edits survive `update`): the CI gate, the CI-triggered artifact deploy,
+the UAT health probe, `.husky/pre-push` (process gates), `.vercelignore`, and
+`docs/ci-cd-pipeline.md`. The cycle is:
 
 ```
-worktree → npm run ship → PR + merge-train label → CI → merge train → main → CI deploy UAT → health probe
+worktree → npm run ship → direct fast-forward push to main → CI → (on CI success) deploy UAT → health probe
 ```
 
-`ship` runs the harness process gates itself (not just via the git hook), refuses a
-direct main push through `test:push-refs`, and **fails closed** if a landing label is
-applied with no CI/deploy workflow to watch (`--allow-no-deploy` opts out). Check
-readiness at any time with the deterministic report:
+`ship` runs the harness process gates itself (not just via the git hook), lands
+`HEAD:main` with a direct fast-forward push (retrying after a concurrent
+landing), and **waits for CI to go green on the landed SHA** — the deploy runs
+only after CI succeeds. Check readiness at any time with the deterministic report:
 
 ```bash
 npx @dombaras/agent-harness doctor --target /path/to/project
 ```
 
-It reports git/remote/branch, `gh` + auth, the CI/merge-train/deploy workflows, the
-pre-push guard, the Vercel link, and the local-only ignores. Missing infrastructure
-is a warning; a missing prerequisite for the cycle the harness promises is a failure.
+It reports git/remote/branch, `gh` + auth, the CI/deploy workflows, the pre-push
+gate, the Vercel link, and the local-only ignores. Missing infrastructure is a
+warning; a missing prerequisite for the cycle the harness promises is a failure.
 
 ### Backlog migration (`migrate-backlog`)
 

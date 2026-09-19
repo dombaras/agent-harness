@@ -123,7 +123,7 @@ function isBacklogFile(rel) {
   return relKey(rel) === "BACKLOG.md";
 }
 /* The CI/CD release scaffold is also project data: `init` seeds a working
- * pipeline (CI, serialized merge train, artifact deploy, health probe, Vercel
+ * pipeline (CI gate, CI-triggered artifact deploy, health probe, Vercel
  * build-context hygiene, and the reference doc) exactly once, and `update`
  * NEVER overwrites a project's edited workflows. This is what makes the
  * self-contained agent cycle reproducible on a fresh project instead of only in
@@ -248,7 +248,6 @@ const HARNESS_SCRIPTS = {
   "test:docs": "node scripts/qa/check-docs.js",
   "test:concurrency": "node scripts/qa/check-concurrency.js",
   "test:integrate": "node scripts/qa/check-integrate.js",
-  "test:push-refs": "node scripts/qa/check-push-refs.js",
   "test:quality": "node scripts/qa/check-quality.js",
   "test:wiring": "node scripts/qa/check-test-wiring.js",
   "test:linger": "node scripts/qa/check-linger.js",
@@ -1023,10 +1022,11 @@ function printNextSteps() {
   console.log("   3. Capture found items as one light row in the canonical `BACKLOG.md` (repo root);");
   console.log("      dispatch the `features` persona to author the per-feature doc chain when one is picked up.");
   console.log("   4. The CI/CD release scaffold was seeded create-if-missing:");
-  console.log("      `.github/workflows/{ci,merge-train,deploy-uat,uat-health}.yml`,");
-  console.log("      `.husky/pre-push`, `.vercelignore`, `docs/ci-cd-pipeline.md`. Fill the");
-  console.log("      repository secrets/variables it names and run `agent-harness doctor` to");
-  console.log("      confirm the ship -> land -> deploy cycle is ready.");
+  console.log("      `.github/workflows/{ci,deploy-uat,uat-health}.yml`,");
+  console.log("      `.husky/pre-push`, `.vercelignore`, `docs/ci-cd-pipeline.md`. A feature");
+  console.log("      lands by a direct fast-forward push to main; CI gates the landed SHA and");
+  console.log("      the deploy runs after CI. Fill the repository secrets/variables it names");
+  console.log("      and run `agent-harness doctor` to confirm the ship -> land -> CI cycle is ready.");
   console.log("   5. Restart your agent CLI (config is read once at startup).\n");
 }
 
@@ -1055,10 +1055,10 @@ function printUsage() {
       `  the next-item workflow, then relaunches a fresh opencode session that resumes\n` +
       `  from the checkpoint whenever a phase ends before the feature is landed. A\n` +
       `  resumed phase whose checkpoint shows implementation complete goes straight to\n` +
-      `  \`npm run finalize -- --feature <id>\` (one call: archive + commit + ship +\n` +
-      `  watch to landed + UAT deploy). It stops on landed (archived / shipped\n` +
-      `  outcome), the phase cap, an empty queue, or a failed phase that did not land.\n` +
-      `  --dry-run prints the phase plan.\n` +
+      `  \`npm run finalize -- --feature <id>\` (one call: archive + commit + ship, and\n` +
+      `  ship lands the branch on main and confirms green CI). It stops on landed\n` +
+      `  (archived / shipped outcome), the phase cap, an empty queue, or a failed phase\n` +
+      `  that did not land. --dry-run prints the phase plan.\n` +
       `\n` +
       `  agent-harness list\n` +
       `  agent-harness doctor [--target <dir>]   # readiness of the ship/deploy cycle\n` +
@@ -1106,29 +1106,10 @@ function whichBin(cmd, args) {
 
 /* `doctor` — a deterministic (no-LLM) readiness report for the self-contained
  * agent release cycle. It answers, before a session starts, whether the pieces
- * `ship` depends on actually exist: gh + auth, the CI/merge-train/deploy
- * workflows, the pre-push guard, the Vercel link, and the local-only ignores.
- * Missing infrastructure is a `warn` (a project may not use that tier yet);
- * missing prerequisites for the cycle the harness promises are `fail`. */
-/* Ship attempts whose watch never completed (`.serve/ship-<pr>.json` with
- * `landed:false`). `ship --no-watch` writes one, so a session that paused on the
- * turn budget leaves a machine-readable "enqueued, not landed" record instead of
- * a silent false completion. `doctor` surfaces it with the exact resume. */
-function readPendingShips(target) {
-  const dir = path.join(target, ".serve");
-  if (!fs.existsSync(dir)) return [];
-  const pending = [];
-  for (const name of fs.readdirSync(dir)) {
-    if (!/^ship-.*\.json$/.test(name)) continue;
-    try {
-      const rec = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
-      if (rec && rec.landed === false) pending.push(rec);
-    } catch {
-      /* ignore a malformed ledger */
-    }
-  }
-  return pending;
-}
+ * `ship` depends on actually exist: gh + auth, the CI/deploy workflows, the
+ * pre-push gate, the Vercel link, and the local-only ignores. Missing
+ * infrastructure is a `warn` (a project may not use that tier yet); missing
+ * prerequisites for the cycle the harness promises are `fail`. */
 
 function doctor(target) {
   const results = [];
@@ -1161,15 +1142,13 @@ function doctor(target) {
 
   const workflows = workflowNamesIn(target);
   const ci = workflows.find((w) => /^ci$/i.test(w.name));
-  const train = workflows.find((w) => /merge.?train/i.test(w.name) || w.file === "merge-train.yml");
   const deploy = workflows.find((w) => /deploy/i.test(w.name));
-  add(ci ? "ok" : "warn", "CI workflow", ci ? ci.file : "none — the merge train requires a CI check");
-  add(train ? "ok" : "warn", "merge-train workflow", train ? train.file : "none — `ship` will push + open a PR but not enqueue");
+  add(ci ? "ok" : "warn", "CI workflow", ci ? ci.file : "none — a landing's green CI is never confirmed");
   add(deploy ? "ok" : "warn", "deploy workflow", deploy ? deploy.file : "none — landed changes will not deploy");
 
   const gh = whichBin("gh", ["--version"]);
   if (!gh.ok) {
-    add("fail", "gh CLI", "not on PATH — `ship` cannot open the PR or watch the loop");
+    add("fail", "gh CLI", "not on PATH — `ship` cannot confirm CI after landing");
   } else {
     const auth = whichBin("gh", ["auth", "status"]);
     add(auth.ok ? "ok" : "warn", "gh auth", auth.ok ? "authenticated" : "not authenticated (`gh auth login`)");
@@ -1187,16 +1166,6 @@ function doctor(target) {
     "pre-push gate",
     hasPrePush ? (hooksPath.out || hookAbs) : "not installed — project test gates run only in CI"
   );
-  if (hasPrePush) {
-    const guard = fs.existsSync(path.join(target, ".husky", "pre-push"))
-      ? fs.readFileSync(path.join(target, ".husky", "pre-push"), "utf8")
-      : "";
-    add(
-      guard.includes("check-push-refs") ? "ok" : "warn",
-      "main-push guard",
-      guard.includes("check-push-refs") ? "check-push-refs wired in pre-push" : "pre-push does not run check-push-refs"
-    );
-  }
 
   add(fs.existsSync(path.join(target, ".vercelignore")) ? "ok" : "warn", ".vercelignore", fs.existsSync(path.join(target, ".vercelignore")) ? "present" : "missing — worktree deploys can fail (ENOTDIR pruned/generated)");
   add(
@@ -1205,23 +1174,14 @@ function doctor(target) {
     fs.existsSync(path.join(target, ".vercel", "project.json")) ? ".vercel/project.json present" : "not linked in this checkout (CI links from secrets)"
   );
 
-  if (config.shipLabel) add("ok", "ship label", config.shipLabel);
-  if (Array.isArray(config.shipWatchWorkflows)) add("ok", "ship watch", config.shipWatchWorkflows.join(", ") || "(none)");
+  if (config.shipCiWorkflow) add("ok", "CI workflow (ship)", String(config.shipCiWorkflow));
   add(
     fs.existsSync(path.join(target, "scripts", "finalize.js")) ? "ok" : "warn",
     "finalize command",
     fs.existsSync(path.join(target, "scripts", "finalize.js"))
-      ? "`npm run finalize` available (archive + commit + ship + watch in one call)"
+      ? "`npm run finalize` available (archive + commit + land + confirm CI)"
       : "missing — re-run `agent-harness update` to deploy scripts/finalize.js"
   );
-
-  for (const p of readPendingShips(target)) {
-    add(
-      "warn",
-      `pending landing #${p.pr}`,
-      `"${p.branch}" was enqueued but never confirmed landed/deployed — resume: npm run finalize -- --feature <id> --watch-only (or npm run ship -- --watch-only)`
-    );
-  }
 
   return reportDoctor(results);
 }
