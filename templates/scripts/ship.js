@@ -310,7 +310,14 @@ function convergeMainCheckout(root, base) {
  * routine take is what left rows "stuck In progress" and forced a manual
  * reconcile. When the ONLY dirty tracked file is BACKLOG.md, reconcile it
  * row-aware against the landed board (an archived row wins over the stale local
- * take; local-only rows survive), then fast-forward. Returns true on success. */
+ * take; local-only rows survive), then fast-forward. Returns true on success.
+ *
+ * The reconciled board is COMMITTED (and pushed) when it carries rows the
+ * landed commit does not — a manual edit to the main checkout's board (a queued
+ * row, a priority change) is otherwise left as uncommitted working-tree dirt,
+ * and a later `git checkout -- BACKLOG.md` in the main tree silently wipes it
+ * (the F-147 incident: two rows the user queued during a session were discarded
+ * by the session's own cleanup after ship reported success). */
 function reconcileDirtyBoard(main, upstream, behind) {
   const boardPath = path.join(main, "BACKLOG.md");
   let localSrc;
@@ -342,14 +349,71 @@ function reconcileDirtyBoard(main, upstream, behind) {
     fs.writeFileSync(boardPath, localSrc, "utf8"); // fast-forward failed — restore the edits we moved aside
     return false;
   }
+  // Byte-compare against the just-fast-forwarded working file (not the trimmed
+  // `git show` capture): a pure take/archive reconcile rebuilds to exactly the
+  // landed board, so there is nothing to publish.
+  let landedSrc = "";
+  try {
+    landedSrc = fs.readFileSync(boardPath, "utf8");
+  } catch {
+    landedSrc = "";
+  }
   fs.writeFileSync(boardPath, reconcile.board, "utf8");
+  const keptLocalRows = reconcile.board !== landedSrc;
+  const published = keptLocalRows ? publishLocalBoardRows(main, upstream) : true;
   console.log(
     `\n[ship] fast-forwarded the main checkout (${behind} commit(s)) and reconciled its board — ` +
       `kept local-only rows` +
       (reconcile.dropped.length ? `; dropped the landed take (${reconcile.dropped.join(", ")})` : "") +
+      (keptLocalRows && published ? "; committed + pushed them" : "") +
+      (keptLocalRows && !published ? "; committed them locally (push pending)" : "") +
       "."
   );
   return true;
+}
+
+/* Persist the reconciled local-only rows so they can never be lost to a
+ * `git checkout -- BACKLOG.md`, then publish them with a fast-forward push
+ * (bounded retry after a concurrent landing). Returns false when the rows are
+ * only committed locally — still durable, just not yet on origin. */
+function publishLocalBoardRows(main, upstream) {
+  if (spawnSync("git", ["-C", main, "add", "--", "BACKLOG.md"], { encoding: "utf8" }).status !== 0) {
+    return false;
+  }
+  const commit = spawnSync(
+    "git",
+    ["-C", main, "commit", "-q", "-m", "chore(board): publish local-only rows reconciled from the main checkout"],
+    { encoding: "utf8" }
+  );
+  if (commit.status !== 0) {
+    console.warn(
+      `[ship] the main checkout board carries local-only rows that could not be committed — commit them before any checkout: git -C ${main} add BACKLOG.md && git -C ${main} commit`
+    );
+    return false;
+  }
+  const base = upstream.includes("/") ? upstream.slice(upstream.indexOf("/") + 1) : upstream;
+  for (let attempt = 1; attempt <= MAX_LAND_ATTEMPTS; attempt++) {
+    const push = spawnSync("git", ["-C", main, "push", "origin", `HEAD:${base}`], { encoding: "utf8" });
+    if (push.status === 0) return true;
+    const text = `${push.stdout || ""}\n${push.stderr || ""}`;
+    if (
+      attempt < MAX_LAND_ATTEMPTS &&
+      /non-fast-forward|fetch first|tip of your current branch is behind|\[rejected\]/i.test(text)
+    ) {
+      spawnSync("git", ["-C", main, "fetch", "--quiet", "origin"], { stdio: "ignore" });
+      const rebase = spawnSync("git", ["-C", main, "rebase", upstream], { encoding: "utf8" });
+      if (rebase.status !== 0) {
+        spawnSync("git", ["-C", main, "rebase", "--abort"], { stdio: "ignore" });
+        return false;
+      }
+      continue;
+    }
+    console.warn(
+      `[ship] reconciled local-only board rows are committed on the main checkout but the push to ${upstream} failed — publish them when the remote is reachable: git -C ${main} push origin HEAD:${base}`
+    );
+    return false;
+  }
+  return false;
 }
 
 function projectScripts(root) {

@@ -5846,10 +5846,24 @@ test("ship reconciles a dirty main board and fast-forwards after landing", () =>
   const board = read(path.join(target, "BACKLOG.md"));
   assert.match(board.split("## Archive")[1], /\| F-255 \|/, "the landed archive is present after reconcile");
   assert.match(board, /\| F-258 \|/, "the local-only row survived the reconcile");
+  // The reconciled local-only row must be COMMITTED (and published), not left as
+  // working-tree dirt — otherwise a later `git checkout -- BACKLOG.md` in main
+  // silently wipes it (the F-147 incident).
+  assert.match(res.out, /committed \+ pushed them/);
+  assert.strictEqual(
+    git(target, ["status", "--porcelain", "--untracked-files=no"]),
+    "",
+    "the reconciled board is committed, not tracked dirt"
+  );
+  assert.match(
+    git(target, ["show", "HEAD:BACKLOG.md"]),
+    /\| F-258 \|/,
+    "the local-only row is in HEAD (a checkout cannot wipe it)"
+  );
   assert.strictEqual(
     execFileSync("git", ["-C", target, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     execFileSync("git", ["-C", target, "rev-parse", "origin/main"], { encoding: "utf8" }).trim(),
-    "main fast-forwarded to origin/main"
+    "main (with the published board commit) is at origin/main"
   );
 });
 
@@ -5876,6 +5890,7 @@ test("[drift-guard] ship converges the main checkout after landing (never a rese
   assert.match(src, /function convergeMainCheckout/, "the main checkout is converged after landing");
   assert.match(src, /merge", "--ff-only", upstream/, "convergence is a fast-forward, never a reset");
   assert.match(src, /function reconcileDirtyBoard/, "a routine dirty board is reconciled before the fast-forward");
+  assert.match(src, /publishLocalBoardRows/, "reconciled local-only rows are committed, never left as working-tree dirt");
   assert.match(src, /isHandoffPath/, "a budget-pause handoff checkpoint is auto-committed, not a dirty-tree abort");
   assert.doesNotMatch(src, /writeShipLedger|phase: "enqueued"|ENQUEUED — NOT DONE/, "no pending-landing ledger remains");
 });
