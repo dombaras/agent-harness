@@ -862,6 +862,31 @@ function clearSessionWorktree(root, sessionID, onlyDir) {
   }
 }
 
+/* Worktree checkouts a LIVE session still owns, from the `.serve/sessions/
+ * <id>.worktree` pointers (written by `worktree`, cleared when that worktree is
+ * removed). `worktree-prune` must never remove one of these: a session can be
+ * mid-`ship`, watching CI from that very checkout, and deleting it blinds the
+ * watch — every `gh` spawn fails on the dead cwd, so a green run looks like a
+ * 20-minute timeout and the session is left believing CI is unconfirmed (F-252).
+ * A pointer whose lease is stale/dead is ignored, so abandoned worktrees still
+ * converge. */
+function liveSessionWorktreeDirs(root) {
+  const dirs = new Set();
+  let live;
+  try {
+    live = leases.liveLeases(root);
+  } catch {
+    return dirs;
+  }
+  for (const rec of live) {
+    const sid = rec.sessionID || (rec.name && rec.name.replace(/\.json$/, ""));
+    if (!sid) continue;
+    const dir = readSessionWorktree(root, sid);
+    if (dir) dirs.add(path.resolve(dir));
+  }
+  return dirs;
+}
+
 /* Best-effort cleanup of a shipped feature's isolation: remove its worktree
  * checkout (the folder that would otherwise hang around) and, if the branch was
  * merged, delete it. Never blocks the board write — a dirty/locked worktree is
@@ -915,11 +940,20 @@ function cmdArchive(state, argv) {
     const wtAbs = path.resolve(cur, wt.rel);
     const cwd = process.cwd();
     const inside = cwd === wtAbs || cwd.startsWith(wtAbs + path.sep);
-    const sid = process.env.HARNESS_SESSION_ID;
-    clearSessionWorktree(cur, sid, wtAbs);
-    const main = mainWorktreeRoot(cur);
-    if (main && path.resolve(main) !== path.resolve(cur)) clearSessionWorktree(main, sid, wtAbs);
     cleanup = cleanupWorktree(cur, wt.rel, wt.branch, { skipRemove: inside });
+    // Drop the session pointer ONLY once we are no longer standing in the
+    // worktree. `finalize` archives from inside the feature checkout and only
+    // THEN runs `ship` (which watches CI from it); clearing the pointer here
+    // would make the still-live worktree look abandoned, so a concurrent
+    // `worktree-prune` could delete it out from under the CI watch (F-252).
+    // When archive runs from the main tree the checkout is being removed, so
+    // clearing is safe.
+    if (!inside) {
+      const sid = process.env.HARNESS_SESSION_ID;
+      clearSessionWorktree(cur, sid, wtAbs);
+      const main = mainWorktreeRoot(cur);
+      if (main && path.resolve(main) !== path.resolve(cur)) clearSessionWorktree(main, sid, wtAbs);
+    }
   }
 
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
@@ -1298,6 +1332,7 @@ function cmdWorktreePrune(state, argv) {
       : []
   );
   const matched = new Set();
+  const inUse = liveSessionWorktreeDirs(main);
 
   let pruned = 0;
   for (const e of entries) {
@@ -1308,6 +1343,12 @@ function cmdWorktreePrune(state, argv) {
       continue;
     }
     if (explicit.has(e.branch)) matched.add(e.branch);
+    // A worktree a live session still owns is off-limits even when merged and
+    // clean: that session may be mid-`ship`, watching CI from it (F-252).
+    if (inUse.has(path.resolve(e.path))) {
+      notes.push(`kept ${label} (in use by a live session)`);
+      continue;
+    }
     const dirty = gitCmd(e.path, ["status", "--porcelain"]);
     if ((dirty.stdout || "").trim()) {
       notes.push(`kept ${label} (uncommitted work)`);

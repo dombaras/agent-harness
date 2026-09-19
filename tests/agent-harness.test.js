@@ -5482,6 +5482,83 @@ test("worktree-prune <branch> prunes a squash-merged branch that ancestry cannot
   assert.ok(!exists(wt), "explicitly named worktree pruned");
 });
 
+test("worktree-prune keeps a worktree owned by a live session (mid-ship safety)", () => {
+  const { target } = trackedRepoFixture();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"), path.join(target, "scripts", "backlog.js"));
+  copyBoardLib(target);
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(target, "BACKLOG.md"));
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed harness scripts"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  const wt = path.join(tmpdir(), "wt-live");
+  git(target, ["branch", "feat-live", "main"]);
+  git(target, ["worktree", "add", wt, "feat-live"]);
+  fs.writeFileSync(path.join(wt, "x.txt"), "x\n", "utf8");
+  execFileSync("git", ["-C", wt, "add", "-A"], { encoding: "utf8" });
+  execFileSync("git", ["-C", wt, "commit", "-q", "-m", "feat-live work"], { encoding: "utf8" });
+  git(target, ["merge", "--ff-only", "feat-live"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  // A live session's fresh lease plus its worktree pointer both claim this
+  // checkout — the exact condition a mid-`ship` session is in.
+  const sessions = path.join(target, ".serve", "sessions");
+  fs.mkdirSync(sessions, { recursive: true });
+  fs.writeFileSync(
+    path.join(sessions, "ses_live.json"),
+    JSON.stringify({ sessionID: "ses_live", pid: process.pid, startedAt: Date.now(), heartbeatAt: Date.now() }),
+    "utf8"
+  );
+  fs.writeFileSync(path.join(sessions, "ses_live.worktree"), wt, "utf8");
+
+  let res = spawnSync(process.execPath, ["scripts/backlog.js", "worktree-prune"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /kept wt-live \(in use by a live session\)/);
+  assert.ok(exists(wt), "in-use worktree kept even though its branch is merged and clean");
+
+  // Once the lease is gone the abandoned checkout converges as before.
+  fs.rmSync(path.join(sessions, "ses_live.json"), { force: true });
+  fs.rmSync(path.join(sessions, "ses_live.worktree"), { force: true });
+  res = spawnSync(process.execPath, ["scripts/backlog.js", "worktree-prune"], { cwd: target, encoding: "utf8" });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /pruned wt-live/);
+  assert.ok(!exists(wt), "abandoned worktree pruned");
+});
+
+test("archive keeps the session worktree pointer while standing inside the checkout", () => {
+  const { target } = trackedRepoFixture();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"), path.join(target, "scripts", "backlog.js"));
+  copyBoardLib(target);
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(target, "BACKLOG.md"));
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed harness scripts"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  runBacklogCli(target, ["add", "a thing", "--p", "P1", "--id", "F-001", "--evidence", "ev"]);
+
+  const wt = path.join(path.dirname(target), "wt-" + path.basename(target));
+  const env = { ...process.env, HARNESS_SESSION_ID: "ses_arch" };
+  const mk = spawnSync(process.execPath, ["scripts/backlog.js", "worktree", "F-001", "--dir", wt], {
+    cwd: target,
+    encoding: "utf8",
+    env,
+  });
+  assert.strictEqual(mk.status, 0, mk.stdout + mk.stderr);
+  const pointer = path.join(target, ".serve", "sessions", "ses_arch.worktree");
+  assert.ok(exists(pointer), "worktree records the session pointer");
+
+  // The worktree's board must carry the annotated In-progress row.
+  fs.copyFileSync(path.join(target, "BACKLOG.md"), path.join(wt, "BACKLOG.md"));
+
+  const arc = spawnSync(process.execPath, ["scripts/backlog.js", "archive", "F-001"], { cwd: wt, encoding: "utf8", env });
+  assert.strictEqual(arc.status, 0, arc.stdout + arc.stderr);
+  assert.match(arc.stdout, /archived F-001/);
+  assert.ok(exists(wt), "worktree left in place (archive ran inside it)");
+  assert.ok(exists(pointer), "pointer kept while the session still owns the checkout (finalize runs ship next)");
+});
+
 test("backlog-notify summarizes the worktree/depends/owns tools too", () => {
   const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "backlog-notify.ts"));
   assert.match(src, /backlog_worktree/);
@@ -5705,6 +5782,60 @@ test("ship exits non-zero when CI is red on the landed SHA", () => {
   const res = runShip(target, ghPath);
   assert.strictEqual(res.status, 1, res.out);
   assert.match(res.out, /concluded "failure"/);
+});
+
+test("ship confirms CI even when the feature worktree is pruned mid-watch", () => {
+  const { target } = initShipRepoWithOrigin();
+  const wt = path.join(path.dirname(target), "wt-" + path.basename(target));
+  git(target, ["worktree", "add", "-q", "-b", "f-wt", wt]);
+  fs.writeFileSync(path.join(wt, "feature.txt"), "feature\n", "utf8");
+  execFileSync("git", ["-C", wt, "add", "-A"], { encoding: "utf8" });
+  execFileSync("git", ["-C", wt, "commit", "-q", "-m", "feat: wt"], { encoding: "utf8" });
+  fs.mkdirSync(path.join(wt, ".github", "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(wt, ".github", "workflows", "ci.yml"), "name: CI\non: push\n", "utf8");
+  execFileSync("git", ["-C", wt, "add", "-A"], { encoding: "utf8" });
+  execFileSync("git", ["-C", wt, "commit", "-q", "-m", "ci"], { encoding: "utf8" });
+  const sha = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+
+  // A fake `gh` that deletes the feature checkout on its first poll — the
+  // concurrent `worktree-prune` from F-252 — then reports the run green.
+  const binDir = path.join(target, ".gh-stub");
+  fs.mkdirSync(binDir, { recursive: true });
+  const ghPath = path.join(binDir, "gh");
+  const statePath = path.join(target, ".gh-stub-state.json");
+  fs.writeFileSync(statePath, JSON.stringify({ sha, wt }), "utf8");
+  fs.writeFileSync(
+    ghPath,
+    "#!/usr/bin/env node\n" +
+      '"use strict";\n' +
+      "const fs = require('fs');\n" +
+      `const s = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, 'utf8'));\n` +
+      "const a = process.argv.slice(2);\n" +
+      "if (a[0] === '--version') { console.log('gh version 2.0.0'); process.exit(0); }\n" +
+      "if (a[0] === 'run' && a[1] === 'list') {\n" +
+      "  if (!fs.existsSync(s.wt + '.gone')) { fs.rmSync(s.wt, { recursive: true, force: true }); fs.writeFileSync(s.wt + '.gone', '1'); }\n" +
+      "  console.log(JSON.stringify([{ databaseId: 1, status: 'completed', conclusion: 'success', url: 'u', headSha: s.sha, name: 'CI' }]));\n" +
+      "  process.exit(0);\n" +
+      "}\n" +
+      "console.log('[]'); process.exit(0);\n",
+    "utf8"
+  );
+  fs.chmodSync(ghPath, 0o755);
+
+  const res = spawnSync(process.execPath, ["scripts/ship.js", "--no-gate"], {
+    cwd: wt,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HARNESS_SHIP_GH_BIN: ghPath,
+      HARNESS_SHIP_CI_NO_SLEEP: "1",
+      HARNESS_SHIP_CI_TIMEOUT_MS: "5000",
+    },
+  });
+  const out = (res.stdout || "") + (res.stderr || "");
+  assert.ok(!exists(wt), "the concurrent prune removed the feature worktree");
+  assert.strictEqual(res.status, 0, out);
+  assert.match(out, /CI green/);
 });
 
 function initShipRepoOnOrigin() {

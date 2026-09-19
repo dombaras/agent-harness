@@ -106,16 +106,29 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/* Run a `gh` command and parse its JSON stdout. Returns null on any failure
- * (non-zero exit, no gh, malformed JSON) — the caller decides whether that is
- * fatal. Never prints, so poll loops stay quiet. */
-function ghJson(root, args) {
-  const res = spawnSync(ghBin(), args, { cwd: root, encoding: "utf8" });
-  if (res.status !== 0) return null;
+/* Run a `gh` command and parse its JSON stdout. Returns `{ ok, data, error }`:
+ * `ok: false` on any failure (dead cwd, non-zero exit, no gh, malformed JSON)
+ * with `error` carrying the real reason — the caller decides whether that is
+ * fatal. Never prints, so poll loops stay quiet. The cwd is checked explicitly
+ * because a deleted working directory (a feature worktree pruned mid-watch)
+ * makes `spawnSync` fail with an opaque error and every poll silently return
+ * nothing — the F-252 phantom CI timeout. */
+function ghJson(cwd, args) {
+  if (!fs.existsSync(cwd)) {
+    return { ok: false, data: null, error: `working directory ${cwd} no longer exists` };
+  }
+  const res = spawnSync(ghBin(), args, { cwd, encoding: "utf8" });
+  if (res.status !== 0) {
+    const lines = `${res.stderr || ""}\n${res.stdout || ""}`
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    return { ok: false, data: null, error: lines[lines.length - 1] || `gh exited ${res.status}` };
+  }
   try {
-    return JSON.parse(String(res.stdout || "null"));
+    return { ok: true, data: JSON.parse(String(res.stdout || "null")), error: null };
   } catch {
-    return null;
+    return { ok: false, data: null, error: "gh returned malformed JSON" };
   }
 }
 
@@ -166,11 +179,24 @@ function ciConfig(root, args) {
   };
 }
 
+/* Consecutive `gh` failures tolerated before the watch says why it is stuck.
+ * `gh` can hiccup transiently, so a single failed poll is not news; a run of
+ * them means the watch is blind and the operator should know. */
+const CI_GH_FAILURE_WARN = 4;
+
 /* Wait for the CI workflow's run on the landed SHA to complete. Returns 0 when
- * green (success/skipped/neutral), 1 otherwise (failed or timeout — an
- * unobserved gate is not a passed gate). */
+ * green (success/skipped/neutral), 1 otherwise (failed, timeout, or a watch
+ * that went blind — an unobserved gate is not a passed gate).
+ *
+ * Polls from `opts.cwd` (the MAIN worktree), not the feature checkout `root`:
+ * CI is a property of the landed SHA on the remote, so the feature worktree is
+ * not needed to observe it, and a concurrent `worktree-prune` removing that
+ * checkout mid-watch must not blind the poll (the F-252 race — every `gh`
+ * spawn failed on the dead cwd, so a green run looked like a 20-minute
+ * timeout). A vanished cwd is reported immediately, never as a phantom timeout. */
 function waitCi(root, sha, opts) {
   const name = opts.workflow;
+  const cwd = opts.cwd || root;
   if (!name) {
     console.warn(
       "ship: no CI workflow detected — landed, but cannot confirm CI. Add a `.github/workflows/ci.yml` (name: CI)."
@@ -185,8 +211,10 @@ function waitCi(root, sha, opts) {
     return 1;
   }
   const deadline = Date.now() + opts.timeoutMs;
+  let failures = 0;
+  let warned = false;
   for (;;) {
-    const runs = ghJson(root, [
+    const res = ghJson(cwd, [
       "run",
       "list",
       "--workflow",
@@ -198,6 +226,39 @@ function waitCi(root, sha, opts) {
       "--json",
       "databaseId,status,conclusion,url,headSha,name",
     ]);
+    if (!res.ok) {
+      failures += 1;
+      if (!fs.existsSync(cwd)) {
+        fail(
+          `ship: landed ${sha.slice(0, 7)}, but the CI watch lost its working directory:\n` +
+            `      ${res.error}\n` +
+            "      The checkout was removed while CI was still being watched. Confirm CI from the main tree:\n" +
+            `        gh run list --workflow "${name}" --commit ${sha}`
+        );
+        return 1;
+      }
+      if (failures >= CI_GH_FAILURE_WARN && !warned) {
+        warned = true;
+        console.warn(
+          `ship: \`gh\` has failed ${failures} times while watching CI (${res.error}) — ` +
+            `still waiting until the ${Math.round(opts.timeoutMs / 60000)}m deadline.`
+        );
+      }
+      if (Date.now() >= deadline) {
+        fail(
+          `ship: timed out after ${Math.round(opts.timeoutMs / 60000)}m waiting for ${name} on ${sha.slice(0, 7)}.\n` +
+            `      The change LANDED; CI is not confirmed. Last \`gh\` error: ${res.error}\n` +
+            "      Check:\n" +
+            `        gh run list --workflow "${name}" --commit ${sha}`
+        );
+        return 1;
+      }
+      process.stdout.write(`[ci] waiting for ${name} on ${sha.slice(0, 7)}... \r`);
+      sleepSync(opts.pollMs);
+      continue;
+    }
+    failures = 0;
+    const runs = res.data;
     const run =
       (runs || []).find((r) => !r.headSha || r.headSha === sha) || (runs || [])[0] || null;
     if (run && run.status === "completed") {
@@ -263,8 +324,10 @@ function mainWorktreeRoot(root) {
  * (`reconcileDirtyBoard`); any OTHER dirty/detached/diverged main or an
  * untracked-file collision (the stray-handoff shape) is reported with the exact
  * manual fix, never force-resolved. */
-function convergeMainCheckout(root, base) {
-  const main = mainWorktreeRoot(root);
+function convergeMainCheckout(root, base, cachedMain) {
+  // Accept the main path resolved before landing: if the feature worktree was
+  // pruned mid-watch, walking it again here would fail and lose the reconcile.
+  const main = cachedMain || mainWorktreeRoot(root);
   if (!main) return;
   const upstream = `origin/${base}`;
   spawnSync("git", ["-C", main, "fetch", "--quiet", "origin"], { stdio: "ignore", timeout: 10000 });
@@ -562,6 +625,11 @@ function main() {
   const root = args.root ? path.resolve(args.root) : findRoot(process.cwd());
   if (!root) return fail("ship: no git repository found (no .git in this tree or its parents).");
 
+  // Resolve the main worktree NOW, while the feature checkout still exists: the
+  // CI watch and the board reconcile both run from main, so they survive the
+  // feature worktree being pruned mid-watch (the F-252 race).
+  const mainRoot = mainWorktreeRoot(root) || root;
+
   const base = args.base || "main";
   const branch = out("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: root });
   if (!branch) return fail("ship: could not resolve the current branch.");
@@ -627,17 +695,22 @@ function main() {
       "  CI is NOT confirmed (deliberate --no-ci-wait pause). Verify with:\n" +
         `    gh run list --workflow "${ciWorkflow(root) || "CI"}" --commit ${sha}`
     );
-    convergeMainCheckout(root, base);
+    convergeMainCheckout(root, base, mainRoot);
     return;
   }
 
   const { timeoutMs, pollMs } = ciConfig(root, args);
-  const code = waitCi(root, sha, { timeoutMs, pollMs, workflow: ciWorkflow(root) });
+  const code = waitCi(root, sha, {
+    timeoutMs,
+    pollMs,
+    workflow: ciWorkflow(root),
+    cwd: mainRoot,
+  });
   if (code !== 0) {
     process.exitCode = code;
     return;
   }
-  convergeMainCheckout(root, base);
+  convergeMainCheckout(root, base, mainRoot);
   console.log(
     "\n[ship] landed + CI green. Clean up the feature worktree when the session ends:\n" +
       "       node scripts/backlog.js worktree-prune"
