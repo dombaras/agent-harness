@@ -24,6 +24,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..");
 const SCHEMA = "checkpoint/1";
@@ -66,8 +67,38 @@ function parseArgs(argv) {
   return out;
 }
 
+/* Compare a feature id ("F-246") to a branch/dir name ("f-246", "F-246-...")
+ * ignoring case and separators. */
+function normalizeId(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/* When the session root is the MAIN tree but the feature has its own linked
+ * worktree (the mid-session-reroot case that is missed when `backlog worktree`
+ * is invoked via bash and no session pointer is recorded), the handoff belongs
+ * in the tree the work actually lives in. Returns the worktree path or null. */
+function featureWorktreeRoot(feature) {
+  const res = spawnSync("git", ["-C", root, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+  if (res.status !== 0) return null;
+  const want = normalizeId(feature);
+  let cur = null;
+  for (const line of String(res.stdout || "").split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      cur = { path: line.slice("worktree ".length).trim(), branch: "" };
+    } else if (cur && line.startsWith("branch ")) {
+      cur.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "").trim();
+      if (path.resolve(cur.path) === root) continue;
+      if (normalizeId(path.basename(cur.path)) === want || normalizeId(cur.branch) === want) {
+        return cur.path;
+      }
+    }
+  }
+  return null;
+}
+
 function handoffPath(feature) {
-  return path.join(root, ".agents", "handoffs", feature + ".md");
+  const base = featureWorktreeRoot(feature) || root;
+  return path.join(base, ".agents", "handoffs", feature + ".md");
 }
 
 /* Split the file into [before, checkpointBody, after] around the existing

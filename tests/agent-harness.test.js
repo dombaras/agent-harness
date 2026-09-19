@@ -3034,6 +3034,35 @@ test("backlog worktree records a session worktree pointer the tools read; archiv
   assert.ok(exists(path.join(t, ".serve", "sessions", "ses_other.worktree")), "other sessions' pointers untouched");
 });
 
+test("backlog worktree attributes its session pointer via the live-lease ancestry (bash invocation)", () => {
+  if (!fs.existsSync("/proc/self/stat")) return; // Linux/WSL: the ancestry probe is /proc-based
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+
+  // A tool call forwards HARNESS_SESSION_ID; the documented bash invocation does
+  // not. The context-guard lease for THIS process is a live ancestor of the CLI,
+  // so the pointer is attributed without the env var (the F-246 reroot gap that
+  // sent checkpoint_write to the main tree).
+  const leaseLib = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"));
+  leaseLib.writeLease(t, "ses_ancestor");
+
+  const dir = path.join(os.tmpdir(), `wt-ancestor-${path.basename(t)}`);
+  const res = spawnSync(
+    process.execPath,
+    ["scripts/backlog.js", "worktree", "F-001", "--branch", `anc-${path.basename(t)}`, "--dir", dir],
+    { cwd: t, encoding: "utf8", env: { ...process.env, HARNESS_SESSION_ID: "" } }
+  );
+  assert.strictEqual(res.status, 0, (res.stdout || "") + (res.stderr || ""));
+  const pointer = path.join(t, ".serve", "sessions", "ses_ancestor.worktree");
+  assert.ok(exists(pointer), "pointer attributed via the live-lease ancestry");
+  assert.strictEqual(read(pointer).trim(), dir, "pointer holds the absolute worktree path");
+});
+
 /* A feature-worktree push reaches `origin/main` without updating the main
  * checkout. These two tests cover the two ways `backlog worktree` handles that:
  * fast-forward a clean stale main, and base the new branch on origin/main even
@@ -3977,6 +4006,17 @@ test("context-guard injected text is byte-stable per band and never interpolated
   }
   assert.strictEqual(cg.bandText("unknown"), null);
   assert.ok(cg.LOOP_TEXT.startsWith("CONTEXT GUARD"));
+});
+
+test("context-guard forbids escaping the finalization watch via --no-watch", () => {
+  // The F-246 stop: at the checkpoint band the orchestrator chose `ship --no-watch`
+  // to dodge the turn budget and handed off, reporting "not done". The band text
+  // must now name the watch as the finalization step and the resume path.
+  assert.match(cg.BAND_TEXT.checkpoint, /ship` watch/, "checkpoint names the ship watch");
+  assert.match(cg.BAND_TEXT.checkpoint, /ship --no-watch/, "checkpoint forbids the --no-watch escape");
+  assert.match(cg.BAND_TEXT.checkpoint, /--watch-only/, "checkpoint names the resume path");
+  assert.match(cg.BAND_TEXT.hard, /ship` watch/, "hard band also allows the running watch to finish");
+  assert.match(cg.BAND_TEXT.hard, /pending landing/, "hard band warns a stopped watch is a pending landing");
 });
 
 test("context-guard composes band + funds + loop text in order (or null)", () => {
@@ -4982,6 +5022,31 @@ test("checkpoint writes a deterministic bounded-state block and resume prints it
   assert.match(empty.stderr, /empty checkpoint/);
 });
 
+test("checkpoint writes into the feature worktree when the session root is main", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  if (!exists(path.join(target, ".git"))) {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  }
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed"]);
+  const wt = path.join(os.tmpdir(), `cp-wt-${path.basename(target)}`);
+  execFileSync("git", ["-C", target, "worktree", "add", "-q", "-b", "f-246", wt, "HEAD"], { encoding: "utf8" });
+
+  // No session pointer (the bash-created-worktree case): the feature id matches
+  // the linked worktree, so the checkpoint must land there, not in main.
+  const cp = spawnSync(
+    process.execPath,
+    ["scripts/checkpoint.js", "write", "--feature", "F-246", "--objective", "fixture fix", "--next-action", "ship"],
+    { cwd: target, encoding: "utf8" }
+  );
+  assert.strictEqual(cp.status, 0, (cp.stdout || "") + (cp.stderr || ""));
+  assert.ok(exists(path.join(wt, ".agents", "handoffs", "F-246.md")), "checkpoint landed in the feature worktree");
+  assert.ok(!exists(path.join(target, ".agents", "handoffs", "F-246.md")), "no stray handoff in the main tree");
+});
+
 test("checkpoint CLI, tools, commands, and report:cost are deployed and stay harness-owned", async () => {
   const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "checkpoint.ts"));
   assert.match(tool, /export const write\b/);
@@ -5337,9 +5402,9 @@ function writeGhStub(target, state) {
   return ghPath;
 }
 
-function runShipWatch(target, ghPath, extraEnv) {
+function runShipWatch(target, ghPath, extraEnv, cwd) {
   const res = spawnSync(process.execPath, ["scripts/ship.js", "--watch-only", "--no-nudge"], {
-    cwd: target,
+    cwd: cwd || target,
     encoding: "utf8",
     env: {
       ...process.env,
@@ -5392,6 +5457,52 @@ test("ship --watch-only fails when the post-merge deploy is red", () => {
   const res = runShipWatch(target, ghPath);
   assert.strictEqual(res.status, 1, res.out);
   assert.match(res.out, /concluded "failure"/);
+});
+
+function initShipRepoOnOrigin() {
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q", "-b", "main"]);
+  const target = initShipRepo();
+  git(target, ["remote", "add", "origin", origin]);
+  git(target, ["push", "-q", "-u", "origin", "main"]);
+  // Advance origin/main from a second clone (the feature push the main tree misses).
+  const other = tmpdir();
+  execFileSync("git", ["clone", "-q", origin, other], { encoding: "utf8" });
+  git(other, ["config", "user.email", "o@o.o"]);
+  git(other, ["config", "user.name", "o"]);
+  fs.writeFileSync(path.join(other, "origin-only.txt"), "from origin\n", "utf8");
+  git(other, ["add", "-A"]);
+  git(other, ["commit", "-q", "-m", "origin advance"]);
+  git(other, ["push", "-q", "origin", "main"]);
+  return { origin, target };
+}
+
+test("ship --watch-only fast-forwards the main checkout so the board converges", () => {
+  const { target } = initShipRepoOnOrigin();
+  const wt = path.join(os.tmpdir(), `ship-conv-${path.basename(target)}`);
+  execFileSync("git", ["-C", target, "worktree", "add", "-q", "-b", "f-conv", wt, "HEAD"], { encoding: "utf8" });
+  fs.mkdirSync(path.join(wt, ".github", "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(wt, ".github", "workflows", "ci.yml"), "name: CI\non: push\n", "utf8");
+  fs.writeFileSync(path.join(wt, ".github", "workflows", "deploy-uat.yml"), "name: Deploy UAT\non: push\n", "utf8");
+  const sha = execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const ghPath = writeGhStub(target, { prState: "MERGED", sha });
+
+  const res = runShipWatch(target, ghPath, {}, wt);
+  assert.strictEqual(res.status, 0, res.out);
+  assert.match(res.out, /fast-forwarded the main checkout/);
+  const mainHead = execFileSync("git", ["-C", target, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const originHead = execFileSync("git", ["-C", target, "rev-parse", "origin/main"], { encoding: "utf8" }).trim();
+  assert.strictEqual(mainHead, originHead, "main checkout fast-forwarded to origin/main");
+  assert.ok(exists(path.join(target, "origin-only.txt")), "the origin-only commit is now in the main checkout");
+});
+
+test("[drift-guard] ship leaves a pending-landing ledger and converges main, never a silent 'shipped'", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
+  assert.match(src, /function convergeMainCheckout/, "the main checkout is converged after landing");
+  assert.match(src, /merge", "--ff-only", upstream/, "convergence is a fast-forward, never a reset");
+  assert.match(src, /phase: "enqueued"/, "the enqueue writes a pending-landing ledger");
+  assert.match(src, /ENQUEUED — NOT DONE/, "the no-watch epilogue says the task is not done");
+  assert.match(src, /landed: false,[\s\S]*watched: false/, "the ledger records watched:false while pending");
 });
 
 test("[drift-guard] ship runs the process gates itself and fails closed without a deploy workflow", () => {
@@ -5449,6 +5560,22 @@ test("agent-harness doctor reports release-cycle readiness", () => {
   assert.match(out, /agent-harness doctor/);
   assert.match(out, /CI workflow/);
   assert.match(out, /failure\(s\), \d+ warning\(s\)/);
+});
+
+test("agent-harness doctor surfaces a pending landing (enqueued, not confirmed)", () => {
+  const target = tmpdir();
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  fs.mkdirSync(path.join(target, ".serve"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".serve", "ship-23.json"),
+    JSON.stringify({ pr: 23, branch: "f-246", landed: false, watched: false, phase: "enqueued" }),
+    "utf8"
+  );
+  const cli = path.join(__dirname, "..", "bin", "agent-harness.js");
+  const res = spawnSync(process.execPath, [cli, "doctor", "--target", target], { encoding: "utf8" });
+  const out = (res.stdout || "") + (res.stderr || "");
+  assert.match(out, /pending landing #23/, "the unlanded enqueue is surfaced");
+  assert.match(out, /--watch-only/, "the exact resume command is printed");
 });
 
 test("deploy seeds the CI/CD release scaffold create-if-missing and wires test:push-refs", async () => {

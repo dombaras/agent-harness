@@ -40,13 +40,15 @@
  * `shipLabel` > `merge-train` when `.github/workflows/merge-train.yml` exists >
  * none (push + PR only).
  *
- * Watch is on by default whenever a landing label is applied (opt out with
- * `--no-watch`). Project overrides: `.harness.json` `shipWatch` (bool),
+ * Watch is on by default whenever a landing label is applied. `--no-watch`
+ * stops after enqueue and writes a pending-landing ledger — it is a pause, not
+ * a completion (resume with `--watch-only`; `doctor` surfaces the pending
+ * record). Project overrides: `.harness.json` `shipWatch` (bool),
  * `shipWatchTimeoutMinutes`, `shipWatchPollSeconds`, `shipWatchWorkflows`
  * (array of workflow names). Workflows default to every `.github/workflows/*`
  * named `CI` or matching /deploy/i. `--watch-only` skips steps 1-6 and just
  * watches the current branch's open PR (resume a session that stopped after
- * enqueue).
+ * enqueue), and fast-forwards the main checkout once the loop is green.
  *
  * Test seams (never set in normal use): `HARNESS_SHIP_GH_BIN` (alternate `gh`),
  * `HARNESS_SHIP_WATCH_NO_SLEEP=1` (skip the poll sleeps).
@@ -278,10 +280,20 @@ function watchLanding(root, prNumber, opts) {
       return 1;
     }
     console.log(`[watch] merged (SHA ${resolved.slice(0, 7)} via origin/${opts.base}).`);
-    return finishWatch(root, resolved, workflows, { timeoutMs, pollMs });
+    return landAndConverge(root, resolved, workflows, { timeoutMs, pollMs }, opts.base);
   }
   console.log(`[watch] merged (SHA ${sha.slice(0, 7)}).`);
-  return finishWatch(root, sha, workflows, { timeoutMs, pollMs });
+  return landAndConverge(root, sha, workflows, { timeoutMs, pollMs }, opts.base);
+}
+
+/* A confirmed landing is also the moment the MAIN checkout's board must
+ * converge: the feature landed from a linked worktree, so the main tree still
+ * shows the shipped row as active until someone pulls (the "row stuck in
+ * progress" report). Fast-forward main after the loop is green. */
+function landAndConverge(root, sha, workflows, opts, base) {
+  const code = finishWatch(root, sha, workflows, opts);
+  if (code === 0) convergeMainCheckout(root, base);
+  return code;
 }
 
 function finishWatch(root, sha, workflows, opts) {
@@ -329,6 +341,57 @@ function writeShipLedger(root, prNumber, entry) {
     );
   } catch {
     /* best-effort */
+  }
+}
+
+/* The MAIN worktree's path (first entry of `git worktree list --porcelain`), or
+ * null. `ship` runs in the feature worktree, so converging the board means
+ * acting on the main checkout's working tree. */
+function mainWorktreeRoot(root) {
+  const res = spawnSync("git", ["-C", root, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+  if (res.status !== 0) return null;
+  const first = String(res.stdout || "").split(/\r?\n/).find((l) => l.startsWith("worktree "));
+  return first ? first.slice("worktree ".length).trim() : null;
+}
+
+/* After a confirmed landing, fast-forward the MAIN checkout to origin/<base> so
+ * its BACKLOG.md/CHANGELOG.md reflect the archived row. Best-effort and
+ * fail-visible: a dirty/detached/diverged main or an untracked-file collision
+ * (the stray-handoff shape) is reported with the exact manual fix, never
+ * force-resolved. */
+function convergeMainCheckout(root, base) {
+  const main = mainWorktreeRoot(root);
+  if (!main) return;
+  const upstream = `origin/${base}`;
+  spawnSync("git", ["-C", main, "fetch", "--quiet", "origin"], { stdio: "ignore", timeout: 10000 });
+  const counts = out("git", ["rev-list", "--left-right", "--count", `HEAD...${upstream}`], { cwd: main });
+  if (!counts) return; // no upstream ref to compare against (offline / no remote)
+  const [ahead, behind] = counts.trim().split(/\s+/).map((n) => parseInt(n, 10) || 0);
+  if (!behind) return; // main already current (or ahead-only)
+  if (ahead) {
+    console.warn(
+      `[ship] main checkout is ${behind} behind and ${ahead} ahead of ${upstream} — not fast-forwarding; reconcile it manually: git -C ${main} pull --rebase`
+    );
+    return;
+  }
+  const dirty = out("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: main });
+  if (dirty) {
+    console.warn(
+      `[ship] main checkout has uncommitted tracked changes — not fast-forwarding; resolve them, then: git -C ${main} merge --ff-only ${upstream}`
+    );
+    return;
+  }
+  const ff = spawnSync("git", ["-C", main, "merge", "--ff-only", upstream], { encoding: "utf8" });
+  if (ff.status === 0) {
+    console.log(
+      `\n[ship] fast-forwarded the main checkout (${behind} commit(s)) — its board now reflects the landed row.`
+    );
+  } else {
+    console.warn(
+      `[ship] landed, but the main checkout could not fast-forward to ${upstream}:\n` +
+        `       ${(ff.stderr || ff.stdout || "").trim()}\n` +
+        `       If this is an untracked-file collision, remove the stray file, then: git -C ${main} merge --ff-only ${upstream}`
+    );
   }
 }
 
@@ -441,9 +504,10 @@ function usage() {
       "Never runs on main. Rebases on origin/<base>, runs the branch gates, pushes,\n" +
       "opens the PR, applies the landing label, then (by default) watches the PR until\n" +
       "the merge train lands it and the CI gates + UAT deploy go green on the merged\n" +
-      "SHA. `--no-watch` stops after enqueue; `--watch-only` just watches the current\n" +
-      "branch's open PR. Landing + the deploy remain the merge train's / CI's job —\n" +
-      "ship only observes them."
+      "SHA. `--no-watch` stops after enqueue — it leaves a pending-landing ledger\n" +
+      "(surfaced by `agent-harness doctor`) and is NOT a completed task; resume with\n" +
+      "`npm run ship -- --watch-only`. Landing + the deploy remain the merge train's /\n" +
+      "CI's job — ship only observes them."
   );
 }
 
@@ -514,12 +578,20 @@ function main() {
     if (!pr) {
       return fail(`ship: no PR found for branch "${branch}" — nothing to watch.\n      Run \`npm run ship\` first.`);
     }
-    process.exitCode = watchLanding(root, pr.number, {
+    const code = watchLanding(root, pr.number, {
       base,
       args,
       workflows: watchWorkflows(root),
       nudge: !args["no-nudge"],
     });
+    writeShipLedger(root, pr.number, {
+      branch,
+      base,
+      landed: code === 0,
+      watched: true,
+      phase: code === 0 ? "landed" : "pending",
+    });
+    process.exitCode = code;
     return;
   }
 
@@ -641,6 +713,20 @@ function main() {
     );
   }
 
+  // Persist the enqueue record BEFORE any watch. If the watch is skipped (a
+  // budget pause) this is the machine-readable "enqueued, not landed" state
+  // `agent-harness doctor` surfaces — a session can no longer stop at "pushed"
+  // and call it done.
+  if (pr.number) {
+    writeShipLedger(root, pr.number, {
+      branch,
+      base,
+      landed: false,
+      watched: false,
+      phase: "enqueued",
+    });
+  }
+
   // Watch the whole loop to completion: by default whenever the PR was
   // enqueued; explicitly with `--watch`; skipped with `--no-watch`.
   const shouldWatch =
@@ -653,7 +739,13 @@ function main() {
       workflows,
       nudge: !args["no-nudge"],
     });
-    writeShipLedger(root, pr.number, { branch, base, landed: code === 0 });
+    writeShipLedger(root, pr.number, {
+      branch,
+      base,
+      landed: code === 0,
+      watched: true,
+      phase: code === 0 ? "landed" : "pending",
+    });
     if (code !== 0) {
       process.exitCode = code;
       return;
@@ -668,10 +760,9 @@ function main() {
   console.log(
     `\nshipped ${branch} -> ${pr.url}` +
       (label && !args["no-label"] ? ` (label: ${label})` : "") +
-      "\n  Landing is the merge train's job; CI deploys the merged SHA to UAT.\n" +
-      "  Confirm with: gh pr view " +
-      (pr.number || "<number>") +
-      " --json state,mergedAt,labels"
+      "\n  ENQUEUED — NOT DONE. Landing is the merge train's job; CI deploys the merged SHA to UAT.\n" +
+      "  Do not report the task complete until the watch is green. Resume it with:\n" +
+      "    npm run ship -- --watch-only"
   );
 }
 

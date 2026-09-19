@@ -51,11 +51,11 @@ const BAND_TEXT = Object.freeze({
   warning:
     "CONTEXT GUARD — checkpoint warning: the orchestrator is approaching its turn budget (`checkpoint_warning_turn` in `.agents/memory/orchestration.md`). Finish the current step, then write compact deterministic state to `.agents/handoffs/<feature-id>.md` before starting more work.",
   checkpoint:
-    "CONTEXT GUARD — soft turn budget reached: checkpoint now — task id/feature/objective/phase, completed and active dispatches, files changed, contracts, known facts, decisions, risks, next_action — into `.agents/handoffs/<feature-id>.md`, and prefer a fresh bounded context over continuing this transcript.",
+    "CONTEXT GUARD — soft turn budget reached: checkpoint now — task id/feature/objective/phase, completed and active dispatches, files changed, contracts, known facts, decisions, risks, next_action — into `.agents/handoffs/<feature-id>.md`, and prefer a fresh bounded context over continuing this transcript. If the current step is the `ship` watch, that is the finalization step: let it run to completion — never replace it with `ship --no-watch` to escape the budget, and resume a deliberate pause only with `ship --watch-only`.",
   "new-context":
     "CONTEXT GUARD — strong new-context preference: do not keep growing this transcript. Checkpoint, then continue in a fresh bounded context that reads the checkpoint plus the current task only — never the replayed transcript.",
   hard:
-    "CONTEXT GUARD — hard safety ceiling reached: stop starting new work, checkpoint, and finish. A running tool call still completes — never kill it mid-operation.",
+    "CONTEXT GUARD — hard safety ceiling reached: stop starting new work, checkpoint, and finish. A running tool call still completes — never kill it mid-operation. If that running step is the `ship` watch, allow it to finish and report the landed SHA; a stopped watch is a pending landing, resumable only with `ship --watch-only`.",
 });
 
 const LOOP_TEXT =

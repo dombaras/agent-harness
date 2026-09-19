@@ -1098,6 +1098,26 @@ function whichBin(cmd, args) {
  * workflows, the pre-push guard, the Vercel link, and the local-only ignores.
  * Missing infrastructure is a `warn` (a project may not use that tier yet);
  * missing prerequisites for the cycle the harness promises are `fail`. */
+/* Ship attempts whose watch never completed (`.serve/ship-<pr>.json` with
+ * `landed:false`). `ship --no-watch` writes one, so a session that paused on the
+ * turn budget leaves a machine-readable "enqueued, not landed" record instead of
+ * a silent false completion. `doctor` surfaces it with the exact resume. */
+function readPendingShips(target) {
+  const dir = path.join(target, ".serve");
+  if (!fs.existsSync(dir)) return [];
+  const pending = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!/^ship-.*\.json$/.test(name)) continue;
+    try {
+      const rec = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+      if (rec && rec.landed === false) pending.push(rec);
+    } catch {
+      /* ignore a malformed ledger */
+    }
+  }
+  return pending;
+}
+
 function doctor(target) {
   const results = [];
   const add = (level, label, detail) => results.push({ level, label, detail });
@@ -1175,6 +1195,14 @@ function doctor(target) {
 
   if (config.shipLabel) add("ok", "ship label", config.shipLabel);
   if (Array.isArray(config.shipWatchWorkflows)) add("ok", "ship watch", config.shipWatchWorkflows.join(", ") || "(none)");
+
+  for (const p of readPendingShips(target)) {
+    add(
+      "warn",
+      `pending landing #${p.pr}`,
+      `"${p.branch}" was enqueued but never confirmed landed/deployed — resume: npm run ship -- --watch-only`
+    );
+  }
 
   return reportDoctor(results);
 }

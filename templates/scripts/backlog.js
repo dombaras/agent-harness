@@ -57,6 +57,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { splitCells, isSep, formatRow, findCycle } = require("./qa/board-lib.js");
+const leases = require("./qa/lease-lib.js");
 
 const PRIORITIES = { P1: 0, P2: 1, P3: 2, P4: 3 };
 
@@ -789,6 +790,51 @@ function sessionWorktreeFile(root, sessionID) {
   return path.join(root, ".serve", "sessions", `${sessionID}.worktree`);
 }
 
+/* The parent pid of `pid` from `/proc/<pid>/stat` (field 4). Parsing past the
+ * final `)` avoids a comm containing spaces/parens. Linux/WSL only; returns null
+ * elsewhere so the ancestry probe degrades to "no session". */
+function parentPid(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = stat.lastIndexOf(")");
+    if (close === -1) return null;
+    const ppid = Number(stat.slice(close + 2).trim().split(/\s+/)[1]);
+    return Number.isInteger(ppid) && ppid > 1 ? ppid : null;
+  } catch {
+    return null;
+  }
+}
+
+/* The session that owns this process. A tool call forwards HARNESS_SESSION_ID;
+ * the documented bash invocation (`node scripts/backlog.js worktree <id>`) does
+ * NOT, so walk the process ancestry to the live lease that owns this shell. The
+ * context-guard plugin heartbeats the lease on the `tool.execute.before` of the
+ * very bash call that runs this, so it is live and its pid is an ancestor.
+ * Without this the mid-session reroot never happens and later tools
+ * (`checkpoint_write`) keep writing to the main tree — the F-246 stray handoff. */
+function ancestorSessionId(root) {
+  const env = process.env.HARNESS_SESSION_ID;
+  if (env) return env;
+  let live;
+  try {
+    live = leases.liveLeases(root);
+  } catch {
+    return "";
+  }
+  const byPid = new Map(
+    live.filter((r) => typeof r.pid === "number" && r.sessionID).map((r) => [r.pid, r.sessionID])
+  );
+  if (byPid.size === 0) return "";
+  let pid = process.pid;
+  for (let i = 0; i < 64 && pid > 1; i++) {
+    if (byPid.has(pid)) return byPid.get(pid);
+    const next = parentPid(pid);
+    if (!next || next === pid) break;
+    pid = next;
+  }
+  return "";
+}
+
 function readSessionWorktree(root, sessionID) {
   if (!sessionID) return null;
   try {
@@ -1126,8 +1172,18 @@ function cmdWorktree(state, argv) {
   }
 
   // Root this session's tool calls in the worktree even though opencode's
-  // `context.worktree` stays pinned to the main tree it launched in.
-  writeSessionWorktree(root, process.env.HARNESS_SESSION_ID, dir);
+  // `context.worktree` stays pinned to the main tree it launched in. A bash
+  // invocation carries no HARNESS_SESSION_ID, so fall back to the live lease
+  // that owns this shell (see ancestorSessionId).
+  const sessionID = ancestorSessionId(root);
+  writeSessionWorktree(root, sessionID, dir);
+  if (!sessionID) {
+    console.warn(
+      "worktree: could not attribute this worktree to the calling session (no HARNESS_SESSION_ID, no live lease ancestor) —\n" +
+        "          later tool calls (e.g. checkpoint_write) will keep acting on the MAIN tree. Re-run via the `backlog_worktree`\n" +
+        "          tool, or create it with --open so the session is rooted in the worktree."
+    );
+  }
 
   return { id, branch, dir: rel, dirAbs: dir, base };
 }
