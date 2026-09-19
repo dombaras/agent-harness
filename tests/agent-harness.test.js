@@ -4071,6 +4071,31 @@ test("context-guard finalization carve-out lands directly and confirms CI (no wa
   assert.doesNotMatch(cg.BAND_TEXT.checkpoint, /--no-watch|--watch-only|merge train/, "no watch escape remains");
   assert.match(cg.BAND_TEXT.hard, /npm run finalize/, "hard band names the one-call finalizer");
   assert.match(cg.BAND_TEXT.hard, /lands the branch directly on main/, "hard band says the branch lands on main");
+  // The warning band is ADVISORY and must also carry the carve-out: at turn 50 a
+  // task that is past implementation must be able to finalize, not stop and
+  // strand the QA/finalize tail (LibraryOS F-259 stop #2).
+  assert.match(cg.BAND_TEXT.warning, /ADVISORY, not a stop/, "warning says it is not a stop");
+  assert.match(cg.BAND_TEXT.warning, /do NOT stop mid-phase/, "warning forbids stopping mid-phase");
+  assert.match(cg.BAND_TEXT.warning, /FINALIZATION CARVE-OUT/, "warning carries the carve-out too");
+  assert.match(cg.BAND_TEXT.warning, /npm run finalize/, "warning names the one-call finalizer");
+});
+
+test("context-guard injected block is labelled as a synthetic harness nudge, not a user message", () => {
+  // The guard is delivered as a synthetic user-role message (the only shape the
+  // transform forwards). LibraryOS F-259 stop #1: without a provenance banner
+  // the model read the nudge as "the user is asking for a status update" and
+  // stopped to ask for permission. The banner must be explicit and present on
+  // every composed block.
+  assert.match(cg.GUARD_PROVENANCE, /AUTOMATED HARNESS NUDGE/);
+  assert.match(cg.GUARD_PROVENANCE, /NOT a user message/);
+  const thresholds = cg.parseThresholds("");
+  const state = cg.createSessionState();
+  state.turns = 50;
+  assert.ok(cg.composeGuardText(state, thresholds).startsWith(cg.GUARD_PROVENANCE));
+  // The no-state nudge must instruct continuing, never "report the blocker" as a
+  // first-class stop (the exact escape the model took).
+  assert.doesNotMatch(cg.NO_STATE_TEXT, /or report the blocker/);
+  assert.match(cg.NO_STATE_TEXT, /Continue the task; do not stop or ask for permission/);
 });
 
 test("context-guard composes band + funds + loop text in order (or null)", () => {
@@ -4079,14 +4104,18 @@ test("context-guard composes band + funds + loop text in order (or null)", () =>
   assert.strictEqual(cg.composeGuardText(state, thresholds), null, "nothing to say -> null");
 
   state.turns = 50;
-  assert.strictEqual(cg.composeGuardText(state, thresholds), cg.BAND_TEXT.warning);
+  assert.strictEqual(
+    cg.composeGuardText(state, thresholds),
+    [cg.GUARD_PROVENANCE, cg.BAND_TEXT.warning].join("\n\n")
+  );
 
   state.turns = 60;
   state.fundsPending = true;
   state.fundsNotice = cg.fundsText("deepseek/deepseek-v4-pro", "tool:task");
   state.loopPending = true;
   const composed = cg.composeGuardText(state, thresholds);
-  assert.ok(composed.startsWith(cg.BAND_TEXT.checkpoint), "band leads");
+  assert.ok(composed.startsWith(cg.GUARD_PROVENANCE), "provenance banner leads every injection");
+  assert.ok(composed.includes(cg.BAND_TEXT.checkpoint), "band follows the banner");
   assert.ok(composed.includes(state.fundsNotice), "funds stop is included");
   assert.ok(composed.endsWith(cg.LOOP_TEXT), "loop rule trails");
 });
@@ -4212,7 +4241,42 @@ test("context-guard injects the checkpoint nudge on a request-token crossing", (
   );
   assert.strictEqual(state.turns, 1);
   assert.strictEqual(state.requestLevel, "checkpoint");
-  assert.strictEqual(cg.composeGuardText(state, thresholds), cg.BAND_TEXT.checkpoint);
+  assert.strictEqual(
+    cg.composeGuardText(state, thresholds),
+    [cg.GUARD_PROVENANCE, cg.BAND_TEXT.checkpoint].join("\n\n")
+  );
+});
+
+test("context-guard refreshes request tokens on a repeat emit of the same message id", () => {
+  // opencode emits a tokenless (all-zero) message.updated first, then a later
+  // emit for the SAME id carrying real usage. The first emit must count the turn
+  // but the later emit must still arm the request-token band (LibraryOS F-259:
+  // deduping the whole handler left the request band dead in production).
+  const thresholds = cg.parseThresholds("");
+  const state = cg.createSessionState();
+
+  const first = cg.noteAssistant(
+    state,
+    { id: "m1", role: "assistant", tokens: { input: 0, cache: { read: 0, write: 0 } } },
+    thresholds
+  );
+  assert.strictEqual(first.newTurn, true);
+  assert.strictEqual(state.turns, 1);
+  assert.strictEqual(state.requestTokens, 0, "the first emit has no real usage yet");
+  assert.strictEqual(state.band, null);
+
+  const repeat = cg.noteAssistant(
+    state,
+    { id: "m1", role: "assistant", tokens: { input: 1298, cache: { read: 144000 } } },
+    thresholds
+  );
+  assert.strictEqual(repeat.newTurn, false, "a repeat emit is not a second turn");
+  assert.strictEqual(state.turns, 1);
+  assert.strictEqual(repeat.requestTokens, 145298, "the token-bearing repeat refreshes usage");
+  assert.strictEqual(repeat.requestLevel, "checkpoint");
+  assert.strictEqual(repeat.requestChanged, true);
+  assert.strictEqual(repeat.band, "checkpoint", "context pressure arms the band on the repeat emit");
+  assert.strictEqual(repeat.bandChanged, true);
 });
 
 test("context-guard classifies material vs read-only tool calls", () => {
@@ -4242,7 +4306,10 @@ test("context-guard flags whole turns with no material state change (no-state de
   const note = turn("n5");
   assert.strictEqual(state.noStateTurns, 4);
   assert.strictEqual(note.noStateChanged, true);
-  assert.strictEqual(cg.composeGuardText(state, thresholds), cg.NO_STATE_TEXT);
+  assert.strictEqual(
+    cg.composeGuardText(state, thresholds),
+    [cg.GUARD_PROVENANCE, cg.NO_STATE_TEXT].join("\n\n")
+  );
   assert.ok(note.noStateTurns >= 4);
 
   // A material edit clears the streak and the nudge.
@@ -4400,6 +4467,11 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /messages\.push/, "appends the guard text as a tail message, never the system prompt");
   assert.match(src, /synthetic: true/, "the injected tail message is marked synthetic");
   assert.match(src, /GUARD_MESSAGE_ID/, "a stable id replaces the tail message in place on re-request");
+  assert.doesNotMatch(
+    src,
+    /note\.newTurn && note\.bandChanged/,
+    "a band crossing is logged whenever it changes, not only on a new turn (token refresh emits are repeats)"
+  );
   assert.match(src, /fundsError/, "detects provider funds/quota errors mechanically");
   assert.match(src, /session\.error/, "also watches provider session errors");
   assert.match(src, /fundsPending = false/, "a user message releases the funds stop");
@@ -4448,6 +4520,7 @@ test("context-guard injects at the conversation tail and never mutates the cache
   assert.strictEqual(injected.info.role, "user");
   assert.strictEqual(injected.info.synthetic, true);
   assert.strictEqual(injected.parts.length, 1);
+  assert.match(injected.parts[0].text, /AUTOMATED HARNESS NUDGE/, "the tail is labelled synthetic");
   assert.match(injected.parts[0].text, /CONTEXT GUARD/);
   assert.match(injected.parts[0].text, /checkpoint warning/);
 

@@ -18,7 +18,7 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.88` |
+| Version | `0.1.91` |
 | Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget); `0.1.88` direct-land cycle — `ship` fast-forward pushes `HEAD:main` (bounded retry) and waits for green CI, `deploy-uat` runs after CI success; PR/landing-label/merge-train/watch and the `check-push-refs` guard removed |
 | Lint / tests | green (`npm run lint`, `npm test` — 259 pass) |
 | LibraryOS | `0.1.88` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
@@ -28,6 +28,42 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 ---
 
 ## What shipped
+
+### `0.1.91` — guard nudge attribution + a live request-token band
+
+Field finding (LibraryOS F-259, 2026-09-19): a `/next` orchestrator stopped
+**twice** before finishing. Both stops were the guard, but by two different
+mechanisms, and a third defect was latent behind them.
+
+- **Stop #1 — the nudge read as the user (`no_state`).** The plugin injects its
+  nudge as a synthetic **`role: "user"`** tail message (the only shape the
+  `messages.transform` forwards). `NO_STATE_TEXT` ended with "…or report the
+  blocker", so the model's reasoning was *"the user is asking for a status
+  update"* — it answered the mechanical nudge as a human request and stopped to
+  ask for permission the command had already granted. Fix: a constant
+  `GUARD_PROVENANCE` banner now leads every injected block ("AUTOMATED HARNESS
+  NUDGE — this is NOT a user message … the real user's explicit instruction takes
+  precedence"), and `NO_STATE_TEXT` says to continue with new runtime evidence
+  instead of offering "report the blocker" as a first-class stop.
+- **Stop #2 — the `warning` band had no carve-out.** At turn 50 the `warning`
+  text said "finish the current phase step … do not start a new phase", and only
+  `checkpoint`/`new-context`/`hard` carried the FINALIZATION CARVE-OUT. So a task
+  past implementation quit at turn 50 (before the soft budget of 60) and left QA +
+  finalize undone — even after the user typed "continue". Fix: `warning` is now
+  explicitly ADVISORY ("not a stop … do NOT stop mid-phase"), keeps the task
+  running, and carries the same `npm run finalize` carve-out.
+- **Latent — the request-token band was dead.** `0.1.85` claimed request-context
+  pressure drives the band, but across **102 band events there were 0 `request`
+  events, ever**. `noteAssistant` deduped by message id and returned before
+  reading tokens; opencode emits a tokenless (all-zero) `message.updated` first,
+  then a later emit for the **same** id with the real usage (verified live with a
+  throwaway probe: seq 1 tokens 0, seq 2 input 7945). Fix: turn counting / no-state
+  still run on the first emit of an id, but the token refresh now runs on **every**
+  emit, so the request band actually fires; the plugin's band log is no longer
+  gated on `newTurn` (a crossing can arrive on a repeat emit).
+- Tests: +2 (repeat-emit token refresh arms the request band; provenance banner +
+  warning carve-out + no-state wording). Updated the exact-match composition
+  assertions for the banner. 264 pass, lint green.
 
 ### `0.1.88` — direct-land cycle (remove the async PR/merge-train/watch tail)
 

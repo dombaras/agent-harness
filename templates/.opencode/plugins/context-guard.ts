@@ -216,7 +216,10 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           }
           if (info?.role !== "assistant") return
           const note = guard.noteAssistant(stateFor(sid), info, loadThresholds())
-          if (note.newTurn && note.bandChanged && note.band) {
+          // Not gated on `newTurn`: a request-token crossing can arrive on a
+          // repeat emit of the same message (the token-bearing update), so the
+          // band transition must be logged whenever it actually changes.
+          if (note.bandChanged && note.band) {
             logEvent({ kind: "band", sessionID: info.sessionID, band: note.band, turn: note.turns })
             await report(`turn ${note.turns}: ${note.band} band`)
           }

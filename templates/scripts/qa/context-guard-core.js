@@ -64,7 +64,7 @@ const REQUEST_BAND = Object.freeze({
  * must not turn every request into a fresh cache write). */
 const BAND_TEXT = Object.freeze({
   warning:
-    "CONTEXT GUARD — checkpoint warning: the orchestrator is approaching its turn/context budget (`checkpoint_warning_turn` and the request-token levels in `.agents/memory/orchestration.md`). Finish the current phase step, then write ONE compact deterministic checkpoint to `.agents/handoffs/<feature-id>.md`. Do not start a new phase in this transcript.",
+    "CONTEXT GUARD — checkpoint warning (ADVISORY, not a stop): the orchestrator is approaching its turn/context budget (`checkpoint_warning_turn` and the request-token levels in `.agents/memory/orchestration.md`). Keep working: finish the current phase step and continue the task — do NOT stop mid-phase or ask for permission to continue. Write ONE compact deterministic checkpoint to `.agents/handoffs/<feature-id>.md` at the next natural phase boundary. FINALIZATION CARVE-OUT: if implementation + verification are complete and only the finalization tail remains (docs/CHANGELOG, archive, commit, land, confirm CI), do NOT stop — run `npm run finalize -- --feature <id>` ONCE and let it run to completion; that single call archives, commits, lands the branch directly on main, and confirms green CI (the deploy runs after CI).",
   checkpoint:
     "CONTEXT GUARD — soft turn budget reached: checkpoint ONCE now — task id/feature/objective/phase, completed and active dispatches, files changed, contracts, known facts, decisions, risks, next_action — into `.agents/handoffs/<feature-id>.md`, then STOP this transcript at the current phase boundary; a fresh bounded context resumes from the checkpoint. Do not begin the next phase here, and do not write a second checkpoint in this transcript. FINALIZATION CARVE-OUT: if implementation + verification are complete and only the finalization tail remains (docs/CHANGELOG, archive, commit, land, confirm CI), do NOT stop — run `npm run finalize -- --feature <id>` ONCE and let it run to completion; that single call archives, commits, lands the branch directly on main, and confirms green CI (the deploy runs after CI).",
   "new-context":
@@ -72,6 +72,16 @@ const BAND_TEXT = Object.freeze({
   hard:
     "CONTEXT GUARD — hard safety ceiling reached: stop starting new work, checkpoint once, and finish. A running tool call still completes — never kill it mid-operation. FINALIZATION CARVE-OUT: if only the finalization tail remains, run `npm run finalize -- --feature <id>` once and allow it to finish — it archives, commits, lands the branch directly on main, and confirms green CI. A landed change is a completed one; a red or unconfirmed CI is the blocker to record.",
 });
+
+/* Provenance banner prepended to every injected block. The guard is delivered as
+ * a synthetic user-role message (the only shape opencode forwards from the
+ * messages transform), so without an explicit banner the model can mistake the
+ * nudge for the human speaking. LibraryOS F-259: the model read the no-state
+ * nudge as "the user is asking for a status update" and stopped to ask for
+ * permission the `/next` command had already granted. Constant text, so the
+ * cached prefix stays byte-stable. */
+const GUARD_PROVENANCE =
+  "AUTOMATED HARNESS NUDGE — this is NOT a user message and NOT a user request. It is mechanical context-budget guidance from the agent harness. Keep executing the current task; the real user's explicit instruction takes precedence over this nudge except at the hard safety ceiling.";
 
 const LOOP_TEXT =
   "CONTEXT GUARD — repeated identical tool call detected (`identical_tool_calls` in `.agents/memory/orchestration.md`). Do not repeat it again: change instructions, context, model, decomposition, or diagnostics — or report the blocker. A retry must materially change something.";
@@ -81,7 +91,7 @@ const LOOP_TEXT =
  * no code/state change is not progress. Armed when whole turns pass with no
  * file/state mutation (`no_state_change_turns`). */
 const NO_STATE_TEXT =
-  "CONTEXT GUARD — no material state change detected across several turns (`no_state_change_turns` in `.agents/memory/orchestration.md`). Stop re-reading or re-checkpointing and make a materially changing action: edit code, run the failing gate with NEW diagnostics, change the decomposition/model — or report the blocker. Another checkpoint with no state change is not progress.";
+  "CONTEXT GUARD — no material state change detected across several turns (`no_state_change_turns` in `.agents/memory/orchestration.md`). Stop re-reading or re-checkpointing and make a materially changing action NOW: edit code, run the failing gate with NEW diagnostics, change the decomposition/model, or gather new runtime evidence (a DB query, a runtime probe, a live reproduction) — investigation that produces new facts counts as progress. Continue the task; do not stop or ask for permission. Another checkpoint with no state change is not progress.";
 
 /* Same-failure nudge. Distinct from `identical_tool_calls`: the failure is the
  * same even when the arguments differ. Armed when the same failure signature
@@ -246,10 +256,12 @@ function guardTexts(state, thresholds) {
 }
 
 /* The single block injected into the conversation TAIL (never the system prompt,
- * so the cached prefix stays byte-stable). Null when there is nothing to inject. */
+ * so the cached prefix stays byte-stable). The provenance banner leads so the
+ * synthetic user-role message can never be mistaken for the human. Null when
+ * there is nothing to inject. */
 function composeGuardText(state, thresholds) {
   const texts = guardTexts(state, thresholds);
-  return texts.length ? texts.join("\n\n") : null;
+  return texts.length ? [GUARD_PROVENANCE, ...texts].join("\n\n") : null;
 }
 
 function requestLevel(tokens, request) {
@@ -335,9 +347,16 @@ function createSessionState() {
 }
 
 /* Record an assistant message. `message.updated` fires repeatedly per message,
- * so dedupe by id; a new id is one orchestrator turn. Returns the transitions
- * (band + request level + no-state) for the plugin to log — never the raw
- * every-request state, so the JSONL only carries crossings.
+ * so a NEW id is one orchestrator turn; a repeat of a seen id is not. Returns
+ * the transitions (band + request level + no-state) for the plugin to log —
+ * never the raw every-request state, so the JSONL only carries crossings.
+ *
+ * Token refresh runs on EVERY emit, including repeats of a seen id. opencode
+ * emits a tokenless (all-zero) `message.updated` first, then a later emit for
+ * the SAME id carrying the real usage; deduping the whole handler dropped that
+ * second emit, so `requestTokens` never left 0 and the request-token band was
+ * dead in production (0 `request` guard events ever). Turn counting and the
+ * no-state detector still run only on the first emit of an id.
  *
  * A new turn also FINALIZES the previous turn's materiality: its tool calls
  * have all run by now, so `materialSeen` is authoritative for that turn. Whole
@@ -356,30 +375,35 @@ function noteAssistant(state, message, thresholds) {
     noStateTurns: state.noStateTurns,
   };
   const id = message?.id;
-  if (!id || state.assistantIds.has(id)) return out;
-  const priorTurns = state.turns;
-  state.assistantIds.add(id);
-  state.turns += 1;
-  out.newTurn = true;
-  out.turns = state.turns;
+  if (!id) return out;
 
-  if (priorTurns > 0) {
-    if (state.materialSeen) state.noStateTurns = 0;
-    else state.noStateTurns += 1;
-    state.materialSeen = false;
-    const nsThreshold = Number.isFinite(thresholds?.stuck?.no_state_change_turns)
-      ? thresholds.stuck.no_state_change_turns
-      : 4;
-    if (state.noStateTurns >= nsThreshold && !state.noStatePending) {
-      state.noStatePending = true;
-      out.noStateChanged = true;
+  const seen = state.assistantIds.has(id);
+  if (!seen) {
+    const priorTurns = state.turns;
+    state.assistantIds.add(id);
+    state.turns += 1;
+    out.newTurn = true;
+    out.turns = state.turns;
+
+    if (priorTurns > 0) {
+      if (state.materialSeen) state.noStateTurns = 0;
+      else state.noStateTurns += 1;
+      state.materialSeen = false;
+      const nsThreshold = Number.isFinite(thresholds?.stuck?.no_state_change_turns)
+        ? thresholds.stuck.no_state_change_turns
+        : 4;
+      if (state.noStateTurns >= nsThreshold && !state.noStatePending) {
+        state.noStatePending = true;
+        out.noStateChanged = true;
+      }
     }
+    out.noStatePending = state.noStatePending;
+    out.noStateTurns = state.noStateTurns;
   }
-  out.noStatePending = state.noStatePending;
-  out.noStateTurns = state.noStateTurns;
 
-  // Request tokens/level first, then derive the combined pressure band so a
-  // context-token crossing is reflected on the same turn it is observed.
+  // Token refresh on every emit (first or repeat), then derive the combined
+  // pressure band so a context-token crossing is reflected on the same emit it
+  // is observed — not just the first, tokenless one.
   const tokens = requestTokensOf(message);
   if (tokens != null) state.requestTokens = tokens;
   out.requestTokens = state.requestTokens;
@@ -600,6 +624,7 @@ module.exports = {
   DEFAULT_STUCK,
   DEFAULT_REQUEST,
   BAND_TEXT,
+  GUARD_PROVENANCE,
   NO_STATE_TEXT,
   FAILURE_TEXT,
   LOOP_TEXT,
