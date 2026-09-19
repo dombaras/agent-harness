@@ -193,6 +193,25 @@ if (!fs.existsSync(changelogPath)) {
     let m;
     while ((m = hashRe.exec(changelog)) !== null) cited.add(m[1].slice(0, 7).toLowerCase());
 
+    // A squash-merged PR lands as ONE new commit on the default branch whose
+    // hash differs from the branch commit the CHANGELOG entry cites. That commit
+    // ships its own CHANGELOG.md delta (the entry was authored on the branch and
+    // squashed in), so a commit that itself modifies CHANGELOG.md is
+    // self-documenting — do not demand a citation for its rewritten hash. A
+    // shipped commit that forgot the changelog has no CHANGELOG.md delta and is
+    // still flagged.
+    const selfDocLog = gitLog([
+      "log",
+      "--no-merges",
+      "--format=%h",
+      `${baseline.trim()}..HEAD`,
+      "--",
+      "CHANGELOG.md",
+    ]);
+    const selfDocumented = new Set(
+      selfDocLog ? selfDocLog.split(/\r?\n/).filter(Boolean).map((h) => h.toLowerCase()) : []
+    );
+
     const log = gitLog(["log", "--no-merges", "--format=%h%x09%s", `${baseline.trim()}..HEAD`]);
     if (log === null) {
       warn("git unavailable \u2014 changelog completeness skipped");
@@ -205,7 +224,9 @@ if (!fs.existsSync(changelogPath)) {
         const hash = line.slice(0, sep);
         const subject = line.slice(sep + 1);
         if (!/^(feat|fix|refactor|perf)(\([^)]*\))?:/.test(subject)) continue;
-        if (!cited.has(hash.toLowerCase())) missing.push({ hash, subject });
+        if (!cited.has(hash.toLowerCase()) && !selfDocumented.has(hash.toLowerCase())) {
+          missing.push({ hash, subject });
+        }
       }
 
       // 5. Review/audit deliverables are milestones too — a commit that ships
@@ -225,7 +246,7 @@ if (!fs.existsSync(changelogPath)) {
           if (sep < 0) continue;
           const hash = line.slice(0, sep);
           const subject = line.slice(sep + 1);
-          if (!cited.has(hash.toLowerCase())) {
+          if (!cited.has(hash.toLowerCase()) && !selfDocumented.has(hash.toLowerCase())) {
             missing.push({ hash, subject, note: "ships .agents/reviews/ — append a docs(review) changelog line" });
           }
         }

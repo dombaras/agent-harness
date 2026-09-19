@@ -5345,3 +5345,30 @@ test("test:qa-plan treats harness-shipped top-level scripts as tooling, not unco
   assert.strictEqual(res2.status, 1, res2.stdout + res2.stderr);
   assert.match(res2.stdout, /feature\.js NOT covered/);
 });
+
+test("test:docs accepts a squash-merged commit that ships its own changelog delta (rewritten hash)", () => {
+  const t = scaffoldDocsTarget();
+  fs.writeFileSync(path.join(t, "README.md"), "# Demo\n", "utf8");
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  fs.writeFileSync(path.join(t, "CHANGELOG.md"), "# Changelog\n", "utf8");
+  git(t, ["add", "README.md", "CHANGELOG.md"]);
+  git(t, ["commit", "-q", "-m", "docs: seed changelog"]);
+
+  // Squash-merge shape: ONE commit carries the code AND the changelog entry, but
+  // the entry cites the ORIGINAL branch commit hash, not this commit's rewritten
+  // hash — the gate must not demand a citation for the squash hash (F-235 drift).
+  fs.writeFileSync(path.join(t, "lib.js"), "x\n", "utf8");
+  fs.appendFileSync(
+    path.join(t, "CHANGELOG.md"),
+    "- 2026-09-05 `abc1234` \u2014 add thing (F-001)\n",
+    "utf8"
+  );
+  git(t, ["add", "lib.js", "CHANGELOG.md"]);
+  git(t, ["commit", "-q", "-m", "feat: add thing (F-001) (#7)"]);
+
+  const r = runDocsGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /recorded/);
+});
