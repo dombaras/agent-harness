@@ -171,6 +171,36 @@ function merge(baseSrc, oursSrc, theirsSrc) {
   return { resolved, conflicts };
 }
 
+/* A board-aware reconcile for a DIRTY main checkout that is strictly behind the
+ * integration branch. `base` is the checkout's committed board, `ours` its
+ * working board (carrying the `backlog worktree` take + any local-only rows),
+ * `theirs` the landed upstream board. A row archived upstream is authoritative
+ * over a stale local take, so that conflict resolves to the archive and the
+ * stale local copy is dropped; local-only rows survive. Genuine same-row
+ * conflicts (neither side an archive) return ok:false with the keys. */
+function reconcileBoard(baseSrc, oursSrc, theirsSrc) {
+  const { resolved, conflicts } = merge(baseSrc, oursSrc, theirsSrc);
+  const dropped = [];
+  const unresolved = [];
+  for (const c of conflicts) {
+    if (c.theirs && c.theirs.startsWith("archive\u0000")) {
+      const i = c.theirs.indexOf("\u0000");
+      resolved.set(c.key, {
+        key: c.key,
+        section: c.theirs.slice(0, i),
+        line: c.theirs.slice(i + 1),
+      });
+      dropped.push(c.key);
+      continue;
+    }
+    unresolved.push(c);
+  }
+  if (unresolved.length) {
+    return { ok: false, board: null, dropped: [], conflicts: unresolved.map((c) => c.key) };
+  }
+  return { ok: true, board: rebuild(oursSrc, resolved), dropped, conflicts: [] };
+}
+
 /* Rebuild the board from the OURS skeleton, replacing each section's table data
  * rows with the merged rows. Preserves OURS prose, headings, header/separator. */
 function rebuild(oursSrc, resolved) {
@@ -268,4 +298,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { splitCells, parseBoard, merge, rebuild, priorityRank };
+module.exports = { splitCells, parseBoard, merge, rebuild, reconcileBoard, priorityRank };

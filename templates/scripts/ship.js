@@ -11,6 +11,8 @@
  * mechanical:
  *
  *   1. refuse `main` on a dirty tree (never ship WIP or the integration branch);
+ *      a `.agents/handoffs/*` checkpoint left by a budget pause is the one
+ *      exception — it is auto-committed so the documented resume can run;
  *   2. integrate early — `git fetch origin` + `git rebase origin/<base>`;
  *   3. run the branch gates (default: `test:integrate`, else `test:backlog` +
  *      `test:concurrency` when the project defines them);
@@ -80,6 +82,33 @@ function out(cmd, args, opts) {
 
 function has(cmd) {
   return spawnSync(cmd, ["--version"], { stdio: "ignore" }).status === 0;
+}
+
+/* The path in a `git status --porcelain` line (`XY <path>`). Robust to the
+ * leading space `out()` trims off the FIRST line of a captured status: match the
+ * status code(s) + separator rather than assuming a fixed column. */
+function porcelainPath(line) {
+  const m = line.match(/^\s*[A-Z?!]{1,2}\s+(.*)$/);
+  return (m ? m[1] : line).trim().replace(/^"|"$/g, "");
+}
+
+/* The machine-written session handoff a budget-paused checkpoint leaves
+ * uncommitted. It is the one path `ship` auto-commits: leaving it dirty makes
+ * the documented resume (`npm run ship`) abort at the dirty-tree guard before it
+ * can push — the re-engagement loop (code committed, checkpoint dirty, ship
+ * refuses). Any other dirty tracked file still fails. */
+function isHandoffPath(p) {
+  return /^\.agents\/handoffs\//.test(p);
+}
+
+/* Stage + commit handoff-only dirt so the branch ships clean. */
+function commitSessionHandoffs(root, entries, branch) {
+  const paths = entries.map(porcelainPath);
+  console.log(
+    `\n[handoff] committing the session handoff checkpoint so the branch is clean: ${paths.join(", ")}`
+  );
+  if (!run("git", ["add", "--", ...paths], { cwd: root })) return false;
+  return run("git", ["commit", "-m", `docs(${branch}): session checkpoint`], { cwd: root });
 }
 
 /* The `gh` binary (overridable for tests). */
@@ -355,10 +384,11 @@ function mainWorktreeRoot(root) {
 }
 
 /* After a confirmed landing, fast-forward the MAIN checkout to origin/<base> so
- * its BACKLOG.md/CHANGELOG.md reflect the archived row. Best-effort and
- * fail-visible: a dirty/detached/diverged main or an untracked-file collision
- * (the stray-handoff shape) is reported with the exact manual fix, never
- * force-resolved. */
+ * its BACKLOG.md/CHANGELOG.md reflect the archived row. A board made dirty by
+ * the routine `backlog worktree` take is reconciled row-aware first
+ * (`reconcileDirtyBoard`); any OTHER dirty/detached/diverged main or an
+ * untracked-file collision (the stray-handoff shape) is reported with the exact
+ * manual fix, never force-resolved. */
 function convergeMainCheckout(root, base) {
   const main = mainWorktreeRoot(root);
   if (!main) return;
@@ -376,6 +406,11 @@ function convergeMainCheckout(root, base) {
   }
   const dirty = out("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: main });
   if (dirty) {
+    const dirtyPaths = dirty
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map(porcelainPath);
+    if (dirtyPaths.every((p) => p === "BACKLOG.md") && reconcileDirtyBoard(main, upstream, behind)) return;
     console.warn(
       `[ship] main checkout has uncommitted tracked changes — not fast-forwarding; resolve them, then: git -C ${main} merge --ff-only ${upstream}`
     );
@@ -393,6 +428,54 @@ function convergeMainCheckout(root, base) {
         `       If this is an untracked-file collision, remove the stray file, then: git -C ${main} merge --ff-only ${upstream}`
     );
   }
+}
+
+/* A landed feature leaves the main checkout's board dirty BY CONSTRUCTION: the
+ * `backlog worktree` take moved the row to In progress in the working copy while
+ * the landed commit archived it upstream. Refusing to fast-forward on that
+ * routine take is what left rows "stuck In progress" and forced a manual
+ * reconcile. When the ONLY dirty tracked file is BACKLOG.md, reconcile it
+ * row-aware against the landed board (an archived row wins over the stale local
+ * take; local-only rows survive), then fast-forward. Returns true on success. */
+function reconcileDirtyBoard(main, upstream, behind) {
+  const boardPath = path.join(main, "BACKLOG.md");
+  let localSrc;
+  try {
+    localSrc = fs.readFileSync(boardPath, "utf8");
+  } catch {
+    return false;
+  }
+  const baseSrc = out("git", ["show", `HEAD:BACKLOG.md`], { cwd: main });
+  const theirsSrc = out("git", ["show", `${upstream}:BACKLOG.md`], { cwd: main });
+  if (!baseSrc || !theirsSrc) return false;
+  let reconcile;
+  try {
+    reconcile = require("./qa/merge-backlog.js").reconcileBoard(baseSrc, localSrc, theirsSrc);
+  } catch {
+    return false; // merge-backlog not deployed / refactor — fall back to the warning
+  }
+  if (!reconcile.ok) {
+    console.warn(
+      `[ship] main checkout board has conflicting rows (${reconcile.conflicts.join(", ")}) — not fast-forwarding; reconcile it manually: git -C ${main} pull --rebase`
+    );
+    return false;
+  }
+  if (spawnSync("git", ["-C", main, "checkout", "--", "BACKLOG.md"], { encoding: "utf8" }).status !== 0) {
+    return false;
+  }
+  const ff = spawnSync("git", ["-C", main, "merge", "--ff-only", upstream], { encoding: "utf8" });
+  if (ff.status !== 0) {
+    fs.writeFileSync(boardPath, localSrc, "utf8"); // fast-forward failed — restore the edits we moved aside
+    return false;
+  }
+  fs.writeFileSync(boardPath, reconcile.board, "utf8");
+  console.log(
+    `\n[ship] fast-forwarded the main checkout (${behind} commit(s)) and reconciled its board — ` +
+      `kept local-only rows` +
+      (reconcile.dropped.length ? `; dropped the landed take (${reconcile.dropped.join(", ")})` : "") +
+      "."
+  );
+  return true;
 }
 
 function projectScripts(root) {
@@ -602,14 +685,22 @@ function main() {
     );
   }
 
-  const dirty = out("git", ["status", "--porcelain"], { cwd: root })
+  const entries = out("git", ["status", "--porcelain"], { cwd: root })
     .split(/\r?\n/)
-    .filter((l) => l && !l.startsWith("??") && !l.startsWith("!!"));
-  if (dirty.length > 0) {
+    .filter((l) => l && !l.startsWith("!!"));
+  // A budget pause writes the checkpoint into `.agents/handoffs/<id>.md`; commit
+  // that machine-written artifact here so the documented resume path works. Any
+  // other dirty tracked file is still a hard stop (never ship WIP).
+  const foreignTracked = entries.filter((l) => !l.startsWith("??") && !isHandoffPath(porcelainPath(l)));
+  if (foreignTracked.length > 0) {
     return fail(
       "ship: uncommitted tracked changes — commit first (the tests belong in the tree you ship):\n" +
-        dirty.map((l) => `      ${l}`).join("\n")
+        foreignTracked.map((l) => `      ${l}`).join("\n")
     );
+  }
+  const handoffs = entries.filter((l) => isHandoffPath(porcelainPath(l)));
+  if (handoffs.length > 0 && !commitSessionHandoffs(root, handoffs, branch)) {
+    return fail("ship: could not commit the session handoff checkpoint — commit it by hand, then re-run.");
   }
 
   if (!args["no-rebase"]) {

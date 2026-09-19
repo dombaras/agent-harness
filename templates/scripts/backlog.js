@@ -1069,6 +1069,17 @@ function refreshMainCheckout(root, opts) {
   // harness artifacts) are untracked and must not read as "dirty" mid-write.
   const dirty = gitCmd(root, ["status", "--porcelain", "--untracked-files=no"]);
   if ((dirty.stdout || "").trim()) {
+    // A prior feature's take leaves the board dirty by construction; when
+    // BACKLOG.md is the only dirty file, reconcile it row-aware against the
+    // landed board and fast-forward instead of stranding the checkout behind.
+    const paths = (dirty.stdout || "")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((l) => l.slice(3).trim());
+    if (paths.every((p) => p === "BACKLOG.md") && reconcileMainBoard(root, upstream)) {
+      notes.push(`fast-forwarded main to ${upstream} (${behind} commit(s)) and reconciled its board`);
+      return notes;
+    }
     notes.push(`main is ${behind} behind ${upstream} — uncommitted changes present; not fast-forwarding`);
     return notes;
   }
@@ -1076,6 +1087,38 @@ function refreshMainCheckout(root, opts) {
   if (ff.status === 0) notes.push(`fast-forwarded main to ${upstream} (${behind} commit(s))`);
   else notes.push(`main is ${behind} behind ${upstream} — could not fast-forward; reconcile manually`);
   return notes;
+}
+
+/* Row-aware reconcile for the routine dirty board: a prior `backlog worktree`
+ * take left BACKLOG.md In progress while the landed upstream archived the same
+ * row, which blocks a fast-forward on every subsequent worktree/archive. An
+ * archived upstream row wins over the stale local take; local-only rows
+ * survive. Fast-forwards on success, restoring the local edits if it cannot. */
+function reconcileMainBoard(root, upstream) {
+  const boardPath = path.join(root, "BACKLOG.md");
+  let localSrc;
+  try {
+    localSrc = fs.readFileSync(boardPath, "utf8");
+  } catch {
+    return false;
+  }
+  const base = gitCmd(root, ["show", "HEAD:BACKLOG.md"]);
+  const theirs = gitCmd(root, ["show", `${upstream}:BACKLOG.md`]);
+  if (base.status !== 0 || theirs.status !== 0) return false;
+  let rec;
+  try {
+    rec = require("./qa/merge-backlog.js").reconcileBoard(base.stdout || "", localSrc, theirs.stdout || "");
+  } catch {
+    return false;
+  }
+  if (!rec.ok) return false;
+  if (gitCmd(root, ["checkout", "--", "BACKLOG.md"]).status !== 0) return false;
+  if (gitCmd(root, ["merge", "--ff-only", upstream]).status !== 0) {
+    fs.writeFileSync(boardPath, localSrc, "utf8");
+    return false;
+  }
+  fs.writeFileSync(boardPath, rec.board, "utf8");
+  return true;
 }
 
 /* Run a project-supplied worktree bootstrap after `git worktree add`, so a fresh
