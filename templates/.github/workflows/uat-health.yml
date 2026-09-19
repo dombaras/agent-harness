@@ -1,0 +1,32 @@
+name: UAT health
+
+# Scheduled runtime probe of UAT. Set repository variable UAT_ALIAS (e.g.
+# `myapp-uat.vercel.app`) and, if the app exposes a DB-probing health endpoint,
+# point the probe at it. A failed run notifies the repo watchers by default,
+# which is the alert.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe UAT health endpoint
+        run: |
+          set -euo pipefail
+          alias="${{ vars.UAT_ALIAS }}"
+          if [ -z "$alias" ]; then
+            echo "::notice title=UAT health skipped::set repository variable UAT_ALIAS to probe it."
+            exit 0
+          fi
+          url="https://${alias}/api/health?live=1"
+          code=$(curl -sS -o /tmp/health.json -w "%{http_code}" "$url")
+          echo "HTTP $code"
+          cat /tmp/health.json
+          echo
+          test "$code" = "200"

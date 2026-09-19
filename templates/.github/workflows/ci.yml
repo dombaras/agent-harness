@@ -1,0 +1,85 @@
+name: CI
+
+# The gate every PR and every merge to the integration branch must pass. This is
+# the required check the merge train reads (`statusCheckRollup`): a PR with no CI
+# check can never be picked, so a project using the merge train MUST have this
+# workflow.
+#
+# Scope: project-owned gates. The harness-owned process gates (test:governance,
+# test:qa-plan, test:docs, ...) live in the gitignored harness tree; extend the
+# `static` job with them once the harness is CI-installable (run
+# `npx @dombaras/agent-harness update` in a setup step, or commit the tree).
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: Static + unit gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Lint
+        run: npm run lint --if-present
+      - name: Test
+        run: npm test --if-present
+
+  # DB-backed/API tiers. Off by default so a project can validate the service
+  # container once before it becomes required: set repository variable
+  # CI_RUNTIME=true to enable. Adapt the service/database to the project stack.
+  runtime:
+    name: Runtime gates
+    if: ${{ vars.CI_RUNTIME == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ci?schema=public
+      AUTH_SECRET: ci-runtime-gate-not-a-real-secret-000000000000000000000000000000000000
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Apply migrations
+        run: |
+          if [ -f prisma/schema.prisma ]; then npx prisma migrate deploy; fi
+      - name: API / ORM tier
+        run: npm run test:api --if-present
+      - name: Route tier
+        run: npm run test:routes --if-present

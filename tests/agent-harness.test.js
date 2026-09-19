@@ -5394,6 +5394,86 @@ test("ship --watch-only fails when the post-merge deploy is red", () => {
   assert.match(res.out, /concluded "failure"/);
 });
 
+test("[drift-guard] ship runs the process gates itself and fails closed without a deploy workflow", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
+  assert.match(src, /PROCESS_GATES/, "process gates are owned by ship, not only the git hook");
+  assert.match(src, /test:qa-plan -- --base=origin\//, "qa-plan is diff-scoped to the integration base");
+  assert.match(src, /--allow-no-deploy/, "explicit opt-out exists");
+  assert.match(src, /no CI\/deploy workflow was detected/, "no-deploy is fail-closed by default");
+  assert.match(src, /hasCiWorkflow/, "a merge-train label requires a CI workflow");
+  assert.match(src, /writeShipLedger/, "a resume/audit ledger is written");
+});
+
+test("harness maintenance push uses --no-verify so project hooks never strand it", () => {
+  const src = read(path.join(__dirname, "..", "bin", "agent-harness.js"));
+  assert.match(src, /\["push", "--no-verify", "origin", "HEAD"\]/);
+});
+
+test("check-push-refs refuses a direct push to main and allows a feature branch", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-push-refs.js"),
+    path.join(target, "scripts", "qa", "check-push-refs.js")
+  );
+  const run = (input, env) =>
+    spawnSync(process.execPath, ["scripts/qa/check-push-refs.js"], {
+      cwd: target,
+      encoding: "utf8",
+      input,
+      env: { ...process.env, ...(env || {}) },
+    });
+
+  const blocked = run("refs/heads/feat abc123 refs/heads/main def456\n");
+  assert.strictEqual(blocked.status, 1, blocked.stdout + blocked.stderr);
+  assert.match(blocked.stdout, /refusing to push refs\/heads\/main/);
+
+  const allowed = run("refs/heads/feat abc123 refs/heads/feat def456\n");
+  assert.strictEqual(allowed.status, 0, allowed.stdout + allowed.stderr);
+  assert.match(allowed.stdout, /no integration-branch ref/);
+
+  const override = run("refs/heads/x abc123 refs/heads/main def456\n", {
+    HARNESS_ALLOW_MAIN_PUSH: "1",
+  });
+  assert.strictEqual(override.status, 0, override.stdout + override.stderr);
+});
+
+test("agent-harness doctor reports release-cycle readiness", () => {
+  const target = tmpdir();
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  fs.writeFileSync(path.join(target, "README.md"), "x\n", "utf8");
+  const cli = path.join(__dirname, "..", "bin", "agent-harness.js");
+  const res = spawnSync(process.execPath, [cli, "doctor", "--target", target], { encoding: "utf8" });
+  const out = (res.stdout || "") + (res.stderr || "");
+  assert.match(out, /agent-harness doctor/);
+  assert.match(out, /CI workflow/);
+  assert.match(out, /failure\(s\), \d+ warning\(s\)/);
+});
+
+test("deploy seeds the CI/CD release scaffold create-if-missing and wires test:push-refs", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  for (const rel of [
+    ".github/workflows/ci.yml",
+    ".github/workflows/merge-train.yml",
+    ".github/workflows/deploy-uat.yml",
+    ".github/workflows/uat-health.yml",
+    ".husky/pre-push",
+    ".vercelignore",
+    "docs/ci-cd-pipeline.md",
+  ]) {
+    assert.ok(exists(path.join(target, rel)), `${rel} deployed`);
+  }
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["test:push-refs"], "node scripts/qa/check-push-refs.js");
+
+  // Project-owned afterwards: an update must never clobber an edited workflow.
+  fs.writeFileSync(path.join(target, ".github", "workflows", "ci.yml"), "name: Mine\n", "utf8");
+  await h.deploy(target, { yes: true, isUpdate: true, commit: false });
+  assert.strictEqual(read(path.join(target, ".github", "workflows", "ci.yml")), "name: Mine\n");
+});
+
+
 
 test("deploy ships the ship command and wires npm run ship", async () => {
   const target = tmpdir();

@@ -34,7 +34,7 @@
  *   node scripts/ship.js [--base main] [--label merge-train] [--gate "cmd"]...
  *                        [--no-rebase] [--no-gate] [--no-label] [--root dir]
  *                        [--watch|--no-watch] [--watch-only] [--no-nudge]
- *                        [--watch-timeout <min>] [--watch-poll <sec>]
+ *                        [--allow-no-deploy] [--watch-timeout <min>] [--watch-poll <sec>]
  *
  * Default label resolution: `--label` > $HARNESS_SHIP_LABEL > `.harness.json`
  * `shipLabel` > `merge-train` when `.github/workflows/merge-train.yml` exists >
@@ -234,7 +234,10 @@ function waitWorkflow(root, name, sha, opts) {
       fail(
         `ship: ${name} concluded "${run.conclusion}" on ${sha.slice(0, 7)}` +
           (run.url ? " — " + run.url : "") +
-          "\n      The change landed but did not deploy green — fix forward on a new branch."
+          (run.databaseId ? `\n      Failing logs: gh run view ${run.databaseId} --log-failed` : "") +
+          "\n      The change landed but did not deploy green — fix forward on a new branch.\n" +
+          "      Emergency rollback: re-run the deploy workflow on the previous good SHA\n" +
+          "        gh workflow run <deploy-workflow>.yml --ref main -f ref=<previous-good-sha>"
       );
       return false;
     }
@@ -312,30 +315,89 @@ function readJson(p) {
   }
 }
 
+/* Best-effort resume/audit record of a ship attempt, under the gitignored
+ * `.serve/`. A later (cheap) session can confirm the outcome without replaying
+ * the watch. Never fails the ship. */
+function writeShipLedger(root, prNumber, entry) {
+  try {
+    const dir = path.join(root, ".serve");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, `ship-${prNumber}.json`),
+      JSON.stringify({ ts: new Date().toISOString(), pr: prNumber, ...entry }, null, 2) + "\n",
+      "utf8"
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
 function projectScripts(root) {
   const pkg = readJson(path.join(root, "package.json"));
   return (pkg && pkg.scripts) || {};
 }
 
-/* Default gate commands: the integration gate is the one-shot; fall back to the
- * board + concurrency pair when the project has no `test:integrate`. */
-function defaultGates(root) {
+/* Process gates that must run on every ship regardless of whether the project's
+ * pre-push hook is installed. A missing hook (fresh worktree, `--no-verify`)
+ * must never silently drop the board/QA/docs gates — `ship` is the deterministic
+ * finalizer, so it owns them itself. */
+const PROCESS_GATES = [
+  "test:dispatch",
+  "test:governance",
+  "test:concurrency",
+  "test:backlog",
+  "test:wiring",
+  "test:product",
+  "test:docs",
+  "test:quality",
+];
+
+/* Default gate commands: the integration gate is the one-shot; the process
+ * gates always run when the project defines them. `test:qa-plan` is diff-scoped
+ * and must compare against the integration base — `--base=HEAD` would be a
+ * trivially empty diff. */
+function defaultGates(root, base) {
   const scripts = projectScripts(root);
-  if (scripts["test:integrate"]) return ["npm run test:integrate"];
   const gates = [];
-  if (scripts["test:backlog"]) gates.push("npm run test:backlog");
-  if (scripts["test:concurrency"]) gates.push("npm run test:concurrency");
+  if (scripts["test:integrate"]) gates.push("npm run test:integrate");
+  for (const name of PROCESS_GATES) {
+    if (scripts[name]) gates.push(`npm run ${name}`);
+  }
+  if (scripts["test:qa-plan"]) gates.push(`npm run test:qa-plan -- --base=origin/${base}`);
   return gates;
 }
 
+/* Whether a pre-push hook is installed (husky via core.hooksPath, or the
+ * default hooks dir). Only used for an advisory: project test gates stay in the
+ * hook/CI, while the process gates above never depend on it. */
+function prePushInstalled(root) {
+  if (fs.existsSync(path.join(root, ".husky", "_", "pre-push"))) return true;
+  if (fs.existsSync(path.join(root, ".husky", "pre-push"))) return true;
+  const hooksPath = out("git", ["config", "core.hooksPath"], { cwd: root });
+  if (hooksPath) return true;
+  const p = out("git", ["rev-parse", "--git-path", "hooks/pre-push"], { cwd: root });
+  return !!(p && fs.existsSync(path.resolve(root, p)));
+}
+
 /* Resolve the landing label: explicit > env > .harness.json > merge-train (when
- * the project has a merge-train workflow) > none. */
+ * the project has BOTH a merge-train workflow and a CI workflow) > none.
+ *
+ * The CI requirement is not cosmetic: the merge train only picks a PR with a
+ * non-empty all-green `statusCheckRollup`. Without CI, applying the label would
+ * enqueue a PR that can never land, and `ship` would hang until its watch
+ * timeout — a fail-loud is better than a silent deadlock. */
+function hasCiWorkflow(root) {
+  return workflowNames(root).some((n) => /^ci$/i.test(n));
+}
 function resolveLabel(root, explicit) {
   if (explicit) return explicit;
   if (process.env.HARNESS_SHIP_LABEL) return process.env.HARNESS_SHIP_LABEL;
   const config = readJson(path.join(root, ".harness.json"));
   if (config && config.shipLabel) return String(config.shipLabel);
-  if (fs.existsSync(path.join(root, ".github", "workflows", "merge-train.yml"))) return "merge-train";
+  if (fs.existsSync(path.join(root, ".github", "workflows", "merge-train.yml"))) {
+    if (!hasCiWorkflow(root)) return null;
+    return "merge-train";
+  }
   return null;
 }
 
@@ -351,6 +413,7 @@ function parseArgs(argv) {
     else if (a === "--no-watch") args["no-watch"] = true;
     else if (a === "--watch-only") args["watch-only"] = true;
     else if (a === "--no-nudge") args["no-nudge"] = true;
+    else if (a === "--allow-no-deploy") args["allow-no-deploy"] = true;
     else if (a === "--watch-timeout") args["watch-timeout"] = argv[++i];
     else if (a === "--watch-poll") args["watch-poll"] = argv[++i];
     else if (a === "--no-rebase") args["no-rebase"] = true;
@@ -368,7 +431,7 @@ function usage() {
       "  node scripts/ship.js [--base main] [--label <name>] [--gate \"<cmd>\"]...\n" +
       "                       [--no-rebase] [--no-gate] [--no-label] [--root <dir>]\n" +
       "                       [--watch|--no-watch] [--watch-only] [--no-nudge]\n" +
-      "                       [--watch-timeout <min>] [--watch-poll <sec>]\n\n" +
+      "                       [--allow-no-deploy] [--watch-timeout <min>] [--watch-poll <sec>]\n\n" +
       "Never runs on main. Rebases on origin/<base>, runs the branch gates, pushes,\n" +
       "opens the PR, applies the landing label, then (by default) watches the PR until\n" +
       "the merge train lands it and the CI gates + UAT deploy go green on the merged\n" +
@@ -482,12 +545,18 @@ function main() {
   }
 
   if (!args["no-gate"]) {
-    const gates = args.gates.length ? args.gates : defaultGates(root);
+    const gates = args.gates.length ? args.gates : defaultGates(root, base);
     if (gates.length === 0) {
       console.warn("ship: no branch gates found (set --gate or define test:integrate) — skipping.");
     }
     for (const gate of gates) {
       if (!run(gate, [], { cwd: root, shell: true })) return fail(`ship: gate failed: ${gate}`);
+    }
+    if (!prePushInstalled(root)) {
+      console.warn(
+        "ship: no pre-push hook detected — project test gates (e.g. test:quick) will run in CI only.\n" +
+          "      Install the hook (husky) or rely on CI as the backstop."
+      );
     }
   }
 
@@ -527,6 +596,26 @@ function main() {
   }
 
   const label = resolveLabel(root, args.label);
+  const workflows = watchWorkflows(root);
+  const config = readJson(path.join(root, ".harness.json")) || {};
+  if (label && config.shipLabel && label !== "merge-train") {
+    console.warn(
+      `ship: shipLabel "${label}" is not "merge-train" — the merge-train workflow filters on the\n` +
+        '      literal "merge-train" label. Edit the workflow to match, or the PR will never land.'
+    );
+  }
+
+  // Fail closed: a queued PR with no CI/deploy workflow to watch would report a
+  // green "done" without ever verifying a deploy. Refuse rather than mislead —
+  // unless the project explicitly opts out with --allow-no-deploy.
+  if (label && !args["no-label"] && workflows.length === 0 && !args["allow-no-deploy"]) {
+    return fail(
+      `ship: PR #${pr.number} would be queued, but no CI/deploy workflow was detected on the merged SHA.\n` +
+        `      Detected workflows: [${workflowNames(root).join(", ") || "none"}].\n` +
+        "      Set .harness.json shipWatchWorkflows, or pass --allow-no-deploy to land without a deploy check."
+    );
+  }
+
   if (label && !args["no-label"]) {
     if (!pr.number) {
       return fail(`ship: could not resolve the PR number for ${pr.url} — apply the label manually.`);
@@ -539,7 +628,11 @@ function main() {
     }
     console.log(`\n[label] applied "${label}" — PR #${pr.number} is queued for the merge train.`);
   } else if (!label) {
-    console.warn("ship: no landing label configured — PR opened but not enqueued (use --label to set one).");
+    console.warn(
+      "ship: no landing label configured — PR opened but not enqueued.\n" +
+        "      (A merge-train workflow with no CI workflow is intentionally not auto-labeled —\n" +
+        "       the train cannot land a PR with no checks. Use --label to override.)"
+    );
   }
 
   // Watch the whole loop to completion: by default whenever the PR was
@@ -551,13 +644,18 @@ function main() {
     const code = watchLanding(root, pr.number, {
       base,
       args,
-      workflows: watchWorkflows(root),
+      workflows,
       nudge: !args["no-nudge"],
     });
+    writeShipLedger(root, pr.number, { branch, base, landed: code === 0 });
     if (code !== 0) {
       process.exitCode = code;
       return;
     }
+    console.log(
+      "\n[ship] landed + deployed. Clean up the feature worktree when the session ends:\n" +
+        "       node scripts/backlog.js worktree-prune"
+    );
     return;
   }
 
