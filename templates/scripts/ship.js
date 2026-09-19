@@ -7,7 +7,8 @@
  * not at the merge. That finalization was manual, so a session could stop at
  * "gates green on my branch" and the PR was never enqueued into the landing
  * queue (the F-235 field incident: PR #17 opened, never labeled `merge-train`,
- * so the train never saw it). `ship` makes the enqueue mechanical:
+ * so the train never saw it). `ship` makes BOTH the enqueue and the landing
+ * mechanical:
  *
  *   1. refuse `main` on a dirty tree (never ship WIP or the integration branch);
  *   2. integrate early — `git fetch origin` + `git rebase origin/<base>`;
@@ -16,20 +17,39 @@
  *   4. `git push` the branch (force-with-lease only when the remote branch
  *      already exists, i.e. the rebase rewrote a previously-pushed branch);
  *   5. open the PR if none is open, or reuse the existing one (`gh`);
- *   6. apply the landing label so the merge train can pick it up.
+ *   6. apply the landing label so the merge train can pick it up;
+ *   7. **watch the whole loop to completion** — poll the PR until the merge
+ *      train lands it, then wait for the CI gates and the UAT deploy on the
+ *      merged SHA. A session that ran `ship` no longer has to stop at
+ *      "shipped/enqueued": `ship` exits 0 only once the change is landed and
+ *      deployed, or non-zero with the concrete blocker + exact next command.
  *
  * Landing remains the merge train's job and CI owns the UAT deploy; `ship`
- * only guarantees the PR is *queued*. If `gh` is unavailable it stops after the
- * push and exits non-zero with the exact PR/label commands to run — a silent
- * "pushed, done" is never possible.
+ * never merges by hand and never pushes to `main`. The watch only *observes*
+ * `gh` state (it may nudge the train once — see `--no-nudge`). If `gh` is
+ * unavailable it stops after the push and exits non-zero with the exact
+ * PR/label commands to run — a silent "pushed, done" is never possible.
  *
  * Usage:
  *   node scripts/ship.js [--base main] [--label merge-train] [--gate "cmd"]...
  *                        [--no-rebase] [--no-gate] [--no-label] [--root dir]
+ *                        [--watch|--no-watch] [--watch-only] [--no-nudge]
+ *                        [--watch-timeout <min>] [--watch-poll <sec>]
  *
  * Default label resolution: `--label` > $HARNESS_SHIP_LABEL > `.harness.json`
  * `shipLabel` > `merge-train` when `.github/workflows/merge-train.yml` exists >
  * none (push + PR only).
+ *
+ * Watch is on by default whenever a landing label is applied (opt out with
+ * `--no-watch`). Project overrides: `.harness.json` `shipWatch` (bool),
+ * `shipWatchTimeoutMinutes`, `shipWatchPollSeconds`, `shipWatchWorkflows`
+ * (array of workflow names). Workflows default to every `.github/workflows/*`
+ * named `CI` or matching /deploy/i. `--watch-only` skips steps 1-6 and just
+ * watches the current branch's open PR (resume a session that stopped after
+ * enqueue).
+ *
+ * Test seams (never set in normal use): `HARNESS_SHIP_GH_BIN` (alternate `gh`),
+ * `HARNESS_SHIP_WATCH_NO_SLEEP=1` (skip the poll sleeps).
  */
 const fs = require("fs");
 const path = require("path");
@@ -58,6 +78,219 @@ function out(cmd, args, opts) {
 
 function has(cmd) {
   return spawnSync(cmd, ["--version"], { stdio: "ignore" }).status === 0;
+}
+
+/* The `gh` binary (overridable for tests). */
+function ghBin() {
+  return process.env.HARNESS_SHIP_GH_BIN || "gh";
+}
+
+/* Synchronous sleep — a poll loop must not need async/await. `Atomics.wait` is
+ * a real blocking wait (setTimeout would not block the event loop). The test
+ * seam skips it so the watch tests run instantly. */
+function sleepSync(ms) {
+  if (process.env.HARNESS_SHIP_WATCH_NO_SLEEP) return;
+  if (!(ms > 0)) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/* Run a `gh` command and parse its JSON stdout. Returns null on any failure
+ * (non-zero exit, no gh, malformed JSON) — the caller decides whether that is
+ * fatal. Never prints, so poll loops stay quiet. */
+function ghJson(root, args) {
+  const res = spawnSync(ghBin(), args, { cwd: root, encoding: "utf8" });
+  if (res.status !== 0) return null;
+  try {
+    return JSON.parse(String(res.stdout || "null"));
+  } catch {
+    return null;
+  }
+}
+
+/* Read the `name:` of each workflow file under `.github/workflows`. Used to
+ * auto-detect which workflows a merge must run (CI + a deploy). Best-effort:
+ * a file without a `name:` is skipped. */
+function workflowNames(root) {
+  const dir = path.join(root, ".github", "workflows");
+  const names = [];
+  if (!fs.existsSync(dir)) return names;
+  for (const file of fs.readdirSync(dir)) {
+    if (!/\.ya?ml$/i.test(file)) continue;
+    const src = fs.readFileSync(path.join(dir, file), "utf8");
+    const m = src.match(/^name:\s*(.+)$/m);
+    if (m) names.push(m[1].trim().replace(/^["']|["']$/g, ""));
+  }
+  return names;
+}
+
+/* Which workflows must go green on the merge commit for the loop to be done:
+ * `.harness.json` `shipWatchWorkflows` when set, else every workflow named `CI`
+ * or matching /deploy/i (e.g. "CI", "Deploy UAT"). Empty = landing is the only
+ * observable (no CI/deploy workflow). */
+function watchWorkflows(root) {
+  const config = readJson(path.join(root, ".harness.json"));
+  if (config && Array.isArray(config.shipWatchWorkflows) && config.shipWatchWorkflows.length) {
+    return config.shipWatchWorkflows.map((n) => String(n));
+  }
+  return workflowNames(root).filter((n) => /^ci$/i.test(n) || /deploy/i.test(n));
+}
+
+/* A PR check rollup is "green" when at least one check exists and every check
+ * concluded SUCCESS/SKIPPED/NEUTRAL. */
+function checksGreen(rollup) {
+  if (!Array.isArray(rollup) || rollup.length === 0) return false;
+  return rollup.every((c) => ["SUCCESS", "SKIPPED", "NEUTRAL"].includes(c.conclusion));
+}
+
+function watchConfig(root, args) {
+  const config = readJson(path.join(root, ".harness.json")) || {};
+  // Precedence: CLI flag > test-seam env > .harness.json > default.
+  const envTimeout = Number(process.env.HARNESS_SHIP_WATCH_TIMEOUT_MS);
+  const envPoll = Number(process.env.HARNESS_SHIP_WATCH_POLL_MS);
+  const timeoutMinutes =
+    args["watch-timeout"] !== undefined
+      ? Number(args["watch-timeout"])
+      : Number.isFinite(envTimeout) && envTimeout > 0
+        ? envTimeout / 60000
+        : Number(config.shipWatchTimeoutMinutes) || 20;
+  const pollSeconds =
+    args["watch-poll"] !== undefined
+      ? Number(args["watch-poll"])
+      : Number.isFinite(envPoll) && envPoll > 0
+        ? envPoll / 1000
+        : Number(config.shipWatchPollSeconds) || 15;
+  return {
+    timeoutMs: Math.max(1, Math.round(timeoutMinutes * 60 * 1000)),
+    pollMs: Math.max(1, Math.round(pollSeconds * 1000)),
+  };
+}
+
+/* Wait until the merge train lands PR <prNumber>. Returns the merge SHA ("" on
+ * timeout/close). Optionally nudges the train once, once checks are green, when
+ * the PR is labeled `merge-train` and its workflow exists — the field case this
+ * exists for is a project whose train drains only on a slow schedule. */
+function waitForMerge(root, prNumber, opts) {
+  const deadline = Date.now() + opts.timeoutMs;
+  let nudged = false;
+  for (;;) {
+    const info = ghJson(root, [
+      "pr",
+      "view",
+      String(prNumber),
+      "--json",
+      "state,mergedAt,mergeCommit,statusCheckRollup",
+    ]);
+    if (info && info.state === "MERGED") {
+      return (info.mergeCommit && info.mergeCommit.oid) || "";
+    }
+    if (info && info.state === "CLOSED" && !info.mergedAt) {
+      fail(`ship: PR #${prNumber} was closed without merging — the change did not land.`);
+      return null;
+    }
+    if (!nudged && opts.nudge && info && checksGreen(info.statusCheckRollup)) {
+      console.log("\n[watch] checks are green but the PR has not landed — dispatching the merge train once.");
+      run(ghBin(), ["workflow", "run", "merge-train.yml", "--ref", opts.base], { cwd: root });
+      nudged = true;
+    }
+    if (Date.now() >= deadline) {
+      fail(
+        `ship: timed out after ${Math.round(opts.timeoutMs / 60000)}m waiting for PR #${prNumber} to land.\n` +
+          "      The change is ENQUEUED, not landed. Check the train / branch protection, then resume:\n" +
+          `        gh pr view ${prNumber} --json state,mergedAt,labels\n` +
+          "        npm run ship -- --watch-only"
+      );
+      return null;
+    }
+    process.stdout.write(`[watch] waiting for PR #${prNumber} to land... \r`);
+    sleepSync(opts.pollMs);
+  }
+}
+
+/* Wait for one workflow's run on the merge SHA to complete. Returns true when
+ * it is green (success/skipped), false (after failing) otherwise. A timeout is
+ * a failure — an unobserved deploy is not a deployed change. */
+function waitWorkflow(root, name, sha, opts) {
+  const deadline = Date.now() + opts.timeoutMs;
+  for (;;) {
+    const runs = ghJson(root, [
+      "run",
+      "list",
+      "--workflow",
+      name,
+      "--commit",
+      sha,
+      "--limit",
+      "10",
+      "--json",
+      "databaseId,status,conclusion,url,headSha,name",
+    ]);
+    const run =
+      (runs || []).find((r) => !r.headSha || r.headSha === sha) || (runs || [])[0] || null;
+    if (run && run.status === "completed") {
+      if (["success", "skipped", "neutral"].includes(run.conclusion)) {
+        console.log(`[watch] ${name} green on ${sha.slice(0, 7)}${run.url ? " — " + run.url : ""}`);
+        return true;
+      }
+      fail(
+        `ship: ${name} concluded "${run.conclusion}" on ${sha.slice(0, 7)}` +
+          (run.url ? " — " + run.url : "") +
+          "\n      The change landed but did not deploy green — fix forward on a new branch."
+      );
+      return false;
+    }
+    if (Date.now() >= deadline) {
+      fail(
+        `ship: timed out after ${Math.round(opts.timeoutMs / 60000)}m waiting for ${name} on ${sha.slice(0, 7)}.\n` +
+          `      The change landed; the deploy is not confirmed. Check:\n        gh run list --workflow "${name}" --commit ${sha}`
+      );
+      return false;
+    }
+    process.stdout.write(`[watch] waiting for ${name} on ${sha.slice(0, 7)}... \r`);
+    sleepSync(opts.pollMs);
+  }
+}
+
+/* The full post-enqueue loop: merge -> CI -> deploy. Returns an exit code. */
+function watchLanding(root, prNumber, opts) {
+  const { timeoutMs, pollMs } = watchConfig(root, opts.args);
+  const workflows = opts.workflows;
+  console.log(
+    `\n[watch] PR #${prNumber}: waiting for merge train` +
+      (workflows.length ? " + " + workflows.join(" + ") : "") +
+      ` (timeout ${Math.round(timeoutMs / 60000)}m; re-run \`npm run ship -- --watch-only\` to resume after an interrupt).`
+  );
+  const sha = waitForMerge(root, prNumber, {
+    base: opts.base,
+    timeoutMs,
+    pollMs,
+    nudge: opts.nudge,
+  });
+  if (sha === null) return 1;
+  if (!sha) {
+    // MERGED but no mergeCommit object returned — resolve from the remote.
+    run("git", ["fetch", "origin"], { cwd: root });
+    const resolved = out("git", ["rev-parse", `origin/${opts.base}`], { cwd: root });
+    if (!resolved) {
+      fail(`ship: PR #${prNumber} merged but the merge SHA could not be resolved.`);
+      return 1;
+    }
+    console.log(`[watch] merged (SHA ${resolved.slice(0, 7)} via origin/${opts.base}).`);
+    return finishWatch(root, resolved, workflows, { timeoutMs, pollMs });
+  }
+  console.log(`[watch] merged (SHA ${sha.slice(0, 7)}).`);
+  return finishWatch(root, sha, workflows, { timeoutMs, pollMs });
+}
+
+function finishWatch(root, sha, workflows, opts) {
+  for (const name of workflows) {
+    if (!waitWorkflow(root, name, sha, opts)) return 1;
+  }
+  console.log(
+    "\n[watch] DONE — landed on the integration branch" +
+      (workflows.length ? " with " + workflows.join(" + ") + " green" : "") +
+      "."
+  );
+  return 0;
 }
 
 /* Walk up from `startDir` to the repo root (the first `.git` entry). */
@@ -114,6 +347,12 @@ function parseArgs(argv) {
     else if (a === "--label") args.label = argv[++i];
     else if (a === "--gate") args.gates.push(argv[++i]);
     else if (a === "--root") args.root = argv[++i];
+    else if (a === "--watch") args.watch = true;
+    else if (a === "--no-watch") args["no-watch"] = true;
+    else if (a === "--watch-only") args["watch-only"] = true;
+    else if (a === "--no-nudge") args["no-nudge"] = true;
+    else if (a === "--watch-timeout") args["watch-timeout"] = argv[++i];
+    else if (a === "--watch-poll") args["watch-poll"] = argv[++i];
     else if (a === "--no-rebase") args["no-rebase"] = true;
     else if (a === "--no-gate") args["no-gate"] = true;
     else if (a === "--no-label") args["no-label"] = true;
@@ -125,12 +364,17 @@ function parseArgs(argv) {
 
 function usage() {
   console.log(
-    "ship — integrate, gate, push, and enqueue the feature branch (no LLM)\n\n" +
-      "  node scripts/ship.js [--base main] [--label <name>] [--gate \"<cmd>\"]... \n" +
-      "                       [--no-rebase] [--no-gate] [--no-label] [--root <dir>]\n\n" +
+    "ship — integrate, gate, push, enqueue, and watch the feature branch to landing (no LLM)\n\n" +
+      "  node scripts/ship.js [--base main] [--label <name>] [--gate \"<cmd>\"]...\n" +
+      "                       [--no-rebase] [--no-gate] [--no-label] [--root <dir>]\n" +
+      "                       [--watch|--no-watch] [--watch-only] [--no-nudge]\n" +
+      "                       [--watch-timeout <min>] [--watch-poll <sec>]\n\n" +
       "Never runs on main. Rebases on origin/<base>, runs the branch gates, pushes,\n" +
-      "opens the PR if needed, and applies the landing label so the merge train\n" +
-      "picks it up. Landing + the UAT deploy remain the merge train's / CI's job."
+      "opens the PR, applies the landing label, then (by default) watches the PR until\n" +
+      "the merge train lands it and the CI gates + UAT deploy go green on the merged\n" +
+      "SHA. `--no-watch` stops after enqueue; `--watch-only` just watches the current\n" +
+      "branch's open PR. Landing + the deploy remain the merge train's / CI's job —\n" +
+      "ship only observes them."
   );
 }
 
@@ -149,20 +393,20 @@ function applyLabel(root, pr, label) {
   const slug = repoSlug(root);
   if (!slug) return false;
   const exists =
-    spawnSync("gh", ["api", `repos/${slug}/labels/${encodeURIComponent(label)}`], {
+    spawnSync(ghBin(), ["api", `repos/${slug}/labels/${encodeURIComponent(label)}`], {
       cwd: root,
       stdio: "ignore",
     }).status === 0;
   if (!exists) {
     console.log(`\n[label] "${label}" does not exist — creating it.`);
-    if (!run("gh", ["label", "create", label, "--color", "FBCA04", "--description", "Serialized landing queue (agent-harness ship)"], { cwd: root })) {
+    if (!run(ghBin(), ["label", "create", label, "--color", "FBCA04", "--description", "Serialized landing queue (agent-harness ship)"], { cwd: root })) {
       return false;
     }
   }
-  if (!run("gh", ["api", `repos/${slug}/issues/${pr.number}/labels`, "-f", `labels[]=${label}`], { cwd: root })) {
+  if (!run(ghBin(), ["api", `repos/${slug}/issues/${pr.number}/labels`, "-f", `labels[]=${label}`], { cwd: root })) {
     return false;
   }
-  const labels = out("gh", ["api", `repos/${slug}/issues/${pr.number}/labels`, "--jq", ".[].name"], { cwd: root });
+  const labels = out(ghBin(), ["api", `repos/${slug}/issues/${pr.number}/labels`, "--jq", ".[].name"], { cwd: root });
   return labels.split(/\r?\n/).map((s) => s.trim()).includes(label);
 }
 
@@ -178,6 +422,38 @@ function main() {
   const base = args.base || "main";
   const branch = out("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: root });
   if (!branch) return fail("ship: could not resolve the current branch.");
+
+  // `--watch-only` — resume a session that already pushed + enqueued: skip the
+  // rebase/gate/push/PR/label steps and just watch the current branch's PR to
+  // landing + deploy. No clean-tree requirement (the tree may hold handoff/docs
+  // edits from the paused session).
+  if (args["watch-only"]) {
+    if (!has(ghBin())) return fail("ship: `--watch-only` needs `gh` on PATH.");
+    const prs = ghJson(root, [
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--state",
+      "all",
+      "--json",
+      "number,url,state",
+      "--limit",
+      "1",
+    ]);
+    const pr = prs && prs.length ? prs[0] : null;
+    if (!pr) {
+      return fail(`ship: no PR found for branch "${branch}" — nothing to watch.\n      Run \`npm run ship\` first.`);
+    }
+    process.exitCode = watchLanding(root, pr.number, {
+      base,
+      args,
+      workflows: watchWorkflows(root),
+      nudge: !args["no-nudge"],
+    });
+    return;
+  }
+
   if (branch === base || branch === "main" || branch === "master") {
     return fail(
       `ship: refusing to ship "${branch}" — that is the integration branch.\n` +
@@ -223,7 +499,7 @@ function main() {
     : ["push", "-u", "origin", branch];
   if (!run("git", pushArgs, { cwd: root })) return fail("ship: `git push` failed.");
 
-  if (!has("gh")) {
+  if (!has(ghBin())) {
     return fail(
       "ship: pushed, but `gh` is unavailable — the PR was NOT opened and the landing\n" +
         "      label was NOT applied. Run manually, then re-run `npm run ship`:\n" +
@@ -233,7 +509,7 @@ function main() {
   }
 
   let pr = null;
-  const list = out("gh", ["pr", "list", "--head", branch, "--state", "open", "--json", "number,url", "--limit", "1"], { cwd: root });
+  const list = out(ghBin(), ["pr", "list", "--head", branch, "--state", "open", "--json", "number,url", "--limit", "1"], { cwd: root });
   try {
     const parsed = list ? JSON.parse(list) : [];
     if (parsed.length) pr = parsed[0];
@@ -241,7 +517,7 @@ function main() {
     pr = null;
   }
   if (!pr) {
-    const url = out("gh", ["pr", "create", "--base", base, "--head", branch, "--fill"], { cwd: root });
+    const url = out(ghBin(), ["pr", "create", "--base", base, "--head", branch, "--fill"], { cwd: root });
     if (!url || !/https?:\/\/\S+/.test(url)) return fail("ship: `gh pr create` did not return a PR URL.");
     const number = (url.match(/\/pull\/(\d+)/) || [])[1] || "";
     pr = { number: number ? Number(number) : url, url: (url.match(/https?:\/\/\S+/) || [])[0] };
@@ -264,6 +540,25 @@ function main() {
     console.log(`\n[label] applied "${label}" — PR #${pr.number} is queued for the merge train.`);
   } else if (!label) {
     console.warn("ship: no landing label configured — PR opened but not enqueued (use --label to set one).");
+  }
+
+  // Watch the whole loop to completion: by default whenever the PR was
+  // enqueued; explicitly with `--watch`; skipped with `--no-watch`.
+  const shouldWatch =
+    !!args.watch || (!args["no-watch"] && !!label && !args["no-label"]);
+
+  if (shouldWatch && pr.number) {
+    const code = watchLanding(root, pr.number, {
+      base,
+      args,
+      workflows: watchWorkflows(root),
+      nudge: !args["no-nudge"],
+    });
+    if (code !== 0) {
+      process.exitCode = code;
+      return;
+    }
+    return;
   }
 
   console.log(

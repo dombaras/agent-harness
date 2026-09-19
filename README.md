@@ -51,6 +51,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `.opencode/tools/checkpoint.ts` | `checkpoint_write` / `checkpoint_resume` tools (shell out to `scripts/checkpoint.js`) | harness (overwrite) |
 | `.opencode/command/checkpoint.md`, `.opencode/command/resume.md` | mid-session checkpoint + bounded resume-from-checkpoint commands | harness (overwrite) |
 | `scripts/checkpoint.js` | deterministic checkpoint write/replace/read for one session handoff (no timestamps, `unknown` for absent state) | harness (overwrite) |
+| `scripts/ship.js` | deterministic branch finalizer (`npm run ship`): rebase on `origin/main`, branch gates, push, PR, landing label, then watch the merge + post-merge CI/UAT deploy to completion | harness (overwrite) |
 | `scripts/qa/check-prefix-stability.js` | `test:prefix` gate — fails a volatile value (clock timestamp, machine path, session id) in the always-loaded prompt prefix | harness (overwrite) |
 | `scripts/agent-report.js` | deterministic dispatch report (`--cost` joins observed provider telemetry; `--json` schema `agent-report/1`) | harness (overwrite) |
 | `scripts/qa/provider-stats.js` | observed cost/token/turn telemetry from the local opencode store (no sqlite dependency) | harness (overwrite) |

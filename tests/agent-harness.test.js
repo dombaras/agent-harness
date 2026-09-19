@@ -5292,7 +5292,7 @@ test("[drift-guard] ship integrates, pushes, opens the PR, and enqueues the land
   assert.match(src, /git fetch|fetch", "origin/, "integrates early");
   assert.match(src, /rebase/, "rebases on origin/<base>");
   assert.match(src, /--force-with-lease/, "only force-pushes an already-pushed branch");
-  assert.match(src, /gh", \["pr", "create"/, "opens the PR");
+  assert.match(src, /pr", "create"/, "opens the PR");
   assert.match(src, /issues\/\$\{pr\.number\}\/labels/, "applies the landing label via the REST API");
   assert.match(src, /repoSlug/, "resolves owner/repo for the REST label call");
   assert.match(src, /merge-train/, "defaults the landing label to merge-train");
@@ -5300,6 +5300,100 @@ test("[drift-guard] ship integrates, pushes, opens the PR, and enqueues the land
   // gh unavailable must not be a silent success.
   assert.match(src, /is unavailable — the PR was NOT opened/);
 });
+
+test("[drift-guard] ship watches the PR to landing + CI/UAT deploy so a session can finish the whole loop", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
+  assert.match(src, /waitForMerge/, "waits for the merge train to land the PR");
+  assert.match(src, /waitWorkflow/, "waits for the post-merge workflows on the merged SHA");
+  assert.match(src, /\["workflow",\s*"run",\s*"merge-train\.yml"/, "can nudge the merge train once");
+  assert.match(src, /--watch-only/, "has a resume/watch-only mode");
+  assert.match(src, /shipWatchWorkflows/, "watch workflows are project-configurable");
+  assert.match(src, /DONE — landed/, "reports completion only after the loop is green");
+});
+
+/* A fake `gh` for the watch tests: answers --version, pr list/view, and run list
+ * from a JSON state file, so the poll loop is exercised without a network. */
+function writeGhStub(target, state) {
+  const binDir = path.join(target, ".gh-stub");
+  fs.mkdirSync(binDir, { recursive: true });
+  const ghPath = path.join(binDir, "gh");
+  const statePath = path.join(target, ".gh-stub-state.json");
+  fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+  const script =
+    "#!/usr/bin/env node\n" +
+    '"use strict";\n' +
+    "const fs = require('fs');\n" +
+    `const state = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, 'utf8'));\n` +
+    "const args = process.argv.slice(2);\n" +
+    "const sha = state.sha;\n" +
+    "if (args[0] === '--version') { console.log('gh version 2.0.0'); process.exit(0); }\n" +
+    "if (args[0] === 'pr' && args[1] === 'list') { console.log(JSON.stringify([{ number: 7, url: 'https://example.test/pull/7', state: state.prState }])); process.exit(0); }\n" +
+    "if (args[0] === 'pr' && args[1] === 'view') { console.log(JSON.stringify({ state: state.prState, mergedAt: state.prState === 'MERGED' ? '2026-09-19T00:00:00Z' : null, mergeCommit: { oid: sha }, statusCheckRollup: state.checks || [] })); process.exit(0); }\n" +
+    "if (args[0] === 'run' && args[1] === 'list') { const wf = args[args.indexOf('--workflow') + 1] || 'CI'; console.log(JSON.stringify([{ databaseId: 1, status: 'completed', conclusion: state.runConclusion || 'success', url: 'https://example.test/run/1', headSha: sha, name: wf }])); process.exit(0); }\n" +
+    "console.log(JSON.stringify([]));\n" +
+    "process.exit(0);\n";
+  fs.writeFileSync(ghPath, script, "utf8");
+  fs.chmodSync(ghPath, 0o755);
+  return ghPath;
+}
+
+function runShipWatch(target, ghPath, extraEnv) {
+  const res = spawnSync(process.execPath, ["scripts/ship.js", "--watch-only", "--no-nudge"], {
+    cwd: target,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HARNESS_SHIP_GH_BIN: ghPath,
+      HARNESS_SHIP_WATCH_NO_SLEEP: "1",
+      HARNESS_SHIP_WATCH_TIMEOUT_MS: "5000",
+      ...(extraEnv || {}),
+    },
+  });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("ship --watch-only drives the loop to landing + green CI/deploy", () => {
+  const target = initShipRepo();
+  execFileSync("git", ["checkout", "-q", "-b", "f-watch"], { cwd: target });
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: target, encoding: "utf8" }).trim();
+  fs.mkdirSync(path.join(target, ".github", "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(target, ".github", "workflows", "ci.yml"), "name: CI\non: push\n", "utf8");
+  fs.writeFileSync(path.join(target, ".github", "workflows", "deploy-uat.yml"), "name: Deploy UAT\non: push\n", "utf8");
+  const ghPath = writeGhStub(target, { prState: "MERGED", sha });
+
+  const res = runShipWatch(target, ghPath);
+  assert.strictEqual(res.status, 0, res.out);
+  assert.match(res.out, /merged \(SHA/);
+  assert.match(res.out, /CI green on/);
+  assert.match(res.out, /Deploy UAT green on/);
+  assert.match(res.out, /DONE — landed/);
+});
+
+test("ship --watch-only fails closed when the PR never lands", () => {
+  const target = initShipRepo();
+  execFileSync("git", ["checkout", "-q", "-b", "f-stall"], { cwd: target });
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: target, encoding: "utf8" }).trim();
+  const ghPath = writeGhStub(target, { prState: "OPEN", sha });
+
+  const res = runShipWatch(target, ghPath, { HARNESS_SHIP_WATCH_TIMEOUT_MS: "80" });
+  assert.strictEqual(res.status, 1, res.out);
+  assert.match(res.out, /ENQUEUED, not landed/);
+  assert.match(res.out, /--watch-only/);
+});
+
+test("ship --watch-only fails when the post-merge deploy is red", () => {
+  const target = initShipRepo();
+  execFileSync("git", ["checkout", "-q", "-b", "f-red"], { cwd: target });
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: target, encoding: "utf8" }).trim();
+  fs.mkdirSync(path.join(target, ".github", "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(target, ".github", "workflows", "ci.yml"), "name: CI\non: push\n", "utf8");
+  const ghPath = writeGhStub(target, { prState: "MERGED", sha, runConclusion: "failure" });
+
+  const res = runShipWatch(target, ghPath);
+  assert.strictEqual(res.status, 1, res.out);
+  assert.match(res.out, /concluded "failure"/);
+});
+
 
 test("deploy ships the ship command and wires npm run ship", async () => {
   const target = tmpdir();
