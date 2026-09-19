@@ -807,11 +807,12 @@ function scaffoldBacklogCliTarget() {
 
 /* Copy the shared standalone modules next to the board scripts (backlog.js at
  * scripts/, the QA gates at scripts/qa/) that require them: board-lib.js (row
- * primitive) and lease-lib.js (session-lease liveness). */
+ * primitive), lease-lib.js (session-lease liveness), and the board-sync /
+ * merge-backlog pair (canonical checkout converge + row-aware reconcile). */
 function copyBoardLib(target) {
   const dir = path.join(target, "scripts", "qa");
   fs.mkdirSync(dir, { recursive: true });
-  for (const name of ["board-lib.js", "lease-lib.js"]) {
+  for (const name of ["board-lib.js", "lease-lib.js", "board-sync.js", "merge-backlog.js"]) {
     fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "qa", name), path.join(dir, name));
   }
 }
@@ -3079,10 +3080,9 @@ function backlogRepoOnOrigin() {
   git(t, ["remote", "add", "origin", origin]);
   git(t, ["push", "-q", "-u", "origin", "main"]);
 
+  // `add` now publishes the board itself (the canonical transaction commits +
+  // fast-forward pushes), so no manual commit/push is needed here.
   assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
-  git(t, ["add", "BACKLOG.md"]);
-  git(t, ["commit", "-q", "-m", "row"]);
-  git(t, ["push", "-q", "origin", "main"]);
 
   // advance origin/main from a second clone (the worktree push the main tree misses)
   const other = tmpdir();
@@ -3128,18 +3128,10 @@ test("backlog worktree bases the branch on origin/main when local main cannot fa
   assert.ok(!exists(path.join(dir, "local-only.txt")), "worktree does not inherit the diverged local commit");
 });
 
-test("backlog worktree reconciles a dirty stale board and fast-forwards instead of stranding main", () => {
-  // Build a repo where the landed upstream archived F-001 while the local take
-  // moved F-002 In progress — the routine "row stuck In progress" dirt that
-  // blocked every subsequent worktree/archive fast-forward.
+test("backlog sync replays an offline local board commit onto origin and reconciles the archive", () => {
   const origin = tmpdir();
   git(origin, ["init", "--bare", "-q", "-b", "main"]);
   const t = scaffoldBacklogCliTarget();
-  // backlog's dirty-board reconcile uses the shared row-aware merge module.
-  fs.copyFileSync(
-    path.join(h.TEMPLATES_DIR, "scripts", "qa", "merge-backlog.js"),
-    path.join(t, "scripts", "qa", "merge-backlog.js")
-  );
   git(t, ["init", "-q", "-b", "main"]);
   git(t, ["config", "user.email", "t@t.t"]);
   git(t, ["config", "user.name", "t"]);
@@ -3149,37 +3141,128 @@ test("backlog worktree reconciles a dirty stale board and fast-forwards instead 
   git(t, ["push", "-q", "-u", "origin", "main"]);
   assert.strictEqual(runBacklogCli(t, ["add", "first row", "--p", "P2"]).status, 0);
   assert.strictEqual(runBacklogCli(t, ["add", "second row", "--p", "P2"]).status, 0);
-  git(t, ["add", "BACKLOG.md"]);
-  git(t, ["commit", "-q", "-m", "rows"]);
-  git(t, ["push", "-q", "origin", "main"]);
 
-  // upstream archives F-001
+  // Go offline: the board edit commits locally but cannot publish — the F-147
+  // "local-only row" shape, now durable instead of working-tree dirt.
+  git(t, ["remote", "set-url", "origin", path.join(origin, "does-not-exist")]);
+  const take = runBacklogCli(t, ["take", "F-002", "--handoff", ".agents/handoffs/F-002.md"]);
+  assert.strictEqual(take.status, 0, take.out);
+  assert.match(take.out, /committed locally/);
+  assert.strictEqual(
+    git(t, ["status", "--porcelain", "--untracked-files=no"]),
+    "",
+    "the offline take is committed, not working-tree dirt"
+  );
+
+  // Back online; upstream archives F-001.
+  git(t, ["remote", "set-url", "origin", origin]);
   const other = tmpdir();
   execFileSync("git", ["clone", "-q", origin, other], { encoding: "utf8" });
   git(other, ["config", "user.email", "o@o.o"]);
   git(other, ["config", "user.name", "o"]);
-  const otherScripts = path.join(other, "scripts");
-  fs.mkdirSync(path.join(otherScripts, "qa"), { recursive: true });
-  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"), path.join(otherScripts, "backlog.js"));
-  copyBoardLib(other);
   assert.strictEqual(runBacklogCli(other, ["archive", "F-001", "--closed", "shipped 2026-09-19"]).status, 0);
+
+  // sync replays the local board commit on top of the landed archive.
+  const r = runBacklogCli(t, ["sync"]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /replayed 1 local board commit|published board/);
+  const board = read(path.join(t, "BACKLOG.md"));
+  assert.match(board.split("## Archive")[1], /\| F-001 \|/, "the landed archive is present");
+  assert.match(board.split("## In progress")[1], /\| F-002 \|/, "the local take survived");
+  assert.strictEqual(git(t, ["status", "--porcelain", "--untracked-files=no"]), "", "tree clean after sync");
+  assert.strictEqual(
+    git(t, ["rev-parse", "HEAD"]),
+    git(t, ["rev-parse", "origin/main"]),
+    "main published to origin/main"
+  );
+});
+
+/* A canonical checkout wired to a bare origin, plus a second clone that stands
+ * in for a concurrent worktree session. */
+function canonicalBacklogRepo() {
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q", "-b", "main"]);
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q", "-b", "main"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  git(t, ["remote", "add", "origin", origin]);
+  git(t, ["push", "-q", "-u", "origin", "main"]);
+  return { origin, t };
+}
+function cloneOther(origin) {
+  const other = tmpdir();
+  execFileSync("git", ["clone", "-q", origin, other], { encoding: "utf8" });
+  git(other, ["config", "user.email", "o@o.o"]);
+  git(other, ["config", "user.name", "o"]);
+  return other;
+}
+
+test("backlog canonical add commits and publishes (no working-tree dirt)", () => {
+  const { t } = canonicalBacklogRepo();
+  const r = runBacklogCli(t, ["add", "published row", "--p", "P2", "--evidence", "x"]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /published board to origin\/main/);
+  assert.strictEqual(git(t, ["status", "--porcelain", "--untracked-files=no"]), "", "no working-tree dirt");
+  assert.strictEqual(git(t, ["rev-parse", "HEAD"]), git(t, ["rev-parse", "origin/main"]), "main == origin/main");
+  assert.match(git(t, ["show", "HEAD:BACKLOG.md"]), /published row/, "the row is committed");
+});
+
+test("backlog canonical take refuses a row already archived upstream (no resurrection)", () => {
+  const { origin, t } = canonicalBacklogRepo();
+  assert.strictEqual(runBacklogCli(t, ["add", "shipped row", "--p", "P2"]).status, 0);
+  const other = cloneOther(origin);
+  assert.strictEqual(runBacklogCli(other, ["archive", "F-001", "--closed", "shipped"]).status, 0);
+
+  const r = runBacklogCli(t, ["take", "F-001", "--handoff", ".agents/handoffs/F-001.md"]);
+  assert.notStrictEqual(r.status, 0, "taking an upstream-archived row is refused");
+  assert.match(r.out, /archived/);
+  const board = read(path.join(t, "BACKLOG.md"));
+  assert.match(board.split("## Archive")[1], /\| F-001 \|/, "F-001 stays archived");
+  const inProgress = board.split("## In progress")[1].split("## Queued")[0];
+  assert.doesNotMatch(inProgress, /F-001/, "F-001 was not resurrected into In progress");
+  assert.strictEqual(git(t, ["status", "--porcelain", "--untracked-files=no"]), "", "the reconcile left no dirt");
+});
+
+test("backlog redundant non-board dirt does not block convergence", () => {
+  const { origin, t } = canonicalBacklogRepo();
+  fs.writeFileSync(path.join(t, "notes.txt"), "a\n", "utf8");
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "notes a"]);
+  git(t, ["push", "-q", "origin", "main"]);
+  assert.strictEqual(runBacklogCli(t, ["add", "first", "--p", "P2"]).status, 0);
+
+  const other = cloneOther(origin);
+  fs.writeFileSync(path.join(other, "notes.txt"), "b\n", "utf8");
   git(other, ["add", "-A"]);
-  git(other, ["commit", "-q", "-m", "archive F-001"]);
+  git(other, ["commit", "-q", "-m", "notes b"]);
   git(other, ["push", "-q", "origin", "main"]);
 
-  // local: F-002 taken (dirty board); main is now behind origin
-  assert.strictEqual(runBacklogCli(t, ["take", "F-002", "--handoff", ".agents/handoffs/F-002.md"]).status, 0);
-
-  const suffix = path.basename(t);
-  const branch = `b-rec-${suffix}`;
-  const dir = path.join(os.tmpdir(), `wt-rec-${suffix}`);
-  const r = runBacklogCli(t, ["worktree", "F-002", "--branch", branch, "--dir", dir]);
+  // The local edit is byte-identical to upstream, so it carries no information
+  // and must be cleared instead of freezing the fast-forward forever.
+  fs.writeFileSync(path.join(t, "notes.txt"), "b\n", "utf8");
+  const r = runBacklogCli(t, ["add", "second", "--p", "P2"]);
   assert.strictEqual(r.status, 0, r.out);
-  assert.match(r.out, /reconciled its board/);
-  const board = read(path.join(t, "BACKLOG.md"));
-  assert.match(board.split("## Archive")[1], /\| F-001 \|/, "the landed archive is present after reconcile");
-  assert.match(board.split("## In progress")[1], /\| F-002 \|/, "the local take survived");
-  assert.ok(exists(path.join(dir, "scripts", "backlog.js")), "worktree based on origin/main (reconciled)");
+  assert.match(r.out, /fast-forwarded main to origin\/main/);
+  assert.strictEqual(read(path.join(t, "notes.txt")), "b\n", "the redundant edit matched upstream");
+  assert.strictEqual(git(t, ["status", "--porcelain", "--untracked-files=no"]), "", "tree clean after the transaction");
+  assert.match(git(t, ["show", "HEAD:BACKLOG.md"]), /second/, "the new row is committed");
+});
+
+test("backlog worktree publishes the take before creating the checkout", () => {
+  const { t } = canonicalBacklogRepo();
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+  const dir = path.join(os.tmpdir(), `wt-order-${path.basename(t)}`);
+  const r = runBacklogCli(t, ["worktree", "F-001", "--branch", `b-${path.basename(t)}`, "--dir", dir]);
+  assert.strictEqual(r.status, 0, r.out);
+  // The take landed on origin BEFORE the checkout was created, so the new
+  // worktree's snapshot already carries the In-progress row (no rebase conflict
+  // when it later archives the row).
+  assert.match(git(t, ["show", "origin/main:BACKLOG.md"]).split("## In progress")[1], /\| F-001 \|/);
+  assert.match(read(path.join(dir, "BACKLOG.md")).split("## In progress")[1], /\| F-001 \|/);
+  assert.strictEqual(git(t, ["status", "--porcelain", "--untracked-files=no"]), "", "main is clean after the take");
 });
 
 test("test:concurrency + run-clean are deployed and auto-wired", async () => {
@@ -5643,11 +5726,9 @@ function initShipRepo() {
   const target = tmpdir();
   fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
   fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"), path.join(target, "scripts", "ship.js"));
-  // ship reconciles a dirty board via the shared row-aware merge module.
-  fs.copyFileSync(
-    path.join(h.TEMPLATES_DIR, "scripts", "qa", "merge-backlog.js"),
-    path.join(target, "scripts", "qa", "merge-backlog.js")
-  );
+  // ship's convergence requires the shared board-sync module (and backlog.js
+  // for the board lock); copyBoardLib below deploys board-sync + merge-backlog.
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"), path.join(target, "scripts", "backlog.js"));
   copyBoardLib(target);
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target, encoding: "utf8" });
   execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: target });
@@ -6014,6 +6095,59 @@ test("merge-backlog reconcile refuses a genuine same-row conflict", () => {
   assert.deepStrictEqual(r.conflicts, ["F-257"]);
 });
 
+test("merge-backlog reconcile of a template-shaped board is byte-identical to upstream (no phantom dirt)", () => {
+  // The template ships column-aligned separators and a blank placeholder row in
+  // every empty table. A reconcile that normalized those away would leave the
+  // board byte-different from the landed upstream — i.e. working-tree dirt on
+  // every converge. Guard the byte-stability the transaction relies on.
+  const ours = [
+    "# B",
+    "",
+    "## Open",
+    "",
+    "| ID | P | Epic | Task | Evidence | Depends on |",
+    "|---|---|---|---|---|---|",
+    "| F-001 | P2 | ? | row | ? | ? |",
+    "",
+    "## Archive",
+    "",
+    "| ID | Epic | Task | Closed |",
+    "|----|------|------|--------|",
+    "| | | | |",
+    "",
+    "## Frozen",
+    "",
+    "| ID | Epic | Task | Why frozen / reopen when |",
+    "|----|------|------|--------------------------|",
+    "| | | | |",
+    "",
+  ].join("\n");
+  const theirs = [
+    "# B",
+    "",
+    "## Open",
+    "",
+    "| ID | P | Epic | Task | Evidence | Depends on |",
+    "|---|---|---|---|---|---|",
+    "",
+    "## Archive",
+    "",
+    "| ID | Epic | Task | Closed |",
+    "|---|---|---|---|",
+    "| F-001 | ? | row | shipped |",
+    "",
+    "## Frozen",
+    "",
+    "| ID | Epic | Task | Why frozen / reopen when |",
+    "|----|------|------|--------------------------|",
+    "| | | | |",
+    "",
+  ].join("\n");
+  const r = mb.reconcileBoard(ours, ours, theirs);
+  assert.ok(r.ok);
+  assert.strictEqual(r.board, theirs, "the reconcile is byte-identical to the landed board");
+});
+
 test("ship reconciles a dirty main board and fast-forwards after landing", () => {
   const origin = tmpdir();
   git(origin, ["init", "--bare", "-q", "-b", "main"]);
@@ -6053,7 +6187,7 @@ test("ship reconciles a dirty main board and fast-forwards after landing", () =>
   // The reconciled local-only row must be COMMITTED (and published), not left as
   // working-tree dirt — otherwise a later `git checkout -- BACKLOG.md` in main
   // silently wipes it (the F-147 incident).
-  assert.match(res.out, /committed \+ pushed them/);
+  assert.match(res.out, /published its local-only board rows/);
   assert.strictEqual(
     git(target, ["status", "--porcelain", "--untracked-files=no"]),
     "",
@@ -6092,11 +6226,19 @@ test("ship fast-forwards the main checkout so the board converges after landing"
 test("[drift-guard] ship converges the main checkout after landing (never a reset)", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
   assert.match(src, /function convergeMainCheckout/, "the main checkout is converged after landing");
-  assert.match(src, /merge", "--ff-only", upstream/, "convergence is a fast-forward, never a reset");
-  assert.match(src, /function reconcileDirtyBoard/, "a routine dirty board is reconciled before the fast-forward");
-  assert.match(src, /publishLocalBoardRows/, "reconciled local-only rows are committed, never left as working-tree dirt");
+  assert.match(src, /boardSync\.convergeCanonical/, "convergence delegates to the shared board-sync module");
+  assert.match(src, /withLock\(main/, "the convergence read-modify-write is serialized on the board lock");
+  assert.match(src, /boardSync\.publishBoard/, "reconciled local-only rows are committed + pushed, never left as dirt");
   assert.match(src, /isHandoffPath/, "a budget-pause handoff checkpoint is auto-committed, not a dirty-tree abort");
   assert.doesNotMatch(src, /writeShipLedger|phase: "enqueued"|ENQUEUED — NOT DONE/, "no pending-landing ledger remains");
+});
+
+test("[drift-guard] every canonical board mutation reconciles + publishes via the transaction", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"));
+  assert.match(src, /boardSync\.convergeCanonical/, "mutations converge the canonical checkout first");
+  assert.match(src, /boardSync\.publishBoard/, "mutations publish the board (never leave working-tree dirt)");
+  assert.match(src, /cmdWorktreePlan/, "the worktree take is planned separately so it can publish before the checkout is created");
+  assert.match(src, /function cmdWorktreeApply/, "the worktree checkout is created after the publish");
 });
 
 test("[drift-guard] ship runs the process gates itself; CI is the post-land gate", () => {
@@ -6123,6 +6265,31 @@ test("agent-harness doctor reports release-cycle readiness", () => {
   assert.match(out, /agent-harness doctor/);
   assert.match(out, /CI workflow/);
   assert.match(out, /failure\(s\), \d+ warning\(s\)/);
+});
+
+test("agent-harness doctor warns when the checkout is behind its upstream (stale board)", () => {
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q", "-b", "main"]);
+  const target = tmpdir();
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  fs.writeFileSync(path.join(target, "README.md"), "x\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed"]);
+  git(target, ["remote", "add", "origin", origin]);
+  git(target, ["push", "-q", "-u", "origin", "main"]);
+  const other = cloneOther(origin);
+  fs.writeFileSync(path.join(other, "origin-only.txt"), "y\n", "utf8");
+  git(other, ["add", "-A"]);
+  git(other, ["commit", "-q", "-m", "advance"]);
+  git(other, ["push", "-q", "origin", "main"]);
+
+  const cli = path.join(__dirname, "..", "bin", "agent-harness.js");
+  const res = spawnSync(process.execPath, [cli, "doctor", "--target", target], { encoding: "utf8" });
+  const out = (res.stdout || "") + (res.stderr || "");
+  assert.match(out, /\[warn\] board sync: checkout is 1 behind origin\/main/);
+  assert.match(out, /node scripts\/backlog\.js sync/);
 });
 
 test("agent-harness run --dry-run prints the phase plan from the board state", () => {

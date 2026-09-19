@@ -1,8 +1,10 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import fs from "node:fs"
 import path from "node:path"
+import { spawn } from "node:child_process"
 import guard from "../../scripts/qa/context-guard-core.js"
 import leases from "../../scripts/qa/lease-lib.js"
+import toolLib from "../../scripts/qa/tool-lib.js"
 
 // Mechanical half of the context budget: read the project-owned thresholds from
 // `.agents/memory/orchestration.md` and nudge the PRIMARY orchestrator session as
@@ -147,6 +149,27 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     }
   }
 
+  /* Best-effort board convergence at session start: the main checkout drifts
+   * behind `origin/main` while features land from their worktrees, so a stale
+   * BACKLOG.md can show a shipped row as Open. Fire-and-forget (never blocks
+   * session creation, never throws into the hook); a linked worktree no-ops in
+   * `backlog sync`. */
+  const syncBoard = () => {
+    try {
+      const script = path.join(directory, "scripts", "backlog.js")
+      if (!fs.existsSync(script)) return
+      const child = spawn(toolLib.nodeBin(), [script, "sync"], {
+        cwd: directory,
+        stdio: "ignore",
+        detached: true,
+      })
+      child.on("error", () => {})
+      child.unref()
+    } catch {
+      /* best-effort */
+    }
+  }
+
   // Sweep leases left by crashed/closed sessions so they can never block the
   // concurrency gate. Runs once per plugin load (best-effort).
   try {
@@ -170,6 +193,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
             childParent.set(props.info.id, props.info.parentID)
           } else if (type === "session.created" && props.info?.id) {
             writeLease(props.info.id)
+            syncBoard()
           }
           return
         }

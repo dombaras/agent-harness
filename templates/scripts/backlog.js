@@ -47,17 +47,21 @@
  * checkouts never pile up after sessions close.
  *
  * Because a feature's commits reach `origin/main` from its own worktree, the
- * MAIN checkout's board can lag origin until it is pulled. `worktree` and
- * `archive` therefore sync the main checkout first — fast-forwarding a clean,
- * strictly-behind branch and reporting (never silently rewriting) a diverged
- * one — and `worktree` bases the new branch on the current upstream, not a
- * stale local HEAD. `--no-fetch` skips the network step for offline use.
+ * MAIN checkout's board can lag origin until it is pulled. Every mutating command
+ * in the MAIN checkout is therefore a transaction (`qa/board-sync.js`): reconcile
+ * the working board against `origin/main` row-aware (an archived-upstream row
+ * wins over a stale local take; local-only rows survive), apply the change, then
+ * commit + fast-forward push it. Main never carries an uncommitted board copy,
+ * so it cannot resurrect a shipped row. A linked feature worktree writes its own
+ * snapshot and ships it with the branch. `--no-fetch` skips the network step for
+ * offline use; an offline edit is committed locally and published by `sync`.
  */
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { splitCells, isSep, formatRow, findCycle } = require("./qa/board-lib.js");
 const leases = require("./qa/lease-lib.js");
+const boardSync = require("./qa/board-sync.js");
 
 const PRIORITIES = { P1: 0, P2: 1, P3: 2, P4: 3 };
 
@@ -1055,104 +1059,39 @@ function cmdOwns(state, argv) {
 /* The board is per-checkout: a feature committed + pushed from its own worktree
  * lands on `origin/main`, but the main checkout's checked-out BACKLOG.md stays
  * put until it is pulled — so the main tree shows a stale board and, worse, a
- * later local/auto-commit on that base diverges from origin. `worktree` and
- * `archive` run from the MAIN tree, so they sync it first: a clean, strictly-
- * behind branch is fast-forwarded; a diverged branch is reported and left alone.
- * Best-effort throughout — offline or no-upstream is a quiet no-op. */
+ * later local/auto-commit on that base diverges from origin. The shared
+ * board-sync module owns the git-facing logic (classify dirty files, row-aware
+ * reconcile, converge, publish); these thin wrappers root it in backlog.js.
+ * Only the MAIN checkout is authoritative — a linked feature worktree carries a
+ * snapshot that ship's rebase converges, so syncing is a no-op there. */
 function gitCmd(root, args, opts) {
-  return spawnSync("git", ["-C", root, ...args], {
-    encoding: "utf8",
-    timeout: (opts && opts.timeout) || 0,
-  });
+  return boardSync.gitCmd(root, args, opts);
 }
 
 function currentUpstream(root) {
-  const r = gitCmd(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
-  return r.status === 0 ? (r.stdout || "").trim() : "";
+  return boardSync.currentUpstream(root);
 }
 
-/* The MAIN worktree's path (first entry of `git worktree list --porcelain`), or
- * null. Used to clear a session's `.worktree` pointer from the tree the pointer
- * was actually written in — a linked feature worktree's git dir cannot see the
- * main tree's `.serve/`. */
+/* The MAIN worktree's path, or null. Used to clear a session's `.worktree`
+ * pointer from the tree the pointer was actually written in — a linked feature
+ * worktree's git dir cannot see the main tree's `.serve/`. */
 function mainWorktreeRoot(root) {
-  const r = gitCmd(root, ["worktree", "list", "--porcelain"]);
-  if (r.status !== 0) return null;
-  const first = (r.stdout || "").split(/\r?\n/).find((l) => l.startsWith("worktree "));
-  return first ? first.slice("worktree ".length).trim() : null;
+  return boardSync.mainWorktreeRoot(root);
 }
 
+/* Sync the canonical checkout before a board read/mutation, returning the notes
+ * to print. Best-effort: offline or no-upstream is a quiet no-op, and a linked
+ * worktree is skipped. Unlike the old dirty-only reconcile, redundant non-board
+ * dirt is cleared and genuine local changes fail the caller closed (see
+ * `convergeCanonical`) instead of leaving main silently stale. */
 function refreshMainCheckout(root, opts) {
   const notes = [];
   const inside = gitCmd(root, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.status !== 0 || (inside.stdout || "").trim() !== "true") return notes;
-  if (!opts || opts.fetch !== false) {
-    gitCmd(root, ["fetch", "--quiet", "origin"], { timeout: 10000 });
-  }
+  if (!boardSync.isCanonicalCheckout(root)) return notes;
   const upstream = currentUpstream(root);
   if (!upstream) return notes;
-  const counts = gitCmd(root, ["rev-list", "--left-right", "--count", `HEAD...${upstream}`]);
-  if (counts.status !== 0) return notes;
-  const [ahead, behind] = (counts.stdout || "").trim().split(/\s+/).map((n) => parseInt(n, 10) || 0);
-  if (!behind) return notes;
-  if (ahead) {
-    notes.push(`main is ${behind} behind and ${ahead} ahead of ${upstream} — reconcile (git pull --rebase) before trusting this board`);
-    return notes;
-  }
-  // Tracked modifications only: the live `.backlog.lock` DIRECTORY (and other
-  // harness artifacts) are untracked and must not read as "dirty" mid-write.
-  const dirty = gitCmd(root, ["status", "--porcelain", "--untracked-files=no"]);
-  if ((dirty.stdout || "").trim()) {
-    // A prior feature's take leaves the board dirty by construction; when
-    // BACKLOG.md is the only dirty file, reconcile it row-aware against the
-    // landed board and fast-forward instead of stranding the checkout behind.
-    const paths = (dirty.stdout || "")
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((l) => l.slice(3).trim());
-    if (paths.every((p) => p === "BACKLOG.md") && reconcileMainBoard(root, upstream)) {
-      notes.push(`fast-forwarded main to ${upstream} (${behind} commit(s)) and reconciled its board`);
-      return notes;
-    }
-    notes.push(`main is ${behind} behind ${upstream} — uncommitted changes present; not fast-forwarding`);
-    return notes;
-  }
-  const ff = gitCmd(root, ["merge", "--ff-only", upstream]);
-  if (ff.status === 0) notes.push(`fast-forwarded main to ${upstream} (${behind} commit(s))`);
-  else notes.push(`main is ${behind} behind ${upstream} — could not fast-forward; reconcile manually`);
-  return notes;
-}
-
-/* Row-aware reconcile for the routine dirty board: a prior `backlog worktree`
- * take left BACKLOG.md In progress while the landed upstream archived the same
- * row, which blocks a fast-forward on every subsequent worktree/archive. An
- * archived upstream row wins over the stale local take; local-only rows
- * survive. Fast-forwards on success, restoring the local edits if it cannot. */
-function reconcileMainBoard(root, upstream) {
-  const boardPath = path.join(root, "BACKLOG.md");
-  let localSrc;
-  try {
-    localSrc = fs.readFileSync(boardPath, "utf8");
-  } catch {
-    return false;
-  }
-  const base = gitCmd(root, ["show", "HEAD:BACKLOG.md"]);
-  const theirs = gitCmd(root, ["show", `${upstream}:BACKLOG.md`]);
-  if (base.status !== 0 || theirs.status !== 0) return false;
-  let rec;
-  try {
-    rec = require("./qa/merge-backlog.js").reconcileBoard(base.stdout || "", localSrc, theirs.stdout || "");
-  } catch {
-    return false;
-  }
-  if (!rec.ok) return false;
-  if (gitCmd(root, ["checkout", "--", "BACKLOG.md"]).status !== 0) return false;
-  if (gitCmd(root, ["merge", "--ff-only", upstream]).status !== 0) {
-    fs.writeFileSync(boardPath, localSrc, "utf8");
-    return false;
-  }
-  fs.writeFileSync(boardPath, rec.board, "utf8");
-  return true;
+  return boardSync.convergeCanonical(root, upstream, { fetch: !opts || opts.fetch !== false }).notes;
 }
 
 /* Run a project-supplied worktree bootstrap after `git worktree add`, so a fresh
@@ -1180,11 +1119,14 @@ function runWorktreeSetup(mainRoot, dir) {
   return { ran: true, ok: true };
 }
 
-/* Create an isolated `git worktree` + branch for a feature, then record the
- * worktree path + branch in the row's Handoff cell so the board shows WHERE the
- * work happens (and `test:concurrency` can see active sessions are isolated).
- * Run from the MAIN tree: a worktree's BACKLOG.md is only a snapshot. */
-function cmdWorktree(state, argv) {
+/* Plan the board half of `worktree`: validate, ensure the row is In progress,
+ * and record the isolation target in its Handoff cell. Split from the filesystem
+ * half (`cmdWorktreeApply`) so the canonical transaction can PUBLISH the take
+ * before the worktree is created — the new checkout is then based on an
+ * `origin/main` that already carries the In-progress row, so the feature's
+ * finalize/archive rebases without a same-row conflict. Run from the MAIN tree:
+ * a worktree's BACKLOG.md is only a snapshot. */
+function cmdWorktreePlan(state, argv) {
   const id = argv._[0];
   if (!id) throw new Error("worktree: missing <id>.");
   const root = path.dirname(state.p);
@@ -1222,22 +1164,6 @@ function cmdWorktree(state, argv) {
     handoff = claimed || existing || `.agents/handoffs/${id}.md`;
   }
 
-  // Create the worktree + branch from the CURRENT upstream (`origin/main`), not
-  // a possibly-stale local HEAD left behind by another feature's worktree push.
-  // `--no-track` keeps the feature branch from silently tracking main (so a bare
-  // `git push` in the worktree can't target main).
-  const base = currentUpstream(root) || "HEAD";
-  const res = spawnSync("git", ["-C", root, "worktree", "add", "--no-track", "-b", branch, dir, base], {
-    encoding: "utf8",
-  });
-  if (res.status !== 0) {
-    const err = (res.stderr || res.stdout || "").trim();
-    throw new Error(`worktree: git worktree add failed: ${err}`);
-  }
-
-  // Bootstrap the fresh checkout (node_modules / generated client / .env / hooks).
-  runWorktreeSetup(root, dir);
-
   // Record the isolation target in the Handoff cell.
   const rel = path.relative(root, dir) || dir;
   const handoffCell = `${handoff} (worktree: ${rel}; branch: ${branch})`;
@@ -1248,12 +1174,33 @@ function cmdWorktree(state, argv) {
     state.lines = setRows(state.lines, "inprogress", inprog);
   }
 
+  return { id, branch, dir: rel, dirAbs: dir, handoff };
+}
+
+/* Create the isolated `git worktree` + branch for a planned row. Runs AFTER the
+ * canonical transaction publishes the take, so it is based on the CURRENT
+ * upstream (`origin/main`), not a stale local HEAD. `--no-track` keeps the
+ * feature branch from silently tracking main (a bare `git push` in the worktree
+ * can't target main). */
+function cmdWorktreeApply(root, plan) {
+  const base = currentUpstream(root) || "HEAD";
+  const res = spawnSync("git", ["-C", root, "worktree", "add", "--no-track", "-b", plan.branch, plan.dirAbs, base], {
+    encoding: "utf8",
+  });
+  if (res.status !== 0) {
+    const err = (res.stderr || res.stdout || "").trim();
+    throw new Error(`worktree: git worktree add failed: ${err}`);
+  }
+
+  // Bootstrap the fresh checkout (node_modules / generated client / .env / hooks).
+  runWorktreeSetup(root, plan.dirAbs);
+
   // Root this session's tool calls in the worktree even though opencode's
   // `context.worktree` stays pinned to the main tree it launched in. A bash
   // invocation carries no HARNESS_SESSION_ID, so fall back to the live lease
   // that owns this shell (see ancestorSessionId).
   const sessionID = ancestorSessionId(root);
-  writeSessionWorktree(root, sessionID, dir);
+  writeSessionWorktree(root, sessionID, plan.dirAbs);
   if (!sessionID) {
     console.warn(
       "worktree: could not attribute this worktree to the calling session (no HARNESS_SESSION_ID, no live lease ancestor) —\n" +
@@ -1262,7 +1209,13 @@ function cmdWorktree(state, argv) {
     );
   }
 
-  return { id, branch, dir: rel, dirAbs: dir, base };
+  return { ...plan, base };
+}
+
+/* Backward-compatible wrapper: plan + apply in one call (used by direct
+ * callers/tests; the CLI splits them around the board publish). */
+function cmdWorktree(state, argv) {
+  return cmdWorktreeApply(path.dirname(state.p), cmdWorktreePlan(state, argv));
 }
 
 /* `worktree --open` makes the new worktree the session root: launch the agent
@@ -1453,6 +1406,7 @@ function usage() {
       "  node scripts/backlog.js priority <id> --p P1..P4\n" +
       "  node scripts/backlog.js depends <id> --on <ids|?>\n" +
       "  node scripts/backlog.js owns <id> --files \"glob, glob\"\n" +
+      "  node scripts/backlog.js sync [--root <dir>] [--no-fetch]\n" +
       "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch] [--open]\n" +
       "  node scripts/backlog.js worktree-prune [<branch>...] [--no-fetch]\n" +
       "  node scripts/backlog.js epic-add <key> --label <x> [--goal <y>]\n" +
@@ -1476,36 +1430,67 @@ function main() {
     return;
   }
 
-  // Read-only commands never touch the board — no lock, no write.
-  if (cmd === "list") {
+  // Read-only commands never lock or write. They show the working board
+  // reconciled against the last-known upstream, so a stale main checkout can't
+  // mislead a decision (a shipped row that still shows Open locally).
+  if (cmd === "list" || (cmd === "next" && !args.take)) {
     const state = readBacklog(root);
-    if (args.json) {
-      console.log(JSON.stringify(toBoardJson(state), null, 2));
-    } else {
-      cmdList(state, args);
+    const upstream = boardSync.isCanonicalCheckout(root) ? currentUpstream(root) : "";
+    const disp = boardSync.displayBoard(root, upstream);
+    if (disp.board) state.lines = disp.board.split(/\r?\n/);
+    if (disp.behind > 0) {
+      console.log(`board: main is ${disp.behind} behind ${upstream} — showing the reconciled view`);
     }
-    return;
-  }
-  if (cmd === "next" && !args.take) {
-    const state = readBacklog(root);
-    console.log(formatResult("next", cmdNext(state, args)));
+    if (cmd === "list") {
+      if (args.json) console.log(JSON.stringify(toBoardJson(state), null, 2));
+      else cmdList(state, args);
+    } else {
+      console.log(formatResult("next", cmdNext(state, args)));
+    }
     return;
   }
 
   // Mutating commands read-modify-write BACKLOG.md (or owned-files.md) under an
   // exclusive lock, so two concurrent sessions can't both claim the same row.
+  // In the canonical checkout every mutation is a transaction: converge against
+  // origin first, apply the row change, then commit + publish it. Main therefore
+  // never carries an uncommitted board copy, and a mutation can never resurrect
+  // a row that already landed in Archive upstream.
   let worktreeOut = null;
   try {
     withLock(root, () => {
-      // `worktree`/`archive` run from the main tree and depend on its board being
-      // current; a feature pushed from its own worktree leaves it behind. Sync it
-      // first (fast-forward when clean and strictly behind), then read the board.
-      let refreshNotes = [];
-      if (cmd === "worktree" || cmd === "archive") {
-        refreshNotes = refreshMainCheckout(root, { fetch: !args["no-fetch"] });
+      const canonical = boardSync.isCanonicalCheckout(root);
+      const upstream = canonical ? currentUpstream(root) : "";
+      const notes = [];
+      let canPublish = true;
+
+      if (canonical && upstream && cmd !== "worktree-prune") {
+        const conv = boardSync.convergeCanonical(root, upstream, { fetch: !args["no-fetch"] });
+        notes.push(...conv.notes);
+        if (!conv.ok) throw new Error(conv.notes[conv.notes.length - 1] || "canonical checkout is not converged");
+        canPublish = conv.canPublish !== false;
+      } else if (cmd === "worktree" || cmd === "archive") {
+        notes.push(...refreshMainCheckout(root, { fetch: !args["no-fetch"] }));
       }
+
+      if (cmd === "sync") {
+        if (!canonical || !upstream) {
+          notes.push("not the canonical checkout (or no upstream) — nothing to publish");
+        } else if (!canPublish) {
+          notes.push("main is diverged — reconcile manually: git pull --rebase");
+        } else {
+          const pub = boardSync.publishBoard(root, upstream, "chore(board): sync local rows");
+          if (pub.published && pub.committed) notes.push(`published board to ${upstream}`);
+          else if (!pub.published) notes.push("committed locally; run `node scripts/backlog.js sync` when the remote is reachable");
+        }
+        for (const note of notes) console.log(`board: ${note}`);
+        return;
+      }
+
       const state = readBacklog(root);
       let out;
+      let after = null;
+      let publishMessage = null;
       if (cmd === "add") out = cmdAdd(state, args);
       else if (cmd === "take") out = cmdTake(state, args);
       else if (cmd === "queue") out = cmdQueue(state, args);
@@ -1516,8 +1501,12 @@ function main() {
       else if (cmd === "priority") out = cmdPriority(state, args);
       else if (cmd === "depends") out = cmdDepends(state, args);
       else if (cmd === "owns") out = cmdOwns(state, args);
-      else if (cmd === "worktree") out = cmdWorktree(state, args);
-      else if (cmd === "worktree-prune") out = cmdWorktreePrune(state, args);
+      else if (cmd === "worktree") {
+        out = cmdWorktreePlan(state, args);
+        after = () => {
+          out = cmdWorktreeApply(root, out);
+        };
+      } else if (cmd === "worktree-prune") out = cmdWorktreePrune(state, args);
       else if (cmd === "epic-add") out = cmdEpicAdd(state, args);
       else if (cmd === "epic") out = cmdEpic(state, args);
       else {
@@ -1525,16 +1514,30 @@ function main() {
         process.exitCode = 1;
         return;
       }
+
       if (cmd === "worktree-prune") {
         for (const note of out.notes) console.log(`worktree-prune: ${note}`);
       } else if (cmd === "owns") {
-        console.log(formatResult(cmd, out));
+        publishMessage = `chore(board): owns ${out.id}`;
       } else {
         fs.writeFileSync(state.p, serializeBacklog(state), "utf8");
-        console.log(formatResult(cmd, out));
+        publishMessage = `chore(board): ${cmd}${out && out.id ? " " + out.id : ""}`;
       }
+
+      // Publish the board BEFORE any filesystem side effect: the worktree must
+      // be based on an origin that already carries the In-progress row.
+      if (canonical && upstream && publishMessage && canPublish) {
+        const pub = boardSync.publishBoard(root, upstream, publishMessage);
+        if (pub.published && pub.committed) notes.push(`published board to ${upstream}`);
+        else if (!pub.published) notes.push("committed locally; run `node scripts/backlog.js sync` when the remote is reachable");
+      } else if (canonical && upstream && publishMessage && !canPublish) {
+        notes.push(`not published (main is diverged) — resolve with git pull --rebase, then \`node scripts/backlog.js sync\``);
+      }
+
+      if (after) after();
+      if (cmd !== "worktree-prune") console.log(formatResult(cmd, out));
       if (cmd === "worktree") worktreeOut = out;
-      for (const note of refreshNotes) console.log(`board: ${note}`);
+      for (const note of notes) console.log(`board: ${note}`);
     });
   } catch (e) {
     console.error(`backlog: ${e.message}`);
@@ -1570,6 +1573,8 @@ module.exports = {
   cmdDepends,
   cmdOwns,
   cmdWorktree,
+  cmdWorktreePlan,
+  cmdWorktreeApply,
   cmdEpicAdd,
   cmdEpic,
   readEpics,

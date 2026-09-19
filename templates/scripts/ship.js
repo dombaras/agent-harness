@@ -39,6 +39,8 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const boardSync = require("./qa/board-sync.js");
+const { withLock } = require("./backlog.js");
 
 function fail(message) {
   console.error(message);
@@ -318,165 +320,53 @@ function mainWorktreeRoot(root) {
   return first ? first.slice("worktree ".length).trim() : null;
 }
 
-/* After a confirmed landing, fast-forward the MAIN checkout to origin/<base> so
- * its BACKLOG.md/CHANGELOG.md reflect the archived row. A board made dirty by
- * the routine `backlog worktree` take is reconciled row-aware first
- * (`reconcileDirtyBoard`); any OTHER dirty/detached/diverged main or an
- * untracked-file collision (the stray-handoff shape) is reported with the exact
- * manual fix, never force-resolved. */
+/* After a confirmed landing, bring the MAIN checkout level with origin/<base> so
+ * its BACKLOG.md reflects the archived row. The shared board-sync module owns
+ * the logic — reconcile the board row-aware (an archived-upstream row wins over
+ * a stale local take; local-only rows survive), clear redundant non-board dirt,
+ * fast-forward, and publish local-only rows so a later `git checkout --` cannot
+ * wipe them (the F-147 incident). The short read-modify-write is serialized with
+ * the board lock so it cannot race a concurrent `backlog` command. Any OTHER
+ * dirty/detached/diverged main is reported with the exact manual fix, never
+ * force-resolved. */
 function convergeMainCheckout(root, base, cachedMain) {
   // Accept the main path resolved before landing: if the feature worktree was
   // pruned mid-watch, walking it again here would fail and lose the reconcile.
   const main = cachedMain || mainWorktreeRoot(root);
   if (!main) return;
   const upstream = `origin/${base}`;
-  spawnSync("git", ["-C", main, "fetch", "--quiet", "origin"], { stdio: "ignore", timeout: 10000 });
-  const counts = out("git", ["rev-list", "--left-right", "--count", `HEAD...${upstream}`], { cwd: main });
-  if (!counts) return; // no upstream ref to compare against (offline / no remote)
-  const [ahead, behind] = counts.trim().split(/\s+/).map((n) => parseInt(n, 10) || 0);
-  if (!behind) return; // main already current (or ahead-only)
-  if (ahead) {
-    console.warn(
-      `[ship] main checkout is ${behind} behind and ${ahead} ahead of ${upstream} — not fast-forwarding; reconcile it manually: git -C ${main} pull --rebase`
-    );
-    return;
-  }
-  const dirty = out("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: main });
-  if (dirty) {
-    const dirtyPaths = dirty
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map(porcelainPath);
-    if (dirtyPaths.every((p) => p === "BACKLOG.md") && reconcileDirtyBoard(main, upstream, behind)) return;
-    console.warn(
-      `[ship] main checkout has uncommitted tracked changes — not fast-forwarding; resolve them, then: git -C ${main} merge --ff-only ${upstream}`
-    );
-    return;
-  }
-  const ff = spawnSync("git", ["-C", main, "merge", "--ff-only", upstream], { encoding: "utf8" });
-  if (ff.status === 0) {
-    console.log(
-      `\n[ship] fast-forwarded the main checkout (${behind} commit(s)) — its board now reflects the landed row.`
-    );
-  } else {
-    console.warn(
-      `[ship] landed, but the main checkout could not fast-forward to ${upstream}:\n` +
-        `       ${(ff.stderr || ff.stdout || "").trim()}\n` +
-        `       If this is an untracked-file collision, remove the stray file, then: git -C ${main} merge --ff-only ${upstream}`
-    );
-  }
-}
-
-/* A landed feature leaves the main checkout's board dirty BY CONSTRUCTION: the
- * `backlog worktree` take moved the row to In progress in the working copy while
- * the landed commit archived it upstream. Refusing to fast-forward on that
- * routine take is what left rows "stuck In progress" and forced a manual
- * reconcile. When the ONLY dirty tracked file is BACKLOG.md, reconcile it
- * row-aware against the landed board (an archived row wins over the stale local
- * take; local-only rows survive), then fast-forward. Returns true on success.
- *
- * The reconciled board is COMMITTED (and pushed) when it carries rows the
- * landed commit does not — a manual edit to the main checkout's board (a queued
- * row, a priority change) is otherwise left as uncommitted working-tree dirt,
- * and a later `git checkout -- BACKLOG.md` in the main tree silently wipes it
- * (the F-147 incident: two rows the user queued during a session were discarded
- * by the session's own cleanup after ship reported success). */
-function reconcileDirtyBoard(main, upstream, behind) {
-  const boardPath = path.join(main, "BACKLOG.md");
-  let localSrc;
   try {
-    localSrc = fs.readFileSync(boardPath, "utf8");
-  } catch {
-    return false;
-  }
-  const baseSrc = out("git", ["show", `HEAD:BACKLOG.md`], { cwd: main });
-  const theirsSrc = out("git", ["show", `${upstream}:BACKLOG.md`], { cwd: main });
-  if (!baseSrc || !theirsSrc) return false;
-  let reconcile;
-  try {
-    reconcile = require("./qa/merge-backlog.js").reconcileBoard(baseSrc, localSrc, theirsSrc);
-  } catch {
-    return false; // merge-backlog not deployed / refactor — fall back to the warning
-  }
-  if (!reconcile.ok) {
-    console.warn(
-      `[ship] main checkout board has conflicting rows (${reconcile.conflicts.join(", ")}) — not fast-forwarding; reconcile it manually: git -C ${main} pull --rebase`
-    );
-    return false;
-  }
-  if (spawnSync("git", ["-C", main, "checkout", "--", "BACKLOG.md"], { encoding: "utf8" }).status !== 0) {
-    return false;
-  }
-  const ff = spawnSync("git", ["-C", main, "merge", "--ff-only", upstream], { encoding: "utf8" });
-  if (ff.status !== 0) {
-    fs.writeFileSync(boardPath, localSrc, "utf8"); // fast-forward failed — restore the edits we moved aside
-    return false;
-  }
-  // Byte-compare against the just-fast-forwarded working file (not the trimmed
-  // `git show` capture): a pure take/archive reconcile rebuilds to exactly the
-  // landed board, so there is nothing to publish.
-  let landedSrc = "";
-  try {
-    landedSrc = fs.readFileSync(boardPath, "utf8");
-  } catch {
-    landedSrc = "";
-  }
-  fs.writeFileSync(boardPath, reconcile.board, "utf8");
-  const keptLocalRows = reconcile.board !== landedSrc;
-  const published = keptLocalRows ? publishLocalBoardRows(main, upstream) : true;
-  console.log(
-    `\n[ship] fast-forwarded the main checkout (${behind} commit(s)) and reconciled its board — ` +
-      `kept local-only rows` +
-      (reconcile.dropped.length ? `; dropped the landed take (${reconcile.dropped.join(", ")})` : "") +
-      (keptLocalRows && published ? "; committed + pushed them" : "") +
-      (keptLocalRows && !published ? "; committed them locally (push pending)" : "") +
-      "."
-  );
-  return true;
-}
-
-/* Persist the reconciled local-only rows so they can never be lost to a
- * `git checkout -- BACKLOG.md`, then publish them with a fast-forward push
- * (bounded retry after a concurrent landing). Returns false when the rows are
- * only committed locally — still durable, just not yet on origin. */
-function publishLocalBoardRows(main, upstream) {
-  if (spawnSync("git", ["-C", main, "add", "--", "BACKLOG.md"], { encoding: "utf8" }).status !== 0) {
-    return false;
-  }
-  const commit = spawnSync(
-    "git",
-    ["-C", main, "commit", "-q", "-m", "chore(board): publish local-only rows reconciled from the main checkout"],
-    { encoding: "utf8" }
-  );
-  if (commit.status !== 0) {
-    console.warn(
-      `[ship] the main checkout board carries local-only rows that could not be committed — commit them before any checkout: git -C ${main} add BACKLOG.md && git -C ${main} commit`
-    );
-    return false;
-  }
-  const base = upstream.includes("/") ? upstream.slice(upstream.indexOf("/") + 1) : upstream;
-  for (let attempt = 1; attempt <= MAX_LAND_ATTEMPTS; attempt++) {
-    const push = spawnSync("git", ["-C", main, "push", "origin", `HEAD:${base}`], { encoding: "utf8" });
-    if (push.status === 0) return true;
-    const text = `${push.stdout || ""}\n${push.stderr || ""}`;
-    if (
-      attempt < MAX_LAND_ATTEMPTS &&
-      /non-fast-forward|fetch first|tip of your current branch is behind|\[rejected\]/i.test(text)
-    ) {
-      spawnSync("git", ["-C", main, "fetch", "--quiet", "origin"], { stdio: "ignore" });
-      const rebase = spawnSync("git", ["-C", main, "rebase", upstream], { encoding: "utf8" });
-      if (rebase.status !== 0) {
-        spawnSync("git", ["-C", main, "rebase", "--abort"], { stdio: "ignore" });
-        return false;
+    withLock(main, () => {
+      const conv = boardSync.convergeCanonical(main, upstream, { fetch: true });
+      for (const note of conv.notes) console.log(`[ship] ${note}`);
+      if (!conv.ok) {
+        console.warn(
+          `[ship] landed, but the main checkout could not be converged — resolve it, then: git -C ${main} merge --ff-only ${upstream}`
+        );
+        return;
       }
-      continue;
-    }
-    console.warn(
-      `[ship] reconciled local-only board rows are committed on the main checkout but the push to ${upstream} failed — publish them when the remote is reachable: git -C ${main} push origin HEAD:${base}`
-    );
-    return false;
+      if (conv.canPublish === false) {
+        console.warn(`[ship] main checkout board reconciled but main is diverged — not publishing`);
+        return;
+      }
+      const pub = boardSync.publishBoard(
+        main,
+        upstream,
+        "chore(board): publish local-only rows reconciled from the main checkout"
+      );
+      if (pub.published && pub.committed) {
+        console.log(`\n[ship] fast-forwarded the main checkout and published its local-only board rows.`);
+      } else if (!pub.published) {
+        console.warn(
+          `[ship] the main checkout board carries local-only rows that could not be pushed — publish them when the remote is reachable: git -C ${main} push origin HEAD:${base}`
+        );
+      } else {
+        console.log(`\n[ship] fast-forwarded the main checkout — its board now reflects the landed row.`);
+      }
+    });
+  } catch (e) {
+    console.warn(`[ship] could not lock the main checkout to converge its board: ${e.message}`);
   }
-  return false;
 }
 
 function projectScripts(root) {
@@ -706,11 +596,13 @@ function main() {
     workflow: ciWorkflow(root),
     cwd: mainRoot,
   });
+  // Converge the main checkout even when CI is red: a failed/flaky run must not
+  // strand main's board behind (that is how it silently drifts stale).
+  convergeMainCheckout(root, base, mainRoot);
   if (code !== 0) {
     process.exitCode = code;
     return;
   }
-  convergeMainCheckout(root, base, mainRoot);
   console.log(
     "\n[ship] landed + CI green. Clean up the feature worktree when the session ends:\n" +
       "       node scripts/backlog.js worktree-prune"

@@ -1,4 +1,4 @@
-# Agent Harness Optimization — Implementation Status (v0.1.76)
+# Agent Harness Optimization — Implementation Status (v0.1.92)
 
 Tracking doc for the cost/context optimization effort. Basis:
 [`docs/cost-optimization-recommendations-2026-09-12.md`](cost-optimization-recommendations-2026-09-12.md)
@@ -18,9 +18,9 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.91` |
-| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget); `0.1.88` direct-land cycle — `ship` fast-forward pushes `HEAD:main` (bounded retry) and waits for green CI, `deploy-uat` runs after CI success; PR/landing-label/merge-train/watch and the `check-push-refs` guard removed |
-| Lint / tests | green (`npm run lint`, `npm test` — 259 pass) |
+| Version | `0.1.92` |
+| Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget); `0.1.88` direct-land cycle — `ship` fast-forward pushes `HEAD:main` (bounded retry) and waits for green CI, `deploy-uat` runs after CI success; PR/landing-label/merge-train/watch and the `check-push-refs` guard removed; `0.1.89` reconciled local-only board rows are committed + pushed; `0.1.90` CI watch from the main worktree + never prune a live session's worktree; `0.1.91` guard-nudge attribution + live request-token band; `0.1.92` single-authority board transaction (every canonical mutation reconciles + publishes; converge under the board lock; redundant-dirt clear; session-start `backlog sync`; doctor staleness warn) |
+| Lint / tests | green (`npm run lint`, `npm test` — 271 pass) |
 | LibraryOS | `0.1.88` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) |
@@ -28,6 +28,48 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 ---
 
 ## What shipped
+
+### `0.1.92` — single-authority board transaction (no more resurrection / silent drift)
+
+Field incident (LibraryOS F-270/F-271, 2026-09-19): two shipped rows reappeared
+under `## Open` in the main checkout with their Archive rows missing. The cause
+was not the old 0.1.89 board-clobber but two compounding defects under
+concurrent worktrees: (1) board mutations read a stale main checkout whose board
+still showed rows already archived on `origin/main`, and (2) post-landing
+convergence bailed on ANY tracked dirty file other than `BACKLOG.md` — even one
+whose working content already matched upstream — so main drifted 8 commits
+behind and its board never advanced.
+
+- **Every canonical mutation is now a transaction** (`scripts/qa/board-sync.js`,
+  shared by `backlog.js` and `ship.js`): converge against `origin/main`
+  (fetch → row-aware 3-way reconcile → clear redundant non-board dirt →
+  fast-forward), apply the row change, then commit + fast-forward push it. Main
+  never carries an uncommitted board copy, so a mutation can never resurrect a
+  row that already landed in Archive. Offline, the edit is committed locally and
+  published by `backlog sync` (an ahead-only board commit is replayed onto
+  upstream using the row-aware reconcile, not `git rebase`, so a fresh clone with
+  no merge driver still works).
+- **Genuine non-board dirt fails closed** with an actionable message instead of
+  letting the checkout drift stale; a redundant edit (content == upstream) is
+  cleared losslessly.
+- **Convergence is serialized on the board lock** (`withLock(main)`), so a
+  concurrent `backlog` command and a landing can no longer lose each other's
+  writes, and `ship` now converges even when CI is red (a flaky run no longer
+  strands main).
+- **`worktree` publishes the take before creating the checkout**, so the new
+  worktree is based on an origin that already carries the In-progress row and
+  its later `archive` rebases without a same-row conflict.
+- **`merge-backlog.rebuild` is byte-stable** on template-shaped boards (it
+  preserves blank placeholder rows and normalizes rewritten separators), so a
+  pure reconcile equals the landed board and leaves no phantom working-tree dirt.
+- **Observability**: `agent-harness doctor` warns when the checkout is behind its
+  upstream ("board may be stale — run `node scripts/backlog.js sync`"), and the
+  context-guard plugin runs a best-effort `backlog sync` at session start.
+
+Tests: +6 (canonical add publishes; take of an upstream-archived row refuses;
+redundant dirt does not block; worktree publishes the take first; offline board
+commit replays on `sync`; byte-stable reconcile) plus a doctor staleness warning;
+updated the worktree/ship tests to the new publish semantics.
 
 ### `0.1.91` — guard nudge attribution + a live request-token band
 

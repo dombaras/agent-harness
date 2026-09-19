@@ -591,6 +591,13 @@ function syncTargetBranch(target, dryRun) {
     notes.push(`would fast-forward ${st.behind} commit(s) to ${st.upstream}`);
     return { blocked: false, notes, state: st };
   }
+  // A redundant local edit (working content already identical to upstream) must
+  // not block the fast-forward — that silent block is what let the checkout
+  // drift stale across landings. Genuine local edits are still never touched.
+  const cleared = clearRedundantDirty(target, st.upstream);
+  if (cleared.length) {
+    notes.push(`cleared redundant local changes already in ${st.upstream}: ${cleared.join(", ")}`);
+  }
   const ff = runGit(target, ["merge", "--ff-only", st.upstream]);
   if (!ff.ok) {
     notes.push(
@@ -601,6 +608,24 @@ function syncTargetBranch(target, dryRun) {
   }
   notes.push(`fast-forwarded ${st.behind} commit(s) to ${st.upstream}`);
   return { blocked: false, notes, state: st, synced: true };
+}
+
+/* Restore tracked non-board files whose working content already matches
+ * `upstream` — they carry no local information, so clearing them is lossless and
+ * lets the fast-forward proceed. Genuine local edits are left untouched (the
+ * merge then fails and the operator reconciles). */
+function clearRedundantDirty(target, upstream) {
+  const status = runGit(target, ["status", "--porcelain", "--untracked-files=no"]);
+  if (!status.ok || !status.out) return [];
+  const cleared = [];
+  for (const line of status.out.split(/\r?\n/).filter(Boolean)) {
+    const p = line.slice(3).trim();
+    if (!p || p === "BACKLOG.md") continue;
+    const diff = runGit(target, ["diff", "--quiet", upstream, "--", p]);
+    if (diff.status !== 0) continue;
+    if (runGit(target, ["checkout", upstream, "--", p]).ok) cleared.push(p);
+  }
+  return cleared;
 }
 
 // Auto-commit ONLY the harness-owned files an update just changed, so the target
@@ -1139,6 +1164,22 @@ function doctor(target) {
     "canonical branch",
     branch ? `${branch}${def && branch !== def ? ` (canonical is ${def})` : ""}` : "detached HEAD"
   );
+
+  // A checkout behind its upstream holds a stale BACKLOG.md (a row archived on
+  // origin still shows Open locally) — the shape that let a mutation resurrect a
+  // shipped row. Surface it so it is fixed before a session trusts the board.
+  const ust = upstreamState(target);
+  if (ust.known && ust.behind > 0) {
+    add(
+      "warn",
+      "board sync",
+      `checkout is ${ust.behind} behind ${ust.upstream} — the board may be stale; run: node scripts/backlog.js sync`
+    );
+  } else if (ust.known) {
+    add("ok", "board sync", `level with ${ust.upstream}`);
+  } else {
+    add("ok", "board sync", "no upstream tracking branch (offline / no remote)");
+  }
 
   const workflows = workflowNamesIn(target);
   const ci = workflows.find((w) => /^ci$/i.test(w.name));

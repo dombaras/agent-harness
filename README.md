@@ -292,13 +292,20 @@ so agents see complete descriptions.
   follow the session into the worktree, and `archive` clears the pointer. `backlog archive
   <id>` removes the shipped feature's worktree + merged branch, so a session cleans up
   after itself on close.
-- **Main-checkout freshness**: because a feature's commits reach `origin/main` from its own
-  worktree, the MAIN checkout's board can lag origin until it is pulled. `backlog worktree`
-  and `backlog archive` sync it first — fast-forwarding a clean, strictly-behind branch and
-  *reporting* (never silently rewriting) a diverged one. Symmetrically, `agent-harness
-  update` fast-forwards a stale target before it auto-commits and refuses to commit onto a
-  diverged branch, so a harness `chore` commit can never land on a stale base and split the
-  branch (`--no-fetch` skips the network step for `backlog`).
+- **Single-authority board (main-checkout freshness)**: because a feature's commits reach
+  `origin/main` from its own worktree, the MAIN checkout's board can lag origin until it is
+  pulled. Every mutating command in the MAIN checkout is therefore a transaction
+  (`scripts/qa/board-sync.js`): fetch → row-aware reconcile against `origin/main` (an
+  archived-upstream row wins over a stale local take; local-only rows survive) → apply →
+  commit → fast-forward push. Main never carries an uncommitted board copy, so a mutation
+  can never resurrect a shipped row; a genuine non-board local edit fails closed with an
+  actionable message, while a redundant one (already identical to upstream) is cleared
+  losslessly. `ship`'s post-landing convergence runs the same logic under the board lock
+  (so it can't race a concurrent `backlog` command) and runs even when CI is red.
+  `backlog sync` publishes offline edits later; `agent-harness doctor` warns when the
+  checkout is behind. `agent-harness update` likewise fast-forwards a stale target before
+  it auto-commits and refuses to commit onto a diverged branch (`--no-fetch` skips the
+  network step for `backlog`).
 - **Row-aware merge driver**: `.gitattributes` routes `BACKLOG.md` through
   `scripts/qa/merge-backlog.js` (wired by `init`/`update`), so two sessions editing
   *disjoint* rows merge by ID instead of conflicting — concurrent take/archive no longer

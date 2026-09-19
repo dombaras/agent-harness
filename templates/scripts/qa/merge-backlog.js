@@ -246,12 +246,35 @@ function rebuild(oursSrc, resolved) {
     const rows = (bySection.get(b.key) || []).map((r) => r.line);
     if (b.headerIdx === -1) continue;
     const headerLine = lines[b.headerIdx];
-    const sepLine = b.sepIdx !== -1 ? lines[b.sepIdx] : "";
+    // Normalize the separator to the canonical narrow form the board tools emit
+    // (`|---|---|`), so a rewritten section is byte-identical to the landed
+    // upstream board. The template ships column-aligned separators
+    // (`|----|------|`); a section a tool has not rewritten keeps its original
+    // separator (preserved below), so untouched sections stay byte-stable.
+    const canonicalSep = "|" + splitCells(headerLine.slice(1, -1)).map(() => "---").join("|") + "|";
     const start = b.headerIdx;
     const end = b.dataEnd >= b.dataStart ? b.dataEnd : b.sepIdx;
     const replacement = [headerLine];
-    if (sepLine) replacement.push(sepLine);
-    replacement.push(...rows);
+    if (rows.length) {
+      replacement.push(canonicalSep, ...rows);
+    } else {
+      // An empty resolved section normally emits just the header + separator.
+      // But the template's empty tables carry a blank placeholder row
+      // (`| | | |`); replacing it with nothing makes a reconcile of an
+      // otherwise-untouched board byte-different from upstream, which then
+      // reads as working-tree dirt. Preserve the original block only when its
+      // data lines are all placeholders — a section whose real rows moved to
+      // Archive must still be emptied.
+      const origData = lines.slice(b.dataStart, end + 1);
+      const onlyPlaceholders =
+        origData.length > 0 &&
+        origData.every((l) => {
+          if (!/^\s*\|.*\|\s*$/.test(l)) return false;
+          return splitCells(l.slice(1, -1)).every((c) => c.trim() === "");
+        });
+      if (onlyPlaceholders) replacement.push(lines[b.sepIdx] || canonicalSep, ...origData);
+      else replacement.push(canonicalSep);
+    }
     lines.splice(start, end - start + 1, ...replacement);
   }
   return lines.join(eol);
