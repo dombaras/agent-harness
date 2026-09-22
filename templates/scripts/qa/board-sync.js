@@ -291,8 +291,10 @@ function trackedPath(root, rel) {
  * it, re-fetching + rebasing after a concurrent landing. Returns
  * `{ published, committed, reason }`: `published:true` with reason "no change"
  * when nothing needed committing; `published:false` when the commit/push could
- * not complete (the commit may still exist locally — durable, just unpublished). */
-function publishBoard(root, upstream, message) {
+ * not complete (the commit may still exist locally — durable, just unpublished).
+ * `opts.deferPush` commits locally but skips the network push (reason
+ * "deferred"): the request path stays fast and a later `sync` publishes. */
+function publishBoard(root, upstream, message, opts) {
   const rels = ["BACKLOG.md", ...PUBLISH_EXTRA_PATHS.filter((p) => trackedPath(root, p))];
   const add = gitCmd(root, ["add", "--", ...rels]);
   if (add.status !== 0) return { published: false, committed: false, reason: "add-failed" };
@@ -309,6 +311,7 @@ function publishBoard(root, upstream, message) {
   const counts = gitCmd(root, ["rev-list", "--left-right", "--count", `HEAD...${upstream}`]);
   const ahead = counts.status === 0 ? parseInt(String(counts.stdout || "").trim().split(/\s+/)[0], 10) || 0 : 0;
   if (ahead === 0) return { published: true, committed, reason: "no change" };
+  if (opts && opts.deferPush) return { published: false, committed, reason: "deferred" };
 
   const base = upstream.includes("/") ? upstream.slice(upstream.indexOf("/") + 1) : upstream;
   for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt++) {

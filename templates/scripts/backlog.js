@@ -55,6 +55,9 @@
  * so it cannot resurrect a shipped row. A linked feature worktree writes its own
  * snapshot and ships it with the branch. `--no-fetch` skips the network step for
  * offline use; an offline edit is committed locally and published by `sync`.
+ * `--defer` (used by the superadmin API) commits the board locally but skips the
+ * network push entirely, so a request path never blocks on fetch/push; a later
+ * `sync` (the API schedules it in the background) converges and publishes.
  */
 const fs = require("fs");
 const path = require("path");
@@ -397,6 +400,35 @@ function epicOf(cells, key) {
   return i === -1 ? "?" : (cells[i] || "?");
 }
 
+/* Member-report provenance survives the row lifecycle. `reports:sync` stamps an
+ * imported report with `source member-report <uuid>` in the Open row's Evidence
+ * cell, and both the sync dedup and the superadmin pending notice scan the board
+ * for that marker across every section. The In progress / Frozen / Archive
+ * sections have no Evidence column, so a marker living only in Evidence would be
+ * dropped the moment a report is taken or archived — the handled report then
+ * looks pending again (F-276) and the next sync re-imports it as a duplicate.
+ * These helpers carry the marker(s) into the destination's free-form cell
+ * (Handoff / condition / closed) so provenance is never lost. */
+const REPORT_MARKER_PATTERN = /source member-report\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+function reportMarkersInCells(cells) {
+  const found = [];
+  for (const cell of cells) {
+    const matches = String(cell || "").match(REPORT_MARKER_PATTERN);
+    if (matches) for (const m of matches) found.push(m.replace(/\s+/g, " ").toLowerCase());
+  }
+  return [...new Set(found)];
+}
+
+/* Append any markers not already present to a free-form destination note. */
+function appendReportMarkers(note, markers) {
+  const base = (note || "").trim();
+  const haystack = base.toLowerCase();
+  const missing = markers.filter((m) => !haystack.includes(m));
+  if (!missing.length) return base;
+  return [base, ...missing].filter(Boolean).join(" | ");
+}
+
 /* "Depends on" cell (Open/Queued only): a comma/space-separated list of row IDs,
  * or `?`/empty for none. */
 function dependsOf(cells, key) {
@@ -683,7 +715,10 @@ function cmdTake(state, argv) {
 
   const task = taskOf(found.cells, found.key) || id;
   const epic = epicOf(found.cells, found.key);
-  const handoff = validateHandoff(id, argv.handoff) || "?";
+  const handoff = appendReportMarkers(
+    validateHandoff(id, argv.handoff) || "?",
+    reportMarkersInCells(found.cells)
+  );
 
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
   state.lines = setRows(state.lines, found.key, srcRows);
@@ -925,11 +960,23 @@ function cmdArchive(state, argv) {
   if (!id) throw new Error("archive: missing <id>.");
   const found = findRow(state.lines, id);
   if (!found) throw new Error(`archive: no row ${id} in BACKLOG.md.`);
-  if (found.key === "archive") return { id, note: "already archived" };
+  if (found.key === "archive") {
+    // Idempotent repair path: an already-archived row is normally a no-op, but a
+    // caller supplying `--closed` may rewrite its closed note (used to backfill
+    // provenance, e.g. a member-report marker dropped before this preservation
+    // existed — F-276). Markers already on the row are kept.
+    if (!argv.closed) return { id, note: "already archived" };
+    const repaired = appendReportMarkers(argv.closed, reportMarkersInCells(found.cells));
+    const rows = getRows(state.lines, "archive").map((r) => r.cells);
+    const idx = rows.findIndex((c) => (c[0] || "").trim() === id);
+    rows[idx] = [id, epicOf(found.cells, found.key), taskOf(found.cells, found.key), repaired];
+    state.lines = setRows(state.lines, "archive", rows);
+    return { id, note: "already archived", closed: repaired };
+  }
 
   const task = taskOf(found.cells, found.key);
   const epic = epicOf(found.cells, found.key);
-  const closed = argv.closed || "shipped";
+  const closed = appendReportMarkers(argv.closed || "shipped", reportMarkersInCells(found.cells));
 
   // A shipped feature no longer needs its isolated checkout: remove the worktree
   // (and merged branch) it recorded in its Handoff cell, so worktrees don't pile
@@ -983,7 +1030,10 @@ function cmdFreeze(state, argv) {
 
   const task = taskOf(found.cells, found.key);
   const epic = epicOf(found.cells, found.key);
-  const cond = [why, reopen ? `reopen when ${reopen}` : ""].filter(Boolean).join(" — ");
+  const cond = appendReportMarkers(
+    [why, reopen ? `reopen when ${reopen}` : ""].filter(Boolean).join(" — "),
+    reportMarkersInCells(found.cells)
+  );
 
   const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
   state.lines = setRows(state.lines, found.key, srcRows);
@@ -1166,7 +1216,10 @@ function cmdWorktreePlan(state, argv) {
 
   // Record the isolation target in the Handoff cell.
   const rel = path.relative(root, dir) || dir;
-  const handoffCell = `${handoff} (worktree: ${rel}; branch: ${branch})`;
+  const handoffCell = appendReportMarkers(
+    `${handoff} (worktree: ${rel}; branch: ${branch})`,
+    reportMarkersInCells(found.cells)
+  );
   const inprog = getRows(state.lines, "inprogress").map((r) => r.cells);
   const idx = inprog.findIndex((c) => (c[0] || "").trim() === id);
   if (idx !== -1) {
@@ -1344,7 +1397,9 @@ function formatResult(cmd, out) {
     return out.handoff ? `next -> took ${out.id} (${out.handoff})` : `next: ${out.id} [${out.priority}] ${out.task}`;
   }
   if (cmd === "archive") {
-    const base = out.note ? `${out.id}: ${out.note}` : `archived ${out.id} (${out.closed})`;
+    const base = out.note
+      ? `${out.id}: ${out.note}${out.closed ? "; closed note updated" : ""}`
+      : `archived ${out.id} (${out.closed})`;
     return out.cleanup && out.cleanup.length ? `${base} — ${out.cleanup.join("; ")}` : base;
   }
   if (cmd === "freeze") return out.note ? `${out.id}: ${out.note}` : `froze ${out.id} (${out.cond})`;
@@ -1382,6 +1437,7 @@ function parseArgs(argv) {
     else if (a === "--open") args.open = true;
     else if (a === "--open-cmd") args["open-cmd"] = argv[++i];
     else if (a === "--no-fetch") args["no-fetch"] = true;
+    else if (a === "--defer") args.defer = true;
     else if (a === "--all") args.all = true;
     else if (a === "--full") args.full = true;
     else if (a === "--limit") args.limit = argv[++i];
@@ -1457,6 +1513,7 @@ function main() {
   // never carries an uncommitted board copy, and a mutation can never resurrect
   // a row that already landed in Archive upstream.
   let worktreeOut = null;
+  const defer = !!args.defer;
   try {
     withLock(root, () => {
       const canonical = boardSync.isCanonicalCheckout(root);
@@ -1465,12 +1522,12 @@ function main() {
       let canPublish = true;
 
       if (canonical && upstream && cmd !== "worktree-prune") {
-        const conv = boardSync.convergeCanonical(root, upstream, { fetch: !args["no-fetch"] });
+        const conv = boardSync.convergeCanonical(root, upstream, { fetch: !args["no-fetch"] && !defer });
         notes.push(...conv.notes);
         if (!conv.ok) throw new Error(conv.notes[conv.notes.length - 1] || "canonical checkout is not converged");
         canPublish = conv.canPublish !== false;
       } else if (cmd === "worktree" || cmd === "archive") {
-        notes.push(...refreshMainCheckout(root, { fetch: !args["no-fetch"] }));
+        notes.push(...refreshMainCheckout(root, { fetch: !args["no-fetch"] && !defer }));
       }
 
       if (cmd === "sync") {
@@ -1527,9 +1584,15 @@ function main() {
       // Publish the board BEFORE any filesystem side effect: the worktree must
       // be based on an origin that already carries the In-progress row.
       if (canonical && upstream && publishMessage && canPublish) {
-        const pub = boardSync.publishBoard(root, upstream, publishMessage);
+        const pub = boardSync.publishBoard(root, upstream, publishMessage, { deferPush: defer });
         if (pub.published && pub.committed) notes.push(`published board to ${upstream}`);
-        else if (!pub.published) notes.push("committed locally; run `node scripts/backlog.js sync` when the remote is reachable");
+        else if (!pub.published) {
+          notes.push(
+            defer
+              ? "committed locally; a background sync will publish it"
+              : "committed locally; run `node scripts/backlog.js sync` when the remote is reachable"
+          );
+        }
       } else if (canonical && upstream && publishMessage && !canPublish) {
         notes.push(`not published (main is diverged) — resolve with git pull --rebase, then \`node scripts/backlog.js sync\``);
       }

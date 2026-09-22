@@ -6230,6 +6230,65 @@ test("merge-backlog reconcile of a template-shaped board is byte-identical to up
   assert.strictEqual(r.board, theirs, "the reconcile is byte-identical to the landed board");
 });
 
+test("backlog take/archive preserves member-report provenance markers (F-276)", () => {
+  // The superadmin pending notice scans every section for `source member-report
+  // <uuid>`. In progress / Archive have no Evidence column, so a marker left in
+  // Evidence would vanish on take/archive and the handled report would look
+  // pending again (re-imported as a duplicate). The marker must ride into the
+  // destination's free-form cell.
+  const t = scaffoldBacklogCliTarget();
+  const marker = "source member-report 11111111-2222-3333-4444-555555555555";
+  assert.strictEqual(runBacklogCli(t, ["add", "handled report", "--p", "P2", "--evidence", marker]).status, 0);
+  assert.strictEqual(runBacklogCli(t, ["take", "F-001", "--handoff", ".agents/handoffs/F-001.md"]).status, 0);
+  let board = read(path.join(t, "BACKLOG.md"));
+  assert.match(board, /\| F-001 \|.*11111111-2222-3333-4444-555555555555/, "the marker rides into the In progress handoff cell");
+  assert.strictEqual(runBacklogCli(t, ["archive", "F-001", "--closed", "shipped"]).status, 0);
+  board = read(path.join(t, "BACKLOG.md"));
+  assert.match(
+    board.split("## Archive")[1],
+    /11111111-2222-3333-4444-555555555555/,
+    "the marker survives into the archive closed note"
+  );
+});
+
+test("backlog add --defer commits locally but does not push until sync (F-278)", () => {
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q", "-b", "main"]);
+  const target = scaffoldBacklogCliTarget();
+  git(target, ["init", "-q", "-b", "main"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "init"]);
+  git(target, ["remote", "add", "origin", origin]);
+  git(target, ["push", "-q", "-u", "origin", "main"]);
+  const before = git(target, ["rev-parse", "origin/main"]);
+
+  const res = runBacklogCli(target, ["add", "deferred row", "--p", "P2", "--defer"]);
+  assert.strictEqual(res.status, 0, res.out);
+  assert.match(res.out, /background sync/, "the deferred path tells the caller a background sync will publish");
+  assert.notStrictEqual(git(target, ["rev-parse", "HEAD"]), before, "the board commit exists locally");
+  assert.strictEqual(git(target, ["rev-parse", "origin/main"]), before, "origin is untouched by --defer");
+  assert.strictEqual(git(target, ["status", "--porcelain"]), "", "the deferred commit leaves a clean tree");
+
+  const sync = runBacklogCli(target, ["sync"]);
+  assert.strictEqual(sync.status, 0, sync.out);
+  const originAfter = git(target, ["rev-parse", "origin/main"]);
+  assert.notStrictEqual(originAfter, before, "sync publishes the deferred row");
+  assert.strictEqual(git(target, ["rev-parse", "HEAD"]), originAfter, "main is level with origin after sync");
+  assert.match(read(path.join(target, "BACKLOG.md")), /deferred row/, "the deferred row survives the publish");
+});
+
+test("[drift-guard] backlog preserves report provenance and supports --defer; board-sync honors deferPush", () => {
+  const backlogSrc = read(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"));
+  assert.match(backlogSrc, /REPORT_MARKER_PATTERN/, "member-report provenance is preserved across the row lifecycle (F-276)");
+  assert.match(backlogSrc, /appendReportMarkers\(/, "markers ride into the destination free-form cell");
+  assert.match(backlogSrc, /args\.defer/, "the --defer flag is parsed");
+  assert.match(backlogSrc, /deferPush: defer/, "the canonical publish honors --defer");
+  const bsSrc = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-sync.js"));
+  assert.match(bsSrc, /opts\.deferPush/, "publishBoard can defer the network push");
+});
+
 test("ship reconciles a dirty main board and fast-forwards after landing", () => {
   const origin = tmpdir();
   git(origin, ["init", "--bare", "-q", "-b", "main"]);
