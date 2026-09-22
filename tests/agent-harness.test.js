@@ -4479,6 +4479,88 @@ test("branch-switch guard message names the ref + live sessions and points at is
   assert.match(cg.branchSwitchText(null, []), /another primary session/);
 });
 
+test("main-checkout guard classifies code paths vs board/docs/metadata", () => {
+  for (const p of [
+    "app/api/admin/backlog/route.ts",
+    "scripts/backlog.js",
+    "scripts/qa/tests/backlog.test.ts",
+    "package.json",
+    "next.config.mjs",
+    "src/components/Foo.tsx",
+    ".env.local",
+    "Dockerfile",
+    "C:\\develop\\proj\\app\\page.tsx",
+  ]) {
+    assert.strictEqual(cg.isCodePath(p), true, `code: ${p}`);
+  }
+  for (const p of [
+    ".agents/qa-plans/F-278.md",
+    "/repo/.agents/handoffs/F-278.md",
+    "BACKLOG.md",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/guide.md",
+    "node_modules/x/index.js",
+    ".serve/sessions/ses_1.json",
+    "",
+    null,
+  ]) {
+    assert.strictEqual(cg.isCodePath(p), false, `not code: ${p}`);
+  }
+});
+
+test("main-checkout guard detects git mutations + in-place writes, not reads or the board CLI", () => {
+  for (const command of [
+    "git add .",
+    "git commit -m 'x'",
+    "git push origin main",
+    "git -C /repo commit -m x",
+    "git rebase origin/main",
+    "git apply patch.diff",
+    "git rm old.ts",
+    "sed -i s/a/b/ app/x.ts",
+    "perl -pi -e 's/a/b/' app/x.ts",
+    "patch -p1 < fix.diff",
+    "echo x > app/x.ts",
+    "printf y >> scripts/backlog.js",
+    "npm run build > out.txt",
+    "cat a | tee app/x.ts",
+  ]) {
+    assert.strictEqual(cg.isCodeMutationCommand(command), true, `mutation: ${command}`);
+  }
+  for (const command of [
+    "git status",
+    "git fetch origin",
+    "git log --oneline -5",
+    "git diff --stat",
+    "git worktree list",
+    "node scripts/backlog.js worktree F-278",
+    "node scripts/backlog.js next --take",
+    "node scripts/backlog.js sync > /dev/null 2>&1",
+    "npm run test:quick",
+    "npm test",
+    "echo hi > /tmp/out.txt",
+    "npm run test:quick > /tmp/out.txt",
+    'echo "a -> b"',
+    'grep -rn "git commit" scripts/',
+    "",
+    null,
+  ]) {
+    assert.strictEqual(cg.isCodeMutationCommand(command), false, `not a mutation: ${command}`);
+  }
+});
+
+test("main-checkout guard message names the target and points at isolation", () => {
+  const text = cg.mainEditText("edit", "/repo/app/x.ts");
+  assert.match(text, /SESSION GUARD/);
+  assert.match(text, /MAIN checkout/);
+  assert.match(text, /\/repo\/app\/x\.ts/);
+  assert.match(text, /scripts\/backlog\.js worktree/);
+  assert.match(text, /NOT executed/);
+  assert.match(cg.mainEditText("bash", "/repo"), /command/);
+  assert.match(cg.mainEditText("bash", "/repo"), /was NOT executed/);
+});
+
 test("context-guard recognizes provider funds/quota errors (hard stop) and ignores ordinary failures", () => {
   assert.strictEqual(cg.fundsError("Error: Insufficient balance"), true);
   assert.strictEqual(cg.fundsError("provider error: insufficient funds"), true);

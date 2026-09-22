@@ -84,9 +84,23 @@ session:
   `same_failure_turns` arms it when the same failure signature repeats across
   calls (same failure, different arguments).
 
-It appends threshold/loop/no-state/failure events to `.agents/guard-events.jsonl`
-(local-only, gitignored). Keep the table row shapes above; a missing row falls
-back to the documented default.
+Two guards BLOCK a tool call instead of nudging:
+
+- **branch-switch** — `git checkout`/`git switch` is refused while another live
+  primary session shares the checkout (the 2026-09-18 direct-push-to-main
+  incident); isolate with `backlog worktree <id>`.
+- **main-checkout (worktree) guard** — a code change (`edit`/`write`/`patch`/
+  `multiedit` to a source/test/config path) or a git mutation (`git add|commit|
+  push|apply|am|merge|rebase|cherry-pick|revert|reset|clean|rm|mv|stash`, `sed
+  -i`, `perl -i`, `patch`, `tee`, or a redirect into the tree) is refused while
+  the target is inside the shared `main` checkout — the F-278 stranded-work
+  shape. Board / `.agents/` / docs maintenance on `main` stays allowed. It
+  covers every session, subagents included, and has no override: create the
+  worktree first (`backlog worktree <id> --open`), then work inside it.
+
+It appends threshold/loop/no-state/failure/branch-switch/main-edit events to
+`.agents/guard-events.jsonl` (local-only, gitignored). Keep the table row shapes
+above; a missing row falls back to the documented default.
 
 ## Policy notes
 

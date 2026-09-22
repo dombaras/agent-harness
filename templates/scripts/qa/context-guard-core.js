@@ -619,6 +619,104 @@ function branchSwitchText(ref, others) {
   return `SESSION GUARD — blocked a branch switch to ${target}: ${who} is live in the same checkout. Two primary sessions must not share one working tree — the switch would move HEAD under the other session, which could then commit/push on the wrong branch (the 2026-09-18 direct-push-to-main incident). Isolate first: run \`backlog worktree <id> --open\` from the MAIN tree and work in that worktree, or let the other session finish. The switch was NOT executed.`;
 }
 
+// ------------------------------------------------------- main-checkout guard
+/* `main` is board + shippable code only: every feature works in its own linked
+ * worktree, so a session rooted in the shared main checkout must isolate BEFORE
+ * it changes code. F-278 (LibraryOS 2026-09-22) was the counter-example: the
+ * change was implemented straight into `main`, then `finalize` refused on `main`
+ * and the branch switch that would have isolated it was blocked by the
+ * branch-switch guard while other live sessions shared the tree — the work was
+ * stranded. This classifier is the preventive half: the plugin resolves the
+ * target + worktree roots (IO) and throws when a code change or git mutation is
+ * aimed at the main checkout.
+ *
+ * "Code" excludes the harness's own metadata (`.agents/`, `.serve/`, `.git/`,
+ * `node_modules/`) and human docs (Markdown/text), so checkpoint / handoff /
+ * QA-plan / CHANGELOG maintenance on `main` stays allowed — only source, test,
+ * and config edits require a worktree. Pure, so it is unit-testable. */
+const NON_CODE_SEGMENTS = new Set([".agents", ".serve", ".git", "node_modules"]);
+const NON_CODE_EXT = new Set([".md", ".mdx", ".txt", ".rst"]);
+const NON_CODE_BASENAMES = new Set(["BACKLOG.md", "README.md", "CHANGELOG.md"]);
+
+function isCodePath(filePath) {
+  const p = String(filePath || "").replace(/\\/g, "/");
+  if (!p) return false;
+  const segments = p.split("/").filter(Boolean);
+  if (segments.some((s) => NON_CODE_SEGMENTS.has(s))) return false;
+  const base = segments[segments.length - 1] || "";
+  if (NON_CODE_BASENAMES.has(base)) return false;
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot).toLowerCase() : "";
+  return !NON_CODE_EXT.has(ext);
+}
+
+/* Git subcommands that write content or history into the current checkout.
+ * Read-only git (`status`/`fetch`/`log`/`diff`/`show`) and `worktree add` (the
+ * isolation primitive itself) are deliberately absent, so a session on `main`
+ * can still inspect and isolate. HEAD moves (`checkout`/`switch`) are owned by
+ * the branch-switch guard, so they are left out here to keep one rule per
+ * failure mode. */
+const GIT_MUTATIONS = new Set([
+  "add", "commit", "push", "apply", "am", "merge", "rebase",
+  "cherry-pick", "revert", "reset", "clean", "rm", "mv", "stash",
+]);
+
+/* A redirect target that never lands in the working tree: discard/stdio, the
+ * OS temp dirs, and the gitignored `.serve/` runtime container. */
+function isAllowedWriteTarget(target) {
+  const s = String(target || "").replace(/^["']|["']$/g, "");
+  if (s === "/dev/null" || s === "/dev/stdout" || s === "/dev/stderr") return true;
+  if (/^\/dev\/fd\//.test(s)) return true;
+  if (/^\/(tmp|var\/tmp)\//.test(s)) return true;
+  if (/(^|\/)\.serve\//.test(s)) return true;
+  return false;
+}
+
+/* Drop single/double quoted substrings before scanning for redirections, so a
+ * literal `->` or `>` inside an echo/grep argument is never read as a file
+ * write. */
+function stripQuoted(text) {
+  return String(text || "").replace(/"(?:\\.|[^"\\])*"|'(?:[^']*)'/g, " ");
+}
+
+/* True when a shell command writes source/config content or git history in the
+ * current checkout. Narrow by design: the board CLI, test runs, `gh`, and
+ * read-only git never match. */
+function isCodeMutationCommand(command) {
+  const cmd = String(command || "");
+  if (!cmd) return false;
+  for (const segment of cmd.split(/\r?\n|&&|\|\||;|\|/)) {
+    const tokens = tokenize(segment);
+    const found = gitSubcommand(tokens);
+    if (found && GIT_MUTATIONS.has(found.subcommand)) return true;
+    const head = tokens.find((t) => !isRedirection(t) && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
+    if (!head) continue;
+    const base = basename(head);
+    const rest = tokens.slice(tokens.indexOf(head) + 1);
+    if (base === "sed" && rest.some((t) => /^-i/.test(t))) return true;
+    if (base === "perl" && rest.some((t) => /^-[^\s]*i/.test(t))) return true;
+    if (base === "patch") return true;
+    if (base === "tee") {
+      const target = rest.find((t) => !t.startsWith("-"));
+      if (target && !isAllowedWriteTarget(target)) return true;
+    }
+  }
+  const redir = />>?\s*([^\s;&|]+)/g;
+  let m;
+  while ((m = redir.exec(stripQuoted(cmd)))) {
+    if (!isAllowedWriteTarget(m[1])) return true;
+  }
+  return false;
+}
+
+/* The error the plugin throws to abort a code change aimed at the main
+ * checkout. Names the target and the fix (isolate) so recovery is mechanical. */
+function mainEditText(kind, target) {
+  const what = kind === "bash" ? "a command that mutates this checkout" : `an edit to \`${target}\``;
+  const noun = kind === "bash" ? "command" : "edit";
+  return `SESSION GUARD — blocked ${what}: this session is in the shared MAIN checkout, where code + git history are off-limits before isolation (the F-278 shape: work done on main cannot be finalized — \`finalize\` refuses on main and the branch switch is blocked while other sessions share the tree). Isolate FIRST from the main tree: \`node scripts/backlog.js worktree <id>\` (a human starting the worktree at a terminal adds \`--open\`), then make the change inside that worktree (set \`workdir\` to it). Only board/.agents/docs maintenance is allowed on main. The ${noun} was NOT executed.`;
+}
+
 module.exports = {
   DEFAULT_TURNS,
   DEFAULT_STUCK,
@@ -657,4 +755,9 @@ module.exports = {
   formatGuardEvent,
   branchSwitch,
   branchSwitchText,
+  isCodePath,
+  isCodeMutationCommand,
+  isAllowedWriteTarget,
+  stripQuoted,
+  mainEditText,
 };

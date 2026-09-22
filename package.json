@@ -1,6 +1,6 @@
 {
   "name": "@dombaras/agent-harness",
-  "version": "0.1.92",
+  "version": "0.1.93",
   "description": "Reusable multi-agent harness for AI-assisted development: personas, skills, operating rules, model routing, and QA gates. Deploy into any project with `npx @dombaras/agent-harness init`.",
   "bin": {
     "agent-harness": "bin/agent-harness.js"

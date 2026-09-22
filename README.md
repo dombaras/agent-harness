@@ -146,7 +146,12 @@ primary orchestrator session as it crosses them — turn bands AND request-token
 levels (whichever is stronger), flags repeated identical tool calls, whole turns
 with no material state change, and repeated failures sharing a signature, and
 records band/request/loop/no-state/failure crossings in
-`.agents/guard-events.jsonl` (local-only, excluded clone-locally). At the
+`.agents/guard-events.jsonl` (local-only, excluded clone-locally). It also
+**blocks two tool calls outright**: a `git checkout`/`git switch` that would move
+HEAD under another live session in the same checkout, and any code change or git
+mutation aimed at the shared `main` checkout before the session isolates into its
+feature worktree (`backlog worktree <id>`) — board/`.agents`/docs maintenance on
+`main` stays allowed. At the
 checkpoint band the nudge is imperative: write ONE checkpoint, then stop at the
 current **phase boundary** — a fresh bounded context resumes from it. The nudge is
 injected **cache-safely**: it is appended as a synthetic tail message via

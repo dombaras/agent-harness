@@ -26,7 +26,10 @@ import toolLib from "../../scripts/qa/tool-lib.js"
 // child assistant message `providerID/modelID`), never a guess.
 // It also blocks a branch switch (`git checkout`/`git switch`) while another
 // live primary session shares the same checkout — see the branch-switch guard
-// on `tool.execute.before` (the 2026-09-18 direct-push-to-main incident).
+// on `tool.execute.before` (the 2026-09-18 direct-push-to-main incident) — and
+// blocks any code change / git mutation aimed at the shared MAIN checkout until
+// the session isolates into its feature worktree (the F-278 stranded-work
+// guard; board/.agents/docs maintenance on main stays allowed).
 
 const ORCHESTRATION_REL = path.join(".agents", "memory", "orchestration.md")
 const GUARD_LOG_REL = path.join(".agents", "guard-events.jsonl")
@@ -148,6 +151,35 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       /* lease is best-effort */
     }
   }
+
+  /* Classify the checkout that encloses a path WITHOUT invoking git (git is not
+   * guaranteed on the plugin process's PATH). A main worktree's `.git` is a
+   * DIRECTORY; a linked feature worktree's `.git` is a FILE (`gitdir: ...`), so
+   * walking up to the first `.git` and checking its type is enough. Returns
+   * "main" | "linked" | null (outside a repo). The path may not exist yet (a
+   * new file), so start from its nearest existing ancestor. */
+  const checkoutKind = (p: string): "main" | "linked" | null => {
+    let dir = path.resolve(p)
+    // A new file's parents may not exist yet: start from the nearest existing dir.
+    while (dir !== path.dirname(dir) && !fs.existsSync(dir)) dir = path.dirname(dir)
+    if (fs.existsSync(dir) && !fs.statSync(dir).isDirectory()) dir = path.dirname(dir)
+    for (let i = 0; i < 64; i++) {
+      try {
+        return fs.statSync(path.join(dir, ".git")).isDirectory() ? "main" : "linked"
+      } catch {
+        /* no .git here — keep walking up */
+      }
+      const parent = path.dirname(dir)
+      if (parent === dir) return null
+      dir = parent
+    }
+    return null
+  }
+
+  /* Tools whose args name the file they write. `patch`/`apply_patch` may carry
+   * only a diff, in which case the target is unknown and the guard stands
+   * down — the edit/write paths still cover the F-278 shape. */
+  const EDIT_TOOLS = new Set(["edit", "write", "patch", "multiedit", "apply_patch"])
 
   /* Best-effort board convergence at session start: the main checkout drifts
    * behind `origin/main` while features land from their worktrees, so a stale
@@ -311,6 +343,51 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
             throw new Error(message)
           }
         }
+      }
+      // Main-checkout guard (ALL sessions, including subagents). A code change
+      // or git mutation aimed at the shared MAIN checkout must isolate first
+      // (`backlog worktree <id>`), or the work is stranded exactly like F-278:
+      // `finalize` refuses on main and the branch switch is blocked while other
+      // sessions share the tree. This MUST throw to abort the call, so it lives
+      // OUTSIDE the swallow-everything loop-guard try/catch below; only the
+      // resolution is wrapped, and it stands down (no block) on any error.
+      let mainViolation: { kind: "edit" | "bash"; target: string } | null = null
+      try {
+        const tool = String(input?.tool || "").toLowerCase()
+        const args = output?.args || {}
+        const isEdit = EDIT_TOOLS.has(tool)
+        const isBash = tool === "bash"
+        if (isEdit || isBash) {
+          const candidate = isEdit
+            ? args.filePath && guard.isCodePath(args.filePath)
+              ? String(args.filePath)
+              : null
+            : guard.isCodeMutationCommand(args.command)
+              ? String(args.command)
+              : null
+          if (candidate) {
+            const base = path.resolve(String(args.workdir || directory))
+            const targetAbs = isEdit ? path.resolve(base, candidate) : base
+            if (checkoutKind(targetAbs) === "main") {
+              mainViolation = { kind: isEdit ? "edit" : "bash", target: targetAbs }
+            }
+          }
+        }
+      } catch {
+        mainViolation = null
+      }
+      if (mainViolation) {
+        logEvent({
+          kind: "main-edit",
+          sessionID: input?.sessionID,
+          tool: String(input?.tool || ""),
+          target: mainViolation.kind === "edit" ? mainViolation.target : null,
+          commandHash:
+            mainViolation.kind === "bash" ? guard.shortHash(String(output?.args?.command || "")) : null,
+        })
+        const message = guard.mainEditText(mainViolation.kind, mainViolation.target)
+        await report(message)
+        throw new Error(message)
       }
       try {
         if (!isPrimary(input?.sessionID)) return
