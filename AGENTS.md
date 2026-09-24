@@ -49,7 +49,7 @@ across the Windows/Linux boundary:
   `rg` wrapper that refuses `--no-ignore`/`--unrestricted`/`--hidden`, caps output,
   and has a `--files` mode. Never run `rg --no-ignore` in an agent workspace; use
   `npm run search -- <pattern>` for content search and `git grep -n <symbol>` for
-  tracked-symbol searches. This is enforcement for cheaper, cleaner recursive
+  tracked-symbol searches (tracked files only, reads the index). This is enforcement for cheaper, cleaner recursive
   discovery — see `templates/docs/wsl-optimizations.md`.
 - **RAM-backed build/cache storage.** Every deploy ships
   `scripts/setup-tmpfs.sh`, which mounts a WSL2 tmpfs cache root

@@ -47,20 +47,23 @@ scripts/agent-search.sh --limit 50 'TODO'
 ### When to use `git grep` instead
 
 For a **symbol search over tracked files** (where you want the repo's definition
-of the file set and nothing generated), `git grep` reads the git index directly
-and is typically faster than `rg` scanning the working tree:
+of the file set and nothing generated or untracked), `git grep` reads the git
+index and searches tracked files only — no ignore-file dependence, so it is the
+deterministic choice for "where is this symbol defined":
 
 ```bash
-git grep -n 'functionName' -- '*.ts' '*.tsx'   # tracked files only, index-fast
+git grep -n 'functionName' -- '*.ts' '*.tsx'   # tracked files only, reads the index
 git grep -l 'SymbolName'                       # list matching tracked files
 ```
 
 Rule of thumb:
 
-- `git grep` — tracked-source symbol search; the index already knows the files.
+- `git grep` — tracked-source symbol search; the index already knows the files
+  and ignores are irrelevant. Prefer it for "where is this defined".
 - `scripts/agent-search.sh` (rg) — content search that must also see untracked
   files while still honouring the canonical ignores; best for "what changed
-  locally / what's generated".
+  locally / what's generated". On small warm trees raw `rg` is often the fastest
+  of all; `git grep` wins on large trees where tracked-only traversal pays off.
 - Never `rg --no-ignore` / `rg -u` in an agent workspace — it walks `node_modules`
   and build trees and floods both time and context.
 

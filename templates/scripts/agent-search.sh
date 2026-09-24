@@ -21,8 +21,8 @@
 #   scripts/agent-search.sh --help
 #
 # `git grep` is still preferred for symbol searches over tracked files only (it
-# reads the git index and is faster); use this wrapper for generated/untracked
-# aware content search. See docs/wsl-optimizations.md.
+# reads the git index and its file set is exactly the repo's); use this wrapper
+# for generated/untracked-aware content search. See docs/wsl-optimizations.md.
 set -u
 
 LIMIT="${AGENT_SEARCH_LIMIT:-200}"
