@@ -44,3 +44,19 @@ across the Windows/Linux boundary:
 - **Git.** SSH key at `~/.ssh/id_ed25519`; the auto-commit + push in
   `init`/`update` works over SSH from WSL. Do not deploy WSL targets with the
   Windows checkout's CLI.
+- **Ignore-aware search.** Every deploy ships a canonical `.ignore` (merged,
+  never clobbering project entries) and `scripts/agent-search.sh`, an ignore-aware
+  `rg` wrapper that refuses `--no-ignore`/`--unrestricted`/`--hidden`, caps output,
+  and has a `--files` mode. Never run `rg --no-ignore` in an agent workspace; use
+  `npm run search -- <pattern>` for content search and `git grep -n <symbol>` for
+  tracked-symbol searches. This is enforcement for cheaper, cleaner recursive
+  discovery — see `templates/docs/wsl-optimizations.md`.
+- **RAM-backed build/cache storage.** Every deploy ships
+  `scripts/setup-tmpfs.sh`, which mounts a WSL2 tmpfs cache root
+  (`/mnt/ramdisk`, 25–40% of RAM) and exports cache/build env vars for only the
+  installed toolchains (`PIP_CACHE_DIR`, `npm_config_cache`, `PNPM_STORE_DIR`,
+  `YARN_CACHE_FOLDER`, `CARGO_TARGET_DIR`, `GOCACHE`, `GRADLE_USER_HOME`,
+  `CCACHE_DIR`/`SCCACHE_DIR`, `RUSTC_WRAPPER=sccache`). It is idempotent, no-ops
+  outside WSL, and `install` persists it (systemd `--user` unit + `~/.bashrc`
+  hook). **tmpfs is volatile** — caches/build artifacts only, never source code
+  or git state. See `templates/docs/wsl-optimizations.md`.

@@ -21,6 +21,8 @@
  *     canonical task list, and `update` must never clobber the project's live board.
  *   - `opencode.json` is MERGED: harness manages $schema/model/small_model/
  *     instructions; every other key the project adds is preserved.
+ *   - `.gitattributes` and `.ignore` are MERGED as a harness-managed begin/end
+ *     block; project entries outside the block are preserved.
  *   - all other harness-owned files are overwritten. If a harness-owned file was
  *     modified locally since the last deploy (tracked by checksum in
  *     `.harness.json`), it is backed up to `.harness-backup/<timestamp>/` first.
@@ -256,6 +258,9 @@ const HARNESS_SCRIPTS = {
   "report:cost": "node scripts/agent-report.js --cost --since=14d",
   checkpoint: "node scripts/checkpoint.js",
   serve: "node scripts/serve.js",
+  search: "bash scripts/agent-search.sh",
+  ramdisk: "bash scripts/setup-tmpfs.sh up",
+  "ramdisk:down": "bash scripts/setup-tmpfs.sh down",
 };
 
 /* Detect a project's own indentation so a merge never reformats package.json
@@ -365,18 +370,50 @@ function backlogDriverName(projectName) {
   return `backlog-${slugify(projectName)}`;
 }
 
-/* Remove a previously-managed block. New files carry an explicit end marker, so
- * any project entry after it is preserved. A legacy file (begin marker only,
- * written by <=0.1.73) has its block removed to EOF — the block was always
- * appended last, so this matches the old behaviour with no data loss for real
- * files while new merges can never truncate a trailing project entry. */
-function stripGitattributesBlock(text) {
+/* Remove a previously-managed block delimited by an explicit begin/end pair. New
+ * files carry the end marker, so any project entry after it is preserved. A
+ * legacy file (begin marker only) has its block removed to EOF — the block was
+ * always appended last, so this matches the old behaviour with no data loss for
+ * real files while new merges can never truncate a trailing project entry. */
+function stripManagedBlock(text, beginMarker, endMarker) {
   const lines = String(text || "").split(/\r?\n/);
-  const begin = lines.findIndex((l) => l === GITATTRIBUTES_MARKER);
+  const begin = lines.findIndex((l) => l === beginMarker);
   if (begin === -1) return lines;
-  const end = lines.findIndex((l, i) => i > begin && l === GITATTRIBUTES_END);
+  const end = lines.findIndex((l, i) => i > begin && l === endMarker);
   if (end === -1) return lines.slice(0, begin);
   return [...lines.slice(0, begin), ...lines.slice(end + 1)];
+}
+
+function stripGitattributesBlock(text) {
+  return stripManagedBlock(text, GITATTRIBUTES_MARKER, GITATTRIBUTES_END);
+}
+
+/* Merge the canonical search-ignore set (`templates/.ignore`) into the target's
+ * `.ignore` idempotently. `.ignore` is the file ripgrep/fd read (git does not),
+ * so this is where the harness owns the high-cost-tree exclusions; the project's
+ * committed `.gitignore` is never touched. Project entries outside the managed
+ * markers are preserved and the managed block is replaced in place, so repeated
+ * updates never duplicate or truncate anything. */
+function isIgnoreFile(rel) {
+  return relKey(rel) === ".ignore";
+}
+
+function mergeIgnoreFile(target) {
+  const tmpl = path.join(TEMPLATES_DIR, ".ignore");
+  const source = fs.existsSync(tmpl) ? fs.readFileSync(tmpl, "utf8") : "";
+  const srcLines = source.split(/\r?\n/);
+  const b = srcLines.findIndex((l) => l === GITATTRIBUTES_MARKER);
+  const e = srcLines.findIndex((l, i) => i > b && l === GITATTRIBUTES_END);
+  let managed = b !== -1 && e !== -1 ? srcLines.slice(b + 1, e) : srcLines.slice();
+  while (managed.length && managed[managed.length - 1].trim() === "") managed.pop();
+  const p = path.join(target, ".ignore");
+  const existing = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
+  const kept = stripManagedBlock(existing, GITATTRIBUTES_MARKER, GITATTRIBUTES_END);
+  while (kept.length && kept[kept.length - 1].trim() === "") kept.pop();
+  while (kept.length && kept[0].trim() === "") kept.shift();
+  const block = [GITATTRIBUTES_MARKER, ...managed, GITATTRIBUTES_END, ""];
+  const out = kept.length ? [...kept, "", ...block] : [...block];
+  return out.join("\n");
 }
 
 function mergeGitattributes(target, driverName) {
@@ -844,6 +881,25 @@ async function deploy(target, opts) {
     }
   }
 
+  // Merge the canonical search-ignore set (`.ignore`): idempotent begin/end
+  // block, project entries preserved, replaced in place on every update. This is
+  // the file ripgrep/fd read; the project's `.gitignore` stays project-owned.
+  {
+    const text = mergeIgnoreFile(target);
+    const key = ".ignore";
+    const targetAbs = path.join(target, ".ignore");
+    const had = fs.existsSync(targetAbs);
+    const current = had ? fs.readFileSync(targetAbs, "utf8") : null;
+    if (!had) actions.push({ rel: key, kind: "create" });
+    else if (current !== text) actions.push({ rel: key, kind: "merge" });
+    else actions.push({ rel: key, kind: "unchanged" });
+    manifest[key] = sha256(text);
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
+      fs.writeFileSync(targetAbs, text, "utf8");
+    }
+  }
+
   // Register the row-aware BACKLOG.md merge driver in the target's local git
   // config (the script is committed; the driver pointer is per-clone). Also
   // record harness local-only artifact ignores in the clone-local exclude file
@@ -856,6 +912,9 @@ async function deploy(target, opts) {
   for (const { abs, rel } of listFiles(TEMPLATES_DIR)) {
     const key = relKey(rel);
     const targetAbs = path.join(target, rel);
+
+    // `.ignore` is a merged file (see mergeIgnoreFile above), not a plain copy.
+    if (isIgnoreFile(rel)) continue;
 
     if (isOpencodeJson(rel)) {
       const merged = mergeOpencodeJson(target, VARIABLES);
@@ -905,6 +964,15 @@ async function deploy(target, opts) {
     if (!dryRun) {
       fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
       fs.writeFileSync(targetAbs, content, "utf8");
+      // POSIX helper scripts must be runnable after a fresh deploy (the
+      // auto-commit records the mode); `.sh` is pinned to LF via .gitattributes.
+      if (key.endsWith(".sh")) {
+        try {
+          fs.chmodSync(targetAbs, 0o755);
+        } catch (_) {
+          /* best-effort */
+        }
+      }
     }
   }
 
@@ -1694,6 +1762,9 @@ module.exports = {
   mergePackageJson,
   mergeGitattributes,
   stripGitattributesBlock,
+  stripManagedBlock,
+  mergeIgnoreFile,
+  isIgnoreFile,
   withDeployLock,
   sha256,
   readConfig,

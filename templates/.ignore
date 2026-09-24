@@ -1,0 +1,28 @@
+# Canonical agent-search ignore set. This file is read by ripgrep/fd (and the
+# harness `scripts/agent-search.sh` wrapper) so recursive discovery stays cheap
+# and never walks generated, vendored, or cache trees. `.gitignore` is the
+# project's own file and is NEVER written by the harness.
+#
+# Everything between the managed markers is harness-owned and replaced in place
+# on `agent-harness update`; project entries outside the markers are preserved.
+# agent-harness (managed below)
+node_modules/
+.git/
+.venv/
+venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+target/
+dist/
+build/
+.next/
+.nuxt/
+coverage/
+.gradle/
+.cargo/
+vendor/
+.terraform/
+tmp/
+.cache/
+# agent-harness (managed end)

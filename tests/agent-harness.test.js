@@ -5568,6 +5568,104 @@ test("deploy excludes the transient deploy lock clone-locally", async () => {
   assert.match(read(path.join(target, ".git", "info", "exclude")), /\.harness\.lock\//);
 });
 
+// ---------------------------------------------------------------- ignore-aware search + tmpfs
+
+test("deploy writes the canonical .ignore, preserves project entries, and is idempotent", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  fs.writeFileSync(path.join(target, ".ignore"), "my-scratch/\n", "utf8");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false, commit: false });
+  const ig = read(path.join(target, ".ignore"));
+  assert.ok(ig.includes("my-scratch/"), "project .ignore entry preserved");
+  assert.match(ig, /# agent-harness \(managed below\)/);
+  assert.ok(ig.includes("node_modules/"), "node_modules excluded");
+  assert.ok(ig.includes("__pycache__/"), "python caches excluded");
+  assert.ok(ig.includes(".terraform/"), "terraform excluded");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: false });
+  const ig2 = read(path.join(target, ".ignore"));
+  assert.strictEqual(ig2, ig, "re-deploy is byte-identical (idempotent)");
+  assert.strictEqual((ig2.match(/# agent-harness \(managed below\)/g) || []).length, 1, "marker not duplicated");
+  assert.ok(!exists(path.join(target, ".gitignore")), "the project .gitignore is never created by the harness");
+});
+
+test("mergeIgnoreFile replaces a stale managed block and keeps project entries on both sides", () => {
+  const t = tmpdir();
+  fs.writeFileSync(
+    path.join(t, ".ignore"),
+    "before/\n# agent-harness (managed below)\nold-tree/\n# agent-harness (managed end)\nafter/\n",
+    "utf8"
+  );
+  const out = h.mergeIgnoreFile(t);
+  assert.ok(out.includes("before/"), "entry before the block survives");
+  assert.ok(out.includes("after/"), "entry after the block survives");
+  assert.ok(!out.includes("old-tree/"), "stale managed entry removed");
+  assert.ok(out.includes("node_modules/"), "canonical entries present");
+  assert.strictEqual((out.match(/# agent-harness \(managed below\)/g) || []).length, 1);
+});
+
+test("deploy ships agent-search.sh + setup-tmpfs.sh, executable and LF, wired into npm scripts", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  for (const rel of ["scripts/agent-search.sh", "scripts/setup-tmpfs.sh"]) {
+    const p = path.join(target, rel);
+    assert.ok(exists(p), `${rel} deployed`);
+    const src = read(p);
+    assert.doesNotMatch(src, /\r/, `${rel} is LF`);
+    const mode = fs.statSync(p).mode & 0o777;
+    assert.ok(mode & 0o111, `${rel} is executable (mode ${mode.toString(8)})`);
+  }
+
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts.search, "bash scripts/agent-search.sh");
+  assert.strictEqual(pkg.scripts.ramdisk, "bash scripts/setup-tmpfs.sh up");
+
+  const search = read(path.join(target, "scripts", "agent-search.sh"));
+  assert.doesNotMatch(search, /\brg\b[^\n]*--no-ignore/, "rg is never invoked with --no-ignore");
+  assert.doesNotMatch(search, /\brg\b[^\n]*--unrestricted/, "rg is never invoked with --unrestricted");
+  assert.match(search, /refusing/, "wrapper refuses ignore-disabling flags");
+  assert.match(search, /--files/, "wrapper supports cheap file discovery");
+  assert.match(search, /--max-columns|--max-filesize/, "wrapper bounds oversized files/lines");
+
+  const tmpfs = read(path.join(target, "scripts", "setup-tmpfs.sh"));
+  assert.match(tmpfs, /PIP_CACHE_DIR/);
+  assert.match(tmpfs, /npm_config_cache/);
+  assert.match(tmpfs, /GOCACHE/);
+  assert.match(tmpfs, /RUSTC_WRAPPER=sccache/);
+  assert.match(tmpfs, /VOLATILE/i, "tmpfs volatility is warned about");
+});
+
+test("setup-tmpfs.sh is a no-op outside WSL and idempotent/dry-runnable with overrides", () => {
+  const script = path.join(h.TEMPLATES_DIR, "scripts", "setup-tmpfs.sh");
+  const base = { ...process.env, AGENT_TMPFS_DRY_RUN: "1", AGENT_TMPFS_CONFIG: tmpdir() };
+  // No WSL signals, forced off: every action is a clean no-op.
+  const env = { ...base };
+  delete env.WSL_DISTRO_NAME;
+  delete env.AGENT_TMPFS_FORCE;
+  const off = spawnSync("bash", [script, "up"], {
+    encoding: "utf8",
+    env: { ...env, AGENT_TMPFS_FORCE: "0", AGENT_TMPFS_DRY_RUN: "1" },
+  });
+  assert.strictEqual(off.status, 0, off.stderr);
+  assert.match(off.stdout, /not WSL — no-op/);
+
+  // Forced-on dry run: prints the planned mount + env and changes nothing.
+  const on = spawnSync("bash", [script, "up"], {
+    encoding: "utf8",
+    env: { ...base, AGENT_TMPFS_FORCE: "1" },
+  });
+  assert.strictEqual(on.status, 0, on.stderr);
+  assert.match(on.stdout, /mount -t tmpfs -o size=\d+M,mode=0755/);
+  assert.match(on.stdout, /VOLATILE/i, "dry-run warns about volatility");
+
+  const envOut = spawnSync("bash", [script, "env"], { encoding: "utf8", env: base });
+  assert.strictEqual(envOut.status, 0, envOut.stderr);
+  assert.match(envOut.stdout, /^export /m);
+  assert.match(envOut.stdout, /PIP_CACHE_DIR|npm_config_cache/);
+});
+
 // ---------------------------------------------------------------- tool-lib + lease-lib
 
 test("tool-lib is the single source for node resolution and the mid-session worktree reroot", () => {
