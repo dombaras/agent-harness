@@ -5639,7 +5639,13 @@ test("deploy ships agent-search.sh + setup-tmpfs.sh, executable and LF, wired in
 
 test("setup-tmpfs.sh is a no-op outside WSL and idempotent/dry-runnable with overrides", () => {
   const script = path.join(h.TEMPLATES_DIR, "scripts", "setup-tmpfs.sh");
-  const base = { ...process.env, AGENT_TMPFS_DRY_RUN: "1", AGENT_TMPFS_CONFIG: tmpdir() };
+  const cfg = tmpdir();
+  const base = {
+    ...process.env,
+    AGENT_TMPFS_DRY_RUN: "1",
+    AGENT_TMPFS_CONFIG: cfg,
+    AGENT_RAMDISK: path.join(cfg, "ramdisk"),
+  };
   // No WSL signals, forced off: every action is a clean no-op.
   const env = { ...base };
   delete env.WSL_DISTRO_NAME;

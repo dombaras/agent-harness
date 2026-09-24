@@ -169,6 +169,12 @@ write_env_file() {
   } >"$ENV_FILE"
 }
 
+mount_opts() {
+  # Own the mount as the invoking user so cache subdirs are writable without
+  # root for every subsequent build.
+  echo "size=$(size_mb)M,mode=0755,uid=$(id -u),gid=$(id -g)"
+}
+
 guard_ramdisk() {
   case "$RAMDISK" in
     "" | / | /mnt | /home | "$HOME")
@@ -185,8 +191,6 @@ cmd_up() {
     return 0
   }
   guard_ramdisk || return 1
-  local sz
-  sz=$(size_mb)
   if is_mounted; then
     if ! is_tmpfs; then
       echo "setup-tmpfs: $RAMDISK is mounted but not tmpfs — refusing to touch it." >&2
@@ -194,15 +198,15 @@ cmd_up() {
     fi
     echo "setup-tmpfs: $RAMDISK already mounted (no-op mount)."
   else
-    run mkdir -p "$RAMDISK"
+    run as_root mkdir -p "$RAMDISK"
     if [ "$DRY_RUN" = "1" ]; then
-      printf '  [dry-run] mount -t tmpfs -o size=%sM,mode=0755 tmpfs %s\n' "$sz" "$RAMDISK"
+      printf '  [dry-run] mount -t tmpfs -o %s tmpfs %s\n' "$(mount_opts)" "$RAMDISK"
     else
-      if ! as_root mount -t tmpfs -o "size=${sz}M,mode=0755" tmpfs "$RAMDISK"; then
+      if ! as_root mount -t tmpfs -o "$(mount_opts)" tmpfs "$RAMDISK"; then
         echo "setup-tmpfs: mount failed (needs root) — retry with: sudo $0 up" >&2
         return 1
       fi
-      echo "setup-tmpfs: mounted tmpfs at $RAMDISK (size ${sz}M, ${PERCENT}% of RAM)."
+      echo "setup-tmpfs: mounted tmpfs at $RAMDISK ($(mount_opts), ${PERCENT}% of RAM)."
     fi
   fi
   ensure_dirs
@@ -218,7 +222,8 @@ cmd_ensure() {
   is_wsl || return 0
   guard_ramdisk || return 0
   if ! is_mounted; then
-    as_root mount -t tmpfs -o "size=$(size_mb)M,mode=0755" tmpfs "$RAMDISK" >/dev/null 2>&1 || return 0
+    as_root mkdir -p "$RAMDISK" >/dev/null 2>&1
+    as_root mount -t tmpfs -o "$(mount_opts)" tmpfs "$RAMDISK" >/dev/null 2>&1 || return 0
   fi
   ensure_dirs >/dev/null 2>&1
   write_env_file >/dev/null 2>&1
