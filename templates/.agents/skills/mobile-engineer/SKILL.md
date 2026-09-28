@@ -27,6 +27,30 @@ You own the native React Native layer and its gotchas — not shared web UI (tha
 - RTL: use logical props and inverted horizontal lists; pass `writingDirection` / `textAlign` from `useI18n`.
 - Remote push notifications require an `eas` dev build (Expo Go cannot receive them) — coordinate with `devops-engineer`.
 
+## Device / emulator runs (Android)
+
+When a QA tier needs a real device/emulator, launch it as a **detached** process —
+never from your own shell (see the "Synchronous Terminal Commands" rule in
+`.agents/AGENTS.md`):
+
+1. **Boot detached, return immediately:**
+   `node scripts/serve.js start --cmd "~/android-sdk/emulator/emulator -avd <avd> -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect" --name emulator --port 5554 --timeout 120000`
+   (paths/AVD are per-project; on WSL2 the active AVD is `libraryos`).
+2. **Gate on readiness, never `sleep`-and-pray:** `adb wait-for-device`, then
+   `adb shell getprop sys.boot_completed` must print `1` before installing/running.
+3. **The dev server is a separate detached process** — start it with `serve.js`
+   (`--url http://localhost:3000`); list both with `node scripts/serve.js list`.
+4. **`adb install -r <apk>` and Maestro runs are synchronous one-shots** — run them
+   inline and let output stream (never pipe through a buffering filter).
+5. **Reuse the emulator across runs**, but stop a dev server you started when its
+   tier is done (`node scripts/serve.js stop`). Never kill an emulator you didn't start.
+
+**Anti-pattern (hangs the tool forever):** `setsid bash -c 'emulator … > log 2>&1' &`.
+The redirect lands on the *inner* command, so the detached wrapper keeps the tool's
+stdout/stderr socket open; the launch call never returns even after its shell exits.
+If a run is already wedged this way, interrupt the call, keep the emulator (verify with
+`adb devices`), then relaunch cleanly.
+
 ## Refactor & integrity
 
 - **500-line rule**: no screen `.tsx` over ~500 lines. "Fix" it by MOVING distinct
