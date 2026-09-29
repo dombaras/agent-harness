@@ -20,6 +20,7 @@ esac
 $NPM run --if-present test:dispatch
 $NPM run --if-present test:governance
 $NPM run --if-present test:concurrency
+$NPM run --if-present test:capacity
 $NPM run --if-present test:backlog
 $NPM run --if-present test:wiring
 $NPM run --if-present test:integrate

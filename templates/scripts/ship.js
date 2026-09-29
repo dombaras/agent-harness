@@ -382,6 +382,7 @@ const PROCESS_GATES = [
   "test:dispatch",
   "test:governance",
   "test:concurrency",
+  "test:capacity",
   "test:backlog",
   "test:wiring",
   "test:product",

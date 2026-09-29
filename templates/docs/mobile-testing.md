@@ -25,17 +25,25 @@ server is ready.
 ## Booting the emulator
 
 ```bash
-node scripts/serve.js start \
-  --cmd "~/android-sdk/emulator/emulator -avd <avd> -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect" \
+node scripts/serve.js start --heavy \
+  --cmd "~/android-sdk/emulator/emulator -avd <avd> -no-window -no-audio -no-boot-anim -no-snapshot -cores 2 -memory 2048 -gpu host" \
   --name emulator --port 5554 --timeout 120000
 ```
 
+- **Size it to the box.** The emulator is a heavy tier: software rendering
+  (`-gpu swiftshader_indirect`) pins a core and *still* used ~3 GB in the
+  2026-09-29 freeze (QEMU + software-GPU overhead far above `hw.ramSize`). Prefer
+  a host GPU (`-gpu host`) when one is available; otherwise cap it with
+  `-cores 2 -memory 2048`. `serve.js` will refuse to start a heavy process when
+  the capacity envelope (`.agents/memory/orchestration.md`) is already exceeded —
+  stop another tier first, or `--force` to override deliberately.
 - The SDK path and AVD name are per-project. On WSL2 the active AVD is
   `libraryos`. The emulator exposes the adb port at **5554**, which is what
   `--port` probes.
 - A full cold boot takes ~30 s; `--timeout 120000` gives headroom. A start
   prints a "launching" line up front, so an in-progress wait is never silent.
-- The dev server is a **separate** detached process:
+- The dev server is a **separate** detached process — and a second heavy tier,
+  so run it *after* a device-only tier, not alongside:
   `node scripts/serve.js start --cmd "npm run dev" --url http://localhost:3000 --name app-dev`.
 
 ### Readiness gate (never `sleep`-and-pray)
@@ -52,11 +60,17 @@ aborted mid-flight.
 
 ## Reuse vs. stop
 
-- **Reuse** the emulator across runs — leave it booted between tiers. Never kill
-  an emulator you didn't start.
-- **Stop** a dev server you started once its tier is done:
-  `node scripts/serve.js stop --name app-dev`. `serve.js list` shows what is
-  live and which PID to trust.
+- **Reuse** the emulator across runs *within a session* — leave it booted
+  between tiers so a cold boot is not paid twice. Never kill an emulator you
+  didn't start.
+- **Stop the emulator at session end**, and a dev server as soon as its tier is
+  done: `node scripts/serve.js stop --name <label>` (or `stop-all`). An idle
+  emulator left up for hours held ~3 GB and was a direct contributor to the
+  2026-09-29 freeze.
+- `node scripts/serve.js list` is the machine view: capacity (free RAM / swap /
+  load / live serves) plus each process's age and whether it is heavy. Treat an
+  old process as an idle-reap candidate; `npm run test:capacity` fails when the
+  envelope is already exceeded.
 
 ## Anti-pattern that hangs the agent
 

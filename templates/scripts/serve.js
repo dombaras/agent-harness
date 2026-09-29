@@ -26,7 +26,7 @@
  * server never became ready.
  *
  * Usage:
- *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--timeout <ms>]
+ *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force]
  *   node scripts/serve.js stop  [--name <label>] [--port <n>]
  *   node scripts/serve.js stop-all
  *   node scripts/serve.js list
@@ -49,6 +49,7 @@ const http = require("http");
 const https = require("https");
 const net = require("net");
 const { spawn, spawnSync } = require("child_process");
+const capacity = require("./qa/capacity-lib.js");
 
 const SERVE_DIR = path.join(process.cwd(), ".serve");
 const READY_INTERVAL = 500;
@@ -68,6 +69,8 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--cmd" || a === "--url" || a === "--port" || a === "--name" || a === "--timeout") {
       flags[a] = argv[++i];
+    } else if (a === "--heavy" || a === "--force") {
+      flags[a] = true;
     } else {
       flags._.push(a);
     }
@@ -208,6 +211,39 @@ async function start(flags) {
 
   fs.mkdirSync(SERVE_DIR, { recursive: true });
 
+  // Capacity preflight: a heavy long-lived process (emulator, Metro/Next dev,
+  // live tier) is what froze the box on 2026-09-29. Check the project envelope
+  // and the machine-wide heavy lock BEFORE spawning, and refuse (naming what is
+  // already up) rather than silently oversubscribing RAM/CPU. `--force`
+  // overrides; a trivial process is never gated.
+  const heavyLabel = flags["--heavy"]
+    ? capacity.classifyHeavy(flags["--cmd"]) || "heavy process"
+    : capacity.classifyHeavy(flags["--cmd"]);
+  const capacityDisabled = process.env.AGENT_CAPACITY_DISABLE === "1";
+  if (heavyLabel && !flags["--force"] && !capacityDisabled) {
+    const sample = capacity.sample(process.cwd());
+    const ev = capacity.evaluate(sample, { pendingHeavy: 1, pendingLive: 1 });
+    if (!ev.ok) {
+      console.error(capacity.formatSummary(sample));
+      console.error(capacity.heavyBlockText(heavyLabel, ev, sample));
+      process.exit(2);
+    }
+    const lock = capacity.acquireHeavyLock(name, sample.envelope);
+    if (!lock.ok && lock.held) {
+      const held = lock.lock || {};
+      console.error(
+        `refused: the machine-wide heavy lock is held by "${held.name || "?"}" ` +
+          `(pid ${held.pid || "?"}, since ${held.since || "?"}) — only one emulator/live tier ` +
+          `runs at a time. Stop it (node scripts/serve.js stop --name ${held.name || "<name>"}) ` +
+          `or re-run with --force.`
+      );
+      process.exit(2);
+    }
+    if (!lock.ok) {
+      console.warn(`serve start: heavy lock unavailable (${lock.error || "unknown"}) — continuing`);
+    }
+  }
+
   const fullCmd = `${flags["--cmd"]} > "${outLog}" 2> "${errLog}"`;
 
   let pid;
@@ -229,7 +265,15 @@ async function start(flags) {
   fs.writeFileSync(
     pidFile(name),
     JSON.stringify(
-      { pid, name, cmd: flags["--cmd"], port: flags["--port"] || null, url: flags["--url"] || null, startedAt: new Date().toISOString() },
+      {
+        pid,
+        name,
+        cmd: flags["--cmd"],
+        port: flags["--port"] || null,
+        url: flags["--url"] || null,
+        heavy: !!heavyLabel,
+        startedAt: new Date().toISOString(),
+      },
       null,
       2
     ),
@@ -276,6 +320,7 @@ function stop(flags) {
   const name = deriveName(flags);
   const p = pidFile(name);
   if (!fs.existsSync(p)) {
+    capacity.releaseHeavyLock(name);
     console.log(`${name}: not running`);
     return;
   }
@@ -296,6 +341,7 @@ function stop(flags) {
   try {
     fs.unlinkSync(launcherPath(name));
   } catch (_) {}
+  capacity.releaseHeavyLock(name);
 }
 
 function listNames() {
@@ -323,6 +369,17 @@ function isAlive(pid) {
 }
 
 function list() {
+  // Capacity first: free RAM/swap/load + live-serve count, so `list` is the
+  // one place an operator sees the whole machine state and can spot an idle
+  // emulator/dev server to reap before it freezes the box.
+  try {
+    const sample = capacity.sample(process.cwd());
+    console.log(capacity.formatSummary(sample));
+  } catch (_) {
+    /* capacity is best-effort */
+  }
+  const lock = capacity.readLock();
+  if (lock) console.log(`heavy lock: "${lock.name}" pid ${lock.pid} since ${lock.since}`);
   const names = listNames();
   if (names.length === 0) {
     console.log("no servers running");
@@ -335,7 +392,12 @@ function list() {
     } catch (_) {
       info = { pid: "?", name };
     }
-    console.log(`${name}: pid ${info.pid} (${isAlive(info.pid) ? "running" : "stale"}) — ${info.cmd || "?"}`);
+    const started = info.startedAt ? Date.parse(info.startedAt) : NaN;
+    const age = Number.isFinite(started) ? ` · up ${Math.round((Date.now() - started) / 60000)}m` : "";
+    const heavy = info.heavy ? " [heavy]" : "";
+    console.log(
+      `${name}: pid ${info.pid} (${isAlive(info.pid) ? "running" : "stale"})${heavy}${age} — ${info.cmd || "?"}`
+    );
   }
 }
 
@@ -361,7 +423,7 @@ function main() {
       break;
     default:
       console.error(
-        'usage: node scripts/serve.js <start|stop|stop-all|list> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--timeout <ms>]'
+        'usage: node scripts/serve.js <start|stop|stop-all|list> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force]'
       );
       process.exitCode = 1;
   }

@@ -253,6 +253,7 @@ const HARNESS_SCRIPTS = {
   "test:quality": "node scripts/qa/check-quality.js",
   "test:wiring": "node scripts/qa/check-test-wiring.js",
   "test:linger": "node scripts/qa/check-linger.js",
+  "test:capacity": "node scripts/qa/check-capacity.js",
   "test:prefix": "node scripts/qa/check-prefix-stability.js",
   report: "node scripts/agent-report.js",
   "report:cost": "node scripts/agent-report.js --cost --since=14d",
@@ -1205,7 +1206,7 @@ function printNextSteps() {
   console.log("      env vars, deploy + seed commands; the DoD deploy-to-UAT step reads it).");
   console.log("   2. Harness gate scripts (`test:dispatch`, `test:governance`, `test:qa-plan`,");
   console.log("      `test:backlog`, `test:product`, `test:docs`, `test:quality`, `test:wiring`,");
-  console.log("      `test:linger`, `test:prefix`) were auto-wired into package.json \"scripts\".");
+  console.log("      `test:linger`, `test:capacity`, `test:prefix`) were auto-wired into package.json \"scripts\".");
   console.log("   3. Capture found items as one light row in the canonical `BACKLOG.md` (repo root);");
   console.log("      dispatch the `features` persona to author the per-feature doc chain when one is picked up.");
   console.log("   4. The CI/CD release scaffold was seeded create-if-missing:");
@@ -1388,6 +1389,32 @@ function doctor(target) {
       ? "`npm run finalize` available (archive + commit + land + confirm CI)"
       : "missing — re-run `agent-harness update` to deploy scripts/finalize.js"
   );
+
+  // Machine capacity (advisory only): free RAM/swap/load, live `.serve/`
+  // processes, the RAM-backed tmpfs, and Windows-side `.wslconfig` advice. This
+  // is the preflight for the WSL2 freeze class (2026-09-29) — it never fails the
+  // cycle, it tells the operator what to change before a heavy tier tips the box.
+  try {
+    const capacity = require(path.join(TEMPLATES_DIR, "scripts", "qa", "capacity-lib.js"));
+    const s = capacity.sample(target);
+    if (s.mem) {
+      const ev = capacity.evaluate(s);
+      add(ev.ok ? "ok" : "warn", "capacity", capacity.formatSummary(s));
+      for (const r of ev.reasons) add("warn", "capacity", r);
+      for (const w of ev.warnings) add("warn", "capacity", w);
+    } else {
+      add("ok", "capacity", "host memory not readable (non-Linux)");
+    }
+    const wsl = capacity.readWslConfig();
+    if (wsl) {
+      add("ok", "wslconfig", wsl.path);
+      for (const a of capacity.wslConfigAdvice(wsl)) add("warn", "wslconfig", a);
+    } else if (process.platform === "linux") {
+      add("ok", "wslconfig", "no .wslconfig found (not WSL, or Windows user dir unreadable)");
+    }
+  } catch (err) {
+    add("ok", "capacity", `not sampled (${err && err.message ? err.message : "unavailable"})`);
+  }
 
   return reportDoctor(results);
 }

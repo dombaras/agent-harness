@@ -31,6 +31,25 @@ even when the turn count is low.
 | checkpoint | 120K | strong checkpoint recommendation |
 | intervene | 160K+ | forced lifecycle intervention (checkpoint + fresh context) |
 
+## Machine capacity envelope
+
+WSL2 is one Linux VM: every agent, worktree, emulator, dev server, and gate
+shares its RAM/CPU/swap with no per-agent cgroup limit. When the working set
+exceeds the VM cap the kernel thrashes reclaim/swap and starves the host↔VM
+vsock relay — every terminal freezes at once (the 2026-09-29 freeze: `memory=10GB`,
+4 GB swap full, load 60). **Parallel agents are fine; parallel heavy tiers are
+not.** These numbers are the machine-readable envelope that `serve.js`,
+`test:capacity`, the `context-guard` plugin, and `agent-harness doctor` all read
+(one owner, one set of numbers). Tune them to the host, not to hope.
+
+| `min_available_mem_mb` | 1024 | minimum free RAM before a heavy launch is refused (raise on a busy host) |
+| `max_swap_used_pct` | 80 | swap usage that raises a capacity warning |
+| `max_live_serves` | 2 | `.serve/` processes before a warning (dev server + emulator ceiling) |
+| `max_heavy_tiers` | 1 | emulator/dev-server/live-tier launches allowed at once, machine-wide |
+| `idle_reap_minutes` | 90 | age at which a running serve is flagged as an idle-reap candidate |
+| `emulator_ram_mb` | 2048 | budget for the Android emulator (it used ~3 GB with software GPU) |
+| `heavy_lock_ttl_minutes` | 240 | TTL before a crashed heavy-tier lock is considered stale |
+
 ## Dispatch fan-out review
 
 Review the planner's dispatch count against these bands (configurable):

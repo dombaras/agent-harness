@@ -94,6 +94,31 @@ session grow without bound. Thresholds are tunable in
   repository-local evidence) or report. Never loop query variations hoping the
   network changes.
 
+## Machine capacity & heavy tiers (never freeze the box)
+
+Parallel sessions are welcome; **parallel heavy tiers are not**. On WSL2 (one
+Linux VM, no per-agent limits) an emulator + two agents + `next dev` + a gate
+exhausts RAM, thrashes swap, and starves the host↔VM relay — freezing every
+terminal at once. The machine-readable envelope (min free RAM, max live serves,
+max heavy tiers, idle reap) lives in `.agents/memory/orchestration.md`; the
+mechanical guards read it.
+
+- **One heavy tier at a time, machine-wide.** Emulator, Metro/Next dev, and a
+  live/API tier are heavy. `node scripts/serve.js start` checks the envelope and
+  the machine-wide heavy lock before launching and **refuses** (naming what is
+  already up) rather than silently oversubscribing; `--force` overrides. Don't
+  bypass it by backgrounding the process by hand — always launch through `serve.js`.
+- **Stop what you started, when its tier is done.** `node scripts/serve.js stop
+  --name <label>` / `stop-all`. A dev server is stopped after its tier; an
+  emulator is reused *within a session* and stopped at session end. `serve.js
+  list` shows each process's age — treat an old one as an idle-reap candidate.
+- **Know the pressure.** `npm run test:capacity` (`node scripts/qa/check-capacity.js`)
+  reports free RAM / swap / load / live serves and fails when the envelope is
+  already exceeded. `agent-harness doctor` adds host + `.wslconfig` advice.
+- **The tmpfs cache is RAM.** The RAM-backed cache (`npm run ramdisk`) competes
+  with the emulator and agents; keep it small (`AGENT_TMPFS_PERCENT=25`) while
+  running device tiers.
+
 ## Non-negotiable laws
 
 1. **Zero speculation** — base every fix/decision on observed logs, telemetry, or DB state; instrument first if evidence is missing.

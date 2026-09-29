@@ -1,14 +1,18 @@
 # WSL2 / agentic-development optimizations
 
-Two harness-managed, re-runnable features that keep recursive work cheap on a
-10 GB / 10 CPU WSL2 box while staying safe outside it:
+Three harness-managed, re-runnable mechanisms that keep recursive work cheap and
+the VM healthy on a 10 GB / 10 CPU WSL2 box while staying safe outside it:
 
 1. **Ignore-aware search** — a canonical `.ignore` plus `scripts/agent-search.sh`
    so recursive discovery never walks `node_modules`, `.git`, or build output.
 2. **RAM-backed build/cache storage** — `scripts/setup-tmpfs.sh` mounts a tmpfs
    and points cache/build env vars at it.
+3. **Machine capacity envelope** — one set of numbers (`.agents/memory/orchestration.md`)
+   enforced by `serve.js`, `test:capacity`, the `context-guard` plugin, and
+   `agent-harness doctor`, so parallel agents can never stack parallel *heavy
+   tiers* into a freeze.
 
-Both are scripts/config/docs only; neither touches application source.
+All are scripts/config/docs only; none touches application source.
 
 ## 1. Ignore-aware search
 
@@ -111,3 +115,46 @@ tmpfs lives in RAM. A reboot, an OOM kill, a WSL restart, or `down` **erases**
 it. Only **caches and build artifacts** belong there — **never** source code,
 databases, secrets, or git state. `down`/`uninstall` remove the env file so
 new shells fall back to the default on-disk caches.
+
+### tmpfs is not free RAM
+
+Because the cache lives in RAM, at the default 30 % of a 10 GB VM it competes
+directly with the emulator and the agents — the hidden third contributor to the
+2026-09-29 freeze. Keep it small while running device tiers:
+
+```bash
+AGENT_TMPFS_PERCENT=25 scripts/setup-tmpfs.sh up
+```
+
+`serve.js list` and `agent-harness doctor` both report tmpfs usage.
+
+## 3. Machine capacity envelope
+
+WSL2 is **one** Linux VM: every agent, worktree, emulator, dev server, and gate
+shares its RAM/CPU/swap, and there is no per-agent cgroup limit. When the working
+set exceeds the VM cap the kernel thrashes reclaim/swap and starves the
+host↔VM **vsock relay** — so every terminal freezes at once. That is a capacity
+failure, not a stuck agent. **Parallel agents are fine; parallel heavy tiers are
+not.**
+
+The envelope is project-owned and machine-readable in
+`.agents/memory/orchestration.md` (`min_available_mem_mb`, `max_swap_used_pct`,
+`max_live_serves`, `max_heavy_tiers`, `idle_reap_minutes`, `emulator_ram_mb`,
+`heavy_lock_ttl_minutes`). One owner of the numbers, read by every surface:
+
+| Surface | Role |
+| --- | --- |
+| `scripts/qa/capacity-lib.js` | samples `/proc` + `.serve/`, parses the envelope, owns the machine-wide heavy lock |
+| `scripts/serve.js start` | **refuses** a heavy launch that would exceed the envelope or a held heavy lock (naming what is up); `--force` overrides; `list` shows capacity + ages |
+| `scripts/qa/check-capacity.js` (`npm run test:capacity`) | reports free RAM/swap/load/live serves; **fails** when the envelope is already exceeded; skips on non-Linux / `AGENT_CAPACITY_DISABLE=1` |
+| `context-guard` plugin | blocks an over-envelope `serve.js start`, nudges any other heavy command, logs `kind:"capacity"` to `.agents/guard-events.jsonl` |
+| `agent-harness doctor` | adds a capacity line + `.wslconfig` advice (memory, `vmIdleTimeout`, `autoMemoryReclaim`, `swap`) |
+
+The machine-wide heavy lock (`~/.agent-harness/heavy.lock`, TTL + dead-pid
+detection) is what lets many agents coexist while guaranteeing **one
+emulator/live tier at a time across sessions**. It is acquired on a heavy
+`serve.js start` and released on `stop`/`stop-all`.
+
+Env overrides (also used to test the guards): `AGENT_CAPACITY_MEMINFO`,
+`AGENT_CAPACITY_LOADAVG`, `AGENT_CAPACITY_MOUNTS`, `AGENT_CAPACITY_FORCE_WSL`,
+`AGENT_CAPACITY_DISABLE`, `AGENT_HEAVY_LOCK`, `AGENT_WSL_CONFIG`.

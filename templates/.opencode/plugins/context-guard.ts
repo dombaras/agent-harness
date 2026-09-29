@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { execFileSync, spawn } from "node:child_process"
 import guard from "../../scripts/qa/context-guard-core.js"
+import capacity from "../../scripts/qa/capacity-lib.js"
 import leases from "../../scripts/qa/lease-lib.js"
 import toolLib from "../../scripts/qa/tool-lib.js"
 
@@ -460,6 +461,60 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         await report(message)
         throw new Error(message)
       }
+      // Capacity guard. WSL2 is one VM with no per-agent limits: an emulator +
+      // agents + `next dev` exhausts RAM and starves the host<->VM relay, which
+      // froze every terminal at once (2026-09-29). A heavy long-lived launch is
+      // sampled against the project envelope; a `serve.js start` that would
+      // exceed it is BLOCKED (naming what is already up), any other heavy
+      // command gets an injected nudge. This MUST throw to abort the tool call,
+      // so it lives outside the swallow-everything loop-guard try/catch; only
+      // the sampling is wrapped. A trivial command is never gated.
+      let capViolation: { label: string; ev: any; sample: any } | null = null
+      let capNotice: string | null = null
+      let capCommand = ""
+      try {
+        if (String(input?.tool || "").toLowerCase() === "bash") {
+          capCommand = String(output?.args?.command || "")
+          const label = capacity.classifyHeavy(capCommand)
+          if (label) {
+            const sample = capacity.sample(directory)
+            const ev = capacity.evaluate(sample, { pendingHeavy: 1, pendingLive: 1 })
+            const blocked = /serve\.js\s+start/.test(capCommand) && !/--force/.test(capCommand)
+            if (!ev.ok && blocked) capViolation = { label, ev, sample }
+            else if (!ev.ok) capNotice = capacity.notice(ev)
+          }
+        }
+      } catch {
+        /* capacity sampling is best-effort — never break a tool call */
+      }
+      if (capViolation) {
+        logEvent({
+          kind: "capacity",
+          sessionID: input?.sessionID,
+          label: capViolation.label,
+          reasons: capViolation.ev.reasons,
+          blocked: true,
+        })
+        const message = capacity.heavyBlockText(capViolation.label, capViolation.ev, capViolation.sample)
+        await report(message)
+        throw new Error(message)
+      }
+      if (isPrimary(input?.sessionID)) {
+        const state = stateFor(input.sessionID)
+        if (capNotice) {
+          logEvent({
+            kind: "capacity",
+            sessionID: input.sessionID,
+            label: capacity.classifyHeavy(capCommand),
+            reasons: [],
+            blocked: false,
+          })
+          state.resourceNotice = capNotice
+        } else if (/serve\.js\s+(start|stop|stop-all)/.test(capCommand)) {
+          // A serve lifecycle op that did not trip the envelope clears the notice.
+          state.resourceNotice = null
+        }
+      }
       try {
         if (!isPrimary(input?.sessionID)) return
         touchLease(input.sessionID)
@@ -561,7 +616,12 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           }
         }
         if (!isPrimary(sid)) return
-        const text = guard.composeGuardText(stateFor(sid), loadThresholds())
+        const state = stateFor(sid)
+        // The capacity notice (set by the heavy-launch guard) rides the same
+        // cache-safe tail message as the context-budget nudges.
+        const text = [guard.composeGuardText(state, loadThresholds()), state.resourceNotice]
+          .filter(Boolean)
+          .join("\n\n")
         if (!text) return
         const last = messages[messages.length - 1]
         if (last?.info?.id === GUARD_MESSAGE_ID) {

@@ -7167,3 +7167,172 @@ test("finalize command + script are deployed and wired", async () => {
   }
   assert.match(doctorOut.join("\n"), /finalize command/);
 });
+
+// ---------------------------------------------------------------- capacity envelope
+
+const capacity = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "capacity-lib.js"));
+const CAPACITY_GATE = path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-capacity.js");
+
+test("capacity: orchestration.md declares the envelope and parsing falls back to defaults", () => {
+  const text = read(path.join(h.TEMPLATES_DIR, ".agents", "memory", "orchestration.md"));
+  const env = capacity.parseEnvelope(text);
+  assert.strictEqual(env.maxHeavyTiers, 1, "one heavy tier machine-wide");
+  assert.ok(env.minAvailableMemMb > 0, "a free-RAM floor is declared");
+  assert.ok(env.maxLiveServes >= 1, "a live-serve ceiling is declared");
+  assert.deepStrictEqual(
+    capacity.parseEnvelope("| `unrelated_key` | 5 | note |"),
+    capacity.DEFAULT_ENVELOPE,
+    "a missing/unknown row falls back to the documented defaults"
+  );
+});
+
+test("capacity: heavy classifier fires on freeze-class commands, not on trivial ones", () => {
+  assert.strictEqual(capacity.classifyHeavy("~/android-sdk/emulator/emulator -avd x"), "emulator");
+  assert.strictEqual(capacity.classifyHeavy("npm run dev"), "dev server");
+  assert.strictEqual(capacity.classifyHeavy("npx next dev"), "next dev");
+  assert.strictEqual(capacity.classifyHeavy("maestro test flow.yaml"), "maestro");
+  assert.strictEqual(capacity.classifyHeavy("npm run test:verify"), "heavy test tier");
+  assert.strictEqual(capacity.classifyHeavy("node scripts/serve.js start --cmd 'node srv.js'"), null);
+  assert.strictEqual(capacity.classifyHeavy("git status"), null);
+});
+
+test("capacity: evaluate fails on a pending heavy over an existing tier, warns on soft signals", () => {
+  const envelope = Object.assign({}, capacity.DEFAULT_ENVELOPE);
+  const base = {
+    root: ".",
+    envelope,
+    mem: { total: 10240, available: 3000, swapTotal: 4096, swapFree: 3072, swapUsedPct: 25 },
+    load: { load1: 1, cpus: 10 },
+    serves: [],
+    tmpfs: [],
+    wsl: true,
+  };
+  assert.strictEqual(capacity.evaluate(base, {}).ok, true, "healthy host passes");
+  assert.strictEqual(
+    capacity.evaluate(Object.assign({}, base, { serves: [{ name: "emulator", alive: true, heavy: true, ageMs: 1000 }] }), {
+      pendingHeavy: 1,
+    }).ok,
+    false,
+    "a second heavy tier is refused"
+  );
+  const lowMem = Object.assign({}, base, {
+    mem: Object.assign({}, base.mem, { available: 200 }),
+  });
+  assert.match(capacity.evaluate(lowMem, {}).reasons.join(" "), /RAM available/);
+  const many = Object.assign({}, base, {
+    serves: [1, 2, 3].map((i) => ({ name: "s" + i, alive: true, heavy: false, ageMs: 1000 })),
+  });
+  const ev = capacity.evaluate(many, {});
+  assert.strictEqual(ev.ok, true, "too many live serves is a warning, not a failure");
+  assert.match(ev.warnings.join(" "), /live serve/);
+});
+
+test("capacity: the machine-wide heavy lock is exclusive and released by name", () => {
+  const dir = tmpdir();
+  const prev = process.env.AGENT_HEAVY_LOCK;
+  process.env.AGENT_HEAVY_LOCK = path.join(dir, "heavy.lock");
+  try {
+    const first = capacity.acquireHeavyLock("emulator", capacity.DEFAULT_ENVELOPE);
+    assert.strictEqual(first.ok, true, "first heavy launch takes the lock");
+    const second = capacity.acquireHeavyLock("metro", capacity.DEFAULT_ENVELOPE);
+    assert.strictEqual(second.ok, false, "a second heavy launch is refused");
+    assert.strictEqual(second.held, true);
+    assert.strictEqual(second.lock.name, "emulator");
+    assert.strictEqual(capacity.releaseHeavyLock("emulator"), true, "released by name");
+    assert.strictEqual(capacity.acquireHeavyLock("metro", capacity.DEFAULT_ENVELOPE).ok, true);
+    capacity.releaseHeavyLock("metro");
+    assert.strictEqual(capacity.readLock(), null, "lock file removed on release");
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_HEAVY_LOCK;
+    else process.env.AGENT_HEAVY_LOCK = prev;
+  }
+});
+
+test("capacity gate fails when free RAM is below the envelope floor", () => {
+  const dir = tmpdir();
+  const meminfo = path.join(dir, "meminfo");
+  fs.writeFileSync(meminfo, "MemTotal:       10240000 kB\nMemAvailable:     200000 kB\n");
+  const r = spawnSync(process.execPath, [CAPACITY_GATE], {
+    encoding: "utf8",
+    env: Object.assign({}, process.env, {
+      AGENT_CAPACITY_MEMINFO: meminfo,
+      AGENT_HEAVY_LOCK: path.join(dir, "heavy.lock"),
+    }),
+  });
+  assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stdout, /RAM available/);
+  assert.match(r.stdout, /FAILURE/);
+});
+
+test("capacity gate is green on a healthy synthetic host and skips when memory is unreadable", () => {
+  const dir = tmpdir();
+  const ok = path.join(dir, "meminfo-ok");
+  fs.writeFileSync(ok, "MemTotal:       10240000 kB\nMemAvailable:     6000000 kB\n");
+  const healthy = spawnSync(process.execPath, [CAPACITY_GATE], {
+    encoding: "utf8",
+    env: Object.assign({}, process.env, {
+      AGENT_CAPACITY_MEMINFO: ok,
+      AGENT_HEAVY_LOCK: path.join(dir, "heavy.lock"),
+    }),
+  });
+  assert.strictEqual(healthy.status, 0, healthy.stdout + healthy.stderr);
+
+  const missing = spawnSync(process.execPath, [CAPACITY_GATE], {
+    encoding: "utf8",
+    env: Object.assign({}, process.env, {
+      AGENT_CAPACITY_MEMINFO: path.join(dir, "does-not-exist"),
+      AGENT_HEAVY_LOCK: path.join(dir, "heavy.lock"),
+    }),
+  });
+  assert.strictEqual(missing.status, 0, "unreadable /proc is a skip, never a failure");
+  assert.match(missing.stdout, /skipped/);
+});
+
+test("capacity guard is deployed and serve.js refuses an over-envelope heavy start", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  assert.ok(exists(path.join(target, "scripts", "qa", "capacity-lib.js")), "capacity-lib deployed");
+  assert.ok(exists(path.join(target, "scripts", "qa", "check-capacity.js")), "capacity gate deployed");
+  const pkg = JSON.parse(read(path.join(target, "package.json")));
+  assert.strictEqual(pkg.scripts["test:capacity"], "node scripts/qa/check-capacity.js", "test:capacity wired");
+
+  const meminfo = path.join(target, "meminfo-fixture");
+  fs.writeFileSync(meminfo, "MemTotal:       10240000 kB\nMemAvailable:     200000 kB\n");
+  const serve = path.join(target, "scripts", "serve.js");
+  const r = spawnSync(process.execPath, [serve, "start", "--cmd", "npm run dev", "--name", "app-dev"], {
+    cwd: target,
+    encoding: "utf8",
+    env: Object.assign({}, process.env, {
+      AGENT_CAPACITY_MEMINFO: meminfo,
+      AGENT_HEAVY_LOCK: path.join(target, "heavy.lock"),
+    }),
+  });
+  assert.strictEqual(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stderr, /would exceed the machine capacity envelope/);
+  assert.ok(!exists(path.join(target, ".serve", "app-dev.pid")), "nothing spawned on refusal");
+
+  const doctorOut = [];
+  const orig = console.log;
+  console.log = (...a) => doctorOut.push(a.join(" "));
+  try {
+    h.doctor(target);
+  } finally {
+    console.log = orig;
+  }
+  assert.match(doctorOut.join("\n"), /capacity/, "doctor reports a capacity line");
+});
+
+test("[drift-guard] capacity guard is one envelope owned by every surface", () => {
+  const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));
+  assert.match(serve, /capacity-lib\.js/, "serve.js reads the shared capacity lib");
+  assert.match(serve, /acquireHeavyLock/, "serve.js takes the machine-wide heavy lock");
+  const plugin = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
+  assert.match(plugin, /capacity-lib\.js/, "the guard plugin reads the shared capacity lib");
+  assert.match(plugin, /heavyBlockText/, "the plugin blocks an over-envelope heavy start");
+  const ship = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
+  assert.match(ship, /"test:capacity"/, "ship runs the capacity gate when no hook is installed");
+  const prePush = read(path.join(h.TEMPLATES_DIR, ".husky", "pre-push"));
+  assert.match(prePush, /test:capacity/, "the pre-push battery includes the capacity gate");
+});
