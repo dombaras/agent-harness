@@ -252,6 +252,9 @@ function guardTexts(state, thresholds) {
   if (state?.failurePending) texts.push(FAILURE_TEXT);
   if (state?.noStatePending) texts.push(NO_STATE_TEXT);
   if (state?.loopPending) texts.push(LOOP_TEXT);
+  if (state?.inspectPending) texts.push(INSPECT_TEXT);
+  if (state?.readPending && READ_TEXTS[state.readPending]) texts.push(READ_TEXTS[state.readPending]);
+  if (state?.dumpPending) texts.push(DUMP_TEXT);
   return texts;
 }
 
@@ -343,6 +346,14 @@ function createSessionState() {
     consecutiveFailures: 0,
     failurePending: false,
     failureFlagged: false,
+    // tool-choice / read / whole-tree hygiene (advisory one-shot nudges)
+    inspectPending: false,
+    inspectFlagged: false,
+    readSeen: new Set(),
+    readNotices: new Set(),
+    readPending: null,
+    dumpPending: false,
+    dumpFlagged: false,
   };
 }
 
@@ -816,6 +827,160 @@ function mainEditText(kind, target) {
   return `SESSION GUARD — blocked ${what}: this session is in the shared MAIN checkout, where code + git history are off-limits before isolation (the F-278 shape: work done on main cannot be finalized — \`finalize\` refuses on main and the branch switch is blocked while other sessions share the tree). Isolate FIRST from the main tree: \`node scripts/backlog.js worktree <id>\` (a human starting the worktree at a terminal adds \`--open\`), then make the change inside that worktree (set \`workdir\` to it). Only board/.agents/docs maintenance is allowed on main. The ${noun} was NOT executed.`;
 }
 
+// ------------------------------------------- tool-choice & read-hygiene guard
+/* Advisory (never blocking) steering for the highest-volume avoidable habits
+ * measured over the 2026-09-16 → 09-29 WSL sessions: shell file-inspection where
+ * the dedicated tools exist, whole-tree output dumps, and re-reading files that
+ * are already in context. Every text is CONSTANT so the tail stays byte-stable;
+ * the plugin arms each notice at most once per session and clears it after the
+ * next injected request (`clearOneShot`). */
+
+/* Shell heads the dedicated Read/Grep/Glob tools cover better. Matched in
+ * COMMAND POSITION only, and only when the command has no pipe/redirect (a
+ * pipeline is real shell work). `sed`/`awk` are included for the ranged-read
+ * shape but excluded when `-i` makes them an in-place edit — that path belongs to
+ * the main-checkout classifier. */
+const SHELL_INSPECT_TOOLS = new Set([
+  "cat", "ls", "find", "grep", "rg", "egrep", "fgrep", "head", "tail",
+  "wc", "stat", "file", "more", "less", "tree", "sed", "awk",
+]);
+const SHELL_WRAPPERS = new Set(["sudo", "command", "env", "nohup", "time", "exec"]);
+
+/* The command-position program + its args in one shell segment, skipping env
+ * assignments and common wrappers (`sudo cat ...`). Null when the segment is
+ * empty or only wrappers. */
+function commandHead(tokens) {
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) || SHELL_WRAPPERS.has(basename(t))) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  return i < tokens.length ? { head: basename(tokens[i]), args: tokens.slice(i + 1) } : null;
+}
+
+/* The inspection head (`cat`, `grep`, …) when the FIRST command of a command
+ * line is a read-only shell inspection the dedicated tools cover, else null. The
+ * first shell segment is what matters: `grep -rn foo lib/ 2>/dev/null` and
+ * `ls -la | head` are still a shell inspection of the tree (the downstream pipe/
+ * redirect is output shaping), while `git log | grep x` is not (grep is a filter,
+ * not the command). A trailing redirect on the first segment is ignored. */
+function inspectCommand(command) {
+  const cmd = String(command || "");
+  if (!cmd) return null;
+  const first = cmd.split(/\r?\n|&&|\|\||;|\|/)[0];
+  const found = commandHead(tokenize(first).filter((t) => !isRedirection(t)));
+  if (!found || !SHELL_INSPECT_TOOLS.has(found.head)) return null;
+  if ((found.head === "sed" || found.head === "awk") && found.args.some((a) => /^-i/.test(a))) return null;
+  return found.head;
+}
+
+/* Rewrite a single leading `cd <path> && rest` into an explicit bash `workdir`,
+ * so the tree is carried by the tool's cwd parameter instead of a shell `cd`
+ * (the WSL `cd`-chaining habit — 2,981 calls / 388 sessions). Only the
+ * unambiguous shape is transformed: exactly one `cd <literal-path> &&` prefix and
+ * no other `cd` in the remainder. A dynamic path (`$VAR`, backticks, `-`) or an
+ * explicit `workdir` already present is left untouched. */
+function rerootBash(command) {
+  const cmd = String(command || "");
+  const m = cmd.match(/^\s*cd\s+("[^"]*"|'[^']*'|[^\s&;|]+)\s*&&\s*([\s\S]+)$/);
+  if (!m) return null;
+  let dir = m[1];
+  if ((dir.startsWith('"') && dir.endsWith('"')) || (dir.startsWith("'") && dir.endsWith("'"))) {
+    dir = dir.slice(1, -1);
+  }
+  const rest = m[2];
+  if (!dir || dir === "-" || /[$`]/.test(dir)) return null;
+  // Only a tree-anchored path is safe to lift into `workdir`: a relative `cd sub`
+  // resolves against the current cwd, which the tool cannot reproduce from the
+  // launch directory alone.
+  if (!/^(?:~\/|\/|[A-Za-z]:[\\/]|\\\\)/.test(dir)) return null;
+  if (/(^|[^A-Za-z0-9_])cd\s/.test(rest)) return null; // a second cd changes semantics
+  return { workdir: dir, command: rest };
+}
+
+/* Pathological whole-tree scans that dump unbounded output. Narrow on purpose —
+ * a bare `git diff`/`git status` is legitimate, so only `find` rooted at the
+ * filesystem and `ls -R` are flagged. */
+function dumpCommand(command) {
+  for (const segment of String(command || "").split(/\r?\n|&&|\|\||;|\|/)) {
+    const found = commandHead(tokenize(segment).filter((t) => !isRedirection(t)));
+    if (!found) continue;
+    if (found.head === "find") {
+      const root = found.args.find((a) => !a.startsWith("-"));
+      if (root === "/" || /^\/(?:mnt|home|usr|etc|var|opt|srv|root)(?:\/|$)/.test(root || "")) return "find";
+    }
+    if (found.head === "ls" && found.args.some((a) => /^-.*R/.test(a) || a === "-R")) return "ls";
+  }
+  return null;
+}
+
+const INSPECT_TEXT =
+  "TOOL GUARD — read-only shell inspection detected. Use the dedicated tools instead of shell `cat`/`ls`/`grep`/`find`/`sed`: `Read` (targeted with `offset`/`limit`), `Grep`, and `Glob`. They honour the project `.ignore` rules, return bounded output, and keep the transcript small. Reserve the shell for real commands and pipelines.";
+
+const READ_TEXTS = Object.freeze({
+  reread:
+    "TOOL GUARD — you already read this file in this session. Do not re-read it whole; it is already in context. Re-read only a specific changed region with `offset`/`limit`, or use `Grep` to locate the needed lines.",
+  whole:
+    "TOOL GUARD — a large file was read whole. Search first (`Grep`/`Glob`), then read a targeted `offset`/`limit` range — never read a big file blind (`.agents/AGENTS.md` §5).",
+  missing:
+    "TOOL GUARD — that path does not exist (a guessed path). Read `.agents/memory/locations.md` (the canonical locations index) or use `Glob` for the real path before reading again — never re-hunt or guess.",
+});
+
+const DUMP_TEXT =
+  "TOOL GUARD — this command scans the whole tree and dumps unbounded output (`find /`, `ls -R`). Bound it: target specific paths, use `Glob`/`git ls-files`, and keep large output out of context.";
+
+const READ_LARGE_BYTES = 20000;
+
+/* First read of a path is silent; a second read of the SAME path in one session
+ * arms the one-shot re-read nudge. `state.readSeen` is the session's read set. */
+function noteReadBefore(state, filePath) {
+  const p = String(filePath || "");
+  if (!p) return { reread: false, firstFlag: false };
+  const reread = state.readSeen.has(p);
+  state.readSeen.add(p);
+  if (reread && !state.readNotices.has("reread")) {
+    state.readNotices.add("reread");
+    state.readPending = "reread";
+    return { reread: true, firstFlag: true };
+  }
+  return { reread, firstFlag: false };
+}
+
+/* After a read: a failed read arms the guessed-path nudge; a successful
+ * whole-file read of a large file arms the whole-file nudge. Each kind fires at
+ * most once per session. */
+function noteReadAfter(state, args, output, largeBytes = READ_LARGE_BYTES) {
+  const failed = !!output?.error || String(output?.status || "") === "error";
+  if (failed) {
+    if (!state.readNotices.has("missing")) {
+      state.readNotices.add("missing");
+      state.readPending = "missing";
+      return { notice: "missing", firstFlag: true };
+    }
+    return { notice: null, firstFlag: false };
+  }
+  const ranged = args?.offset != null || args?.limit != null;
+  const bytes = typeof output?.output === "string" ? output.output.length : 0;
+  if (!ranged && bytes >= largeBytes && !state.readNotices.has("whole")) {
+    state.readNotices.add("whole");
+    state.readPending = "whole";
+    return { notice: "whole", firstFlag: true };
+  }
+  return { notice: null, firstFlag: false };
+}
+
+/* Clear the one-shot hygiene notices after they have been injected once, so a
+ * standing preference does not nag on every later request. */
+function clearOneShot(state) {
+  state.inspectPending = false;
+  state.readPending = null;
+  state.dumpPending = false;
+}
+
 module.exports = {
   DEFAULT_TURNS,
   DEFAULT_STUCK,
@@ -861,4 +1026,16 @@ module.exports = {
   isAllowedWriteTarget,
   stripQuoted,
   mainEditText,
+  INSPECT_TEXT,
+  READ_TEXTS,
+  DUMP_TEXT,
+  READ_LARGE_BYTES,
+  SHELL_INSPECT_TOOLS,
+  commandHead,
+  inspectCommand,
+  rerootBash,
+  dumpCommand,
+  noteReadBefore,
+  noteReadAfter,
+  clearOneShot,
 };

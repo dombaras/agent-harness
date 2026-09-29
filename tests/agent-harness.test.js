@@ -4768,6 +4768,14 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /session\.error/, "also watches provider session errors");
   assert.match(src, /fundsPending = false/, "a user message releases the funds stop");
   assert.match(src, /doom_loop/, "builds on the built-in doom-loop permission");
+  assert.match(src, /inspectCommand/, "steers shell file-inspection to the dedicated tools");
+  assert.match(src, /rerootBash/, "lifts a leading `cd <tree> &&` into the bash workdir argument");
+  assert.match(src, /sessionBashRoot/, "defaults bash into the session's mid-session worktree");
+  assert.match(src, /readWorktree/, "reads the session worktree pointer via the shared lease lib");
+  assert.match(src, /dumpCommand/, "flags whole-tree output dumps");
+  assert.match(src, /noteReadBefore/, "tracks in-session re-reads");
+  assert.match(src, /noteReadAfter/, "flags guessed whole-file reads");
+  assert.match(src, /clearOneShot/, "hygiene notices are one-shot, never nagging");
   assert.doesNotMatch(src, /identical_tool_calls\s*[:=]\s*\d/, "no hardcoded loop threshold");
   assert.doesNotMatch(src, /(?:===|==|>=|>)\s*(?:50|60|80|100)\b/, "no hardcoded turn band numbers");
 });
@@ -4996,6 +5004,119 @@ test("main-checkout plugin guard judges git ops by paths + effective target; doc
   await runWt(`git -C ${main} commit -q -m 'docs: via -C'`);
 });
 
+test("tool-choice / reroot / read-hygiene core helpers classify the measured anti-patterns", () => {
+  const g = require(CG);
+  // Read-only shell inspection the dedicated Read/Grep/Glob tools cover.
+  assert.strictEqual(g.inspectCommand("grep -rn 'foo' lib/"), "grep");
+  assert.strictEqual(g.inspectCommand("cat a.ts"), "cat");
+  assert.strictEqual(g.inspectCommand("ls -la apps/"), "ls");
+  assert.strictEqual(g.inspectCommand("find . -name '*.ts'"), "find");
+  assert.strictEqual(g.inspectCommand("sed -n '1,40p' a.ts"), "sed");
+  assert.strictEqual(g.inspectCommand("sudo cat a.ts"), "cat", "wrappers are skipped");
+  // The first shell segment is what matters; a trailing pipe/redirect is output shaping.
+  assert.strictEqual(g.inspectCommand("cat a.ts | grep foo"), "cat");
+  assert.strictEqual(g.inspectCommand("grep foo a.ts > out.txt"), "grep");
+  assert.strictEqual(g.inspectCommand("grep -rn foo lib/ 2>/dev/null"), "grep");
+  assert.strictEqual(g.inspectCommand("git log | grep foo"), null, "grep as a downstream filter is not an inspection");
+  assert.strictEqual(g.inspectCommand("sed -i 's/a/b/' a.ts"), null);
+  assert.strictEqual(g.inspectCommand("git status"), null);
+  assert.strictEqual(g.inspectCommand("npm run test:quick"), null);
+
+  // `cd <abs> && rest` -> workdir (the WSL cd-chaining habit).
+  assert.deepStrictEqual(g.rerootBash("cd /repo && npm test"), { workdir: "/repo", command: "npm test" });
+  assert.deepStrictEqual(g.rerootBash("cd ~/develop/x && git status"), { workdir: "~/develop/x", command: "git status" });
+  assert.strictEqual(g.rerootBash("cd sub && npm test"), null, "relative cd is not lifted");
+  assert.strictEqual(g.rerootBash("cd /a && cd /b && ls"), null, "two cds are not rewritten");
+  assert.strictEqual(g.rerootBash("cd $DIR && ls"), null, "dynamic path is left alone");
+  assert.strictEqual(g.rerootBash("npm test"), null);
+
+  // Whole-tree dumps are flagged; ordinary commands are not.
+  assert.strictEqual(g.dumpCommand("find / -maxdepth 5 -name BACKLOG.md"), "find");
+  assert.strictEqual(g.dumpCommand("ls -R"), "ls");
+  assert.strictEqual(g.dumpCommand("git diff --stat"), null);
+  assert.strictEqual(g.dumpCommand("ls -la"), null);
+
+  // Read hygiene one-shots.
+  const s = g.createSessionState();
+  assert.strictEqual(g.noteReadBefore(s, "a.ts").firstFlag, false);
+  assert.strictEqual(g.noteReadBefore(s, "a.ts").firstFlag, true, "second read of the same path arms");
+  assert.strictEqual(g.noteReadBefore(s, "a.ts").firstFlag, false, "fires at most once");
+  const w = g.createSessionState();
+  assert.strictEqual(
+    g.noteReadAfter(w, {}, { output: "x".repeat(g.READ_LARGE_BYTES + 1) }).notice,
+    "whole"
+  );
+  const r = g.createSessionState();
+  assert.strictEqual(g.noteReadAfter(r, {}, { output: "boom", error: "ENOENT" }).notice, "missing");
+
+  // Notices compose on the tail and clear as one-shots.
+  const st = g.createSessionState();
+  st.inspectPending = true;
+  st.dumpPending = true;
+  const text = g.composeGuardText(st, null);
+  assert.match(text, /TOOL GUARD[\s\S]*read-only shell inspection/);
+  assert.match(text, /whole tree/);
+  g.clearOneShot(st);
+  assert.strictEqual(st.inspectPending, false);
+  assert.strictEqual(st.dumpPending, false);
+});
+
+test("bash reroot lifts `cd <tree> &&` into workdir and defaults to the session worktree", async () => {
+  const { pathToFileURL } = require("node:url");
+  const leases = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"));
+  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
+  const mod = await import(pathToFileURL(pluginPath).href);
+  const directory = tmpdir();
+  const wt = tmpdir();
+  const plugin = await mod.ContextGuard({ directory, client: { app: { log: async () => {} } } });
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: "ses_r" } } } });
+
+  // An explicit `cd <abs> && ...` is lifted into the bash workdir argument.
+  const a = { args: { command: `cd ${wt} && npm run test:quick` } };
+  await plugin["tool.execute.before"]({ tool: "bash", sessionID: "ses_r", callID: "c1" }, a);
+  assert.strictEqual(a.args.workdir, wt);
+  assert.strictEqual(a.args.command, "npm run test:quick");
+
+  // A recorded mid-session worktree defaults a cwd-less command into it.
+  leases.writeWorktree(directory, "ses_r", wt);
+  const b = { args: { command: "git status --short" } };
+  await plugin["tool.execute.before"]({ tool: "bash", sessionID: "ses_r", callID: "c2" }, b);
+  assert.strictEqual(b.args.workdir, wt);
+
+  // An explicit workdir is never overwritten.
+  const c = { args: { command: "ls", workdir: "/elsewhere" } };
+  await plugin["tool.execute.before"]({ tool: "bash", sessionID: "ses_r", callID: "c3" }, c);
+  assert.strictEqual(c.args.workdir, "/elsewhere");
+});
+
+test("the guard nudges shell tool-choice and re-reads once, on the cache-safe tail", async () => {
+  const { pathToFileURL } = require("node:url");
+  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
+  const mod = await import(pathToFileURL(pluginPath).href);
+  const plugin = await mod.ContextGuard({ directory: tmpdir(), client: { app: { log: async () => {} } } });
+  const sid = "ses_hygiene";
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: sid } } } });
+
+  await plugin["tool.execute.before"](
+    { tool: "bash", sessionID: sid, callID: "c1" },
+    { args: { command: "grep -rn foo lib/" } }
+  );
+  const out1 = { messages: [{ info: { role: "user", sessionID: sid }, parts: [] }] };
+  await plugin["experimental.chat.messages.transform"]({}, out1);
+  assert.match(out1.messages.at(-1).parts[0].text, /read-only shell inspection/);
+  // The notice is one-shot: the next request does not repeat it.
+  const out2 = { messages: [{ info: { role: "user", sessionID: sid }, parts: [] }] };
+  await plugin["experimental.chat.messages.transform"]({}, out2);
+  assert.strictEqual(out2.messages.length, 1, "the tool-choice nudge is not repeated");
+
+  // A second read of the same path arms the re-read nudge.
+  await plugin["tool.execute.before"]({ tool: "read", sessionID: sid, callID: "r1" }, { args: { filePath: "a.ts" } });
+  await plugin["tool.execute.before"]({ tool: "read", sessionID: sid, callID: "r2" }, { args: { filePath: "a.ts" } });
+  const out3 = { messages: [{ info: { role: "user", sessionID: sid }, parts: [] }] };
+  await plugin["experimental.chat.messages.transform"]({}, out3);
+  assert.match(out3.messages.at(-1).parts[0].text, /already read this file/);
+});
+
 test("funds scan trusts only structured failure evidence — docs quoting the rule never arm the stop", () => {
   // The exact F-169 regression: the mandated session-start read of model-routing.md
   // contains the literal trigger phrases; a healthy session must not pause on it.
@@ -5059,6 +5180,8 @@ test("context-guard plugin + core deploy, stay harness-owned, and the guard log 
 
 const PS = path.join(h.TEMPLATES_DIR, "scripts", "qa", "provider-stats.js");
 const ps = require(PS);
+const SR = path.join(h.TEMPLATES_DIR, "scripts", "qa", "session-recon.js");
+const sr = require(SR);
 
 function fixtureSession(overrides = {}) {
   return {
@@ -5290,6 +5413,100 @@ test("provider-stats CLI reads a fixture, prints observed telemetry, and exports
   const badRes = spawnSync(process.execPath, [PS, "--fixture", path.join(target, "missing.json")], { encoding: "utf8" });
   assert.strictEqual(badRes.status, 1, "an unreadable store/fixture fails loudly, never fabricates");
   assert.match(badRes.stderr, /provider-stats:/);
+});
+
+test("session-recon classifies shell tool-choice, cd-chaining, dumps and read hygiene", () => {
+  const at = Date.parse("2026-09-20T00:00:00Z");
+  const parts = [
+    { session_id: "s", tool: "bash", input: JSON.stringify({ command: "grep -rn foo lib/" }), status: "completed", outputLen: 100, time_created: at },
+    { session_id: "s", tool: "bash", input: JSON.stringify({ command: "cd /repo && npm test" }), status: "completed", outputLen: 100, time_created: at },
+    { session_id: "s", tool: "bash", input: JSON.stringify({ command: "find / -name x" }), status: "completed", outputLen: 100, time_created: at },
+    { session_id: "s", tool: "bash", input: JSON.stringify({ command: "for i in 1 2; do gh run view 1; done" }), status: "completed", outputLen: 100, time_created: at },
+    { session_id: "s", tool: "read", input: JSON.stringify({ filePath: "a.ts" }), status: "completed", outputLen: 100, time_created: at },
+    { session_id: "s", tool: "read", input: JSON.stringify({ filePath: "a.ts" }), status: "completed", outputLen: 100, time_created: at },
+    { session_id: "s", tool: "read", input: JSON.stringify({ filePath: "big.ts" }), status: "completed", outputLen: 40000, time_created: at },
+    { session_id: "s", tool: "read", input: JSON.stringify({ filePath: "gone.ts" }), status: "error", outputLen: 0, time_created: at },
+    { session_id: "s", tool: "task", input: JSON.stringify({ prompt: "x".repeat(1200) }), status: "completed", outputLen: 0, time_created: at },
+  ];
+  const h2 = sr.analyzeTools(parts);
+  assert.strictEqual(h2.bash, 4);
+  assert.strictEqual(h2.inspectTotal, 2, "grep and find are both inspections");
+  assert.strictEqual(h2.inspect.find((i) => i.tool === "grep").count, 1);
+  assert.strictEqual(h2.cdWrapped, 1);
+  assert.strictEqual(h2.dumps, 1);
+  assert.strictEqual(h2.polling.gh, 1);
+  assert.strictEqual(h2.read.total, 4);
+  assert.strictEqual(h2.read.whole, 4);
+  assert.strictEqual(h2.read.rereads, 1);
+  assert.strictEqual(h2.read.large, 1);
+  assert.strictEqual(h2.read.errors, 1);
+  assert.strictEqual(h2.task.count, 1);
+  assert.strictEqual(h2.task.promptBytesMax, 1200);
+  assert.strictEqual(h2.perDay.length, 1, "one calendar day in the fixture");
+});
+
+test("session-recon turn bands + guard events summarize deterministically", () => {
+  const bands = sr.analyzeTurnBands([
+    { id: "a", parentId: null, turns: 10, cost: 0.1 },
+    { id: "b", parentId: null, turns: 70, cost: 0.6 },
+    { id: "c", parentId: "b", turns: 5, cost: 0.1 },
+  ]);
+  const b = bands.find((x) => x.band === "61-80");
+  assert.strictEqual(b.sessions, 1, "only the primary session is banded");
+  assert.strictEqual(b.cost, 0.6);
+  assert.ok(Math.abs(b.costShare - 0.6 / 0.7) < 1e-9);
+
+  const g = sr.summarizeGuardEvents([
+    { kind: "band", ts: "2026-09-20T10:00:00Z" },
+    { kind: "band", ts: "2026-09-20T11:00:00Z" },
+    { kind: "no_state", ts: "2026-09-21T00:00:00Z" },
+  ]);
+  assert.strictEqual(g.total, 3);
+  assert.strictEqual(g.kinds[0].kind, "band");
+  assert.strictEqual(g.kinds[0].count, 2);
+  assert.strictEqual(g.perDay.length, 2);
+});
+
+test("session-recon CLI reads a fixture, prints observed habits, and exports a round-trippable snapshot", () => {
+  const target = tmpdir();
+  const fixture = path.join(target, "recon.json");
+  fs.writeFileSync(
+    fixture,
+    JSON.stringify({
+      schema: sr.SCHEMA,
+      meta: { schema: sr.SCHEMA, root: target, since: null },
+      sessions: [
+        { id: "ses_a", parentId: null, title: "F-1", agent: "build", model: "deepseek-flash", provider: "deepseek", cost: 0.5, turns: 70, tokens: { input: 1, output: 1, reasoning: 0, cacheRead: 1, cacheWrite: 0 } },
+      ],
+      parts: [
+        { session_id: "ses_a", tool: "bash", input: JSON.stringify({ command: "ls -la" }), status: "completed", outputLen: 10, time_created: 1 },
+      ],
+      guardEvents: [{ kind: "band", ts: "2026-09-20T00:00:00Z" }],
+    }),
+    "utf8"
+  );
+
+  const jsonRes = spawnSync(process.execPath, [SR, "--fixture", fixture, "--json"], { encoding: "utf8" });
+  assert.strictEqual(jsonRes.status, 0, jsonRes.stdout + jsonRes.stderr);
+  const parsed = JSON.parse(jsonRes.stdout);
+  assert.strictEqual(parsed.schema, sr.SCHEMA);
+  assert.strictEqual(parsed.aggregates.habits.inspectTotal, 1);
+  assert.strictEqual(parsed.aggregates.guard.total, 1);
+
+  const humanRes = spawnSync(process.execPath, [SR, "--fixture", fixture], { encoding: "utf8" });
+  assert.strictEqual(humanRes.status, 0, humanRes.stdout + humanRes.stderr);
+  assert.match(humanRes.stdout, /Session recon/);
+
+  const out = path.join(target, "exported.json");
+  const exportRes = spawnSync(process.execPath, [SR, "--fixture", fixture, "--export", out], { encoding: "utf8" });
+  assert.strictEqual(exportRes.status, 0, exportRes.stdout + exportRes.stderr);
+  const round = sr.readFixture(out);
+  assert.strictEqual(round.sessions.length, 1);
+  assert.strictEqual(round.parts.length, 1);
+
+  const badRes = spawnSync(process.execPath, [SR, "--fixture", path.join(target, "missing.json")], { encoding: "utf8" });
+  assert.strictEqual(badRes.status, 1, "an unreadable fixture fails loudly");
+  assert.match(badRes.stderr, /session-recon:/);
 });
 
 test("agent-report --cost joins handoffs to provider sessions and reports cost per shipped feature", async () => {

@@ -257,6 +257,7 @@ const HARNESS_SCRIPTS = {
   "test:prefix": "node scripts/qa/check-prefix-stability.js",
   report: "node scripts/agent-report.js",
   "report:cost": "node scripts/agent-report.js --cost --since=14d",
+  "report:recon": "node scripts/qa/session-recon.js --since=14d",
   checkpoint: "node scripts/checkpoint.js",
   serve: "node scripts/serve.js",
   search: "bash scripts/agent-search.sh",

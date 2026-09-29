@@ -59,6 +59,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 | `docs/ci-cd-pipeline.md` | the pipeline reference (setup, secrets/variables, rollback) | **project** (create-if-missing) |
 | `scripts/agent-report.js` | deterministic dispatch report (`--cost` joins observed provider telemetry; `--json` schema `agent-report/1`) | harness (overwrite) |
 | `scripts/qa/provider-stats.js` | observed cost/token/turn telemetry from the local opencode store (no sqlite dependency) | harness (overwrite) |
+| `scripts/qa/session-recon.js` | tool-habit / context-hygiene recon (shell tool-choice, `cd`-chaining, whole-file + repeated reads, guessed paths, dumps, polling, dispatch sizes; `report:recon`) | harness (overwrite) |
 | `.agents/memory/*` | project data (domain-map, stack-versions, locations, model-routing, orchestration, history, flow-map, product-principles, quality-parameters, test-design-parameters) | **project** (create-if-missing) |
 | `.agents/reviews/*` | project data (durable review/audit deliverables — REPORT.md + scans, tagged by quality-parameters) | **project** (create-if-missing) |
 | `.agents/handoffs/*` | project data (one session handoff file per session — sharded so concurrent sessions never collide) | **project** (create-if-missing) |

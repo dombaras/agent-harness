@@ -35,11 +35,12 @@ The canonical rulebook. The always-loaded summary is `.agents/rules/00-operating
 ## 5. Token Efficiency & Workflow Discipline
 
 - **When NOT to Plan**: No heavy planning docs for simple fixes, CSS/layout tweaks, or single-file changes — execute directly.
-- **Precise File Inspections**: Search first (`grep`), then read targeted line ranges — never whole 800+ line files blind. Batch independent searches/reads in parallel.
-- **Don't Re-read Unchanged Files**: Edit files already in context directly.
-- **Delegate Big Searches**: Use the `explore` subagent for broad multi-file exploration.
+- **Use the dedicated tools, not the shell, for file work**: inspect with `Read` (targeted `offset`/`limit`), `Grep`, and `Glob`; edit with `Edit`/`Write` — never shell `cat`/`ls`/`grep`/`find`/`sed -i` to do what they already do (they ignore the project `.ignore`, return noisy output, and bloat the transcript). Reserve the shell for real commands and pipelines. Carry the working tree with the bash `workdir` argument, never a leading `cd <tree> &&` (the context-guard nudges both; it also reroots an exact `cd`).
+- **Precise File Inspections**: Search first (`Grep` / `npm run search`), then read targeted line ranges — never whole 800+ line files blind. Batch independent searches/reads in parallel.
+- **Don't Re-read Unchanged Files**: Edit files already in context directly. A second read of the same path means the region, not the file — use `offset`/`limit` or `Grep` for the changed lines.
+- **Delegate Big Searches**: Use the `explore` subagent for broad multi-file exploration — bound it: name the paths, the exact question, and a result budget (file:line pointers + a short summary; no whole-file dumps, no transcript replay).
+- **Locations Map first**: before reading an unknown path, check `.agents/memory/locations.md` (the canonical index) or `Glob` — never guess a path (`read` failures on guessed paths are a measured waste).
 - **Prefer Memory over Re-derivation**: Persist non-obvious facts to `.agents/memory/`; read the relevant memory files before starting.
-- **Locations Map**: Read `.agents/memory/locations.md` first — it is the canonical index of sessions, logs, docs, and data. Never re-hunt for a path.
 - **Step Zero — Subagent & Model Routing (non-negotiable)**: Before touching code, satisfy the dispatch gate (`.agents/rules/00-operating.md` §Step Zero). Personas: `planner`, `frontend-engineer`, `mobile-engineer`, `ui-designer`, `qa-architect`, `qa-runner`, `security-engineer`, `product-manager`, `system-architect`, `diagnostics-expert`, `data-engineer`, `devops-engineer`, `handoff`, `features`, `docs`. Dispatch via the `task` tool — each runs its own `model:`. Do NOT inline persona-owned work on the main model. Read `.agents/memory/model-routing.md` at session start. Dispatch subagents in parallel only when their work is disjoint (see below).
   - **Persona map**:
     | Work area | Persona |

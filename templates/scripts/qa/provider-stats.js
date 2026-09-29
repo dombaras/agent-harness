@@ -27,8 +27,9 @@
  */
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
-const { execFileSync } = require("child_process");
+const { execFileSync, spawnSync } = require("child_process");
 const CG = require("./context-guard-core.js");
 
 const SCHEMA = "provider-stats/1";
@@ -142,15 +143,79 @@ function resolveOpencode(opts = {}) {
   return found;
 }
 
+/* Synchronous sleep — `runDbJson` is called from sync CLI paths, so the retry
+ * backoff must block the thread. */
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(2000, ms)));
+  } catch (_) {
+    /* Atomics.wait unavailable — skip the backoff rather than fail the read */
+  }
+}
+
 function runDbJson(opencode, sql, opts = {}) {
-  const exec = opts.execFileSync || execFileSync;
-  const out = exec(opencode, ["db", "--format", "json", sql], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    maxBuffer: 1024 * 1024 * 1024,
-  });
-  const trimmed = String(out).trim();
-  return trimmed ? JSON.parse(trimmed) : [];
+  // The store is a LIVE SQLite DB (running opencode sessions keep writing it), so
+  // a large `db` dump can occasionally be read torn — `JSON.parse` then fails at a
+  // random offset. Retry the query before giving up; a genuinely malformed result
+  // still surfaces after the bounded attempts (never a silent empty aggregate).
+  // The opencode CLI (a Bun binary) truncates asynchronous stdout when it is a
+  // PIPE: a large `db --format json` dump exits 0 with the JSON cut short at a
+  // non-deterministic offset (observed: 146,176 of 194,958 bytes, repeatedly).
+  // To a real FILE descriptor the write is synchronous and complete, so the
+  // child's stdout is pointed at a temp file and read back. Retries cover a live
+  // store mid-checkpoint.
+  const run = opts.spawnSync || spawnSync;
+  const attempts = Number.isFinite(opts.retries) ? opts.retries : 4;
+  let lastErr = null;
+  for (let i = 0; i <= attempts; i++) {
+    let tmp = null;
+    let fd = null;
+    let text = null;
+    let status = 0;
+    try {
+      tmp = path.join(os.tmpdir(), `opencode-db-${process.pid}-${Date.now()}-${i}.json`);
+      fd = fs.openSync(tmp, "w");
+      const r = run(opencode, ["db", "--format", "json", sql], {
+        stdio: ["ignore", fd, "pipe"],
+        encoding: null,
+      });
+      status = r.status == null ? 0 : r.status;
+      if (r.error) {
+        lastErr = r.error;
+      } else if (status !== 0) {
+        lastErr = new Error(`opencode db exited ${status}: ${String((r.stderr || "").toString("utf8")).slice(0, 200)}`);
+      }
+      if (fd != null) {
+        fs.closeSync(fd);
+        fd = null;
+      }
+      text = fs.existsSync(tmp) ? fs.readFileSync(tmp, "utf8").trim() : "";
+      if (status === 0 && !r.error) lastErr = null;
+    } catch (e) {
+      lastErr = e;
+    } finally {
+      if (fd != null) {
+        try { fs.closeSync(fd); } catch (_) { /* best-effort */ }
+      }
+      if (tmp) {
+        try { fs.rmSync(tmp, { force: true }); } catch (_) { /* best-effort */ }
+      }
+    }
+    if (text) {
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        lastErr = e;
+      }
+    } else if (!lastErr) {
+      if (status === 0) return [];
+      lastErr = new Error(`opencode db exited ${status}`);
+    }
+    // A live store mid-checkpoint can return a torn read; a short backoff lets it
+    // settle before the retry (a tight loop just re-reads the same tear).
+    if (i < attempts) sleepSync(150 * (i + 1));
+  }
+  throw lastErr;
 }
 
 /* Project ids registered for this root: the main worktree plus every git
@@ -199,7 +264,7 @@ function toolPartsSql(sessionIds) {
 
 /* Run one IN-list query in chunks so a 700-session project never overflows the
  * command line / SQL parser. */
-function queryChunked(runDb, ids, buildSql, chunk = 250) {
+function queryChunked(runDb, ids, buildSql, chunk = 50) {
   const rows = [];
   for (let i = 0; i < ids.length; i += chunk) rows.push(...runDb(buildSql(ids.slice(i, i + chunk))));
   return rows;
@@ -756,6 +821,7 @@ module.exports = {
   normalizeRoot,
   sqlString,
   resolveOpencode,
+  runDbJson,
   projectIdsSql,
   sessionsSql,
   turnsSql,

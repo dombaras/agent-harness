@@ -826,7 +826,7 @@ function parseWorktree(handoff) {
  * `.serve/sessions/` container and `archive` clears it; the tools read it back
  * and root board/handoff/telemetry ops in the worktree. */
 function sessionWorktreeFile(root, sessionID) {
-  return path.join(root, ".serve", "sessions", `${sessionID}.worktree`);
+  return leases.worktreeFile(root, sessionID);
 }
 
 /* The parent pid of `pid` from `/proc/<pid>/stat` (field 4). Parsing past the
@@ -875,30 +875,15 @@ function ancestorSessionId(root) {
 }
 
 function readSessionWorktree(root, sessionID) {
-  if (!sessionID) return null;
-  try {
-    return fs.readFileSync(sessionWorktreeFile(root, sessionID), "utf8").trim() || null;
-  } catch {
-    return null;
-  }
+  return leases.readWorktree(root, sessionID);
 }
 
 function writeSessionWorktree(root, sessionID, dir) {
-  if (!sessionID) return;
-  const file = sessionWorktreeFile(root, sessionID);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, dir, "utf8");
+  leases.writeWorktree(root, sessionID, dir);
 }
 
 function clearSessionWorktree(root, sessionID, onlyDir) {
-  if (!sessionID) return;
-  const cur = readSessionWorktree(root, sessionID);
-  if (onlyDir && cur !== path.resolve(onlyDir)) return;
-  try {
-    fs.rmSync(sessionWorktreeFile(root, sessionID), { force: true });
-  } catch {
-    /* best-effort */
-  }
+  leases.clearWorktree(root, sessionID, onlyDir);
 }
 
 /* Worktree checkouts a LIVE session still owns, from the `.serve/sessions/

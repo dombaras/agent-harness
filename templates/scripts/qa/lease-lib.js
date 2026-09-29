@@ -80,6 +80,43 @@ function leaseDir(root) {
   return path.join(root, ".serve", "sessions");
 }
 
+/* A session that creates its worktree mid-session keeps opencode's
+ * `context.worktree` pinned to the MAIN tree, so the session's tree is recorded
+ * separately as `.serve/sessions/<sessionID>.worktree` (written by
+ * `scripts/backlog.js worktree`, cleared by `archive`/lease cleanup). The guard
+ * plugin reads it to reroot bash calls into the worktree. One home for the path
+ * shape, shared by backlog.js and the plugin. */
+function worktreeFile(root, sessionID) {
+  return path.join(leaseDir(root), `${sessionID}.worktree`);
+}
+
+function readWorktree(root, sessionID) {
+  if (!sessionID) return null;
+  try {
+    return fs.readFileSync(worktreeFile(root, sessionID), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeWorktree(root, sessionID, dir) {
+  if (!sessionID) return false;
+  const file = worktreeFile(root, sessionID);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, String(dir), "utf8");
+  return true;
+}
+
+function clearWorktree(root, sessionID, onlyDir) {
+  if (!sessionID) return;
+  if (onlyDir && readWorktree(root, sessionID) !== path.resolve(onlyDir)) return;
+  try {
+    fs.rmSync(worktreeFile(root, sessionID), { force: true });
+  } catch {
+    /* best-effort */
+  }
+}
+
 function readLeases(root) {
   const dir = leaseDir(root);
   if (!fs.existsSync(dir)) return [];
@@ -170,12 +207,11 @@ function touchLease(root, sessionID) {
 function clearLease(root, sessionID) {
   // Also drop the session's mid-session worktree pointer (`.worktree`), so a
   // closed session can't leave the tools rooted in a worktree it no longer owns.
-  for (const ext of [".json", ".worktree"]) {
-    try {
-      fs.rmSync(path.join(leaseDir(root), `${sessionID}${ext}`), { force: true });
-    } catch {
-      /* best-effort */
-    }
+  try {
+    fs.rmSync(path.join(leaseDir(root), `${sessionID}.json`), { force: true });
+    fs.rmSync(worktreeFile(root, sessionID), { force: true });
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -211,6 +247,10 @@ module.exports = {
   processStart,
   birthToken,
   leaseDir,
+  worktreeFile,
+  readWorktree,
+  writeWorktree,
+  clearWorktree,
   readLeases,
   heartbeatAt,
   leaseStatus,

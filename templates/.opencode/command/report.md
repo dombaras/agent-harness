@@ -19,6 +19,18 @@ npm run report:cost          # = node scripts/agent-report.js --cost --since=14d
 machine-readable output — schema `agent-report/1`; add `--fixture <file>` to read
 a previously exported provider snapshot and `--export <file>` to write one.)
 
+For the tool-habit / context-hygiene recon (shell file-inspection vs the
+dedicated tools, `cd`-chaining, whole-file and repeated reads, guessed paths,
+whole-tree dumps, hand-rolled polling, dispatch prompt sizes, turn/cost bands,
+guard events):
+
+```
+npm run report:recon         # = node scripts/qa/session-recon.js --since=14d
+```
+
+(`--json`, `--export <file>` / `--fixture <file>` for a deterministic snapshot,
+`--root <dir>`, `--opencode <path>`.)
+
 This is the **scheduled review** command: run it at least monthly (a 2-week
 window is the minimum to judge a routing/guard change). It reports top primary
 sessions by cost, sessions over the soft turn budget, identical-call loop

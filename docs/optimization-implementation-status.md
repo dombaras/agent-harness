@@ -18,7 +18,7 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.92` |
+| Version | `0.1.104` |
 | Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget); `0.1.88` direct-land cycle — `ship` fast-forward pushes `HEAD:main` (bounded retry) and waits for green CI, `deploy-uat` runs after CI success; PR/landing-label/merge-train/watch and the `check-push-refs` guard removed; `0.1.89` reconciled local-only board rows are committed + pushed; `0.1.90` CI watch from the main worktree + never prune a live session's worktree; `0.1.91` guard-nudge attribution + live request-token band; `0.1.92` single-authority board transaction (every canonical mutation reconciles + publishes; converge under the board lock; redundant-dirt clear; session-start `backlog sync`; doctor staleness warn) |
 | Lint / tests | green (`npm run lint`, `npm test` — 271 pass) |
 | LibraryOS | `0.1.88` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
@@ -28,6 +28,64 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 ---
 
 ## What shipped
+
+### `0.1.104` — tool-habit steering: dedicated tools, bash reroot, read/dump hygiene + `report:recon`
+
+Basis: a fresh recon of the WSL sessions 2026-09-16 → 09-29 (388 sessions, $21.78;
+the Windows store adds 2026-08-27 → 09-16). The correlation with the shipped work
+(the 0.1.53 → 0.1.103 window) split the findings three ways:
+
+- **Already fixed in-window** (do not re-do): hand-rolled CI polling (`gh run
+  view` loops) 112 → 0 after `ship`/direct-land (0.1.81/0.1.88); the guard's own
+  prompt-cache eviction (0.1.71); funds false-positives (0.1.61/0.1.91); board
+  resurrection (0.1.92); WSL freeze (0.1.102/0.1.103).
+- **Created/intensified by a fix**: the mandatory worktree isolation (0.1.67 →
+  0.1.93) left sessions pinned to the MAIN tree (`--open` invoked 11×; **0**
+  sessions rooted in a worktree) and only `backlog_*` tools rerooted (0.1.73), so
+  agents `cd` by hand — `Set-Location` was 8×/934 sessions on Windows vs `cd`
+  2,981×/388 on WSL.
+- **Persistent, never addressed**: shell file-inspection where the dedicated
+  tools exist (Windows: 4,335 PowerShell content cmdlets/934 sessions; WSL:
+  1,981 `/6,483` bash calls, 30.6% — `grep` 1,049, `ls` 462, `sed` 194, `cat`
+  130); whole-file reads 74.4% of reads; 405 in-session re-reads; 114 guessed-path
+  read failures; whole-tree dumps; 53 primary sessions >60 turns ≈ 74% of primary
+  cost.
+
+Shipped (advisory — nothing blocks a tool call):
+
+- **`scripts/qa/session-recon.js`** (new, harness-owned, tested) + `npm run
+  report:recon`. Deterministic tool-habit/context recon from the local opencode
+  store, reusing the runtime guard's own classifiers (so report and nudge cannot
+  drift): shell file-inspection, `cd`-wrapping, whole-file/repeated/failed reads,
+  whole-tree dumps, hand-rolled polling, dispatch prompt sizes, turn/cost bands,
+  guard-event summary. `--json` / `--export` / `--fixture` / `--guard-events`.
+- **`context-guard-core.js`**: pure `inspectCommand` (first shell segment is a
+  dedicated-tool inspection), `rerootBash` (an exact leading `cd <abs> && rest` →
+  `{workdir, command}`, dynamic/relative/multi-`cd` left alone), `dumpCommand`
+  (`find /`, `ls -R`), `noteReadBefore`/`noteReadAfter` (one-shot re-read /
+  whole-file / guessed-path notices), `clearOneShot`, and byte-stable notices
+  (`INSPECT_TEXT`, `READ_TEXTS`, `DUMP_TEXT`) that ride the existing cache-safe
+  tail.
+- **`context-guard.ts`**: applies `rerootBash` to bash calls (and defaults a
+  cwd-less bash command into the session's recorded mid-session worktree via
+  `lease-lib.readWorktree`), arms the one-shot hygiene notices on the primary
+  session, and logs `kind:"reroot"` / `kind:"tool-choice"` / `kind:"read"`.
+- **`lease-lib.js`**: one home for the `.serve/sessions/<id>.worktree` pointer
+  (`worktreeFile`/`readWorktree`/`writeWorktree`/`clearWorktree`); `backlog.js`
+  delegates to it.
+- **`provider-stats.js` robustness**: `opencode db` (a Bun binary) truncates
+  asynchronous stdout when it is a **pipe** (observed: 146,176 of 194,958 bytes,
+  exit 0); `runDbJson` now points the child's stdout at a temp file (synchronous,
+  complete) with a bounded retry + backoff, and `queryChunked` chunks at 50. This
+  fixes intermittent `report:cost` failures on a live/large store.
+- **Rules**: `00-operating.md` law 6 and `.agents/AGENTS.md` §5 now say "use the
+  dedicated tools, not the shell" + `workdir` (not `cd`), a bounded `explore`
+  budget, and "locations map first".
+- Tests: +13 (core classifier/reroot/dump/read truth tables; plugin bash-reroot
+  mutation + worktree default; one-shot tail nudge; session-recon aggregate +
+  turn bands + guard summary + CLI fixture round-trip). 309 pass, lint green.
+- Baseline for the change: `npm run report:recon -- --since=14d --export
+  .agents/recon-baseline.json`; re-run after 1–2 weeks to judge.
 
 ### `0.1.92` — single-authority board transaction (no more resurrection / silent drift)
 

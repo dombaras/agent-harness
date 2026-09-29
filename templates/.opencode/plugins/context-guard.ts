@@ -1,5 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { execFileSync, spawn } from "node:child_process"
 import guard from "../../scripts/qa/context-guard-core.js"
@@ -176,6 +177,30 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       dir = parent
     }
     return null
+  }
+
+  const expandHome = (p: string): string => {
+    const s = String(p || "")
+    if (s === "~") return os.homedir()
+    if (s.startsWith("~/")) return path.join(os.homedir(), s.slice(2))
+    return s
+  }
+
+  /* The tree a session's bash calls should default to: the recorded mid-session
+   * worktree pointer when this session (or its primary ancestor) created one,
+   * else null (fall back to the launch directory). Used to reroot `cd X && ...`
+   * into the bash `workdir` argument — opencode pins a session to the tree it
+   * launched in, and `--open` is rarely used, so agents otherwise `cd` by hand. */
+  const sessionBashRoot = (sessionID: string): string | null => {
+    try {
+      const root = primaryRoot(sessionID)
+      const ptr = leases.readWorktree(directory, root)
+      if (!ptr) return null
+      const abs = path.resolve(expandHome(ptr))
+      return fs.existsSync(abs) && fs.statSync(abs).isDirectory() ? abs : null
+    } catch {
+      return null
+    }
   }
 
   /* Trimmed stdout of a git command run in `cwd`, or null on ANY failure (git
@@ -397,6 +422,34 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           }
         }
       }
+      // Bash reroot (ALL sessions, best-effort, never blocks). A leading
+      // `cd X && rest` becomes workdir=X, command=rest, so the tree is carried by
+      // the tool's cwd parameter instead of a shell `cd` — the WSL `cd`-chaining
+      // habit (2,981 calls / 388 sessions). When the session owns a mid-session
+      // worktree pointer and the command carries no workdir/cd, the default cwd is
+      // rerooted into it, so bash matches the session's feature tree instead of the
+      // MAIN tree opencode pinned at launch. Runs BEFORE the main-checkout guard so
+      // that classifier sees the rewritten command.
+      if (String(input?.tool || "").toLowerCase() === "bash") {
+        try {
+          const args = output?.args || {}
+          if (!args.workdir) {
+            const root = sessionBashRoot(String(input?.sessionID || ""))
+            const rerooted = guard.rerootBash(String(args.command || ""))
+            if (rerooted && (root || /^(?:~\/|\/)/.test(rerooted.workdir))) {
+              const target = path.resolve(expandHome(rerooted.workdir))
+              args.workdir = target
+              args.command = rerooted.command
+              logEvent({ kind: "reroot", sessionID: input?.sessionID, via: "cd", dir: target })
+            } else if (root) {
+              args.workdir = root
+              logEvent({ kind: "reroot", sessionID: input?.sessionID, via: "worktree", dir: root })
+            }
+          }
+        } catch {
+          /* best-effort — a reroot failure must never break the tool call */
+        }
+      }
       // Main-checkout guard (ALL sessions, including subagents). A code change
       // or code-carrying git mutation aimed at the shared MAIN checkout must
       // isolate first (`backlog worktree <id>`), or the work is stranded exactly
@@ -514,6 +567,32 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           // A serve lifecycle op that did not trip the envelope clears the notice.
           state.resourceNotice = null
         }
+        // Tool-choice / whole-tree-dump / re-read hygiene (advisory, one-shot).
+        // Each kind is flagged once per session and rides the cache-safe tail; it
+        // is cleared after injection (`clearOneShot`), so it never nags.
+        try {
+          const tool = String(input?.tool || "").toLowerCase()
+          if (tool === "bash") {
+            const command = String(output?.args?.command || "")
+            const inspect = guard.inspectCommand(command)
+            if (inspect && !state.inspectFlagged) {
+              state.inspectFlagged = true
+              state.inspectPending = true
+              logEvent({ kind: "tool-choice", sessionID: input.sessionID, tool: inspect })
+            }
+            const dump = guard.dumpCommand(command)
+            if (dump && !state.dumpFlagged) {
+              state.dumpFlagged = true
+              state.dumpPending = true
+              logEvent({ kind: "tool-choice", sessionID: input.sessionID, tool: dump, dump: true })
+            }
+          } else if (tool === "read") {
+            const note = guard.noteReadBefore(state, output?.args?.filePath)
+            if (note.firstFlag) logEvent({ kind: "read", sessionID: input.sessionID, notice: "reread" })
+          }
+        } catch {
+          /* never break the tool call */
+        }
       }
       try {
         if (!isPrimary(input?.sessionID)) return
@@ -543,6 +622,12 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       try {
         if (!isPrimary(input?.sessionID)) return
         touchLease(input.sessionID)
+        // Read-hygiene notice: a guessed (failed) read or a large whole-file read
+        // arms a one-shot nudge (whole-file re-reads are handled in `before`).
+        if (String(input?.tool || "").toLowerCase() === "read") {
+          const note = guard.noteReadAfter(stateFor(input.sessionID), output?.args, output)
+          if (note.firstFlag) logEvent({ kind: "read", sessionID: input.sessionID, notice: note.notice })
+        }
         // Only structured failure evidence may arm the funds stop (core gate): a
         // successful read/grep/dispatch returning the harness's own docs — which
         // quote the trigger phrases — must never pause a healthy session.
@@ -623,6 +708,9 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           .filter(Boolean)
           .join("\n\n")
         if (!text) return
+        // The tool-choice / read / dump notices are one-shot: once injected, clear
+        // them so they never nag on later requests (bands/funds/loop persist).
+        guard.clearOneShot(state)
         const last = messages[messages.length - 1]
         if (last?.info?.id === GUARD_MESSAGE_ID) {
           // Same turn, re-request (e.g. a band advanced): update in place.
