@@ -13,12 +13,20 @@ the Windows checkout (`C:\develop\agent-harness`) is a deprecated fallback.
    node ~/develop/agent-harness/bin/agent-harness.js update --target ~/develop/PublicVirtualLibrary
    ```
 
-Active projects: **LibraryOS** at `~/develop/PublicVirtualLibrary` (WSL, primary).
-**FamilyBudget** is not yet cloned into WSL — deploy it from the Windows checkout
-(`node /mnt/c/develop/agent-harness/bin/agent-harness.js update --target /mnt/c/develop/FamilyBudget`)
-until it migrates. Publishing to npm is optional and done on the user's side — the
-local-checkout updates above are the authoritative way to push harness changes to
-the projects.
+Active projects: **LibraryOS** at `~/develop/PublicVirtualLibrary` (WSL, primary)
+and **FamilyBudget** at `/mnt/c/develop/FamilyBudget` (still on the Windows drive,
+so a deploy prints the `/mnt` slowdown warning — a non-blocker). Deploy both from
+**this** WSL checkout:
+
+```bash
+node ~/develop/agent-harness/bin/agent-harness.js update --target /mnt/c/develop/FamilyBudget
+```
+
+The Windows checkout (`C:\develop\agent-harness`) is a deprecated fallback and is
+far behind (0.1.62) — do **not** deploy from it; its downgrade guard will refuse a
+target already on a newer harness. Publishing to npm is optional and done on the
+user's side — the local-checkout updates above are the authoritative way to push
+harness changes to the projects.
 
 ## Harness-owned files are fixed upstream, never in a project
 
