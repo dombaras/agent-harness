@@ -473,6 +473,23 @@ test("operating rules encode bounded lifecycle + retry/gate/web discipline refer
   assert.match(governance, /Fan-out justification/);
 });
 
+test("agent output explains at the reader's level (behavior-level prose, not raw symbols)", () => {
+  const rules = read(path.join(h.TEMPLATES_DIR, ".agents", "rules", "00-operating.md"));
+  assert.match(rules, /Explain at the reader's level/);
+  assert.match(rules, /only when precision needs it/);
+
+  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  assert.match(rulebook, /Explain at the reader's level/);
+  assert.match(rulebook, /knows the product but not the codebase/);
+
+  const rootAgents = read(path.join(h.TEMPLATES_DIR, "AGENTS.md"));
+  assert.match(rootAgents, /Report value-first, at the reader's level/);
+
+  const handoffSkill = read(path.join(h.TEMPLATES_DIR, ".agents", "skills", "handoff", "SKILL.md"));
+  assert.match(handoffSkill, /Explain at the reader's level/);
+  assert.match(handoffSkill, /no raw code identifiers/);
+});
+
 test("check-qa-scripts expects test:qa-plan", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-qa-scripts.js"));
   assert.match(src, /test:qa-plan/);

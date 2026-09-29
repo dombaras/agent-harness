@@ -21,6 +21,7 @@ Dispatch the relevant personas via the `task` tool — each runs on its own `mod
 - Every subagent returns the output contract (`Result` → `Evidence` → `Deferred & risks`).
 - Wrap up with a **dispatch log** (`subagent → model → shipped/deferred`) in your session's `.agents/handoffs/<feature-id>.md`; a log with 5+ entries also needs a `## Fan-out justification` (the governance gate enforces both).
 - **Report value-first.** The completion message to the user opens with **Value shipped** — a plain-language sentence on what the user now gets and why it matters — then **How** (the main approach, a sentence or two). Technical file/test/commit detail follows; it is never the headline. The handoff file carries the same summary in its `## Value shipped` + `## How` sections.
+- **Explain at the reader's level.** Write for someone who knows the product, not the code. Lead with the observable behavior and the affected part of the system in plain terms; name a code identifier (`syncCatalog()`, `OrderRouter`, a table/route) only when precision needs it, and gloss it on first use. Stay concrete and technical — no theory or business-speak — but never make an internal symbol the subject of a sentence. Example — low-level: "`dedupeById()` early-returns when `seen.has(id)`."; reader-level: "the importer now skips duplicates it has already seen, so a book no longer appears twice."
 
 ## Dispatch economics (spend inference only where it earns value)
 

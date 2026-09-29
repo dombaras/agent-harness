@@ -49,10 +49,10 @@ Date: <YYYY-MM-DD>
 - model_escalation_evidence: <none | persona -> tier: reason> (required when the primary session ran on an `escalation_models:` model — `none` states explicitly that no escalation happened)
 
 ## Value shipped
-- <1-2 plain sentences: what the user now gets and why it matters — no file paths, no tech jargon>
+- <1-2 plain sentences: what the user now gets and why it matters — behavior-level, no raw code identifiers, no file paths>
 
 ## How (main points)
-- <the key approach in a sentence or two — the "how", not a file manifest>
+- <the key approach in a sentence or two — the "how", not a file manifest; plain terms first, name a code identifier only when precision needs it>
 
 ## Done this session (planned → shipped → deferred)
 - <planned → shipped → deferred, one line each, with file + commit refs>
@@ -75,7 +75,7 @@ Date: <YYYY-MM-DD>
 ## Rules
 - Update this at session end even if the user doesn't ask, per the DoD in `.agents/AGENTS.md` §8.
 - Keep it under ~40 lines. Code is the source of truth; the handoff is a pointer, not a spec.
-- **Lead with value, not tech.** After the dispatch log, the file opens with `## Value shipped` (plain language — what the user now gets, why it matters) then `## How` (the main approach). File/test/commit detail lives below and is never the headline.
+- **Lead with value, not tech.** After the dispatch log, the file opens with `## Value shipped` (plain language — what the user now gets, why it matters) then `## How` (the main approach). File/test/commit detail lives below and is never the headline. Explain at the reader's level: behavior in plain terms first, a code identifier only when precision needs it.
 - The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this. When the log has 5+ entries, include the `## Fan-out justification` (or a `dispatch_justification:` line) — the gate also enforces that for handoffs dated `2026-09-12`+ (older/undated history is grandfathered).
 - Record any retries in `## Retries` and any escalation in `## Escalations` (both optional — omit when none) so `npm run report` can surface where inference budget actually went. When the primary session itself ran on an `escalation_models:` model (`.agents/memory/model-routing.md`), also set `model_escalation_evidence:` — the reason, or `none` when the pro model was the pinned default for that work. `npm run report -- --cost` flags a pro primary session with neither.
 - Record the `## Session metadata` block (session / work_type / outcome / termination_reason / checkpoint_count) whenever you know the values — the deterministic report aggregates them per feature, and `npm run report -- --cost` joins the `session:` id to observed provider cost. Get the primary orchestrator id from the `session_info` tool; if the orchestrator passed it in the dispatch prompt, use it verbatim. Use `unknown`, never a fabricated value.
