@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import fs from "node:fs"
 import path from "node:path"
-import { spawn } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import guard from "../../scripts/qa/context-guard-core.js"
 import leases from "../../scripts/qa/lease-lib.js"
 import toolLib from "../../scripts/qa/tool-lib.js"
@@ -27,9 +27,10 @@ import toolLib from "../../scripts/qa/tool-lib.js"
 // It also blocks a branch switch (`git checkout`/`git switch`) while another
 // live primary session shares the same checkout — see the branch-switch guard
 // on `tool.execute.before` (the 2026-09-18 direct-push-to-main incident) — and
-// blocks any code change / git mutation aimed at the shared MAIN checkout until
-// the session isolates into its feature worktree (the F-278 stranded-work
-// guard; board/.agents/docs maintenance on main stays allowed).
+// blocks any code change aimed at the shared MAIN checkout until the session
+// isolates into its feature worktree (the F-278 stranded-work guard). Git ops
+// are judged by the paths they actually move against the checkout they select
+// (`-C` resolved), so docs maintenance on main — and only that — stays allowed.
 
 const ORCHESTRATION_REL = path.join(".agents", "memory", "orchestration.md")
 const GUARD_LOG_REL = path.join(".agents", "guard-events.jsonl")
@@ -174,6 +175,57 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       dir = parent
     }
     return null
+  }
+
+  /* Trimmed stdout of a git command run in `cwd`, or null on ANY failure (git
+   * absent, not a repo, bad ref). null is "unknown": the caller stays
+   * conservative and blocks, so a missing git binary can never open a hole. */
+  const gitOut = (cwd: string, args: string[]): string | null => {
+    try {
+      return execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 5000,
+      }).trim()
+    } catch {
+      return null
+    }
+  }
+
+  /* Whether a PATHLESS git op would move a code path, resolved against the live
+   * checkout. `commit` inspects the index (or the `HEAD` diff for `-a`); `push`
+   * inspects the commits not yet on the upstream. Docs-only -> false; anything
+   * indeterminate (git unavailable, no upstream) -> null, which blocks. */
+  const gitOpTouchesCode = (checkout: string, op: any): boolean | null => {
+    const sub = String(op?.subcommand || "")
+    const args: string[] = Array.isArray(op?.args) ? op.args : []
+    const nameOnly = (spec: string[]): string | null => gitOut(checkout, [...spec, "--name-only"])
+    let files: string | null
+    if (sub === "commit") {
+      const all = args.some((a) => a === "--all" || (/^-[a-z]+$/i.test(a) && a.includes("a")))
+      if (args.includes("--amend")) {
+        const committed = gitOut(checkout, ["diff", "--name-only", "HEAD^", "HEAD"])
+        const staged = gitOut(checkout, ["diff", "--cached", "--name-only"])
+        if (committed == null || staged == null) return null // root commit / unborn HEAD
+        files = committed + "\n" + staged
+      } else {
+        files = all ? nameOnly(["diff", "HEAD"]) : nameOnly(["diff", "--cached"])
+      }
+    } else if (sub === "push") {
+      const upstream = gitOut(checkout, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+      if (!upstream) return null
+      files = nameOnly(["diff", `${upstream}..HEAD`])
+    } else {
+      // merge/rebase/am/cherry-pick/revert/reset/clean/stash are not the docs
+      // maintenance carve-out — block them conservatively.
+      return null
+    }
+    if (files == null) return null
+    return files
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .some((p) => guard.isCodePath(p))
   }
 
   /* Tools whose args name the file they write. `patch`/`apply_patch` may carry
@@ -345,31 +397,50 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         }
       }
       // Main-checkout guard (ALL sessions, including subagents). A code change
-      // or git mutation aimed at the shared MAIN checkout must isolate first
-      // (`backlog worktree <id>`), or the work is stranded exactly like F-278:
-      // `finalize` refuses on main and the branch switch is blocked while other
-      // sessions share the tree. This MUST throw to abort the call, so it lives
-      // OUTSIDE the swallow-everything loop-guard try/catch below; only the
-      // resolution is wrapped, and it stands down (no block) on any error.
+      // or code-carrying git mutation aimed at the shared MAIN checkout must
+      // isolate first (`backlog worktree <id>`), or the work is stranded exactly
+      // like F-278: `finalize` refuses on main and the branch switch is blocked
+      // while other sessions share the tree. Docs/board maintenance on main is
+      // allowed, so a git op is judged by the PATHS it actually moves — the
+      // explicit pathspecs when present, the live index/upstream diff for a
+      // whole-index `commit`/`push` — against the checkout the command selects
+      // (`git -C <main>` is resolved, not bypassed via an unrelated cwd). This
+      // MUST throw to abort the call, so it lives OUTSIDE the swallow-everything
+      // loop-guard try/catch below; only the resolution is wrapped.
       let mainViolation: { kind: "edit" | "bash"; target: string } | null = null
       try {
         const tool = String(input?.tool || "").toLowerCase()
         const args = output?.args || {}
         const isEdit = EDIT_TOOLS.has(tool)
         const isBash = tool === "bash"
-        if (isEdit || isBash) {
-          const candidate = isEdit
-            ? args.filePath && guard.isCodePath(args.filePath)
-              ? String(args.filePath)
-              : null
-            : guard.isCodeMutationCommand(args.command)
-              ? String(args.command)
-              : null
-          if (candidate) {
+        if (isEdit) {
+          if (args.filePath && guard.isCodePath(args.filePath)) {
             const base = path.resolve(String(args.workdir || directory))
-            const targetAbs = isEdit ? path.resolve(base, candidate) : base
+            const targetAbs = path.resolve(base, String(args.filePath))
             if (checkoutKind(targetAbs) === "main") {
-              mainViolation = { kind: isEdit ? "edit" : "bash", target: targetAbs }
+              mainViolation = { kind: "edit", target: targetAbs }
+            }
+          }
+        } else if (isBash) {
+          const { contentCode, gitOps } = guard.classifyCommand(args.command)
+          const base = path.resolve(String(args.workdir || directory))
+          // Content mutators (`sed -i`/`tee`/redirect) name their own path in the
+          // command; the checkout is the command cwd.
+          if (contentCode && checkoutKind(base) === "main") {
+            mainViolation = { kind: "bash", target: base }
+          }
+          if (!mainViolation) {
+            for (const op of gitOps) {
+              const checkout = path.resolve(base, String(op.target || "."))
+              if (checkoutKind(checkout) !== "main") continue
+              const code = op.pathless
+                ? gitOpTouchesCode(checkout, op)
+                : op.paths.some((p: string) => guard.isCodePath(p))
+              if (code !== false) {
+                // true = code; null = indeterminate -> block conservatively.
+                mainViolation = { kind: "bash", target: checkout }
+                break
+              }
             }
           }
         }

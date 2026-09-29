@@ -4518,6 +4518,9 @@ test("main-checkout guard detects git mutations + in-place writes, not reads or 
     "git rebase origin/main",
     "git apply patch.diff",
     "git rm old.ts",
+    "git add -A",
+    "git commit -a -m x",
+    "git add .agents/handoffs/F-278.md app/x.ts",
     "sed -i s/a/b/ app/x.ts",
     "perl -pi -e 's/a/b/' app/x.ts",
     "patch -p1 < fix.diff",
@@ -4543,11 +4546,39 @@ test("main-checkout guard detects git mutations + in-place writes, not reads or 
     "npm run test:quick > /tmp/out.txt",
     'echo "a -> b"',
     'grep -rn "git commit" scripts/',
+    "git add .agents/handoffs/F-278.md BACKLOG.md",
+    "git add -- .agents/handoffs/F-278.md docs/guide.md",
+    "git commit -m 'docs' -- .agents/handoffs/F-278.md",
+    "git commit .agents/handoffs/F-278.md",
+    "git rm docs/old.md",
+    "sed -i s/a/b/ .agents/memory/history.md",
+    "perl -pi -e 's/a/b/' README.md",
+    "cat a | tee docs/guide.md",
     "",
     null,
   ]) {
     assert.strictEqual(cg.isCodeMutationCommand(command), false, `not a mutation: ${command}`);
   }
+});
+
+test("main-checkout guard exposes git ops with pathspecs + the effective repo selector", () => {
+  const plain = cg.classifyCommand("git add .agents/handoffs/F-278.md && git commit -m x && git push");
+  assert.deepStrictEqual(
+    plain.gitOps.map((o) => [o.subcommand, o.pathless, o.paths]),
+    [
+      ["add", false, [".agents/handoffs/F-278.md"]],
+      ["commit", true, []],
+      ["push", true, []],
+    ]
+  );
+  assert.strictEqual(plain.contentCode, false);
+
+  const targeted = cg.classifyCommand("git -C /repo add -- app/x.ts docs/y.md");
+  assert.strictEqual(targeted.gitOps[0].target, "/repo", "the -C repo selector is captured");
+  assert.deepStrictEqual(targeted.gitOps[0].paths, ["app/x.ts", "docs/y.md"]);
+  assert.strictEqual(cg.classifyCommand("git --git-dir=/repo/.git commit -m x").gitOps[0].target, "/repo/.git");
+  assert.deepStrictEqual(cg.gitPathspecs("commit", ["-m", "msg", "--", "a.md", "b.ts"]), ["a.md", "b.ts"]);
+  assert.deepStrictEqual(cg.gitPathspecs("commit", ["-m", "msg"]), [], "the -m value is not a pathspec");
 });
 
 test("main-checkout guard message names the target and points at isolation", () => {
@@ -4622,6 +4653,9 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /pruneLeases/, "startup sweep clears crashed/closed sessions' leases");
   assert.match(src, /branchSwitch\(/, "detects a branch-switch command via the shared core");
   assert.match(src, /branchSwitchText/, "the block message comes from the shared core");
+  assert.match(src, /classifyCommand/, "main-checkout guard judges git ops by paths/target, not verb");
+  assert.match(src, /gitOpTouchesCode/, "pathless commit/push are resolved against the live index/upstream");
+  assert.match(src, /execFileSync/, "the index/upstream inspection shells out to git");
   assert.match(src, /throw new Error\(message\)/, "the branch guard THROWS to abort the switch");
   assert.match(src, /childParent/, "child->parent mapping attributes subagent funds errors to the orchestrator");
   assert.match(src, /sessionModel/, "tracks the observed provider/model per session");
@@ -4779,6 +4813,94 @@ test("branch-switch plugin guard aborts a HEAD move only while another live sess
     { tool: "bash", sessionID: "ses_d", callID: "c4" },
     { args: { command: "git switch main" } }
   );
+});
+
+test("main-checkout plugin guard judges git ops by paths + effective target; docs maintenance on main is allowed", async () => {
+  const { pathToFileURL } = require("node:url");
+  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
+  const mod = await import(pathToFileURL(pluginPath).href);
+  const client = { app: { log: async () => {} } };
+
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q"]);
+  const main = tmpdir();
+  git(main, ["init", "-q"]);
+  git(main, ["config", "user.email", "t@t.t"]);
+  git(main, ["config", "user.name", "t"]);
+  fs.mkdirSync(path.join(main, ".agents", "handoffs"), { recursive: true });
+  fs.writeFileSync(path.join(main, "app.ts"), "export const x = 1\n");
+  fs.writeFileSync(path.join(main, ".agents", "handoffs", "F-1.md"), "# handoff\n");
+  git(main, ["add", "-A"]);
+  git(main, ["commit", "-q", "-m", "seed"]);
+  git(main, ["remote", "add", "origin", origin]);
+  git(main, ["push", "-q", "-u", "origin", "HEAD:main"]);
+
+  const plugin = await mod.ContextGuard({ directory: main, client });
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: "ses_main" } } } });
+  const run = (command, args = {}) =>
+    plugin["tool.execute.before"](
+      { tool: "bash", sessionID: "ses_main", callID: "c" },
+      { args: { command, ...args } }
+    );
+  const assertBlocked = (command) =>
+    assert.rejects(run(command), /SESSION GUARD[\s\S]*MAIN checkout[\s\S]*NOT executed/, `blocked: ${command}`);
+
+  // Docs maintenance on main is allowed — the false positive that blocked handoff
+  // commits. (The index is empty at guard time, so the pathless commit is docs.)
+  fs.writeFileSync(path.join(main, ".agents", "handoffs", "F-1.md"), "# handoff v2\n");
+  await run("git add .agents/handoffs/F-1.md && git commit -q -m 'docs: handoff'");
+  git(main, ["add", ".agents/handoffs/F-1.md"]);
+  git(main, ["commit", "-q", "-m", "docs: handoff"]);
+  await run("git commit --amend --no-edit"); // amending a docs-only commit stays allowed
+
+  // Source edits / writes on main are still blocked.
+  await assertBlocked("git add app.ts");
+  await assertBlocked("echo x > app.ts");
+
+  // A whole-index commit is judged by the live index: docs staged -> allowed.
+  fs.writeFileSync(path.join(main, ".agents", "handoffs", "F-1.md"), "# handoff v3\n");
+  git(main, ["add", ".agents/handoffs/F-1.md"]);
+  await run("git commit -q -m 'docs: staged handoff'");
+  // Code staged -> blocked.
+  fs.writeFileSync(path.join(main, "app.ts"), "export const x = 2\n");
+  git(main, ["add", "app.ts"]);
+  await assertBlocked("git commit -q -m 'feat: code'");
+
+  // A push is judged by the commits not yet on the upstream.
+  git(main, ["reset", "--hard", "-q", "origin/main"]);
+  git(main, ["commit", "-q", "--allow-empty", "-m", "docs-only marker"]);
+  await run("git push -q origin HEAD:main");
+  fs.writeFileSync(path.join(main, "app.ts"), "export const x = 3\n");
+  git(main, ["add", "app.ts"]);
+  git(main, ["commit", "-q", "-m", "feat: unpushed code"]);
+  await assertBlocked("git push -q origin HEAD:main");
+  await assertBlocked("git commit --amend --no-edit"); // amending a code commit is code
+
+  // `git -C <main>` from a linked worktree is resolved to main, not bypassed via
+  // the worktree cwd (the hole the docs-commit workaround exploited).
+  const wt = path.join(tmpdir(), "linked");
+  git(main, ["worktree", "add", "-q", wt, "-b", "feat"]);
+  const wtPlugin = await mod.ContextGuard({ directory: wt, client });
+  await wtPlugin.event({ event: { type: "session.created", properties: { info: { id: "ses_wt" } } } });
+  const runWt = (command) =>
+    wtPlugin["tool.execute.before"](
+      { tool: "bash", sessionID: "ses_wt", callID: "c" },
+      { args: { command } }
+    );
+  // main's index carries the unpushed code commit's tree? It's committed, so
+  // stage fresh code and confirm the -C commit is blocked.
+  fs.writeFileSync(path.join(main, "app.ts"), "export const x = 4\n");
+  git(main, ["add", "app.ts"]);
+  await assert.rejects(
+    runWt(`git -C ${main} commit -q -m 'feat: code via -C'`),
+    /SESSION GUARD[\s\S]*MAIN checkout/,
+    "a -C <main> code commit is resolved to main and blocked, not bypassed"
+  );
+  // Docs staged in main through the same -C target are allowed.
+  git(main, ["reset", "-q"]);
+  fs.writeFileSync(path.join(main, ".agents", "handoffs", "F-1.md"), "# handoff v4\n");
+  git(main, ["add", ".agents/handoffs/F-1.md"]);
+  await runWt(`git -C ${main} commit -q -m 'docs: via -C'`);
 });
 
 test("funds scan trusts only structured failure evidence — docs quoting the rule never arm the stop", () => {

@@ -544,10 +544,23 @@ function basename(token) {
   return parts[parts.length - 1];
 }
 
+/* The raw value of a repo-selecting global option (`-C <path>`, `--git-dir[=]`,
+ * `--work-tree[=]`), or null. Kept pure: the caller resolves it against the
+ * command cwd and classifies the enclosing checkout (a `--git-dir` pointing at a
+ * `.git` directory resolves to its repo root when the classifier walks up). */
+function gitRepoSelector(tokens, at) {
+  const t = tokens[at];
+  if (t === "-C" || t === "--work-tree" || t === "--git-dir") return tokens[at + 1] || null;
+  const eq = /^--(git-dir|work-tree)=(.*)$/.exec(t);
+  return eq ? eq[2] || null : null;
+}
+
 /* The git subcommand in command position of one shell segment, or null. Env
- * assignments and the common wrappers (`sudo git ...`) are skipped; any `-C`/
- * `--git-dir`/... global option is stepped over (the guard deliberately does not
- * chase them, so a foreign-repo checkout is never mis-blocked). */
+ * assignments and the common wrappers (`sudo git ...`) are skipped. Global
+ * options (`-C`, `--git-dir`, `--work-tree`, ...) are stepped over to find the
+ * subcommand, but the repo selector is captured as `target` so the caller can
+ * classify the checkout the command actually writes to (a `git -C <main>` from
+ * an unrelated cwd must not escape the guard). */
 function gitSubcommand(tokens) {
   let i = 0;
   while (i < tokens.length) {
@@ -560,13 +573,18 @@ function gitSubcommand(tokens) {
   }
   if (i >= tokens.length || basename(tokens[i]) !== "git") return null;
   let j = i + 1;
+  let target = null;
   while (j < tokens.length) {
     const t = tokens[j];
     if (GIT_GLOBAL_WITH_ARG.has(t)) {
+      const sel = gitRepoSelector(tokens, j);
+      if (sel && !target) target = sel;
       j += 2;
       continue;
     }
     if (/^--(git-dir|work-tree|namespace|exec-path)=/.test(t)) {
+      const sel = gitRepoSelector(tokens, j);
+      if (sel && !target) target = sel;
       j += 1;
       continue;
     }
@@ -574,7 +592,7 @@ function gitSubcommand(tokens) {
       j += 1;
       continue;
     }
-    return { subcommand: t, args: tokens.slice(j + 1) };
+    return { subcommand: t, args: tokens.slice(j + 1), target };
   }
   return null;
 }
@@ -679,34 +697,115 @@ function stripQuoted(text) {
   return String(text || "").replace(/"(?:\\.|[^"\\])*"|'(?:[^']*)'/g, " ");
 }
 
-/* True when a shell command writes source/config content or git history in the
- * current checkout. Narrow by design: the board CLI, test runs, `gh`, and
- * read-only git never match. */
-function isCodeMutationCommand(command) {
-  const cmd = String(command || "");
-  if (!cmd) return false;
-  for (const segment of cmd.split(/\r?\n|&&|\|\||;|\|/)) {
-    const tokens = tokenize(segment);
-    const found = gitSubcommand(tokens);
-    if (found && GIT_MUTATIONS.has(found.subcommand)) return true;
-    const head = tokens.find((t) => !isRedirection(t) && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
-    if (!head) continue;
+/* Git subcommands whose positional args are path operands (`git add <paths>`),
+ * as opposed to history ops that name no paths (`git push`, `git rebase`). For
+ * `commit`/`reset` only post-`--` args are pathspecs; a bare trailing arg is
+ * ambiguous and stays pathless (conservative). */
+const GIT_PATHSPEC_SUBCOMMANDS = new Set(["add", "rm", "mv", "apply"]);
+
+/* Flags that consume the NEXT token as their value, so it must not be mistaken
+ * for a pathspec (`git commit -m "docs: fix"`). */
+const GIT_VALUE_FLAGS = new Set([
+  "-m", "--message", "-F", "--file", "--author", "--date", "--reuse-message",
+  "-c", "-C", "--fixup", "--squash", "--template", "--pathspec-from-file",
+  "--exclude", "--chmod", "--src-prefix", "--dst-prefix", "--directory",
+  "--trailer", "--cleanup",
+]);
+
+/* The explicit pathspecs named by one git mutation. Empty means the op carries
+ * no static path info (a whole-index `commit`, a `push`, a `rebase`) and the
+ * caller must resolve the affected paths at runtime. */
+function gitPathspecs(subcommand, args) {
+  const out = [];
+  let afterDash = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (afterDash) {
+      out.push(a);
+      continue;
+    }
+    if (a === "--") {
+      afterDash = true;
+      continue;
+    }
+    if (a.startsWith("-")) {
+      if (GIT_VALUE_FLAGS.has(a)) i += 1;
+      continue;
+    }
+    const partial = (subcommand === "commit" || subcommand === "reset") && (a.includes("/") || a.startsWith("."));
+    if (GIT_PATHSPEC_SUBCOMMANDS.has(subcommand) || partial) out.push(a);
+  }
+  return out;
+}
+
+/* The non-git content mutators (`sed -i`, `perl -i`, `patch`, `tee`, redirect)
+ * whose target path is named in the command, now resolved against `isCodePath`
+ * so an in-place edit to a docs/metadata file does not read as code. */
+function contentCodeMutation(tokens, cmd) {
+  const head = tokens.find((t) => !isRedirection(t) && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
+  if (head) {
     const base = basename(head);
     const rest = tokens.slice(tokens.indexOf(head) + 1);
-    if (base === "sed" && rest.some((t) => /^-i/.test(t))) return true;
-    if (base === "perl" && rest.some((t) => /^-[^\s]*i/.test(t))) return true;
+    const operands = rest.filter((t) => !t.startsWith("-"));
+    // The FILE operand is the last positional (`sed [opts] script file`,
+    // `perl [opts] code file`); a script-only invocation stays conservative.
+    const target = operands[operands.length - 1];
+    if (base === "sed" && rest.some((t) => /^-i/.test(t)) && (!target || isCodePath(target))) return true;
+    if (base === "perl" && rest.some((t) => /^-[^\s]*i/.test(t)) && (!target || isCodePath(target))) return true;
     if (base === "patch") return true;
     if (base === "tee") {
-      const target = rest.find((t) => !t.startsWith("-"));
-      if (target && !isAllowedWriteTarget(target)) return true;
+      const teeTarget = rest.find((t) => !t.startsWith("-"));
+      if (teeTarget && !isAllowedWriteTarget(teeTarget) && isCodePath(teeTarget)) return true;
     }
   }
+  // A redirect into the tree is conservative code regardless of extension: it
+  // is a build/command output, not the board/docs maintenance carve-out.
   const redir = />>?\s*([^\s;&|]+)/g;
   let m;
   while ((m = redir.exec(stripQuoted(cmd)))) {
     if (!isAllowedWriteTarget(m[1])) return true;
   }
   return false;
+}
+
+/* Structured view of a shell command: whether it writes source/config content,
+ * and every git mutation with its explicit pathspecs + effective repo selector.
+ * The plugin refines the pathless git ops (whole-index `commit`/`push`) against
+ * the live index; the pure predicate below treats them conservatively. */
+function classifyCommand(command) {
+  const cmd = String(command || "");
+  const result = { contentCode: false, gitOps: [] };
+  if (!cmd) return result;
+  for (const segment of cmd.split(/\r?\n|&&|\|\||;|\|/)) {
+    const tokens = tokenize(segment);
+    const found = gitSubcommand(tokens);
+    if (found && GIT_MUTATIONS.has(found.subcommand)) {
+      const paths = gitPathspecs(found.subcommand, found.args);
+      result.gitOps.push({
+        subcommand: found.subcommand,
+        args: found.args,
+        paths,
+        target: found.target,
+        pathless: paths.length === 0,
+      });
+    }
+    if (!result.contentCode && contentCodeMutation(tokens, segment)) result.contentCode = true;
+  }
+  return result;
+}
+
+/* True when a shell command writes source/config content or git history in the
+ * current checkout. A git op whose explicit pathspecs are ALL non-code (e.g.
+ * `git add .agents/handoffs/F-1.md BACKLOG.md`) does NOT match — the docs
+ * maintenance carve-out. A pathless op (`git commit`, `git push`) stays
+ * conservatively true here; the plugin resolves it against the index. Narrow by
+ * design: the board CLI, test runs, `gh`, and read-only git never match. */
+function isCodeMutationCommand(command) {
+  const { contentCode, gitOps } = classifyCommand(command);
+  return (
+    contentCode ||
+    gitOps.some((op) => op.pathless || op.paths.some((p) => isCodePath(p)))
+  );
 }
 
 /* The error the plugin throws to abort a code change aimed at the main
@@ -757,6 +856,8 @@ module.exports = {
   branchSwitchText,
   isCodePath,
   isCodeMutationCommand,
+  classifyCommand,
+  gitPathspecs,
   isAllowedWriteTarget,
   stripQuoted,
   mainEditText,

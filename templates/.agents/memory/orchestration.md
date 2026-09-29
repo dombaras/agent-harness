@@ -89,14 +89,22 @@ Two guards BLOCK a tool call instead of nudging:
 - **branch-switch** — `git checkout`/`git switch` is refused while another live
   primary session shares the checkout (the 2026-09-18 direct-push-to-main
   incident); isolate with `backlog worktree <id>`.
-- **main-checkout (worktree) guard** — a code change (`edit`/`write`/`patch`/
-  `multiedit` to a source/test/config path) or a git mutation (`git add|commit|
-  push|apply|am|merge|rebase|cherry-pick|revert|reset|clean|rm|mv|stash`, `sed
-  -i`, `perl -i`, `patch`, `tee`, or a redirect into the tree) is refused while
-  the target is inside the shared `main` checkout — the F-278 stranded-work
-  shape. Board / `.agents/` / docs maintenance on `main` stays allowed. It
-  covers every session, subagents included, and has no override: create the
-  worktree first (`backlog worktree <id> --open`), then work inside it.
+- **main-checkout (worktree) guard** — a code change is refused while the target
+  is inside the shared `main` checkout (the F-278 stranded-work shape): an
+  `edit`/`write`/`patch`/`multiedit` to a source/test/config path, a content
+  writer (`sed -i`, `perl -i`, `patch`, `tee`, or a redirect) into the tree, or
+  a git op whose PATHS are code. A git op is judged by what it actually moves —
+  the explicit pathspecs when present (`git add <paths>`, `git commit -- <paths>`),
+  the live index for a whole-index `commit` (the `HEAD` diff for `commit -a`),
+  and the commits not yet on the upstream for a `push` — against the checkout the
+  command SELECTS, so `git -C <main>` is resolved rather than bypassed from an
+  unrelated cwd. Board / `.agents/` / docs maintenance on `main` therefore stays
+  allowed: a docs-only `git add .agents/... BACKLOG.md && git commit && git push`
+  is not a code mutation. `merge`/`rebase`/`am`/`cherry-pick`/`revert`/`reset`/
+  `clean`/`stash`, and any git op whose content cannot be resolved (git
+  unavailable, no upstream), block conservatively. It covers every session,
+  subagents included, and has no override: create the worktree first (`backlog
+  worktree <id> --open`), then work inside it.
 
 It appends threshold/loop/no-state/failure/branch-switch/main-edit events to
 `.agents/guard-events.jsonl` (local-only, gitignored). Keep the table row shapes
