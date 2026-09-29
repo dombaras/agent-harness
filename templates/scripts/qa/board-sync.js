@@ -36,10 +36,30 @@ const { spawnSync } = require("child_process");
 
 const MAX_PUBLISH_ATTEMPTS = 3;
 
+// Repo-scoping GIT_* vars can leak in from a parent git hook (husky's pre-push
+// exports GIT_DIR); `git -C <root>` must always target `root`, so drop them.
+const REPO_SCOPING_GIT_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_PREFIX",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CEILING_DIRECTORIES",
+];
+
+function hermeticGitEnv() {
+  const env = { ...process.env };
+  for (const k of REPO_SCOPING_GIT_VARS) delete env[k];
+  return env;
+}
+
 function gitCmd(root, args, opts) {
   return spawnSync("git", ["-C", root, ...args], {
     encoding: "utf8",
     timeout: (opts && opts.timeout) || 0,
+    env: hermeticGitEnv(),
   });
 }
 
@@ -174,8 +194,12 @@ function aheadOnlyBoard(root, upstream) {
  * reconcile as the rest of the module — NOT `git rebase`, which depends on the
  * per-clone merge driver being registered (a fresh clone that never ran
  * `agent-harness update` has no driver, so a textual rebase conflicts on the
- * board). `reset --soft` keeps every working-tree file, so uncommitted work is
- * never lost. Returns `{ ok, changed }`. */
+ * board). The checkout is advanced with `reset --hard` so HEAD, the index, and
+ * the working tree move together: a `reset --soft` left the index/worktree
+ * stale, turning every landed upstream non-board commit into a permanent staged
+ * reverse-diff that corrupted the canonical checkout. Genuine uncommitted
+ * non-board changes fail the replay closed (never silently discarded). Returns
+ * `{ ok, changed, blockedBy }`. */
 function replayBoardOnly(root, upstream) {
   const ours = readWorkingBoard(root);
   const mb = gitCmd(root, ["merge-base", upstream, "HEAD"]);
@@ -184,7 +208,18 @@ function replayBoardOnly(root, upstream) {
   const theirs = gitShow(root, `${upstream}:BACKLOG.md`);
   const rec = require("./merge-backlog.js").reconcileBoard(base, ours, theirs);
   if (!rec.ok) return { ok: false, conflicts: rec.conflicts || [] };
-  gitCmd(root, ["reset", "--soft", upstream]);
+
+  // A hard reset must never discard uncommitted work: the only tracked dirt we
+  // may clear is the board itself (already reconciled into `rec.board` above).
+  // Any other dirty path is genuine local state — fail closed so the caller
+  // cannot move the checkout and silently lose it.
+  const blockedBy = dirtyTracked(root)
+    .map((e) => e.path)
+    .filter((p) => p !== "BACKLOG.md");
+  if (blockedBy.length) return { ok: false, conflicts: [], blockedBy };
+
+  const reset = gitCmd(root, ["reset", "--hard", upstream]);
+  if (reset.status !== 0) return { ok: false, conflicts: [], blockedBy: [] };
   fs.writeFileSync(path.join(root, "BACKLOG.md"), rec.board, "utf8");
   gitCmd(root, ["add", "--", "BACKLOG.md"]);
   const staged = gitCmd(root, ["diff", "--cached", "--quiet", "--", "BACKLOG.md"]);
@@ -224,10 +259,24 @@ function convergeCanonical(root, upstream, opts) {
     if (aheadOnlyBoard(root, upstream)) {
       const replay = replayBoardOnly(root, upstream);
       if (!replay.ok) {
-        notes.push(
-          `main has local board commits that could not be replayed onto ${upstream} — reconcile manually: git pull --rebase`
-        );
-        return { ok: false, behind, ahead, blockedBy: replay.conflicts || [], notes, board: readWorkingBoard(root) };
+        if (replay.blockedBy && replay.blockedBy.length) {
+          notes.push(
+            `main is ${behind} behind ${upstream} but has uncommitted changes to ${replay.blockedBy.join(", ")} — ` +
+              `commit or discard them, then run: node scripts/backlog.js sync`
+          );
+        } else {
+          notes.push(
+            `main has local board commits that could not be replayed onto ${upstream} — reconcile manually: git pull --rebase`
+          );
+        }
+        return {
+          ok: false,
+          behind,
+          ahead,
+          blockedBy: replay.blockedBy || replay.conflicts || [],
+          notes,
+          board: readWorkingBoard(root),
+        };
       }
       notes.push(`replayed ${ahead} local board commit(s) onto ${upstream}`);
       return { ok: true, behind: 0, ahead: 0, notes, board: readWorkingBoard(root), canPublish: true };

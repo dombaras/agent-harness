@@ -419,6 +419,13 @@ npx @dombaras/agent-harness update --target /path/to/project
 ```
 
 - Overwrites harness-owned files, preserves `.agents/memory/*`, `.agents/reviews/*`, `.agents/handoffs/*`, `.agents/qa-plans/*`, and `BACKLOG.md`.
+- **Fails closed on a locally-modified harness-owned file**: if a harness-owned
+  file's bytes no longer match the checksum in `.harness.json` (someone hand-edited
+  it in the project), `update` aborts *before writing anything* and names the file.
+  Port the change into the harness `templates/` (with a drift-guard test for a
+  gate/QA script), release, and re-run — or pass `--accept-harness` to overwrite
+  deliberately. This prevents the F-289 class of incident, where a project-side
+  fix to `scripts/qa/board-sync.js` was silently clobbered by a routine deploy.
 - Auto-wires the harness gate scripts (`test:dispatch`, `test:governance`,
   `test:qa-plan`, `test:backlog`, `test:product`, `test:docs`, `test:quality`,
   `test:wiring`, `test:linger`, `test:prefix`) plus the `report`,
@@ -429,7 +436,8 @@ npx @dombaras/agent-harness update --target /path/to/project
   modified harness files. Your unrelated uncommitted work is never staged. The push
   uses `--no-verify` — a `chore(harness)` maintenance commit must not be stranded by a
   project pre-push gate that legitimately refuses a direct main push.
-  - `--no-commit` to skip commit+push, `--no-push` to commit but not push.
+  - `--no-commit` to skip commit+push, `--no-push` to commit but not push,
+    `--accept-harness` to overwrite a locally-modified harness-owned file.
   - `init` auto-commits + pushes by default too: it commits everything it scaffolds
     (including `.agents/memory/*`, `.agents/reviews/*`, `.agents/features/*`, `.agents/handoffs/*`, and `BACKLOG.md`) so a fresh
     project starts fully tracked and no harness file is left untracked.
@@ -446,9 +454,11 @@ npx @dombaras/agent-harness update --target /path/to/project
 - **Published-version check**: if this CLI's version is not the latest `dist-tags.latest` on npm,
   `update` warns you — catches the "bumped the version and updated a project from a local
   checkout, but never published" gap before it silently forks the projects.
-- **Non-destructive**: if a harness-owned file was modified locally since the
-  last deploy (tracked by checksum in `.harness.json`), it is backed up to
-  `.harness-backup/<timestamp>/` before overwrite.
+- **Non-destructive**: a locally-modified harness-owned file is backed up to
+  `.harness-backup/<timestamp>/` before any overwrite. With `--accept-harness`,
+  after the overwrite the target's own `npm run test:quick` is run **before** the
+  harness commit; if it is red the clobbered files and `.harness.json` are rolled
+  back and the commit is aborted, so a deploy can never land a broken suite.
 - `opencode.json` is merged (project keys preserved).
 - **Local-only excludes — never `.gitignore`**: the harness's local artifacts
   (`.harness-backup/`, `.backlog.lock`, `.serve/`, `.agents/guard-events.jsonl`)

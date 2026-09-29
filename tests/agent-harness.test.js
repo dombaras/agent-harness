@@ -209,17 +209,30 @@ test("deploy preserves project-owned handoff files on re-deploy", async () => {
   assert.strictEqual(read(handoffPath), "custom project data");
 });
 
-test("update backs up a locally-modified harness-owned file", async () => {
+test("update fails closed on a locally-modified harness-owned file (no --accept-harness)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
   const rootAgents = path.join(target, "AGENTS.md");
+  const original = read(rootAgents);
   fs.writeFileSync(rootAgents, "LOCAL EDIT", "utf8");
 
-  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  await assert.rejects(
+    () => h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true }),
+    /locally-modified harness-owned file/,
+    "the update refuses to clobber a hand-edited harness file"
+  );
 
-  assert.ok(read(rootAgents).includes("Operating Rules"), "harness file restored");
+  assert.strictEqual(read(rootAgents), "LOCAL EDIT", "the local edit survives the refused update");
+  assert.ok(
+    !exists(path.join(target, h.BACKUP_DIR)) ||
+      fs.readdirSync(path.join(target, h.BACKUP_DIR)).every((s) => !exists(path.join(target, h.BACKUP_DIR, s, "AGENTS.md"))),
+    "no clobber backup was written when the update was refused"
+  );
 
+  // The explicit escape hatch overwrites deliberately and still backs up.
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
+  assert.ok(read(rootAgents).includes("Operating Rules"), "harness file restored with --accept-harness");
   const backups = path.join(target, h.BACKUP_DIR);
   assert.ok(exists(backups));
   let found = false;
@@ -227,7 +240,70 @@ test("update backs up a locally-modified harness-owned file", async () => {
     const p = path.join(backups, stamp, "AGENTS.md");
     if (exists(p) && read(p) === "LOCAL EDIT") found = true;
   }
-  assert.ok(found, "local modification was backed up");
+  assert.ok(found, "local modification was backed up on the accepted overwrite");
+  assert.notStrictEqual(original, "", "guard did not accidentally deploy an empty file");
+});
+
+test("update fails closed on a modified QA script and points upstream (F-289 shape)", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q", "-b", "main"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false, commit: false });
+
+  const qaScript = path.join(target, "scripts", "qa", "board-sync.js");
+  const original = read(qaScript);
+  fs.writeFileSync(qaScript, original + "\n// project-side F-289 fix\n", "utf8");
+
+  await assert.rejects(
+    () => h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true }),
+    (err) =>
+      /scripts[/\\]qa[/\\]board-sync\.js/.test(err.message) &&
+      /templates\//.test(err.message),
+    "the error names the diverged QA script and the upstream remedy"
+  );
+  assert.match(read(qaScript), /project-side F-289 fix/, "the QA fix was not destroyed");
+});
+
+test("--accept-harness rolls back the clobber when the target test:quick is red", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q", "-b", "main"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false, commit: false });
+
+  // Give the target a gate that deliberately fails, as the F-289 clobber did.
+  const pkgPath = path.join(target, "package.json");
+  const pkg = JSON.parse(read(pkgPath));
+  pkg.scripts = { ...(pkg.scripts || {}), "test:quick": "node -e \"process.exit(1)\"" };
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf8");
+
+  const rootAgents = path.join(target, "AGENTS.md");
+  fs.writeFileSync(rootAgents, "LOCAL EDIT", "utf8");
+  const configBefore = read(path.join(target, ".harness.json"));
+
+  await assert.rejects(
+    () =>
+      h.deploy(target, {
+        name: "Demo",
+        yes: true,
+        isUpdate: true,
+        commit: true,
+        acceptHarness: true,
+      }),
+    /failed `npm run test:quick`/,
+    "a red target suite aborts the accepted-clobber commit"
+  );
+
+  assert.strictEqual(read(rootAgents), "LOCAL EDIT", "the clobber was rolled back on disk");
+  assert.strictEqual(read(path.join(target, ".harness.json")), configBefore, ".harness.json rolled back");
+  assert.strictEqual(
+    git(target, ["log", "--oneline"]).split(/\r?\n/).filter(Boolean).length,
+    1,
+    "no harness commit was made"
+  );
 });
 
 test("dry-run writes nothing", async () => {
@@ -432,7 +508,7 @@ test("switch-model command + script are deployed to every project", async () => 
 
   // the command is re-deployed (overwritten) on update, like any harness file
   fs.writeFileSync(path.join(target, ".opencode", "command", "switch-model.md"), "LOCAL EDIT", "utf8");
-  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
   assert.match(read(path.join(target, ".opencode", "command", "switch-model.md")), /opencode-go\/deepseek-v4\.1-flash/, "command restored on update");
 });
 
@@ -523,7 +599,7 @@ test("board command is deployed to every project (delegates to the deterministic
 
   // the command is re-deployed (overwritten) on update, like any harness file
   fs.writeFileSync(path.join(target, ".opencode", "command", "board.md"), "LOCAL EDIT", "utf8");
-  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
   assert.match(read(path.join(target, ".opencode", "command", "board.md")), /BACKLOG\.md/, "board command restored on update");
 });
 
@@ -3760,7 +3836,7 @@ test("skills/features SKILL.md is harness-owned (overwritten), not project scaff
   assert.ok(exists(skill), "features skill deployed");
   fs.writeFileSync(skill, "LOCAL EDIT", "utf8");
 
-  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
   assert.match(read(skill), /registrar only/, "features skill restored on update (harness-owned)");
 });
 
@@ -4958,7 +5034,7 @@ test("context-guard plugin + core deploy, stay harness-owned, and the guard log 
   assert.ok(exclude.includes(".agents/guard-events.jsonl"), "runtime guard log is excluded clone-locally");
 
   fs.writeFileSync(corePath, "LOCAL EDIT", "utf8");
-  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
   assert.match(read(corePath), /parseThresholds/, "guard core is harness-owned (restored on update)");
 });
 
@@ -5294,7 +5370,7 @@ test("session_info tool ships, reports the join key, and both telemetry files st
 
   const scriptPath = path.join(target, "scripts", "qa", "provider-stats.js");
   fs.writeFileSync(scriptPath, "LOCAL EDIT", "utf8");
-  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
   assert.match(read(scriptPath), /aggregateSessions/, "provider-stats is harness-owned (restored on update)");
 });
 
@@ -5599,7 +5675,7 @@ test("checkpoint CLI, tools, commands, and report:cost are deployed and stay har
   assert.strictEqual(pkg.scripts.checkpoint, "node scripts/checkpoint.js");
 
   fs.writeFileSync(path.join(target, "scripts", "checkpoint.js"), "LOCAL EDIT", "utf8");
-  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
   assert.match(read(path.join(target, "scripts", "checkpoint.js")), /resume/, "checkpoint.js restored on update");
 });
 
@@ -6513,6 +6589,21 @@ test("[drift-guard] backlog preserves report provenance and supports --defer; bo
   assert.match(backlogSrc, /deferPush: defer/, "the canonical publish honors --defer");
   const bsSrc = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-sync.js"));
   assert.match(bsSrc, /opts\.deferPush/, "publishBoard can defer the network push");
+});
+
+test("[drift-guard] board-sync replay is a guarded reset --hard with a hermetic git env (F-289)", () => {
+  const bsSrc = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-sync.js"));
+  // The replay must advance HEAD, index and worktree together; a `reset --soft`
+  // leaves a permanent staged reverse-diff on the canonical checkout (F-289).
+  assert.match(bsSrc, /\["reset", "--hard", upstream\]/, "replay advances index+worktree with reset --hard");
+  assert.doesNotMatch(bsSrc, /\["reset", "--soft", upstream\]/, "the stale reset --soft replay must not return");
+  assert.match(bsSrc, /const blockedBy = dirtyTracked\(root\)/, "genuine non-board dirt blocks the hard reset");
+  assert.match(bsSrc, /replay\.blockedBy/, "the blocker is surfaced to convergeCanonical");
+  // A parent git hook can export repo-scoping GIT_* vars; `git -C <root>` must
+  // stay hermetic or the suite targets the real checkout (F-289 QA follow-up).
+  assert.match(bsSrc, /const REPO_SCOPING_GIT_VARS = \[/, "repo-scoping GIT_* vars are enumerated");
+  assert.match(bsSrc, /function hermeticGitEnv\(\)/, "a hermetic git env is built");
+  assert.match(bsSrc, /env: hermeticGitEnv\(\)/, "gitCmd runs with the hermetic env");
 });
 
 test("ship reconciles a dirty main board and fast-forwards after landing", () => {

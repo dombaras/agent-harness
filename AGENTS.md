@@ -20,6 +20,24 @@ until it migrates. Publishing to npm is optional and done on the user's side —
 local-checkout updates above are the authoritative way to push harness changes to
 the projects.
 
+## Harness-owned files are fixed upstream, never in a project
+
+`scripts/qa/**`, `scripts/*.js`, `.opencode/**`, `.agents/skills/**`,
+`.agents/rules/**`, `.agents/AGENTS.md`, `AGENTS.md`, and opencode config are
+**harness-owned**: `update` copies the `templates/` version into every project. If
+a project needs one changed (a gate fix, a QA-script fix), do it in this repo's
+`templates/` — add a drift-guard test when it is a gate/QA script — bump + release,
+then `update` the projects. A hand-edit inside a project is a latent clobber.
+
+As of **0.1.100**, `update` **fails closed** on a harness-owned file whose bytes
+differ from the `.harness.json` checksum: it aborts before writing and lists the
+files. `--accept-harness` overwrites deliberately (backing up first); after an
+accepted overwrite it runs the target's `test:quick` and rolls the clobber back if
+the suite is red. This is the fix for the F-289 incident (the 0.1.99 deploy
+silently reverted a project-side `board-sync.js` fix and broke `test:quick` for
+everyone). When a deploy *does* clobber a project file, check
+`.harness-backup/<timestamp>/` — the previous bytes are there.
+
 ## WSL environment
 
 The harness's primary environment is WSL2 (Ubuntu). These rules keep it healthy

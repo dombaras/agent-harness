@@ -765,8 +765,56 @@ function backup(target, rel, content) {
   fs.writeFileSync(dest, content, "utf8");
 }
 
+/* Locally-modified harness-owned files a deploy WOULD overwrite:
+ * `{ rel, targetAbs, prev }`. A file counts only when its content differs from
+ * the incoming template (a no-op rewrite is harmless) AND its on-disk bytes no
+ * longer match the checksum recorded in `.harness.json` — i.e. the project
+ * edited a harness-owned file since the last deploy. Merged files
+ * (`.gitattributes`, `.ignore`, `opencode.json`, `package.json`) and
+ * create-if-missing project data are excluded: those never clobber. */
+function collectLocalHarnessDivergences(target, previousFiles, variables) {
+  const divergent = [];
+  for (const { abs, rel } of listFiles(TEMPLATES_DIR)) {
+    const key = relKey(rel);
+    if (key === ".gitattributes" || key === "package.json") continue;
+    if (isIgnoreFile(rel) || isOpencodeJson(rel) || isCreateIfMissing(rel)) continue;
+    const deployedHash = previousFiles[key];
+    if (!deployedHash) continue; // not previously deployed: no tracked local edit
+    const targetAbs = path.join(target, rel);
+    if (!fs.existsSync(targetAbs)) continue;
+    const prev = fs.readFileSync(targetAbs, "utf8");
+    if (deployedHash === sha256(prev)) continue; // unmodified since last deploy
+    const content = substitute(fs.readFileSync(abs, "utf8"), variables);
+    if (prev === content) continue; // matches the incoming template: no clobber
+    divergent.push({ rel: key, targetAbs, prev });
+  }
+  return divergent;
+}
+
+/* Run the target's own mechanical gate after an accepted overwrite. A clobber
+ * that breaks the project's own suite (the F-289 board-sync regression) must not
+ * be committed as a `chore(harness)` commit. Returns { ran, ok, output }. */
+function runTargetQuickGate(target) {
+  const pkgPath = path.join(target, "package.json");
+  let scripts = {};
+  try {
+    scripts = JSON.parse(fs.readFileSync(pkgPath, "utf8")).scripts || {};
+  } catch (_) {
+    return { ran: false, ok: true, output: "" };
+  }
+  if (!scripts["test:quick"]) return { ran: false, ok: true, output: "" };
+  const r = spawnSync("npm", ["run", "test:quick"], {
+    cwd: target,
+    encoding: "utf8",
+    timeout: 0,
+  });
+  const output = String(r.stdout || "") + String(r.stderr || "");
+  if (r.error || r.status == null) return { ran: false, ok: true, output };
+  return { ran: true, ok: r.status === 0, output };
+}
+
 async function deploy(target, opts) {
-  const { name, domain, yes, dryRun, isUpdate, commit, push, allowBranch } = opts || {};
+  const { name, domain, yes, dryRun, isUpdate, commit, push, allowBranch, acceptHarness } = opts || {};
   if (isWindowsMount(target)) {
     console.warn(
       `  WARNING: target "${target}" is on a Windows drive mount (/mnt/...) — file I/O is ` +
@@ -845,6 +893,29 @@ async function deploy(target, opts) {
   const previousFiles = existing.files || {};
   const actions = [];
   const manifest = {};
+
+  // Fail closed on a locally-modified harness-owned file BEFORE writing anything.
+  // A silent overwrite destroys a project-side fix to a harness file (F-289:
+  // the 0.1.99 deploy clobbered scripts/qa/board-sync.js, breaking the target's
+  // own suite). The operator must either upstream the fix into this harness's
+  // `templates/` and release, or re-run with --accept-harness to overwrite
+  // deliberately (the old bytes are still backed up).
+  const divergent = collectLocalHarnessDivergences(target, previousFiles, VARIABLES);
+  if (divergent.length && !acceptHarness) {
+    const list = divergent.map((d) => `    - ${d.rel}`).join("\n");
+    throw new Error(
+      `"${projectName}" has locally-modified harness-owned file(s):\n${list}\n` +
+        `  These diverge from the deployed checksum in .harness.json, so \`update\` would ` +
+        `overwrite a hand-edit.\n` +
+        `  Fix it upstream instead: port the change into this harness's \`templates/\` ` +
+        `(a drift-guard test if it is a gate/QA script), bump + release the harness, then re-run \`update\`.\n` +
+        `  To discard the local edit and take the template copy (a backup is written), re-run with --accept-harness.`
+    );
+  }
+  // Snapshot for the post-overwrite gate rollback: if the accepted copy breaks the
+  // target's own suite, restore these files and abort before committing.
+  const configPath = path.join(target, CONFIG_FILE);
+  const configPrev = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : null;
 
   // Auto-wire harness gate scripts into the target package.json (merged, add-only).
   // A no-op merge leaves the file byte-identical so its own formatting is never
@@ -954,7 +1025,11 @@ async function deploy(target, opts) {
         if (locallyModified && !dryRun) backup(target, rel, current);
       } else {
         actions.push({ rel: key, kind: "unchanged" });
-        manifest[key] = previousFiles[key] || sha256(content);
+        // Record what is actually on disk (== content), not the stale hash from a
+        // prior deploy: an F-289-style local restore can have left .harness.json
+        // pointing at an older template, which would falsely flag the file as
+        // locally-modified on the NEXT update.
+        manifest[key] = sha256(content);
         continue;
       }
     } else {
@@ -997,6 +1072,25 @@ async function deploy(target, opts) {
   };
   if (!dryRun && !nothingToUpdate) {
     fs.writeFileSync(path.join(target, CONFIG_FILE), JSON.stringify(config, null, 2) + "\n", "utf8");
+  }
+
+  // Hardening for an accepted overwrite: a clobber that breaks the target's own
+  // suite must never be committed. Run the target's mechanical gate BEFORE the
+  // harness auto-commit; on red, restore the clobbered bytes + .harness.json and
+  // abort, leaving the working tree holding the project's own content.
+  if (divergent.length && acceptHarness && !dryRun && commit && !nothingToUpdate) {
+    const gate = runTargetQuickGate(target);
+    if (gate.ran && !gate.ok) {
+      for (const d of divergent) fs.writeFileSync(d.targetAbs, d.prev, "utf8");
+      if (configPrev != null) fs.writeFileSync(configPath, configPrev, "utf8");
+      else if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
+      const tail = gate.output.split(/\r?\n/).slice(-25).join("\n");
+      throw new Error(
+        `"${projectName}" failed \`npm run test:quick\` after accepting the overwrite of locally-modified ` +
+          `harness file(s): ${divergent.map((d) => d.rel).join(", ")}. The clobber was rolled back and the ` +
+          `harness commit aborted — upstream the local fix into templates/ instead.\n${tail}`
+      );
+    }
   }
 
   // Auto-commit the files this run created/changed so nothing the harness
@@ -1128,7 +1222,7 @@ function printUsage() {
     `agent-harness v${PKG.version}\n\n` +
       `Usage:\n` +
       `  agent-harness init   [--target <dir>] [--name <project>] [--domain <desc>] [--yes] [--dry-run] [--no-commit] [--no-push]\n` +
-      `  agent-harness update [--target <dir>] [--dry-run] [--no-commit] [--no-push]\n` +
+      `  agent-harness update [--target <dir>] [--dry-run] [--no-commit] [--no-push] [--accept-harness]\n` +
       `  agent-harness migrate-backlog [--target <dir>]\n` +
       `\n` +
       `  init and update auto-commit only the harness files they create/change\n` +
@@ -1137,7 +1231,10 @@ function printUsage() {
       `  uncommitted work is never staged. The target must be on its canonical\n` +
       `  branch (origin/HEAD, else main/master) or the commit is refused, so a\n` +
       `  harness update can never be stranded off main — pass --allow-branch to\n` +
-      `  override deliberately.\n` +
+      `  override deliberately. A locally-modified harness-owned file makes\n` +
+      `  update FAIL CLOSED (port the fix into templates/ instead); pass\n` +
+      `  --accept-harness to overwrite it deliberately (a backup is kept, and the\n` +
+      `  target's test:quick must stay green or the clobber is rolled back).\n` +
       `\n` +
       `  migrate-backlog consolidates any live \`.agents/features/INDEX.md\` F-rows and\n` +
       `  \`.agents/memory/todo.md\` into the canonical BACKLOG.md, then rewrites those\n` +
@@ -1554,6 +1651,7 @@ async function init(target, flags) {
     commit: !flags["--no-commit"],
     push: !flags["--no-commit"] && !flags["--no-push"],
     allowBranch: !!flags["--allow-branch"],
+    acceptHarness: !!flags["--accept-harness"],
   });
   printSummary(result, false);
   printCommitResult(result);
@@ -1572,6 +1670,7 @@ async function update(target, flags) {
     commit: !flags["--no-commit"],
     push: !flags["--no-commit"] && !flags["--no-push"],
     allowBranch: !!flags["--allow-branch"],
+    acceptHarness: !!flags["--accept-harness"],
   });
   printSummary(result, true);
   printUnpublishedWarning();
@@ -1686,7 +1785,8 @@ function parseArgs(argv) {
     const a = argv[i];
     if (valueFlags.has(a)) flags[a] = argv[++i];
     else if (a === "--dry-run" || a === "--yes" || a === "-y") flags[a] = true;
-    else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch") flags[a] = true;
+    else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch" || a === "--accept-harness")
+      flags[a] = true;
   }
   return flags;
 }
