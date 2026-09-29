@@ -112,9 +112,17 @@ mechanical guards read it.
   --name <label>` / `stop-all`. A dev server is stopped after its tier; an
   emulator is reused *within a session* and stopped at session end. `serve.js
   list` shows each process's age — treat an old one as an idle-reap candidate.
+- **Cap the heavy process.** `serve.js start --mem-max 4G --cpu-max 250%` runs it
+  as a systemd transient unit (Linux) so a runaway is throttled/OOM-killed in its
+  own cgroup instead of thrashing the VM. Graceful no-op without systemd.
 - **Know the pressure.** `npm run test:capacity` (`node scripts/qa/check-capacity.js`)
-  reports free RAM / swap / load / live serves and fails when the envelope is
-  already exceeded. `agent-harness doctor` adds host + `.wslconfig` advice.
+  reports free RAM / swap / **PSI memory pressure** / live serves and fails when
+  the envelope is already exceeded. `agent-harness doctor` adds host-aware
+  `.wslconfig` advice and whether the one-time tuning is applied.
+- **Tune the VM once.** `sudo bash scripts/wsl-tune.sh apply` sets low-swappiness
+  sysctls, a `user.slice` memory/CPU ceiling, and merges safe `.wslconfig` keys;
+  `status`/`down` inspect/remove. The only manual step is `wsl --shutdown` on
+  Windows for the `.wslconfig` half to take effect.
 - **The tmpfs cache is RAM.** The RAM-backed cache (`npm run ramdisk`) competes
   with the emulator and agents; keep it small (`AGENT_TMPFS_PERCENT=25`) while
   running device tiers.

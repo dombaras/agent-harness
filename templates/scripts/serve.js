@@ -26,7 +26,7 @@
  * server never became ready.
  *
  * Usage:
- *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force]
+ *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force] [--mem-max 4G] [--cpu-max 250%]
  *   node scripts/serve.js stop  [--name <label>] [--port <n>]
  *   node scripts/serve.js stop-all
  *   node scripts/serve.js list
@@ -35,6 +35,11 @@
  *   until ready or --timeout. Exits 0 on ready; exits 1 (after printing the log
  *   tail) on timeout. Always prints a "launching" line first + heartbeats while
  *   waiting, so an in-progress start is never silent.
+ * - --mem-max / --cpu-max (systemd user bus available): the process tree runs as
+ *   a transient `systemd-run --user` unit with MemoryMax/CPUQuota, so a runaway
+ *   is throttled or OOM-killed *inside its cgroup* instead of taking the whole
+ *   WSL VM into swap-thrash (the 2026-09-29 freeze). Graceful no-op where
+ *   systemd is absent; `stop` tears the unit down.
  * - stop: kills the recorded PID and its process tree, removes the PID file.
  * - PID files + logs + the generated launcher live in <project>/.serve/
  *   (excluded clone-locally by the harness).
@@ -67,7 +72,15 @@ function parseArgs(argv) {
   const flags = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--cmd" || a === "--url" || a === "--port" || a === "--name" || a === "--timeout") {
+    if (
+      a === "--cmd" ||
+      a === "--url" ||
+      a === "--port" ||
+      a === "--name" ||
+      a === "--timeout" ||
+      a === "--mem-max" ||
+      a === "--cpu-max"
+    ) {
       flags[a] = argv[++i];
     } else if (a === "--heavy" || a === "--force") {
       flags[a] = true;
@@ -140,6 +153,65 @@ function killTree(pid) {
     } catch (_) {
       return false;
     }
+  }
+}
+
+/* Whether the systemd *user* manager can host a transient unit (Linux only).
+ * `--mem-max`/`--cpu-max` use it to cap a heavy process tree in its own cgroup;
+ * everywhere else the flags are ignored with a warning. */
+function systemdUserAvailable() {
+  if (process.platform !== "linux") return false;
+  if (process.env.AGENT_SERVE_NO_SYSTEMD === "1") return false;
+  try {
+    const r = spawnSync("systemctl", ["--user", "is-system-running"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (r.error) return false;
+    return r.status === 0 || /running|degraded|starting|maintenance/.test(r.stdout || "");
+  } catch (_) {
+    return false;
+  }
+}
+
+/* MainPID of a transient unit, once systemd has forked it. Bounded retry because
+ * there is a small race between `systemd-run` returning and the exec landing. */
+function mainPidOf(unit) {
+  for (let i = 0; i < 20; i++) {
+    const r = spawnSync("systemctl", ["--user", "show", "-p", "MainPID", "--value", unit], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const pid = parseInt((r.stdout || "").trim(), 10);
+    if (pid) return pid;
+    const end = Date.now() + 150;
+    while (Date.now() < end) {
+      /* brief busy-wait; the pid is needed before the pid file is written */
+    }
+  }
+  return null;
+}
+
+function stopUnit(unit) {
+  if (!unit) return false;
+  try {
+    const r = spawnSync("systemctl", ["--user", "stop", unit], { encoding: "utf8", timeout: 15000 });
+    if (r.status === 0) return true;
+    // `--collect` may have already GC'd a unit whose command exited: stopping a
+    // gone unit is success, not failure.
+    const s = spawnSync("systemctl", ["--user", "is-active", unit], { encoding: "utf8", timeout: 5000 });
+    const state = (s.stdout || "").trim();
+    return (
+      state === "" ||
+      state === "inactive" ||
+      state === "failed" ||
+      state === "unknown" ||
+      /not-found/.test(s.stderr || "")
+    );
+  } catch (_) {
+    return false;
   }
 }
 
@@ -246,20 +318,66 @@ async function start(flags) {
 
   const fullCmd = `${flags["--cmd"]} > "${outLog}" 2> "${errLog}"`;
 
-  let pid;
-  if (process.platform === "win32") {
-    pid = launchDetachedWin32(fullCmd, name);
-  } else {
-    // POSIX: a detached spawn (setsid) is enough to leave the tool's terminal.
-    const child = spawn(fullCmd, {
-      cwd: process.cwd(),
-      shell: true,
-      detached: true,
-      windowsHide: true,
-      stdio: "ignore",
-    });
-    pid = child.pid;
-    child.unref();
+  // Resource caps: when requested and a systemd user bus exists, run the tree as
+  // a transient unit so MemoryMax/CPUQuota bound it in its own cgroup. A runaway
+  // then degrades or OOMs inside the slice instead of dragging the whole VM into
+  // swap-thrash. On win32 / without systemd the flags are ignored with a warning.
+  const wantLimits = !!(flags["--mem-max"] || flags["--cpu-max"]);
+  let unit = null;
+  let pid = null;
+  if (wantLimits) {
+    if (systemdUserAvailable()) {
+      const safe = String(name).replace(/[^a-zA-Z0-9_.-]/g, "_");
+      unit = `agent-serve-${safe}-${Date.now()}`;
+      const args = ["--user", "--unit", unit, "--collect"];
+      if (flags["--mem-max"]) args.push("-p", `MemoryMax=${flags["--mem-max"]}`);
+      if (flags["--cpu-max"]) args.push("-p", `CPUQuota=${flags["--cpu-max"]}`);
+      // A transient unit gets the user manager's env + cwd, not the caller's.
+      // Pass both through so the command resolves and behaves exactly as it
+      // would in the agent shell (PATH, node managers, exported project vars).
+      args.push("-p", `WorkingDirectory=${process.cwd()}`);
+      for (const [k, v] of Object.entries(process.env)) {
+        if (typeof v !== "string" || v.includes("\n")) continue;
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;
+        args.push(`--setenv=${k}=${v}`);
+      }
+      args.push("--", "sh", "-c", fullCmd);
+      const r = spawnSync("systemd-run", args, {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 15000,
+      });
+      if (r.status !== 0) {
+        console.warn(
+          `serve start: systemd-run failed (${((r.stderr || r.stdout || "") + "").trim()}) — ` +
+            `launching without resource caps`
+        );
+        unit = null;
+      } else {
+        pid = mainPidOf(unit);
+      }
+    } else {
+      console.warn(
+        "serve start: --mem-max/--cpu-max ignored — no systemd user bus (Linux+systemd only)"
+      );
+    }
+  }
+
+  if (!unit && !pid) {
+    if (process.platform === "win32") {
+      pid = launchDetachedWin32(fullCmd, name);
+    } else {
+      // POSIX: a detached spawn (setsid) is enough to leave the tool's terminal.
+      const child = spawn(fullCmd, {
+        cwd: process.cwd(),
+        shell: true,
+        detached: true,
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      pid = child.pid;
+      child.unref();
+    }
   }
 
   fs.writeFileSync(
@@ -272,6 +390,9 @@ async function start(flags) {
         port: flags["--port"] || null,
         url: flags["--url"] || null,
         heavy: !!heavyLabel,
+        unit: unit || null,
+        memMax: flags["--mem-max"] || null,
+        cpuMax: flags["--cpu-max"] || null,
         startedAt: new Date().toISOString(),
       },
       null,
@@ -280,7 +401,9 @@ async function start(flags) {
     "utf8"
   );
 
-  console.log(`serve start: launching ${name} (pid ${pid}) → ${outLog}`);
+  console.log(
+    `serve start: launching ${name} (pid ${pid || "?"}${unit ? `, unit ${unit}` : ""}) → ${outLog}`
+  );
   if (process.platform === "win32") console.log(`  launcher: ${launcherPath(name)}`);
 
   const readyCheck = flags["--url"]
@@ -324,13 +447,19 @@ function stop(flags) {
     console.log(`${name}: not running`);
     return;
   }
-  let pid;
+  let info;
   try {
-    pid = JSON.parse(fs.readFileSync(p, "utf8")).pid;
+    info = JSON.parse(fs.readFileSync(p, "utf8"));
   } catch (_) {
-    pid = fs.readFileSync(p, "utf8").trim();
+    info = { pid: fs.readFileSync(p, "utf8").trim() };
   }
-  if (pid && killTree(pid)) {
+  const pid = info.pid;
+  // A capped launch lives in a transient systemd unit: stopping the unit tears
+  // down the whole cgroup (the MainPID alone would miss reparented children).
+  if (info.unit) {
+    if (stopUnit(info.unit)) console.log(`stopped ${name} (unit ${info.unit})`);
+    else console.log(`stopped ${name} (unit ${info.unit}) — systemctl reported failure; verify with list`);
+  } else if (pid && killTree(pid)) {
     console.log(`stopped ${name} (pid ${pid})`);
   } else {
     console.log(`stopped ${name} (pid ${pid}) — kill reported failure; verify with list`);
@@ -395,8 +524,12 @@ function list() {
     const started = info.startedAt ? Date.parse(info.startedAt) : NaN;
     const age = Number.isFinite(started) ? ` · up ${Math.round((Date.now() - started) / 60000)}m` : "";
     const heavy = info.heavy ? " [heavy]" : "";
+    const caps = [info.memMax ? `mem≤${info.memMax}` : null, info.cpuMax ? `cpu≤${info.cpuMax}` : null]
+      .filter(Boolean)
+      .join(" ");
+    const capped = caps ? ` {${caps}${info.unit ? `, ${info.unit}` : ""}}` : "";
     console.log(
-      `${name}: pid ${info.pid} (${isAlive(info.pid) ? "running" : "stale"})${heavy}${age} — ${info.cmd || "?"}`
+      `${name}: pid ${info.pid} (${isAlive(info.pid) ? "running" : "stale"})${heavy}${capped}${age} — ${info.cmd || "?"}`
     );
   }
 }
@@ -423,7 +556,7 @@ function main() {
       break;
     default:
       console.error(
-        'usage: node scripts/serve.js <start|stop|stop-all|list> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force]'
+        'usage: node scripts/serve.js <start|stop|stop-all|list> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force] [--mem-max 4G] [--cpu-max 250%]'
       );
       process.exitCode = 1;
   }

@@ -25,10 +25,15 @@ server is ready.
 ## Booting the emulator
 
 ```bash
-node scripts/serve.js start --heavy \
+node scripts/serve.js start --heavy --mem-max 4G --cpu-max 250% \
   --cmd "~/android-sdk/emulator/emulator -avd <avd> -no-window -no-audio -no-boot-anim -no-snapshot -cores 2 -memory 2048 -gpu host" \
   --name emulator --port 5554 --timeout 120000
 ```
+
+On Linux with a systemd user bus, `--mem-max`/`--cpu-max` put the emulator in
+its own cgroup: if it runs away it is throttled or OOM-killed *inside the unit*
+rather than dragging the whole WSL VM into swap-thrash. They are ignored with a
+warning elsewhere.
 
 - **Size it to the box.** The emulator is a heavy tier: software rendering
   (`-gpu swiftshader_indirect`) pins a core and *still* used ~3 GB in the

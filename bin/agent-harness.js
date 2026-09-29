@@ -262,6 +262,7 @@ const HARNESS_SCRIPTS = {
   search: "bash scripts/agent-search.sh",
   ramdisk: "bash scripts/setup-tmpfs.sh up",
   "ramdisk:down": "bash scripts/setup-tmpfs.sh down",
+  "wsl-tune": "bash scripts/wsl-tune.sh",
 };
 
 /* Detect a project's own indentation so a merge never reformats package.json
@@ -1405,12 +1406,27 @@ function doctor(target) {
     } else {
       add("ok", "capacity", "host memory not readable (non-Linux)");
     }
+    if (s.psi && s.psi.mem && s.psi.mem.some10 != null) {
+      add("ok", "pressure (PSI)", `memory some avg10=${s.psi.mem.some10.toFixed(2)} full avg10=${(s.psi.mem.full10 || 0).toFixed(2)}`);
+    }
+    const host = capacity.readHost(); // powershell, best-effort — doctor only, never the hot path
     const wsl = capacity.readWslConfig();
     if (wsl) {
       add("ok", "wslconfig", wsl.path);
-      for (const a of capacity.wslConfigAdvice(wsl)) add("warn", "wslconfig", a);
+      for (const a of capacity.wslConfigAdvice(wsl, host)) add("warn", "wslconfig", a);
     } else if (process.platform === "linux") {
       add("ok", "wslconfig", "no .wslconfig found (not WSL, or Windows user dir unreadable)");
+    }
+    // One-time in-WSL tuning (scripts/wsl-tune.sh apply). Detect rather than
+    // assume so doctor can point at the single command that finishes setup.
+    const tuning = capacity.readTuning();
+    if (tuning.swappiness != null && tuning.swappiness > 20) {
+      add("warn", "wsl tuning", `vm.swappiness=${tuning.swappiness} — run \`sudo scripts/wsl-tune.sh apply\` (targets 10)`);
+    }
+    if (!tuning.sliceApplied) {
+      add("warn", "wsl tuning", "no user.slice resource ceiling — run `sudo scripts/wsl-tune.sh apply`");
+    } else if (tuning.swappiness != null && tuning.swappiness <= 20) {
+      add("ok", "wsl tuning", "swappiness + user.slice ceiling applied");
     }
   } catch (err) {
     add("ok", "capacity", `not sampled (${err && err.message ? err.message : "unavailable"})`);

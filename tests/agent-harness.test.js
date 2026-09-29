@@ -7336,3 +7336,184 @@ test("[drift-guard] capacity guard is one envelope owned by every surface", () =
   const prePush = read(path.join(h.TEMPLATES_DIR, ".husky", "pre-push"));
   assert.match(prePush, /test:capacity/, "the pre-push battery includes the capacity gate");
 });
+
+// ---------------------------------------------------------------- WSL tuning
+
+const WM = path.join(h.TEMPLATES_DIR, "scripts", "qa", "wslconfig-merge.js");
+const wm = require(WM);
+const WSL_TUNE = path.join(h.TEMPLATES_DIR, "scripts", "wsl-tune.sh");
+
+test("capacity: PSI pressure is sampled and warned on", () => {
+  const dir = tmpdir();
+  const psi = path.join(dir, "pressure");
+  fs.mkdirSync(psi, { recursive: true });
+  fs.writeFileSync(path.join(psi, "memory"), "some avg10=25.00 avg60=5.00 avg300=1.00 total=1\nfull avg10=10.00 avg60=2.00 avg300=0.50 total=1\n");
+  fs.writeFileSync(path.join(psi, "cpu"), "some avg10=2.00 avg60=1.00 avg300=0.50 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n");
+  const prev = { psi: process.env.AGENT_CAPACITY_PSI_DIR, ram: process.env.AGENT_HOST_RAM_MB, cpus: process.env.AGENT_HOST_CPUS };
+  process.env.AGENT_CAPACITY_PSI_DIR = psi;
+  process.env.AGENT_HOST_RAM_MB = "16384";
+  process.env.AGENT_HOST_CPUS = "12";
+  try {
+    const sample = capacity.sample(dir, "");
+    assert.strictEqual(sample.psi.mem.some10, 25);
+    const ev = capacity.evaluate(sample, {});
+    assert.match(ev.warnings.join(" "), /memory pressure/);
+  } finally {
+    for (const [k, v] of [
+      ["AGENT_CAPACITY_PSI_DIR", prev.psi],
+      ["AGENT_HOST_RAM_MB", prev.ram],
+      ["AGENT_HOST_CPUS", prev.cpus],
+    ]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+test("capacity: host-aware .wslconfig advice flags processor oversubscription and big swap", () => {
+  const wsl = {
+    config: capacity.parseWslConfig(
+      "[wsl2]\nmemory=10GB\nprocessors=10\nswap=8GB\nvmIdleTimeout=86400000\n[experimental]\nautoMemoryReclaim=gradual\n"
+    ),
+  };
+  const advice = capacity.wslConfigAdvice(wsl, { ramMb: 16 * 1024, cpus: 12 }).join("\n");
+  assert.match(advice, /processors=10 of 12/, "flags leaving Windows only 2 threads");
+  assert.match(advice, /swap=8GB/, "flags a large swap as thrash-prone");
+  assert.match(advice, /vmIdleTimeout/, "flags a 24h idle timeout");
+  assert.doesNotMatch(advice, /leaves Windows ~/, "10GB of 16GB is not over-allocated");
+
+  // Host-aware: a VM that starves Windows is called out.
+  const tight = capacity
+    .wslConfigAdvice(
+      { config: capacity.parseWslConfig("[wsl2]\nmemory=13GB\nprocessors=4\n") },
+      { ramMb: 16 * 1024, cpus: 12 }
+    )
+    .join("\n");
+  assert.match(tight, /leaves Windows ~3\.0 GB/);
+});
+
+test("capacity: readTuning reports swappiness and the user.slice ceiling", () => {
+  const dir = tmpdir();
+  const sysctl = path.join(dir, "sys");
+  fs.mkdirSync(path.join(sysctl, "vm"), { recursive: true });
+  fs.writeFileSync(path.join(sysctl, "vm", "swappiness"), "10\n");
+  const slice = path.join(dir, "90-agent-cap.conf");
+  fs.writeFileSync(slice, "[Slice]\nMemoryMax=9G\n");
+  const prev = { s: process.env.AGENT_TUNING_SYSCTL_DIR, f: process.env.AGENT_TUNING_SLICE_FILE };
+  process.env.AGENT_TUNING_SYSCTL_DIR = sysctl;
+  process.env.AGENT_TUNING_SLICE_FILE = slice;
+  try {
+    const t = capacity.readTuning();
+    assert.strictEqual(t.swappiness, 10);
+    assert.strictEqual(t.sliceApplied, true);
+  } finally {
+    if (prev.s === undefined) delete process.env.AGENT_TUNING_SYSCTL_DIR;
+    else process.env.AGENT_TUNING_SYSCTL_DIR = prev.s;
+    if (prev.f === undefined) delete process.env.AGENT_TUNING_SLICE_FILE;
+    else process.env.AGENT_TUNING_SLICE_FILE = prev.f;
+  }
+});
+
+test("wslconfig-merge updates keys in place, preserves the rest, and is idempotent", () => {
+  const src = "[wsl2]\nnetworkingMode=mirrored\nmemory=10GB\nprocessors=10\n\n[experimental]\nautoMemoryReclaim=gradual\n";
+  const merged = wm.mergeConfig(src, [
+    { section: "wsl2", key: "processors", value: "8" },
+    { section: "wsl2", key: "swap", value: "4GB" },
+    { section: "experimental", key: "sparseVhd", value: "true" },
+  ]);
+  assert.match(merged, /processors=8/);
+  assert.doesNotMatch(merged, /processors=10/);
+  assert.match(merged, /memory=10GB/);
+  assert.match(merged, /networkingMode=mirrored/);
+  assert.match(merged, /\[wsl2\][\s\S]*swap=4GB/);
+  assert.match(merged, /\[experimental\][\s\S]*sparseVhd=true/);
+  assert.strictEqual(
+    wm.mergeConfig(merged, [{ section: "wsl2", key: "processors", value: "8" }]),
+    merged,
+    "re-applying the same value is a no-op"
+  );
+
+  const appended = wm.mergeConfig("[wsl2]\nmemory=8GB\n", [
+    { section: "experimental", key: "sparseVhd", value: "true" },
+  ]);
+  assert.match(appended, /\[experimental\]/);
+  assert.match(appended, /sparseVhd=true/);
+});
+
+test("wslconfig-merge CLI writes atomically and rejects a bad --set", () => {
+  const dir = tmpdir();
+  const cfg = path.join(dir, ".wslconfig");
+  fs.writeFileSync(cfg, "[wsl2]\nmemory=10GB\nprocessors=10\n");
+  const r = spawnSync(
+    process.execPath,
+    [WM, "--file", cfg, "--write", "--backup", "--set", "wsl2.processors=8", "--set", "wsl2.swap=4GB"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  const after = read(cfg);
+  assert.match(after, /processors=8/);
+  assert.match(after, /swap=4GB/);
+  assert.match(read(fs.readdirSync(dir).filter((f) => f.startsWith(".wslconfig.bak-")).map((f) => path.join(dir, f))[0]), /processors=10/);
+
+  const bad = spawnSync(process.execPath, [WM, "--file", cfg, "--set", "nonsense"], { encoding: "utf8" });
+  assert.strictEqual(bad.status, 1, bad.stdout + bad.stderr);
+});
+
+test("wsl-tune status reports and apply --dry-run changes nothing", () => {
+  const dir = tmpdir();
+  const env = Object.assign({}, process.env, {
+    AGENT_WSL_TUNE_FORCE: "1",
+    AGENT_WSL_TUNE_SYSCTL: path.join(dir, "99-agent-wsl.conf"),
+    AGENT_WSL_TUNE_SLICE_DIR: path.join(dir, "user.slice.d"),
+    AGENT_WSL_CONFIG: path.join(dir, ".wslconfig"),
+  });
+  const status = spawnSync("bash", [WSL_TUNE, "status"], { encoding: "utf8", env });
+  assert.strictEqual(status.status, 0, status.stdout + status.stderr);
+  assert.match(status.stdout, /wsl-tune status/);
+
+  const dry = spawnSync("bash", [WSL_TUNE, "apply", "--dry-run"], {
+    encoding: "utf8",
+    env: Object.assign({}, env, { AGENT_WSL_TUNE_DRY_RUN: "1", AGENT_WSL_TUNE_PROCESSORS: "8" }),
+  });
+  assert.strictEqual(dry.status, 0, dry.stdout + dry.stderr);
+  assert.match(dry.stdout, /would write/);
+  assert.match(dry.stdout, /MemoryMax=9G/);
+  assert.ok(!exists(path.join(dir, "99-agent-wsl.conf")), "dry-run writes nothing");
+  assert.ok(!exists(path.join(dir, "user.slice.d")), "dry-run creates no slice dir");
+});
+
+test("wsl-tune wslconfig merges the host keys into .wslconfig", () => {
+  const dir = tmpdir();
+  const cfg = path.join(dir, ".wslconfig");
+  fs.writeFileSync(cfg, "[wsl2]\nnetworkingMode=mirrored\nmemory=10GB\nprocessors=10\n");
+  const r = spawnSync("bash", [WSL_TUNE, "wslconfig"], {
+    encoding: "utf8",
+    env: Object.assign({}, process.env, {
+      AGENT_WSL_TUNE_FORCE: "1",
+      AGENT_WSL_CONFIG: cfg,
+      AGENT_WSL_TUNE_PROCESSORS: "8",
+      AGENT_WSL_TUNE_SWAP: "4GB",
+      AGENT_WSL_TUNE_IDLE_MS: "7200000",
+    }),
+  });
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  const after = read(cfg);
+  assert.match(after, /processors=8/);
+  assert.match(after, /memory=10GB/, "project keys preserved");
+  assert.match(after, /networkingMode=mirrored/);
+  assert.match(after, /swap=4GB/);
+  assert.match(after, /sparseVhd=true/);
+});
+
+test("[drift-guard] serve caps + wsl-tune are wired end to end", () => {
+  const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));
+  assert.match(serve, /--mem-max/, "serve.js exposes --mem-max");
+  assert.match(serve, /--cpu-max/, "serve.js exposes --cpu-max");
+  assert.match(serve, /systemd-run/, "serve.js caps heavy tiers via a transient unit");
+  const tune = read(WSL_TUNE);
+  assert.match(tune, /wslconfig-merge\.js/, "wsl-tune uses the safe merge helper");
+  assert.match(tune, /MemoryMax=9G/, "wsl-tune caps user.slice memory");
+  assert.match(tune, /vm\.swappiness=10/, "wsl-tune lowers swappiness");
+  const bin = read(path.join(__dirname, "..", "bin", "agent-harness.js"));
+  assert.match(bin, /wsl-tune/, "the wsl-tune script is wired into the deploy");
+});

@@ -19,10 +19,13 @@
  *   AGENT_CAPACITY_MEMINFO   (default /proc/meminfo)
  *   AGENT_CAPACITY_LOADAVG   (default /proc/loadavg)
  *   AGENT_CAPACITY_MOUNTS    (default /proc/mounts)
+ *   AGENT_CAPACITY_PSI_DIR   (default /proc/pressure)
  *   AGENT_CAPACITY_FORCE_WSL (1 -> treat as WSL2 even off-Linux, 0 -> never)
  *   AGENT_CAPACITY_DISABLE   (1 -> skip capacity gates entirely)
  *   AGENT_HEAVY_LOCK         (default ~/.agent-harness/heavy.lock)
  *   AGENT_WSL_CONFIG         (explicit .wslconfig path for doctor)
+ *   AGENT_HOST_RAM_MB / AGENT_HOST_CPUS (inject Windows host totals for tests)
+ *   AGENT_TUNING_SYSCTL_DIR / AGENT_TUNING_SLICE_FILE (tuning status for tests)
  */
 const fs = require("fs");
 const os = require("os");
@@ -40,6 +43,11 @@ const DEFAULT_ENVELOPE = {
   idleReapMinutes: 90,
   emulatorRamMb: 2048,
   heavyLockTtlMinutes: 240,
+  // PSI (`/proc/pressure/*`) is the earliest true freeze signal — load average
+  // lies, but memory "some avg10" climbing means processes are already stalled
+  // on reclaim. Warning thresholds, not hard failures.
+  maxMemPressureAvg10: 10,
+  maxCpuPressureAvg10: 80,
 };
 
 const ENVELOPE_KEYS = {
@@ -50,6 +58,8 @@ const ENVELOPE_KEYS = {
   idle_reap_minutes: "idleReapMinutes",
   emulator_ram_mb: "emulatorRamMb",
   heavy_lock_ttl_minutes: "heavyLockTtlMinutes",
+  max_mem_pressure_avg10: "maxMemPressureAvg10",
+  max_cpu_pressure_avg10: "maxCpuPressureAvg10",
 };
 
 /* Heavy-process classifier. Deliberately narrow: it must fire on the things
@@ -170,6 +180,84 @@ function readLoad() {
   }
 }
 
+/* PSI (`/proc/pressure/{memory,cpu}`): the kernel's own stall accounting. `some
+ * avg10` is the share of the last 10 s during which at least one task was
+ * stalled; a memory `some` value climbing past ~10 is the freeze arriving,
+ * before free-RAM or load make it obvious. Returns null where PSI is absent. */
+function readPsi() {
+  const dir = process.env.AGENT_CAPACITY_PSI_DIR || "/proc/pressure";
+  const readOne = (name) => {
+    try {
+      const text = fs.readFileSync(path.join(dir, name), "utf8");
+      const get = (re) => {
+        const m = text.match(re);
+        return m ? parseFloat(m[1]) : null;
+      };
+      return {
+        some10: get(/some\s+avg10=([0-9.]+)/),
+        full10: get(/full\s+avg10=([0-9.]+)/),
+      };
+    } catch (_) {
+      return null;
+    }
+  };
+  const mem = readOne("memory");
+  const cpu = readOne("cpu");
+  if (!mem && !cpu) return null;
+  return { mem, cpu };
+}
+
+/* Windows-host totals, for host-aware advice. On WSL the VM is a slice of the
+ * real machine, so "raise memory" is only sensible when the host has room and
+ * "processors=N" only when it leaves Windows threads to run the terminal/relay.
+ * Best-effort (powershell may be slow/unavailable); overridable for tests. */
+function readHost() {
+  if (process.env.AGENT_HOST_RAM_MB || process.env.AGENT_HOST_CPUS) {
+    const ramMb = Number(process.env.AGENT_HOST_RAM_MB);
+    const cpus = Number(process.env.AGENT_HOST_CPUS);
+    return {
+      ramMb: Number.isFinite(ramMb) && ramMb > 0 ? ramMb : null,
+      cpus: Number.isFinite(cpus) && cpus > 0 ? cpus : null,
+    };
+  }
+  if (!isWsl()) return null;
+  const ps = (expr) => {
+    try {
+      const r = require("child_process").execFileSync(
+        "powershell.exe",
+        ["-NoProfile", "-Command", expr],
+        { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] }
+      );
+      const n = Number(String(r).trim());
+      return Number.isFinite(n) && n > 0 ? n : null;
+    } catch (_) {
+      return null;
+    }
+  };
+  const ramBytes = ps("(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory");
+  const cpus = ps("(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors");
+  if (!ramBytes && !cpus) return null;
+  return { ramMb: ramBytes ? Math.round(ramBytes / 1048576) : null, cpus };
+}
+
+/* Whether the one-time in-WSL tuning (`scripts/wsl-tune.sh apply`) is present:
+ * a low swappiness and the user.slice resource ceiling. Doctor reads this to
+ * tell the operator the single command that finishes the setup. */
+function readTuning() {
+  const sysctlDir = process.env.AGENT_TUNING_SYSCTL_DIR || "/proc/sys";
+  let swappiness = null;
+  try {
+    const v = fs.readFileSync(path.join(sysctlDir, "vm", "swappiness"), "utf8").trim();
+    swappiness = Number(v);
+    if (!Number.isFinite(swappiness)) swappiness = null;
+  } catch (_) {
+    swappiness = null;
+  }
+  const sliceFile =
+    process.env.AGENT_TUNING_SLICE_FILE || "/etc/systemd/system/user.slice.d/90-agent-cap.conf";
+  return { swappiness, sliceFile, sliceApplied: fs.existsSync(sliceFile) };
+}
+
 /* Live long-lived processes recorded by `serve.js` under `.serve/*.pid`. A pid
  * file whose pid is dead is still reported (so a stale file is visible) but
  * never counts as live. `ageMs` comes from the recorded start timestamp. */
@@ -248,6 +336,7 @@ function sample(root, envelopeText) {
     envelope,
     mem: readMem(),
     load: readLoad(),
+    psi: readPsi(),
     serves: readServes(root),
     tmpfs: readTmpfs(),
     wsl: isWsl(),
@@ -286,6 +375,15 @@ function evaluate(s, opts) {
   if (s && s.mem && s.mem.swapTotal > 0 && s.mem.swapUsedPct >= e.maxSwapUsedPct) {
     warnings.push(`swap ${s.mem.swapUsedPct}% used (envelope max ${e.maxSwapUsedPct}%)`);
   }
+  if (s && s.psi && s.psi.mem && s.psi.mem.some10 != null && s.psi.mem.some10 >= e.maxMemPressureAvg10) {
+    warnings.push(
+      `memory pressure ${s.psi.mem.some10.toFixed(1)} (PSI some avg10 ≥ ${e.maxMemPressureAvg10}) — ` +
+        `processes are already stalling on reclaim`
+    );
+  }
+  if (s && s.psi && s.psi.cpu && s.psi.cpu.some10 != null && s.psi.cpu.some10 >= e.maxCpuPressureAvg10) {
+    warnings.push(`CPU pressure ${s.psi.cpu.some10.toFixed(1)} (PSI some avg10 ≥ ${e.maxCpuPressureAvg10})`);
+  }
   for (const x of live) {
     if (x.ageMs != null && x.ageMs > e.idleReapMinutes * 60000) {
       warnings.push(
@@ -303,6 +401,9 @@ function formatSummary(s) {
     if (s.mem.swapTotal > 0) parts.push(`swap ${s.mem.swapUsedPct}% of ${s.mem.swapTotal} MB`);
   }
   if (s && s.load && s.load.load1 != null) parts.push(`load ${s.load.load1}/${s.load.cpus} cpu`);
+  if (s && s.psi && s.psi.mem && s.psi.mem.some10 != null) {
+    parts.push(`mem pressure ${s.psi.mem.some10.toFixed(1)}`);
+  }
   const live = ((s && s.serves) || []).filter((x) => x.alive);
   parts.push(`${live.length} live serve(s)`);
   if (s && s.tmpfs && s.tmpfs.length) {
@@ -467,15 +568,35 @@ function memToGb(value) {
   return n;
 }
 
-function wslConfigAdvice(wsl) {
+function wslConfigAdvice(wsl, host) {
   const advice = [];
   if (!wsl || !wsl.config) return advice;
   const cfg = wsl.config;
+  const hostGb = host && host.ramMb ? host.ramMb / 1024 : null;
   const mem = cfg["wsl2.memory"];
   const gb = mem ? memToGb(mem) : null;
-  if (gb != null && gb < 12) {
+  if (gb != null) {
+    if (hostGb != null) {
+      // Host-aware: only push back when the VM leaves Windows too little.
+      const leftForWindows = hostGb - gb;
+      if (leftForWindows < 5) {
+        advice.push(
+          `.wslconfig memory=${mem} leaves Windows ~${leftForWindows.toFixed(1)} GB on a ${hostGb.toFixed(1)} GB host — ` +
+            `too tight (Windows needs room for the terminal + vsock relay); keep WSL at ~${Math.max(6, Math.floor(hostGb - 6))} GB or serialize heavy tiers`
+        );
+      }
+    } else if (gb < 12) {
+      advice.push(
+        `.wslconfig memory=${mem} — raise it only if the Windows host has headroom (a 10 GB VM + emulator + 2 agents + next dev does not fit)`
+      );
+    }
+  }
+  const proc = Number(cfg["wsl2.processors"]);
+  const hostCpus = host && host.cpus;
+  if (Number.isFinite(proc) && hostCpus && proc > hostCpus - 4) {
     advice.push(
-      `.wslconfig memory=${mem} — raise it if the Windows host has headroom (a 10 GB VM + emulator + 2 agents + next dev does not fit)`
+      `.wslconfig processors=${proc} of ${hostCpus} host logical CPUs leaves only ${hostCpus - proc} thread(s) for ` +
+        `Windows (terminal, vsock relay) — set processors=${Math.max(2, hostCpus - 4)}`
     );
   }
   const idle = cfg["wsl2.vmidletimeout"];
@@ -487,8 +608,14 @@ function wslConfigAdvice(wsl) {
   if (!reclaim) {
     advice.push(".wslconfig has no autoMemoryReclaim=gradual — idle WSL memory is never reclaimed");
   }
-  if (cfg["wsl2.swap"] === "0") {
+  const swap = cfg["wsl2.swap"];
+  if (swap === "0") {
     advice.push(".wslconfig swap=0 disables swap — keep a modest swap file so a spike degrades instead of OOM-freezing");
+  } else if (swap && memToGb(swap) != null && memToGb(swap) >= 8) {
+    advice.push(
+      `.wslconfig swap=${swap} allows long swap-thrash before an OOM — a smaller swap (2–4 GB) fails faster and lets the ` +
+        `capacity guard intervene (scripts/wsl-tune.sh sets this)`
+    );
   }
   return advice;
 }
@@ -505,6 +632,9 @@ module.exports = {
   isWsl,
   readMem,
   readLoad,
+  readPsi,
+  readHost,
+  readTuning,
   readServes,
   readTmpfs,
   sample,

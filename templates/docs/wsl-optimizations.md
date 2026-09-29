@@ -144,17 +144,40 @@ The envelope is project-owned and machine-readable in
 
 | Surface | Role |
 | --- | --- |
-| `scripts/qa/capacity-lib.js` | samples `/proc` + `.serve/`, parses the envelope, owns the machine-wide heavy lock |
-| `scripts/serve.js start` | **refuses** a heavy launch that would exceed the envelope or a held heavy lock (naming what is up); `--force` overrides; `list` shows capacity + ages |
-| `scripts/qa/check-capacity.js` (`npm run test:capacity`) | reports free RAM/swap/load/live serves; **fails** when the envelope is already exceeded; skips on non-Linux / `AGENT_CAPACITY_DISABLE=1` |
+| `scripts/qa/capacity-lib.js` | samples `/proc` + PSI + `.serve/`, parses the envelope, owns the machine-wide heavy lock |
+| `scripts/serve.js start` | **refuses** a heavy launch that would exceed the envelope or a held heavy lock (naming what is up); `--force` overrides; `--mem-max`/`--cpu-max` cap the tree; `list` shows capacity + ages + caps |
+| `scripts/qa/check-capacity.js` (`npm run test:capacity`) | reports free RAM/swap/load/PSI/live serves; **fails** when the envelope is already exceeded; skips on non-Linux / `AGENT_CAPACITY_DISABLE=1` |
 | `context-guard` plugin | blocks an over-envelope `serve.js start`, nudges any other heavy command, logs `kind:"capacity"` to `.agents/guard-events.jsonl` |
-| `agent-harness doctor` | adds a capacity line + `.wslconfig` advice (memory, `vmIdleTimeout`, `autoMemoryReclaim`, `swap`) |
+| `agent-harness doctor` | capacity + **PSI** + host-aware `.wslconfig` advice + in-WSL tuning status |
+
+`serve.js --mem-max/--cpu-max` runs the process tree as a transient
+`systemd-run --user` unit with `MemoryMax`/`CPUQuota`, so a runaway is throttled
+or OOM-killed **inside its cgroup** instead of dragging the VM into swap-thrash;
+it passes the caller's cwd + environment through and is a graceful no-op where
+systemd is absent.
 
 The machine-wide heavy lock (`~/.agent-harness/heavy.lock`, TTL + dead-pid
 detection) is what lets many agents coexist while guaranteeing **one
 emulator/live tier at a time across sessions**. It is acquired on a heavy
 `serve.js start` and released on `stop`/`stop-all`.
 
+### One-time VM tuning: `scripts/wsl-tune.sh`
+
+`doctor` reports whether it is applied; `sudo bash scripts/wsl-tune.sh apply`
+does it all (auto-sudo where passwordless), idempotently:
+
+- **sysctls** (`/etc/sysctl.d/99-agent-wsl.conf`): `vm.swappiness=10`,
+  bounded dirty ratios, a `min_free_kbytes` floor — less swap/writeback thrash.
+- **user.slice ceiling** (`/etc/systemd/system/user.slice.d/90-agent-cap.conf`):
+  `MemoryHigh=8G`, `MemoryMax=9G`, `CPUQuota=800%` — a backstop so user work can
+  never consume the whole VM and starve the kernel/relay.
+- **`.wslconfig`** keys merged safely by `scripts/qa/wslconfig-merge.js`
+  (processors = host CPUs − 4, swap 4 GB, 2 h idle timeout, reclaim on); the
+  only manual step is `wsl --shutdown` from Windows PowerShell, because the VM
+  must restart. `wsl-tune.sh status` / `down` inspect / remove.
+
 Env overrides (also used to test the guards): `AGENT_CAPACITY_MEMINFO`,
-`AGENT_CAPACITY_LOADAVG`, `AGENT_CAPACITY_MOUNTS`, `AGENT_CAPACITY_FORCE_WSL`,
-`AGENT_CAPACITY_DISABLE`, `AGENT_HEAVY_LOCK`, `AGENT_WSL_CONFIG`.
+`AGENT_CAPACITY_LOADAVG`, `AGENT_CAPACITY_MOUNTS`, `AGENT_CAPACITY_PSI_DIR`,
+`AGENT_CAPACITY_FORCE_WSL`, `AGENT_CAPACITY_DISABLE`, `AGENT_HEAVY_LOCK`,
+`AGENT_WSL_CONFIG`, `AGENT_HOST_RAM_MB`, `AGENT_HOST_CPUS`,
+`AGENT_TUNING_SYSCTL_DIR`, `AGENT_TUNING_SLICE_FILE`, `AGENT_WSL_TUNE_*`.
