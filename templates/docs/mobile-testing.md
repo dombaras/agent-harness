@@ -24,6 +24,16 @@ server is ready.
 
 ## Booting the emulator
 
+Prefer the harness helper (it wraps `serve.js`, is safe to re-run — an
+already-booted emulator is reused, never duplicated — and reads the AVD from
+`scripts/qa/mobile-e2e/local.json` / `MOBILE_E2E_AVD`):
+
+```bash
+node scripts/qa/mobile-e2e/boot-emulator.sh          # MOBILE_E2E_GPU=host for a GPU box
+```
+
+It expands to:
+
 ```bash
 node scripts/serve.js start --heavy --mem-max 4G --cpu-max 250% \
   --cmd "~/android-sdk/emulator/emulator -avd <avd> -no-window -no-audio -no-boot-anim -no-snapshot -cores 2 -memory 2048 -gpu host" \
@@ -62,6 +72,50 @@ Only then `adb install -r <apk>` and run flows. Both are synchronous one-shots �
 run them inline and let output stream; never pipe a run through a buffering
 filter (`| tail`, redirect-to-file-then-read), or it looks frozen and gets
 aborted mid-flight.
+
+## Making a full run fast and observable
+
+A full multi-journey Maestro matrix on a software-rendered emulator can take tens
+of minutes. The runner (`scripts/qa/mobile-e2e/run-maestro.js`, harness-owned)
+carries a performance layer; coverage and assertions are unchanged:
+
+1. **Launch detached, then tail.** Never block the tool for the whole run — a
+   buffered long run looks frozen and gets aborted. The helper runs it with its
+   own session/stdio and points at the log; `run-maestro.js` prints a
+   `Running flow (i/n): …` line per invocation, so the tail is live:
+
+   ```bash
+   scripts/qa/mobile-e2e/run-detached.sh --flows all --reuse-session
+   tail -f /tmp/opencode/mobile-e2e-<timestamp>.log
+   ```
+
+2. **`--reuse-session`** signs in **once per actor** instead of once per journey
+   and batches consecutive same-actor, setup-free journeys into one `maestro
+   test` invocation (fewer JVMs). A journey whose `actor:` (in `flows/matrix.yaml`)
+   changes is always re-established cold. This is the single biggest wall-clock
+   win. Omit it for a strictly per-journey cold run (the default, which preserves
+   `clearState` semantics).
+3. **Animations are disabled** for the run by `config.yaml`
+   (`platform.android.disableAnimations: true`, passed via `maestro test
+   --config`), removing the per-command animation-settle wait. Override with
+   `--config <file>`.
+4. **`--no-seed`** runs `reset.js --no-seed` (mint actor auth, keep the seeded
+   data) so a re-verification run skips the full DB seed.
+5. **`--failed`** re-runs only the journeys that failed last time, from
+   `.serve/mobile-e2e-last-run.json` (written after every run). Iterate on the
+   failing subset, then do one full pass at the end.
+6. **`--max-same-reason`** (default 3) is the fail-fast stop. Leave the default
+   for a verification run so a systemic break stops early; pass `0` only for a
+   full attribution sweep that must touch every journey.
+7. The Maestro driver APKs are **not reinstalled** per invocation
+   (`--no-reinstall-driver`); pass `--reinstall-driver` only if the driver is
+   suspect.
+
+Project-specific defaults (app id, default actor) live in
+`scripts/qa/mobile-e2e/local.json` — project-owned, not overwritten by the
+harness. The mechanism (`run-maestro.js`, `check-flows.js`, `config.yaml`,
+`boot-emulator.sh`, `run-detached.sh`) is harness-owned under `templates/`, so
+fix it upstream and `agent-harness update` the projects.
 
 ## Reuse vs. stop
 

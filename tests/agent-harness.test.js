@@ -7961,3 +7961,71 @@ test("[drift-guard] serve caps heavy tiers by default and wsl-tune installs the 
   const cap = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "capacity-lib.js"));
   assert.match(cap, /workloadCapped/, "capacity-lib detects whether the workload cgroup is capped");
 });
+
+test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpers) and is documented", () => {
+  const dir = path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e");
+  for (const f of ["run-maestro.js", "check-flows.js", "config.yaml", "boot-emulator.sh", "run-detached.sh"]) {
+    assert.ok(exists(path.join(dir, f)), `${f} must ship in templates/scripts/qa/mobile-e2e`);
+  }
+
+  // The runner's pure planner drives the entire perf layer — it must ship and
+  // behave (cold = one invocation per flow; reuse = same-actor batching; an
+  // actor change forces a cold invocation).
+  const runner = require(path.join(dir, "run-maestro.js"));
+  const rec = (name, actor, setup = false) => ({
+    file: `${name}.yaml`,
+    name,
+    actor,
+    setup: null,
+    oracle: null,
+    hasSetup: setup,
+    hasOracle: false,
+  });
+  const cold = runner.planInvocations([rec("a", "0502000001"), rec("b", "0502000001")], false);
+  assert.strictEqual(cold.length, 2, "default is one invocation per flow");
+  assert.ok(cold.every((inv) => inv.cold), "default runs every flow cold");
+  const warm = runner.planInvocations(
+    [rec("a", "0502000001"), rec("b", "0502000001"), rec("c", "0502000006")],
+    true
+  );
+  assert.strictEqual(warm.length, 3, "same-actor flows batch; an actor change splits");
+  assert.strictEqual(warm[0].cold, true, "the first flow of an actor is cold");
+  assert.strictEqual(warm[1].cold, false, "the next same-actor flow reuses the session");
+  assert.strictEqual(warm[2].cold, true, "an actor change forces a cold invocation");
+  assert.strictEqual(runner.parseFailedFlows("[Failed] a (1s) (boom)\n[Passed] b").get("a"), "boom");
+
+  // The config turns off animations (the dominant per-command cost).
+  assert.match(read(path.join(dir, "config.yaml")), /disableAnimations:\s*true/);
+
+  // The validator accepts the optional `actor:` key and still rejects unknown keys.
+  const validator = require(path.join(dir, "check-flows.js"));
+  const okMatrix = [
+    "journeys:",
+    "  - id: x",
+    "    flow: x.yaml",
+    "    entry: mobile/app/login.tsx",
+    '    actor: "0502000001"',
+    "    screens: [mobile/app/login.tsx]",
+    "    states: [ideal]",
+    "",
+  ].join("\n");
+  assert.deepStrictEqual(validator.parseMatrix(okMatrix).violations, []);
+  const badMatrix = [
+    "journeys:",
+    "  - id: x",
+    "    flow: x.yaml",
+    "    entry: mobile/app/login.tsx",
+    "    bogus: 1",
+    "",
+  ].join("\n");
+  assert.ok(
+    validator.parseMatrix(badMatrix).violations.some((v) => /unknown journey key/.test(v)),
+    "an unknown journey key must fail"
+  );
+
+  // The runbook documents the fast/observable workflow.
+  const doc = read(path.join(h.TEMPLATES_DIR, "docs", "mobile-testing.md"));
+  assert.match(doc, /run-detached\.sh/, "runbook documents the detached runner helper");
+  assert.match(doc, /--reuse-session/, "runbook documents session reuse");
+  assert.match(doc, /boot-emulator\.sh/, "runbook documents the emulator helper");
+});
