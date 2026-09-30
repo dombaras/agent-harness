@@ -30,12 +30,17 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const readline = require("readline");
 const { spawnSync } = require("child_process");
 
 const PKG = require("../package.json");
 const TEMPLATES_DIR = path.resolve(__dirname, "..", "templates");
+/* Repo-only global-plugin sources (NOT under templates/, so `init`/`update` never
+ * deploy them into a project). `install-global` links these into the user's
+ * opencode global plugin dir. */
+const GLOBAL_PLUGINS_SRC = path.resolve(__dirname, "..", "contrib", "global-plugins");
 const CONFIG_FILE = ".harness.json";
 const BACKUP_DIR = ".harness-backup";
 
@@ -1320,6 +1325,9 @@ function printUsage() {
       `\n` +
       `  agent-harness list\n` +
       `  agent-harness doctor [--target <dir>]   # readiness of the ship/deploy cycle\n` +
+      `  agent-harness install-global [--dry-run] [--force] [--dir <dir>]\n` +
+      `                     # link contrib/global-plugins/* into ~/.config/opencode/plugins/\n` +
+      `                     # (machine-level, version-independent harness checks; restart opencode)\n` +
       `  agent-harness explain <gate>            # what a gate enforces + how to satisfy/waive it\n` +
       `  agent-harness run [--target <dir>] [--feature <id>] [--prompt <text>]\n` +
       `                     [--max-phases <n>] [--opencode <path>] [--dry-run]\n` +
@@ -2008,6 +2016,105 @@ function parseArgs(argv) {
   return flags;
 }
 
+/* ---------------------------------------------------------------- install-global
+ *
+ * The global opencode plugin dir (`~/.config/opencode/plugins/`, auto-loaded for
+ * EVERY project/session) is machine config, not something `update` can deploy
+ * into a project. To keep it reproducible and current, the sources live here in
+ * `contrib/global-plugins/`, and this command links them into that global dir.
+ * A symlink means the installed plugin always reflects this checkout's latest
+ * source (a copy is the fallback where symlinks are unavailable, e.g. Windows
+ * without privilege — re-run `install-global` after harness updates there).
+ *
+ * The headline plugin is `harness-freshness.ts`: on every session start it
+ * compares a checkout's `.harness.json` to the local harness and refreshes the
+ * checkout ONLY when that is safe for the active branch (a fast-forward worktree,
+ * or the sanctioned main-checkout `update`); otherwise it blocks and tells the
+ * agent to wait. It must be global because a stale project or worktree loads its
+ * OWN (stale) harness — a check shipped inside it could never fire. */
+function opencodeGlobalPluginsDir() {
+  const xdg = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  return path.join(xdg, "opencode", "plugins");
+}
+
+function installGlobal(flags) {
+  const dryRun = !!flags["--dry-run"];
+  const force = !!flags["--force"];
+  const destDir = path.resolve(flags["--dir"] || opencodeGlobalPluginsDir());
+
+  if (!fs.existsSync(GLOBAL_PLUGINS_SRC)) {
+    console.error(`install-global: no bundled global plugins at ${GLOBAL_PLUGINS_SRC}`);
+    process.exitCode = 1;
+    return;
+  }
+  const files = fs.readdirSync(GLOBAL_PLUGINS_SRC).filter((f) => /\.(ts|js)$/.test(f));
+  console.log(`install-global → ${destDir}${dryRun ? "  (dry-run)" : ""}`);
+
+  const counts = { linked: 0, updated: 0, current: 0, skipped: 0 };
+  for (const f of files) {
+    const src = path.join(GLOBAL_PLUGINS_SRC, f);
+    const dest = path.join(destDir, f);
+    let st = null;
+    try {
+      st = fs.lstatSync(dest);
+    } catch {
+      /* not present */
+    }
+
+    if (st && st.isSymbolicLink()) {
+      const resolved = path.resolve(path.dirname(dest), fs.readlinkSync(dest));
+      if (resolved === path.resolve(src)) {
+        counts.current++;
+        console.log(`  [current] ${f}`);
+        continue;
+      }
+    } else if (st && !force) {
+      // A regular file: only treat as current if identical, else refuse.
+      let same = false;
+      try {
+        same = fs.readFileSync(dest, "utf8") === fs.readFileSync(src, "utf8");
+      } catch {
+        /* unreadable */
+      }
+      if (same) {
+        counts.current++;
+        console.log(`  [current] ${f}`);
+      } else {
+        counts.skipped++;
+        console.log(`  [skip]    ${f} exists (not a managed link) — pass --force to replace`);
+      }
+      continue;
+    }
+
+    const existed = !!st;
+    if (dryRun) {
+      counts[existed ? "updated" : "linked"]++;
+      console.log(`  [would ${existed ? "update" : "link"}] ${dest} -> ${src}`);
+      continue;
+    }
+    fs.mkdirSync(destDir, { recursive: true });
+    let linked = false;
+    try {
+      if (st) fs.rmSync(dest, { force: true });
+      fs.symlinkSync(src, dest);
+      linked = true;
+    } catch {
+      linked = false;
+    }
+    if (!linked) fs.copyFileSync(src, dest); // symlinks unavailable -> copy
+    counts[existed ? "updated" : "linked"]++;
+    console.log(`  [${linked ? "link" : "copy"}]    ${f}${linked ? "" : " (symlink unavailable — copied)"}`);
+  }
+
+  console.log(
+    `\n  ${counts.linked} linked, ${counts.updated} updated, ${counts.current} current, ${counts.skipped} skipped.`
+  );
+  if (!dryRun && counts.linked + counts.updated > 0) {
+    console.log("  Restart opencode to load the plugin(s).");
+  }
+  if (counts.skipped > 0) process.exitCode = 1;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const cmd = args[0];
@@ -2060,6 +2167,9 @@ function main() {
     case "doctor":
       doctor(target);
       break;
+    case "install-global":
+      installGlobal(flags);
+      break;
     case "run":
       runCommand(target, flags);
       break;
@@ -2106,6 +2216,9 @@ module.exports = {
   explain,
   explainSection,
   explainList,
+  installGlobal,
+  opencodeGlobalPluginsDir,
+  GLOBAL_PLUGINS_SRC,
   HARNESS_SCRIPTS,
   runCommand,
   TEMPLATES_DIR,

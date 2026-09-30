@@ -6233,6 +6233,74 @@ test("wsl-gpu.sh enables the WSL GPU (vgem + d3d12) and is a clean no-op off WSL
   }
 });
 
+test("install-global links the bundled global plugins into the opencode global dir (idempotent)", () => {
+  const srcFile = path.join(h.GLOBAL_PLUGINS_SRC, "harness-freshness.ts");
+  assert.ok(exists(srcFile), "bundled global plugin ships");
+  // Repo-only: `init`/`update` must never deploy a global plugin into a project.
+  assert.ok(
+    !path.resolve(h.GLOBAL_PLUGINS_SRC).startsWith(path.resolve(h.TEMPLATES_DIR) + path.sep),
+    "global plugins live outside templates/"
+  );
+  const src = read(srcFile);
+  assert.match(src, /\.harness\.json/, "compares the checkout's harness version");
+  assert.match(src, /--ff-only/, "refreshes a worktree by fast-forward only");
+  assert.match(src, /"update", "--target"|update --target/, "refreshes the main checkout via the sanctioned update");
+  assert.match(src, /notices|synthetic/, "blocks via a session notice");
+  assert.match(src, /AGENT_HARNESS_HOME/, "the authoritative checkout path is configurable");
+
+  const dest = tmpdir();
+  const runInstall = (flags) => {
+    const out = [];
+    const orig = console.log;
+    const prevExit = process.exitCode;
+    console.log = (...a) => out.push(a.join(" "));
+    process.exitCode = 0;
+    try {
+      h.installGlobal(flags);
+    } finally {
+      console.log = orig;
+    }
+    const code = process.exitCode;
+    process.exitCode = prevExit;
+    return { out: out.join("\n"), code };
+  };
+
+  const first = runInstall({ "--dir": dest });
+  assert.strictEqual(first.code, 0, first.out);
+  const installed = path.join(dest, "harness-freshness.ts");
+  assert.ok(exists(installed), "plugin installed");
+  const st = fs.lstatSync(installed);
+  if (st.isSymbolicLink()) {
+    assert.strictEqual(
+      path.resolve(path.dirname(installed), fs.readlinkSync(installed)),
+      path.resolve(srcFile),
+      "symlink points back at the checkout source"
+    );
+  } else {
+    assert.strictEqual(read(installed), src, "copy fallback is byte-identical");
+  }
+
+  const second = runInstall({ "--dir": dest });
+  assert.strictEqual(second.code, 0, second.out);
+  assert.match(second.out, /1 current/, "re-running is a no-op (idempotent)");
+
+  // A regular (unmanaged) file is not clobbered without --force.
+  fs.rmSync(installed); // remove the managed link/copy first (never write through a symlink)
+  fs.writeFileSync(installed, "// hand-written\n", "utf8");
+  const blocked = runInstall({ "--dir": dest });
+  assert.strictEqual(blocked.code, 1, "refuses to clobber an unmanaged file");
+  assert.match(blocked.out, /skip/);
+  assert.strictEqual(read(installed), "// hand-written\n", "left untouched");
+});
+
+test("[drift-guard] install-global is wired into the CLI and the package ships contrib/", () => {
+  const pkg = JSON.parse(read(path.join(h.TEMPLATES_DIR, "..", "package.json")));
+  assert.ok(pkg.files.includes("contrib/"), "contrib/ is published");
+  const bin = read(path.join(h.TEMPLATES_DIR, "..", "bin", "agent-harness.js"));
+  assert.match(bin, /case "install-global":/, "install-global is dispatched");
+  assert.match(bin, /install-global \[--dry-run\]/, "install-global is documented in usage");
+});
+
 // ---------------------------------------------------------------- tool-lib + lease-lib
 
 test("tool-lib is the single source for node resolution and the mid-session worktree reroot", () => {
