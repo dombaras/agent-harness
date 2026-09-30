@@ -26,7 +26,7 @@
  * server never became ready.
  *
  * Usage:
- *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
+ *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--group <tier>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
  *   node scripts/serve.js stop  [--name <label>] [--port <n>]
  *   node scripts/serve.js stop-all
  *   node scripts/serve.js list
@@ -85,6 +85,7 @@ function parseArgs(argv) {
       a === "--url" ||
       a === "--port" ||
       a === "--name" ||
+      a === "--group" ||
       a === "--timeout" ||
       a === "--mem-max" ||
       a === "--cpu-max"
@@ -286,6 +287,7 @@ async function start(flags) {
   }
   const name = deriveName(flags);
   const timeout = Number(flags["--timeout"]) || DEFAULT_TIMEOUT;
+  const tierGroup = flags["--group"] || null;
   const outLog = logPath(name, "out");
   const errLog = logPath(name, "err");
 
@@ -304,27 +306,42 @@ async function start(flags) {
     ? capacity.classifyHeavy(flags["--cmd"]) || "heavy process"
     : capacity.classifyHeavy(flags["--cmd"]);
   const capacityDisabled = process.env.AGENT_CAPACITY_DISABLE === "1";
-  if (heavyLabel && !flags["--force"] && !capacityDisabled) {
+  const holdLock = !!heavyLabel && !flags["--force"] && !capacityDisabled;
+  if (holdLock) {
     const sample = capacity.sample(process.cwd());
-    const ev = capacity.evaluate(sample, { pendingHeavy: 1, pendingLive: 1 });
+    const ev = capacity.evaluate(sample, { pendingHeavy: 1, pendingLive: 1, pendingGroup: tierGroup });
     if (!ev.ok) {
       console.error(capacity.formatSummary(sample));
       console.error(capacity.heavyBlockText(heavyLabel, ev, sample));
       process.exit(2);
     }
-    const lock = capacity.acquireHeavyLock(name, sample.envelope);
-    if (!lock.ok && lock.held) {
-      const held = lock.lock || {};
-      console.error(
-        `refused: the machine-wide heavy lock is held by "${held.name || "?"}" ` +
-          `(pid ${held.pid || "?"}, since ${held.since || "?"}) — only one emulator/live tier ` +
-          `runs at a time. Stop it (node scripts/serve.js stop --name ${held.name || "<name>"}) ` +
-          `or re-run with --force.`
-      );
-      process.exit(2);
-    }
-    if (!lock.ok) {
-      console.warn(`serve start: heavy lock unavailable (${lock.error || "unknown"}) — continuing`);
+    // A sibling member of the same tier group (the emulator's dev server) joins
+    // the already-held group lock instead of being refused: the pair is ONE
+    // budgeted mobile tier, not two competing heavy tiers.
+    const existing = capacity.readLock();
+    const joinsGroup =
+      !!tierGroup &&
+      !!existing &&
+      existing.group === tierGroup &&
+      !capacity.lockIsStale(existing, sample.envelope.heavyLockTtlMinutes);
+    if (!joinsGroup) {
+      const lock = capacity.acquireHeavyLock(name, sample.envelope, tierGroup);
+      if (!lock.ok && lock.held) {
+        const held = lock.lock || {};
+        const members = capacity.lockMembers(held);
+        const who = members.length ? members.map((m) => m.name).join(", ") : held.name || "?";
+        console.error(
+          `refused: the machine-wide heavy lock is held by "${who}"` +
+            `${held.group ? ` [group ${held.group}]` : ""} ` +
+            `(since ${held.since || "?"}) — only one emulator/live tier ` +
+            `runs at a time. Stop it (node scripts/serve.js stop --name ${held.name || "<name>"}) ` +
+            `or re-run with --force.`
+        );
+        process.exit(2);
+      }
+      if (!lock.ok) {
+        console.warn(`serve start: heavy lock unavailable (${lock.error || "unknown"}) — continuing`);
+      }
     }
   }
 
@@ -411,12 +428,24 @@ async function start(flags) {
   const appliedMemMax = unit ? memMax : null;
   const appliedCpuMax = unit ? flags["--cpu-max"] || null : null;
 
+  // Point the heavy lock at the REAL server pid (the `start` CLI exits now, so
+  // its pid would read as stale at once). A same-group sibling is appended, not
+  // clobbered. Best-effort: a lock write must never break a launch.
+  if (holdLock) {
+    try {
+      capacity.updateHeavyMember({ name, group: tierGroup, pid, unit: unit || null });
+    } catch (_) {
+      /* lock bookkeeping is best-effort */
+    }
+  }
+
   fs.writeFileSync(
     pidFile(name),
     JSON.stringify(
       {
         pid,
         name,
+        group: tierGroup,
         cmd: flags["--cmd"],
         port: flags["--port"] || null,
         url: flags["--url"] || null,
@@ -475,6 +504,7 @@ function stop(flags) {
   const name = deriveName(flags);
   const p = pidFile(name);
   if (!fs.existsSync(p)) {
+    // No record: release this name's own lock (covers a lock left after a crash).
     capacity.releaseHeavyLock(name);
     console.log(`${name}: not running`);
     return;
@@ -486,6 +516,7 @@ function stop(flags) {
     info = { pid: fs.readFileSync(p, "utf8").trim() };
   }
   const pid = info.pid;
+  const group = info.group || null;
   // A capped launch lives in a transient systemd unit: stopping the unit tears
   // down the whole cgroup (the MainPID alone would miss reparented children).
   if (info.unit) {
@@ -502,7 +533,10 @@ function stop(flags) {
   try {
     fs.unlinkSync(launcherPath(name));
   } catch (_) {}
-  capacity.releaseHeavyLock(name);
+  // Remove this member from the heavy lock; the lock file itself is deleted only
+  // when the last member is gone, so a shared group (emulator + dev server)
+  // releases exactly once.
+  capacity.releaseHeavyLock(name, group);
 }
 
 function listNames() {
@@ -633,12 +667,13 @@ function list() {
     const started = info.startedAt ? Date.parse(info.startedAt) : NaN;
     const age = Number.isFinite(started) ? ` · up ${Math.round((Date.now() - started) / 60000)}m` : "";
     const heavy = info.heavy ? " [heavy]" : "";
+    const group = info.group ? ` [group ${info.group}]` : "";
     const caps = [info.memMax ? `mem≤${info.memMax}` : null, info.cpuMax ? `cpu≤${info.cpuMax}` : null]
       .filter(Boolean)
       .join(" ");
     const capped = caps ? ` {${caps}${info.unit ? `, ${info.unit}` : ""}}` : "";
     console.log(
-      `${name}: pid ${info.pid} (${isAlive(info.pid) ? "running" : "stale"})${heavy}${capped}${age} — ${info.cmd || "?"}`
+      `${name}: pid ${info.pid} (${isAlive(info.pid) ? "running" : "stale"})${heavy}${group}${capped}${age} — ${info.cmd || "?"}`
     );
   }
 }
@@ -668,7 +703,7 @@ function main() {
       break;
     default:
       console.error(
-        'usage: node scripts/serve.js <start|stop|stop-all|list|prune> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--worktrees] [--mem-max 4G] [--cpu-max 250%]'
+        'usage: node scripts/serve.js <start|stop|stop-all|list|prune> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--group <tier>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--worktrees] [--mem-max 4G] [--cpu-max 250%]'
       );
       process.exitCode = 1;
   }

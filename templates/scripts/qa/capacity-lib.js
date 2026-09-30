@@ -334,6 +334,7 @@ function readServes(root) {
       cmd,
       url: info.url || null,
       port: info.port || null,
+      group: info.group || null,
       startedAt: info.startedAt || null,
       ageMs,
       alive: isAlive(pid),
@@ -391,11 +392,17 @@ function sample(root, envelopeText) {
 
 /* Evaluate a sample. `opts.pendingHeavy` / `opts.pendingLive` let a caller ask
  * "would adding this process exceed the envelope?" — the preflight must count
- * the process it is ABOUT to start, not only what is already running. */
+ * the process it is ABOUT to start, not only what is already running.
+ *
+ * `opts.pendingGroup` is a shared tier group (e.g. `mobile`): the device tier
+ * legitimately needs two heavy processes (emulator + dev server), so members of
+ * ONE group count as a single heavy tier rather than tripping `maxHeavyTiers`.
+ * A second, unrelated heavy tier is still refused. */
 function evaluate(s, opts) {
   const e = (s && s.envelope) || DEFAULT_ENVELOPE;
   const pendingHeavy = (opts && opts.pendingHeavy) || 0;
   const pendingLive = (opts && opts.pendingLive) || 0;
+  const pendingGroup = (opts && opts.pendingGroup) || null;
   const reasons = [];
   const warnings = [];
   const live = ((s && s.serves) || []).filter((x) => x.alive);
@@ -406,9 +413,15 @@ function evaluate(s, opts) {
       `only ${s.mem.available} MB RAM available (envelope min ${e.minAvailableMemMb} MB)`
     );
   }
-  if (heavy.length + pendingHeavy > e.maxHeavyTiers) {
+  // Members of the pending group join the existing heavy tier instead of adding
+  // one, so emulator + dev server = one budgeted `mobile` tier.
+  const heavyGroups = new Set(heavy.map((x) => x.group).filter(Boolean));
+  const joinsRunningGroup =
+    !!pendingGroup && heavy.length > 0 && heavyGroups.size === 1 && heavyGroups.has(pendingGroup);
+  const heavyTiers = joinsRunningGroup ? heavy.length : heavy.length + pendingHeavy;
+  if (heavyTiers > e.maxHeavyTiers) {
     reasons.push(
-      `${heavy.length + pendingHeavy} heavy tier(s) would run at once ` +
+      `${heavyTiers} heavy tier(s) would run at once ` +
         `(${[...heavy.map((h) => h.name), pendingHeavy ? "this launch" : null].filter(Boolean).join(", ")}); ` +
         `envelope allows ${e.maxHeavyTiers}`
     );
@@ -503,18 +516,43 @@ function readLock() {
   }
 }
 
+/* Members of a lock. A current lock carries `members: [{name, pid, unit}]` — the
+ * REAL server pids, because the `serve.js start` CLI process that writes the
+ * lock exits immediately and would make a pid-based lock look stale at once.
+ * A legacy `{pid, name}` record is normalised to a single member. */
+function lockMembers(lock) {
+  if (!lock) return [];
+  if (Array.isArray(lock.members) && lock.members.length > 0) return lock.members;
+  if (lock.pid) return [{ name: lock.name || "heavy", pid: lock.pid, unit: lock.unit || null }];
+  return [];
+}
+
+function writeLock(record) {
+  const p = lockPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(record, null, 2));
+}
+
+/* Stale when no recorded member process is alive, or the lock has outlived its
+ * TTL (a crashed tier can never wedge the machine). */
 function lockIsStale(lock, ttlMinutes) {
   if (!lock) return true;
-  if (!isAlive(lock.pid)) return true;
+  const members = lockMembers(lock);
+  if (members.length === 0) return true;
+  if (!members.some((m) => isAlive(m.pid))) return true;
   const since = lock.since ? Date.parse(lock.since) : null;
   const ttl = Number(ttlMinutes) > 0 ? Number(ttlMinutes) : DEFAULT_ENVELOPE.heavyLockTtlMinutes;
   if (since != null && Number.isFinite(since) && Date.now() - since > ttl * 60000) return true;
   return false;
 }
 
-/* Returns { ok, held, lock?, error? }. `ok` false + `held` true means another
- * live process holds the tier; `held` false means the lock could not be written. */
-function acquireHeavyLock(name, envelope) {
+/* Returns { ok, held, lock?, joined?, error? }. `ok` false + `held` true means
+ * another live tier holds the lock; `held` false means it could not be written.
+ * `group` records a shared tier (e.g. `mobile`): a live holder of the SAME group
+ * is compatible, and this member is appended rather than refused. The member pid
+ * is the short-lived CLI pid until serve.js calls `updateHeavyMember` with the
+ * real server pid. */
+function acquireHeavyLock(name, envelope, group) {
   const ttl = (envelope && envelope.heavyLockTtlMinutes) || DEFAULT_ENVELOPE.heavyLockTtlMinutes;
   const p = lockPath();
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -524,7 +562,13 @@ function acquireHeavyLock(name, envelope) {
       fs.writeSync(
         fd,
         JSON.stringify(
-          { pid: process.pid, name: name || "heavy", host: os.hostname(), since: new Date().toISOString() },
+          {
+            name: name || "heavy",
+            group: group || null,
+            host: os.hostname(),
+            since: new Date().toISOString(),
+            members: [{ name: name || "heavy", pid: process.pid, unit: null }],
+          },
           null,
           2
         )
@@ -540,20 +584,59 @@ function acquireHeavyLock(name, envelope) {
         } catch (_) {}
         continue;
       }
+      if (group != null && existing.group === group) {
+        return { ok: true, held: true, joined: true, lock: existing };
+      }
       return { ok: false, held: true, lock: existing };
     }
   }
   return { ok: false, held: true, lock: readLock() };
 }
 
-/* Release when the lock belongs to this process, or (for a separate `stop`
- * invocation) when its recorded name matches the server being stopped. */
-function releaseHeavyLock(name) {
+/* Register/replace a lock member with the REAL running server pid + unit. Called
+ * by serve.js after the spawn, so the lock tracks a process that outlives the
+ * `start` CLI. Adds the member to a same-group lock (never clobbers a sibling). */
+function updateHeavyMember(member) {
+  const lock = readLock();
+  if (!lock) {
+    writeLock({
+      name: member.name,
+      group: member.group || null,
+      host: os.hostname(),
+      since: new Date().toISOString(),
+      members: [{ name: member.name, pid: member.pid, unit: member.unit || null }],
+    });
+    return true;
+  }
+  const members = lockMembers(lock).filter((m) => m.name !== member.name);
+  members.push({ name: member.name, pid: member.pid, unit: member.unit || null });
+  lock.members = members;
+  if (member.group != null) lock.group = member.group;
+  writeLock(lock);
+  return true;
+}
+
+/* Release this member. `name` (the server being stopped) removes its member
+ * entry; the lock is deleted only when the last member is gone, so a shared
+ * group (emulator + dev server) releases exactly once. `group` is a fallback for
+ * a legacy record without a members list. */
+function releaseHeavyLock(name, group) {
   const lock = readLock();
   if (!lock) return false;
-  const mine = Number(lock.pid) === process.pid;
-  const named = name != null && lock.name === name;
-  if (!mine && !named) return false;
+  const members = lockMembers(lock);
+  if (Array.isArray(lock.members) && lock.members.length > 0 && name != null) {
+    const remaining = members.filter((m) => m.name !== name);
+    if (remaining.length > 0) {
+      lock.members = remaining;
+      writeLock(lock);
+      return true;
+    }
+  } else {
+    const mine = Number(lock.pid) === process.pid;
+    const named = name != null && lock.name === name;
+    const grouped = group != null && lock.group === group;
+    if (!mine && !named && !grouped) return false;
+  }
   try {
     fs.unlinkSync(lockPath());
     return true;
@@ -690,8 +773,10 @@ module.exports = {
   notice,
   lockPath,
   readLock,
+  lockMembers,
   lockIsStale,
   acquireHeavyLock,
+  updateHeavyMember,
   releaseHeavyLock,
   isAlive,
   parseWslConfig,

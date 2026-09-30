@@ -59,6 +59,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
+const jobEvents = require('./job-events.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const FLOWS_DIR = path.join(__dirname, 'flows');
@@ -701,6 +702,17 @@ function main() {
   const startedAt = new Date().toISOString();
   const results = [];
 
+  // Machine-readable progress bus (see job-events.js): the notifier plugin and
+  // `--wait` consume it so the agent never has to poll/guess.
+  const eventsPath = process.env.MOBILE_E2E_EVENTS || null;
+  let flowIndex = 0;
+  jobEvents.appendEvent(eventsPath, {
+    type: 'matrix_start',
+    at: startedAt,
+    mode: options.reuseSession ? 'reuse-session' : 'per-flow',
+    total: records.length,
+  });
+
   const signatureCounts = new Map();
   const signatureFlows = new Map();
   let anyFailed = false;
@@ -717,6 +729,16 @@ function main() {
     runDeclaredSteps(scoped.setups, 'setup');
 
     console.log(`\nRunning ${invocation.records.length > 1 ? 'flows' : 'flow'} (${index + 1}/${invocations.length}): ${label} [actor=${invocation.actor}${invocation.switchUser ? ', switch' : ', reuse'}]`);
+    for (const record of invocation.records) {
+      jobEvents.appendEvent(eventsPath, {
+        type: 'flow_start',
+        at: new Date().toISOString(),
+        name: record.name,
+        actor: record.actor,
+        index: ++flowIndex,
+        total: records.length,
+      });
+    }
     const { status, output } = runMaestroFlows(
       invocation.records.map((record) => record.file),
       options,
@@ -736,6 +758,14 @@ function main() {
       const pass = failedFlows.size > 0 ? !failedFlows.has(record.name) : status === 0;
       const reason = pass ? null : failedFlows.get(record.name) || extractFailureReason(output, record.name);
       results.push({ name: record.name, actor: record.actor, status: pass ? 'pass' : 'fail', reason });
+      jobEvents.appendEvent(eventsPath, {
+        type: 'flow_result',
+        at: new Date().toISOString(),
+        name: record.name,
+        actor: record.actor,
+        status: pass ? 'pass' : 'fail',
+        reason,
+      });
       return !pass;
     });
 
@@ -754,6 +784,14 @@ function main() {
           const executed = new Set(results.map((result) => result.name));
           const skipped = records.map((record) => record.name).filter((name) => !executed.has(name));
           reportFailFast(signature, signatureFlows.get(signature), skipped);
+          jobEvents.appendEvent(eventsPath, {
+            type: 'fail_fast',
+            at: new Date().toISOString(),
+            count,
+            signature,
+            flows: signatureFlows.get(signature),
+            skipped,
+          });
           stopped = true;
         }
       });
@@ -761,11 +799,22 @@ function main() {
     if (stopped) break;
   }
 
+  const finishedAt = new Date().toISOString();
   writeReport(REPORT_FILE, {
     startedAt,
-    finishedAt: new Date().toISOString(),
+    finishedAt,
     mode: options.reuseSession ? 'reuse-session' : 'per-flow',
     flows: results,
+  });
+
+  jobEvents.appendEvent(eventsPath, {
+    type: 'matrix_done',
+    at: finishedAt,
+    total: records.length,
+    passed: results.filter((result) => result.status === 'pass').length,
+    failed: results.filter((result) => result.status !== 'pass').length,
+    stopped,
+    report: REPORT_FILE,
   });
 
   if (anyFailed) process.exit(1);

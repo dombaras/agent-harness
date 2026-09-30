@@ -45,10 +45,10 @@ not.** These numbers are the machine-readable envelope that `serve.js`,
 | `min_available_mem_mb` | 1024 | minimum free RAM before a heavy launch is refused (raise on a busy host) |
 | `max_swap_used_pct` | 80 | swap usage that raises a capacity warning |
 | `max_live_serves` | 2 | `.serve/` processes before a warning (dev server + emulator ceiling) |
-| `max_heavy_tiers` | 1 | emulator/dev-server/live-tier launches allowed at once, machine-wide |
+| `max_heavy_tiers` | 1 | emulator/dev-server/live-tier launches allowed at once, machine-wide; members of ONE tier group (`serve.js --group <tier>`, e.g. the `mobile` emulator + dev server) count as a single tier |
 | `idle_reap_minutes` | 90 | age at which a running serve is flagged as an idle-reap candidate |
-| `emulator_ram_mb` | 2048 | budget for the Android emulator (it used ~3 GB with software GPU) |
-| `heavy_mem_max_mb` | 5120 | default cgroup `MemoryMax` for a heavy tier (`serve.js` applies it; above the observed peak so E2E is not throttled; `--mem-max` overrides) |
+| `emulator_ram_mb` | 2048 | budget for the Android emulator (it used ~3 GB with software GPU); `boot-emulator.sh` reads this as the guest RAM default |
+| `heavy_mem_max_mb` | 5120 | default cgroup `MemoryMax` for a heavy tier (`serve.js` applies it; above the observed peak so E2E is not throttled; `--mem-max` overrides). Keep ≥ `emulator_ram_mb` + ~2 GB QEMU overhead, or the emulator is OOM-killed inside its own unit |
 | `backstop_mem_high_mb` | 8704 | soft `MemoryHigh` on `init.scope` (`wsl-tune.sh`) — the cgroup agents actually run in; 8.5 GB is above the observed non-reclaimable set (~6.9 GB) so it only reclaims cache in normal E2E, and below the ~9.5 GB freeze peak; never OOM-kills |
 | `heavy_lock_ttl_minutes` | 240 | TTL before a crashed heavy-tier lock is considered stale |
 

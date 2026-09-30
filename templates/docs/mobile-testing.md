@@ -32,7 +32,8 @@ already-booted emulator and a live adb server are reused — and it reads the AV
 from `scripts/qa/mobile-e2e/local.json` / `MOBILE_E2E_AVD`:
 
 ```bash
-node scripts/qa/mobile-e2e/boot-emulator.sh          # MOBILE_E2E_GPU=host for a GPU box
+node scripts/qa/mobile-e2e/boot-emulator.sh          # auto-sizes CPU/RAM/GPU to the box
+node scripts/qa/mobile-e2e/boot-emulator.sh --print-profile   # preview the resolved profile as JSON
 ```
 
 It expands to (adb server, then emulator, then a bounded gate):
@@ -41,12 +42,27 @@ It expands to (adb server, then emulator, then a bounded gate):
 node scripts/serve.js prune
 node scripts/serve.js start --cmd "~/android-sdk/platform-tools/adb -a nodaemon server" \
   --name adb-server --port 5037 --timeout 30000
-node scripts/serve.js start --heavy \
-  --cmd "~/android-sdk/emulator/emulator -avd <avd> -no-window -no-audio -no-boot-anim -no-snapshot -cores 2 -memory 2048 -gpu host" \
-  --name emulator --port 5554 --timeout 120000
+node scripts/serve.js start --group mobile \
+  --cmd "~/android-sdk/emulator/emulator -avd <avd> -no-window -no-audio -no-boot-anim -no-snapshot -cores <n> -memory <mb> -gpu <backend>" \
+  --name emulator --port 5554 --timeout 180000
 timeout 90 adb wait-for-device
 timeout 10 adb shell getprop sys.boot_completed   # must print 1
 ```
+
+**Right-sizing** (the device tier is the slowest, heaviest part of a run):
+`boot-emulator.sh` derives the profile instead of hardcoding it —
+`cores = min(AVD hw.cpu.ncore, nproc − reserve)`, guest RAM from the envelope's
+`emulator_ram_mb` (the single owner of that number), and the GPU backend is
+auto-detected (`host` only when a real DRM/NVIDIA renderer is present, else
+`swiftshader_indirect`; `-gpu host` on a box whose only renderer is `llvmpipe` is
+software GL anyway). Override any of them with `MOBILE_E2E_CORES`,
+`MOBILE_E2E_MEMORY`, `MOBILE_E2E_GPU`.
+
+The emulator joins the machine-wide **`mobile` tier group** (`--group mobile`):
+the emulator and the dev server are two heavy processes that legitimately run
+together for device E2E, so they share ONE budgeted tier instead of tripping the
+single-heavy-tier lock. Start the dev server in the same group (see below). A
+third, unrelated heavy tier is still refused.
 
 Every adb call is `timeout`-wrapped: a wedged adb fails fast instead of hanging
 the tool. `run-maestro.js` also preflights adb (10 s probe) and exits with the
@@ -61,19 +77,22 @@ warning elsewhere.
 
 - **Size it to the box.** The emulator is a heavy tier: software rendering
   (`-gpu swiftshader_indirect`) pins a core and *still* used ~3 GB in the
-  2026-09-29 freeze (QEMU + software-GPU overhead far above `hw.ramSize`). Prefer
-  a host GPU (`-gpu host`) when one is available; otherwise cap it with
-  `-cores 2 -memory 2048`. `serve.js` will refuse to start a heavy process when
-  the capacity envelope (`.agents/memory/orchestration.md`) is already exceeded —
-  stop another tier first, or `--force` to override deliberately.
+  2026-09-29 freeze (QEMU + software-GPU overhead far above `hw.ramSize`) — the
+  observed QEMU RSS at a 2048 MB guest is ~4.4 GB. `boot-emulator.sh` right-sizes
+  cores to the host (a fixed 2 cores made QEMU the bottleneck on an 8-vCPU box),
+  reads guest RAM from the envelope, and picks the GPU backend automatically.
+  Keep `heavy_mem_max_mb` ≥ `emulator_ram_mb` + ~2 GB, or the emulator is
+  OOM-killed inside its own cgroup. `serve.js` refuses a heavy launch that would
+  exceed the capacity envelope (`.agents/memory/orchestration.md`) — stop another
+  tier first, or `--force` to override deliberately.
 - The SDK path and AVD name are per-project. On WSL2 the active AVD is
   `libraryos`. The emulator exposes the adb port at **5554**, which is what
   `--port` probes.
 - A full cold boot takes ~30 s; `--timeout 120000` gives headroom. A start
   prints a "launching" line up front, so an in-progress wait is never silent.
-- The dev server is a **separate** detached process — and a second heavy tier,
-  so run it *after* a device-only tier, not alongside:
-  `node scripts/serve.js start --cmd "npm run dev" --url http://localhost:3000 --name app-dev`.
+- The dev server is a **separate** detached process, but part of the same device
+  tier — start it in the **same group** so the pair is budgeted as one:
+  `node scripts/serve.js start --cmd "npm run dev" --url http://localhost:3000 --name app-dev --group mobile`.
 
 ### Readiness gate (never `sleep`-and-pray)
 
@@ -93,14 +112,29 @@ A full multi-journey Maestro matrix on a software-rendered emulator can take ten
 of minutes. The runner (`scripts/qa/mobile-e2e/run-maestro.js`, harness-owned)
 carries a performance layer; coverage and assertions are unchanged:
 
-1. **Launch detached, then tail.** Never block the tool for the whole run — a
-   buffered long run looks frozen and gets aborted. The helper runs it with its
-   own session/stdio and points at the log; `run-maestro.js` prints a
-   `Running flow (i/n): …` line per invocation, so the tail is live:
+1. **Launch detached, then get notified — do NOT sleep/poll.** Never block the
+   tool for the whole run, and never guess a finish time with `sleep N; grep`.
+   The helper runs the matrix with its own session/stdio and writes a
+   machine-readable job:
 
    ```bash
    scripts/qa/mobile-e2e/run-detached.sh --flows all --reuse-session
-   tail -f /tmp/opencode/mobile-e2e-<timestamp>.log
+   ```
+
+   It writes `<jobdir>/<id>.events.jsonl` (one JSON line per scenario: start,
+   pass/fail, fail-fast, done) plus `<jobdir>/<id>.json` (pid + log + events
+   paths). The `job-notify` opencode plugin tails the stream and turns it into a
+   **push**: a TUI toast per scenario (live progress with no LLM turn), and a
+   message injected back into the session (`session.promptAsync`) on the **first
+   failure** and at **completion** — so the agent resumes on real results instead
+   of polling. The report lands at `.serve/mobile-e2e-last-run.json`.
+
+   When no plugin is watching (headless, or a fresh session), add `--wait`: the
+   launch blocks until the run finishes, streaming each scenario line and
+   returning the run's exit code:
+
+   ```bash
+   scripts/qa/mobile-e2e/run-detached.sh --flows all --reuse-session --wait
    ```
 
 2. **`--reuse-session`** reuses the device session and signs in only when there
@@ -140,8 +174,9 @@ carries a performance layer; coverage and assertions are unchanged:
 Project-specific defaults (app id, default actor) live in
 `scripts/qa/mobile-e2e/local.json` — project-owned, not overwritten by the
 harness. The mechanism (`run-maestro.js`, `check-flows.js`, `config.yaml`,
-`boot-emulator.sh`, `run-detached.sh`) is harness-owned under `templates/`, so
-fix it upstream and `agent-harness update` the projects.
+`boot-emulator.sh`, `run-detached.sh`, `job-events.js`) plus the `job-notify`
+plugin are harness-owned under `templates/`, so fix them upstream and
+`agent-harness update` the projects.
 
 ## Reuse vs. stop
 

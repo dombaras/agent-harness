@@ -29,20 +29,30 @@ You own the native React Native layer and its gotchas — not shared web UI (tha
 
 ## Device / emulator runs (Android)
 
-When a QA tier needs a real device/emulator, launch it as a **detached** process —
-never from your own shell (see the "Synchronous Terminal Commands" rule in
-`.agents/AGENTS.md`):
+Boot the tier with the harness helper — it right-sizes cores/RAM/GPU to the host
+and the AVD, and joins the machine-wide `mobile` heavy-tier group so the emulator
+and dev server share one budget instead of fighting the lock:
 
-1. **Boot detached, return immediately:**
-   `node scripts/serve.js start --cmd "~/android-sdk/emulator/emulator -avd <avd> -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect" --name emulator --port 5554 --timeout 120000`
-   (paths/AVD are per-project; on WSL2 the active AVD is `libraryos`).
-2. **Gate on readiness, never `sleep`-and-pray:** `adb wait-for-device`, then
+```bash
+node scripts/qa/mobile-e2e/boot-emulator.sh          # --print-profile to preview the resolved profile
+```
+
+It starts the adb server + emulator detached via `serve.js`, then gates on a
+bounded `sys.boot_completed`. Only hand-roll `serve.js start` to override.
+
+1. **Gate on readiness, never `sleep`-and-pray:** `adb wait-for-device`, then
    `adb shell getprop sys.boot_completed` must print `1` before installing/running.
-3. **The dev server is a separate detached process** — start it with `serve.js`
-   (`--url http://localhost:3000`); list both with `node scripts/serve.js list`.
-4. **`adb install -r <apk>` and Maestro runs are synchronous one-shots** — run them
-   inline and let output stream (never pipe through a buffering filter).
-5. **Reuse the emulator across runs**, but stop a dev server you started when its
+2. **The dev server is the same tier group**:
+   `node scripts/serve.js start --cmd "npm run dev" --url http://localhost:3000 --name app-dev --group mobile`
+   (list both with `node scripts/serve.js list`).
+3. **Maestro runs are launched detached, never from your shell**:
+   `scripts/qa/mobile-e2e/run-detached.sh --flows all --reuse-session`.
+   The run writes a machine-readable progress stream; the `job-notify` plugin
+   pushes a per-scenario toast and wakes you on the first failure and at
+   completion — do NOT `sleep`/poll the log. With no plugin watching, add
+   `--wait` to block and stream the same per-scenario lines, returning the run's
+   exit code.
+4. **Reuse the emulator across runs**, but stop a dev server you started when its
    tier is done (`node scripts/serve.js stop`). Never kill an emulator you didn't start.
 
 **Anti-pattern (hangs the tool forever):** `setsid bash -c 'emulator … > log 2>&1' &`.

@@ -8049,3 +8049,140 @@ test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpe
   assert.match(doc, /--reuse-session/, "runbook documents session reuse");
   assert.match(doc, /boot-emulator\.sh/, "runbook documents the emulator helper");
 });
+
+test("[drift-guard] device tier is right-sized, group-budgeted, and notifyable", () => {
+  const meDir = path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e");
+  assert.ok(exists(path.join(meDir, "job-events.js")), "job-events.js must ship");
+
+  const boot = read(path.join(meDir, "boot-emulator.sh"));
+  assert.match(boot, /--print-profile/, "boot-emulator.sh exposes --print-profile");
+  assert.match(boot, /detect_gpu|swiftshader_indirect/, "boot-emulator.sh auto-detects the GPU backend");
+  assert.match(boot, /nproc/, "boot-emulator.sh derives cores from the host");
+  assert.match(boot, /--group/, "boot-emulator.sh joins a tier group");
+
+  const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));
+  assert.match(serve, /a === "--group"/, "serve.js parses --group");
+  assert.match(serve, /updateHeavyMember/, "serve.js records the real server pid in the lock");
+  assert.match(serve, /pendingGroup/, "serve.js evaluates the pending tier group");
+
+  const cap = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "capacity-lib.js"));
+  assert.match(cap, /pendingGroup/, "capacity-lib counts a group as one tier");
+
+  const det = read(path.join(meDir, "run-detached.sh"));
+  assert.match(det, /--wait/, "run-detached.sh supports --wait");
+  assert.match(det, /events\.jsonl|EVENTS=/, "run-detached.sh records an events stream");
+  assert.match(det, /record:/, "run-detached.sh points at the job record");
+
+  const runner = read(path.join(meDir, "run-maestro.js"));
+  assert.match(runner, /matrix_done/, "run-maestro.js emits matrix_done");
+  assert.match(runner, /flow_result/, "run-maestro.js emits per-scenario results");
+
+  const plugin = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "job-notify.ts"));
+  assert.match(plugin, /promptAsync/, "job-notify wakes the session with a push notification");
+  assert.match(plugin, /readEvents/, "job-notify tails the progress stream");
+});
+
+test("mobile E2E job-events reduce the progress stream for the notifier", () => {
+  const j = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "job-events.js"));
+  const seq = [
+    { type: "matrix_start", total: 2, mode: "reuse-session" },
+    { type: "flow_start", name: "auth-login", index: 1, total: 2 },
+    { type: "flow_result", name: "auth-login", status: "pass" },
+    { type: "flow_result", name: "book-detail", status: "fail", reason: "Element not found: id x" },
+    { type: "matrix_done", passed: 1, failed: 1, total: 2, report: "/r.json" },
+  ];
+  const s = j.summarize(seq);
+  assert.strictEqual(s.passed, 1);
+  assert.strictEqual(s.failed, 1);
+  assert.strictEqual(s.done, true);
+  assert.strictEqual(s.failures[0].name, "book-detail");
+  const text = j.notificationText(s, { eventsPath: "/e.jsonl" });
+  assert.match(text, /1 passed \/ 1 failed/);
+  assert.match(text, /book-detail/);
+  assert.match(text, /\/r\.json/);
+  assert.match(j.progressLine(seq[3]), /flow FAIL: book-detail/);
+  assert.match(j.progressLine(seq[1]), /flow start \(1\/2\)/);
+
+  // A partially-written trailing line is tolerated (the run is still live).
+  const dir = tmpdir();
+  const f = path.join(dir, "ev.jsonl");
+  fs.writeFileSync(f, `${JSON.stringify(seq[0])}\n{partial`);
+  assert.strictEqual(j.readEvents(f).length, 1);
+});
+
+test("boot-emulator.sh --print-profile derives the profile from the host and AVD", () => {
+  const script = path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "boot-emulator.sh");
+  const dir = tmpdir();
+  const cfg = path.join(dir, "config.ini");
+  fs.writeFileSync(cfg, "hw.cpu.ncore = 2\n");
+  const run = (env) => {
+    const r = spawnSync("bash", [script, "--print-profile"], {
+      encoding: "utf8",
+      env: Object.assign({}, process.env, env),
+    });
+    assert.strictEqual(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  const derived = run({ MOBILE_E2E_AVD: "t", MOBILE_E2E_AVD_CONFIG: cfg });
+  assert.strictEqual(derived.avdCores, 2, "the AVD config is read");
+  assert.strictEqual(derived.cores, 2, "cores are capped by the AVD's 2-core config");
+  assert.strictEqual(derived.memory, 2048, "RAM default comes from the capacity envelope");
+  assert.ok(["host", "swiftshader_indirect"].includes(derived.gpu), "GPU backend is auto-detected");
+
+  const over = run({
+    MOBILE_E2E_AVD: "t",
+    MOBILE_E2E_AVD_CONFIG: cfg,
+    MOBILE_E2E_CORES: "6",
+    MOBILE_E2E_MEMORY: "3072",
+    MOBILE_E2E_GPU: "host",
+  });
+  assert.strictEqual(over.cores, 6);
+  assert.strictEqual(over.memory, 3072);
+  assert.strictEqual(over.gpu, "host");
+});
+
+test("capacity: a shared tier group counts as one heavy tier and the lock tracks members", () => {
+  const e = capacity.DEFAULT_ENVELOPE;
+  const base = {
+    envelope: e,
+    mem: { available: 4000, total: 10000, swapTotal: 0, swapUsedPct: 0 },
+    load: { load1: 1, cpus: 8 },
+    psi: null,
+    tmpfs: [],
+    wsl: true,
+    serves: [{ name: "emulator", alive: true, heavy: true, group: "mobile", ageMs: 1000 }],
+  };
+  assert.strictEqual(
+    capacity.evaluate(base, { pendingHeavy: 1, pendingLive: 1 }).ok,
+    false,
+    "a second unrelated heavy tier is refused"
+  );
+  assert.strictEqual(
+    capacity.evaluate(base, { pendingHeavy: 1, pendingLive: 1, pendingGroup: "mobile" }).ok,
+    true,
+    "a same-group member joins the running tier"
+  );
+
+  const dir = tmpdir();
+  const prev = process.env.AGENT_HEAVY_LOCK;
+  process.env.AGENT_HEAVY_LOCK = path.join(dir, "heavy.lock");
+  try {
+    assert.strictEqual(capacity.acquireHeavyLock("emulator", e, "mobile").ok, true);
+    const join = capacity.acquireHeavyLock("app-dev", e, "mobile");
+    assert.strictEqual(join.ok, true, "a same-group member may join");
+    assert.strictEqual(join.joined, true);
+    assert.strictEqual(capacity.acquireHeavyLock("other", e, null).ok, false, "an unrelated tier is refused");
+
+    capacity.updateHeavyMember({ name: "app-dev", group: "mobile", pid: process.pid });
+    const names = capacity.readLock().members.map((m) => m.name).sort();
+    assert.deepStrictEqual(names, ["app-dev", "emulator"], "both members are recorded");
+
+    assert.strictEqual(capacity.releaseHeavyLock("app-dev", "mobile"), true);
+    assert.ok(capacity.readLock(), "the lock survives while a member remains");
+    assert.strictEqual(capacity.releaseHeavyLock("emulator", "mobile"), true);
+    assert.strictEqual(capacity.readLock(), null, "the lock is removed with the last member");
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_HEAVY_LOCK;
+    else process.env.AGENT_HEAVY_LOCK = prev;
+  }
+});
