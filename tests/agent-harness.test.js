@@ -8323,6 +8323,35 @@ test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpe
     ["b.yaml", "a.yaml"],
     "a firstLogin journey is ordered first"
   );
+  // --reuse-session regroups by actor so a warm run batches an actor's
+  // setup-free journeys instead of interleaving them with standalone flows.
+  const reuseSteps = new Map([
+    ["a.yaml", { actor: "M" }],
+    ["b.yaml", { actor: "M" }],
+    ["c.yaml", { actor: "O" }],
+    ["s.yaml", { actor: "M", setup: "seed" }],
+    ["f.yaml", { actor: "M", firstLogin: true }],
+  ]);
+  const reuseOrder = runner.orderForSessionReuse(
+    ["a.yaml", "c.yaml", "s.yaml", "f.yaml", "b.yaml"],
+    reuseSteps
+  );
+  assert.deepStrictEqual(
+    reuseOrder,
+    ["f.yaml", "s.yaml", "a.yaml", "b.yaml", "c.yaml"],
+    "firstLogin first, then each actor's standalone flows before its batchable run"
+  );
+  const asRecords = (files) =>
+    runner.buildFlowRecords(files.map((f) => path.join(dir, "flows", f)), reuseSteps);
+  const orderedInvocations = runner.planInvocations(asRecords(reuseOrder), true).length;
+  const unorderedInvocations = runner.planInvocations(
+    asRecords(runner.orderFirstLoginFirst(["a.yaml", "c.yaml", "s.yaml", "f.yaml", "b.yaml"], reuseSteps)),
+    true
+  ).length;
+  assert.ok(
+    orderedInvocations < unorderedInvocations,
+    `actor-aware ordering reduces invocations (${orderedInvocations} < ${unorderedInvocations})`
+  );
   assert.strictEqual(runner.parseFailedFlows("[Failed] a (1s) (boom)\n[Passed] b").get("a"), "boom");
 
   // The config turns off animations (the dominant per-command cost).
@@ -8380,8 +8409,14 @@ test("[drift-guard] device tier is right-sized, group-budgeted, and notifyable",
   assert.match(boot, /GALLIUM_DRIVER=d3d12/, "boot-emulator.sh selects the d3d12 driver on WSL");
   assert.match(boot, /GPU_ENV/, "boot-emulator.sh passes the GL env to the emulator launch");
   assert.match(boot, /\$gpu_env \$EMULATOR/, "the emulator command supplies GPU_ENV");
-  assert.match(boot, /start_emulator "\$GPU" "\$GPU_ENV"/, "the launch is invoked with the resolved GPU and env");
+  assert.match(boot, /start_emulator "\$GPU" "\$GPU_ENV" "\$GPU_EXTRA"/, "the launch is invoked with the resolved GPU, env, and feature args");
+  // On the WSL d3d12 path the gfxstream Vulkan backend segfaults qemu mid-boot;
+  // disabling it keeps `-gpu host` GLES acceleration stable (F-296).
+  assert.match(boot, /-feature -Vulkan/, "boot-emulator.sh disables Vulkan on the WSL host path");
   assert.match(boot, /wsl-gpu\.sh/, "boot-emulator.sh points at the wsl-gpu.sh fix");
+  // A missing/unwritable XDG_RUNTIME_DIR aborts the emulator (systemd-less WSL);
+  // the boot must resolve a usable one instead of crashing (F-296).
+  assert.match(boot, /XDG_RUNTIME_DIR/, "boot-emulator.sh guarantees a writable XDG_RUNTIME_DIR");
 
   const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));
   assert.match(serve, /a === "--group"/, "serve.js parses --group");
@@ -8616,6 +8651,9 @@ test("[drift-guard] wait-for is wired into npm scripts and the wait tool", () =>
   const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "wait.ts"));
   assert.match(tool, /scripts\/wait-for\.js/);
   assert.match(tool, /timeout/, "the wait tool is timeout-bounded");
+  // A full 26-journey device matrix runs ~33 min, so a 30-min cap forced a second
+  // wait (F-296). The cap must clear the longest known target.
+  assert.match(tool, /2700/, "the wait tool allows a full device matrix (>30 min) in one wait");
   // The wait must be async: a synchronous (execFileSync) wait blocks opencode's
   // event loop and starves the job-notify plugin's live progress (F-296).
   assert.match(tool, /runScriptAsync\(/, "the wait tool must spawn async, not block the runtime");

@@ -26,9 +26,10 @@
 #     behind /dev/dxg) and, when accelerated, launches the emulator with the
 #     matching GL env — otherwise Mesa silently picks llvmpipe even with a GPU
 #     (F-296). Enable it once with `bash scripts/wsl-gpu.sh apply`.
-#   * If an AUTO-selected backend fails to boot, the tier retries once with
-#     `swiftshader_indirect` (the observed d3d12 segfault), unless
-#     MOBILE_E2E_GPU pins one explicitly.
+#   * On the WSL d3d12 path `-gpu host` is launched with `-feature -Vulkan`
+#     (the gfxstream Vulkan backend segfaults qemu; GLES-over-host is stable).
+#   * If an AUTO-selected backend still fails to boot, the tier retries once
+#     with `swiftshader_indirect`, unless MOBILE_E2E_GPU pins one explicitly.
 #   MOBILE_E2E_CORES / MOBILE_E2E_MEMORY / MOBILE_E2E_GPU override each.
 #
 # Tunables (env; `local.json` supplies `avd`):
@@ -148,8 +149,16 @@ case "$MEMORY" in ''|*[!0-9]*) MEMORY=2048 ;; esac
 # inherits the same driver selection (serve.js runs the command through a shell
 # and forwards the caller's env) — otherwise `-gpu host` would still use llvmpipe.
 GPU_ENV=""
+GPU_EXTRA=""
 if [ "$GPU" = "host" ] && is_wsl_gpu; then
   GPU_ENV="MESA_LOADER_DRIVER_OVERRIDE=d3d12 GALLIUM_DRIVER=d3d12"
+  # Disable the emulator's Vulkan feature on the WSL d3d12 path: its gfxstream
+  # Vulkan backend segfaults qemu mid-boot (the "Segmentation fault (core
+  # dumped)" that made every F-296 run fall back to the software rasterizer),
+  # while GLES-over-host on d3d12 is stable. Verified: `-gpu host -feature
+  # -Vulkan` boots to `D3D12 (Intel(R) Graphics)`; without `-feature -Vulkan` it
+  # crashes. Native (non-WSL) host GPUs keep Vulkan.
+  GPU_EXTRA="-feature -Vulkan"
 fi
 
 # WSL GPU passthrough available but GL resolved to software: the emulator is
@@ -165,8 +174,8 @@ if [ "$PRINT_PROFILE" = "2" ]; then
 fi
 
 if [ "$PRINT_PROFILE" = "1" ]; then
-  node -e "process.stdout.write(JSON.stringify({avd:process.argv[1]||null,hostCpus:Number(process.argv[2]),avdCores:Number(process.argv[3]),cores:Number(process.argv[4]),memory:Number(process.argv[5]),gpu:process.argv[6],gpuEnv:process.argv[7]||null,tierGroup:process.argv[8]},null,2)+'\n')" \
-    "$AVD" "$HOST_CPUS" "$AVD_CORES" "$CORES" "$MEMORY" "$GPU" "$GPU_ENV" "$TIER_GROUP"
+  node -e "process.stdout.write(JSON.stringify({avd:process.argv[1]||null,hostCpus:Number(process.argv[2]),avdCores:Number(process.argv[3]),cores:Number(process.argv[4]),memory:Number(process.argv[5]),gpu:process.argv[6],gpuEnv:process.argv[7]||null,gpuExtra:process.argv[8]||null,tierGroup:process.argv[9]},null,2)+'\n')" \
+    "$AVD" "$HOST_CPUS" "$AVD_CORES" "$CORES" "$MEMORY" "$GPU" "$GPU_ENV" "$GPU_EXTRA" "$TIER_GROUP"
   exit 0
 fi
 
@@ -190,6 +199,18 @@ cd "$ROOT"
 echo "device profile: avd=$AVD cores=$CORES/$HOST_CPUS memory=${MEMORY}MB gpu=$GPU${GPU_ENV:+ ($GPU_ENV)} (avd declares ${AVD_CORES} cores)"
 if [ "$CORES" -gt "$AVD_CORES" ]; then
   echo "  ! cores ($CORES) exceed the AVD's hw.cpu.ncore ($AVD_CORES); the guest may cap them." >&2
+fi
+
+# 0. Ensure a writable XDG_RUNTIME_DIR. The emulator aborts hard ("Aborted (core
+#    dumped)") when XDG_RUNTIME_DIR is unset or points at a missing/unwritable
+#    directory — exactly the case on a systemd-less WSL where /run/user/<uid> is
+#    absent, which cost a whole failed bring-up (F-296). Resolve a usable one and
+#    export it; serve.js forwards the caller's env to the emulator command.
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "${XDG_RUNTIME_DIR:-}" ] || [ ! -w "${XDG_RUNTIME_DIR:-}" ]; then
+  XDG_RUNTIME_DIR="${TMPDIR:-/tmp}/agent-emulator-runtime-$(id -u)"
+  mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+  export XDG_RUNTIME_DIR
+  echo "XDG_RUNTIME_DIR was unset/unwritable; using $XDG_RUNTIME_DIR (the emulator aborts without a writable runtime dir)"
 fi
 
 # 1. Reap dead `.serve/` records so a stale adb-server/emulator entry from a
@@ -217,9 +238,9 @@ fi
 #    `--group` lets the emulator and the dev server share one machine-wide
 #    mobile-tier budget instead of fighting the single-heavy-tier lock.
 start_emulator() {
-  local gpu="$1" gpu_env="$2"
+  local gpu="$1" gpu_env="$2" gpu_extra="$3"
   node scripts/serve.js start \
-    --cmd "$gpu_env $EMULATOR -avd $AVD -no-window -no-audio -no-boot-anim -no-snapshot -gpu $gpu -cores $CORES -memory $MEMORY" \
+    --cmd "$gpu_env $EMULATOR -avd $AVD -no-window -no-audio -no-boot-anim -no-snapshot -gpu $gpu $gpu_extra -cores $CORES -memory $MEMORY" \
     --name emulator --port 5554 --group "$TIER_GROUP" --timeout 180000
 }
 
@@ -248,7 +269,7 @@ log_emulator_failure() {
   fi
 }
 
-start_emulator "$GPU" "$GPU_ENV"
+start_emulator "$GPU" "$GPU_ENV" "$GPU_EXTRA"
 if ! wait_boot; then
   # A healthy emulator uses a GPU backend that actually boots. If it did not, and
   # the user did not pin MOBILE_E2E_GPU, fall back ONCE to the software
@@ -263,7 +284,8 @@ if ! wait_boot; then
     node scripts/serve.js prune >/dev/null 2>&1 || true
     GPU="swiftshader_indirect"
     GPU_ENV=""
-    start_emulator "$GPU" "$GPU_ENV"
+    GPU_EXTRA=""
+    start_emulator "$GPU" "$GPU_ENV" "$GPU_EXTRA"
     if ! wait_boot; then
       echo "FAIL — emulator still did not boot with swiftshader_indirect." >&2
       log_emulator_failure

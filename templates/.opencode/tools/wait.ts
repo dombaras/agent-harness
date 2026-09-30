@@ -8,9 +8,11 @@ import toolLib from "../../scripts/qa/tool-lib.js"
 // wraps `scripts/wait-for.js`, which reuses the same `ci-wait-lib.js` the
 // lander (`ship.js`) uses.
 //
-// BOUNDED by design: a `--timeout` (default 20 min, hard-capped here at 30 min)
+// BOUNDED by design: a `--timeout` (default 20 min, hard-capped here at 45 min)
 // is required, so a wedged target can never hang the session. Returns the
-// waiter's stdout and its exit status via the script output.
+// waiter's stdout and its exit status via the script output. The 45-min cap is
+// above the longest known target — a full 26-journey mobile device matrix runs
+// ~33 min on a software renderer, so a 30-min cap forced a second wait (F-296).
 //
 // It runs the child ASYNC (toolLib.runScriptAsync) rather than blocking the
 // runtime: an `execFileSync` wait froze opencode's whole event loop, so the
@@ -29,7 +31,7 @@ export const wait = tool({
       .string()
       .describe("the mode's target: job record path, events path, commit sha (ci), url, port, or log path (file)"),
     grep: tool.schema.string().describe("regex to match when mode=file (optional otherwise)"),
-    timeout: tool.schema.number().describe("max seconds to wait (default 1200; hard cap 1800)"),
+    timeout: tool.schema.number().describe("max seconds to wait (default 1200; hard cap 2700)"),
     poll: tool.schema.number().describe("poll interval seconds (default 5)"),
   },
   async execute(args, context) {
@@ -47,7 +49,7 @@ export const wait = tool({
       argv.push("--file", args.target)
       if (args.grep) argv.push("--grep", args.grep)
     }
-    const timeout = Math.min(Math.max(Number(args.timeout) || 1200, 1), 1800)
+    const timeout = Math.min(Math.max(Number(args.timeout) || 1200, 1), 2700)
     argv.push("--timeout", String(timeout))
     if (args.poll) argv.push("--poll", String(args.poll))
     const res = await toolLib.runScriptAsync(context, "scripts/wait-for.js", argv, {

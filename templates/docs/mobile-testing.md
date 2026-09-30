@@ -109,7 +109,12 @@ bash scripts/wsl-gpu.sh apply     # load + persist vgem, verify d3d12 (auto-sudo
 Once active, `glxinfo -B` reports `D3D12 (<Windows GPU>)` and `Accelerated: yes`,
 and `boot-emulator.sh --print-profile` resolves `gpu: "host"` with a `gpuEnv`
 that exports the two variables to the emulator (serve.js forwards the caller's
-env). Verification on this box: before — `llvmpipe`, `Accelerated: no`; after —
+env), plus a `gpuExtra` of `-feature -Vulkan`. **Vulkan must be disabled on this
+path**: the emulator's gfxstream Vulkan backend segfaults qemu mid-boot under
+Mesa `d3d12` (the `Segmentation fault (core dumped)` that made every F-296 run
+fall back to the software rasterizer), while GLES-over-`host` on d3d12 is stable
+and hardware-accelerated. Verified on this box: `-gpu host -feature -Vulkan`
+boots to `D3D12 (Intel(R) Graphics)` in ~20 s; `-gpu host` without it crashes. Verification on this box: before — `llvmpipe`, `Accelerated: no`; after —
 `D3D12 (Intel(R) Graphics)`, `Accelerated: yes`. The script is a no-op outside
 WSL (no `/dev/dxg`). The Huawei/Xiaomi/etc. GPU must have a WSL-capable driver
 (the Intel/AMD/NVIDIA "WSL" driver); if `apply` loads `vgem` but d3d12 still
@@ -162,6 +167,9 @@ warning elsewhere.
   `--port` probes.
 - A full cold boot takes ~30 s; `--timeout 120000` gives headroom. A start
   prints a "launching" line up front, so an in-progress wait is never silent.
+- On a systemd-less WSL there is no `/run/user/<uid>`; the emulator aborts
+  (`Aborted (core dumped)`) without a writable `XDG_RUNTIME_DIR`. `boot-emulator.sh`
+  resolves a private temp runtime dir automatically, so this is not a manual step.
 - The dev server is a **separate** detached process, but part of the same device
   tier — start it in the **same group** so the pair is budgeted as one:
   `node scripts/serve.js start --cmd "npm run dev" --url http://localhost:3000 --name app-dev --group mobile`.
@@ -229,9 +237,14 @@ carries a performance layer; coverage and assertions are unchanged:
    `flows/_shared/session.yaml` subflow **never `clearState`s** — it launches
    without clearing, signs the current actor out when the journey's `actor:`
    (in `flows/matrix.yaml`) changes (`MOBILE_E2E_SWITCH=1`), and signs in as the
-   target actor. This is the single biggest wall-clock win. Omit it for a strict
+   target actor.    This is the single biggest wall-clock win. Omit it for a strict
    per-journey run (the default still switches session per flow, but no longer
-   clears app data).
+   clears app data). The runner also **regroups the selected flows by actor**
+   (firstLogin first, then each actor's standalone setup/oracle/`endsAs` flows
+   before its setup-free run) so a batch is never interrupted by an unrelated
+   flow. Alphabetical order otherwise scattered an actor's journeys among
+   standalone flows — the F-296 run batched just 2 of 26 journeys (24
+   invocations).
 
    **First login is one dedicated scenario.** The first-login walkthrough is
    gated on a per-member `AsyncStorage` flag, and `clearState` (`pm clear`)

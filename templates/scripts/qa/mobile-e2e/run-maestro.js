@@ -483,6 +483,39 @@ function orderFirstLoginFirst(flowFiles, stepsByFlow) {
 }
 
 /**
+ * Order the selected flows to maximise warm-session batching (`--reuse-session`).
+ *
+ * The planner only batches *consecutive* same-actor, setup/oracle-free journeys,
+ * so the alphabetical order a cold run uses scatters an actor's batchable flows
+ * among standalone ones — the F-296 run batched just 2 of 26 journeys (24
+ * invocations). Regroup: the `firstLogin` scenario first (unchanged), then each
+ * actor's flows together with the standalone (setup/oracle/`endsAs`) ones before
+ * its batchable run so the batch is never interrupted. Deterministic: actors and
+ * flows keep their incoming order.
+ */
+function orderForSessionReuse(flowFiles, stepsByFlow) {
+  const first = [];
+  const groups = new Map();
+  flowFiles.forEach((file) => {
+    const journey = stepsByFlow.get(path.basename(file)) || {};
+    if (journey.firstLogin) {
+      first.push(file);
+      return;
+    }
+    const actor = journey.actor || DEFAULT_ACTOR;
+    const standalone = Boolean(journey.setup || journey.oracle || (journey.endsAs && journey.endsAs !== actor));
+    if (!groups.has(actor)) groups.set(actor, { standalone: [], batchable: [] });
+    groups.get(actor)[standalone ? 'standalone' : 'batchable'].push(file);
+  });
+  const ordered = [...first];
+  [...groups.keys()].sort().forEach((actor) => {
+    const group = groups.get(actor);
+    ordered.push(...group.standalone, ...group.batchable);
+  });
+  return ordered;
+}
+
+/**
  * Turn the ordered flow records into `maestro test` invocations.
  *
  * Default: one invocation per flow (preserves per-flow fail-fast granularity).
@@ -671,7 +704,12 @@ function main() {
   }
   // A `firstLogin` journey `clearState`s the app (wiping every actor's on-device
   // onboarding flag); run it first so the rest of the run reuses intact sessions.
-  flowFiles = orderFirstLoginFirst(flowFiles, stepsByFlow);
+  // With `--reuse-session`, additionally regroup by actor so a warm run batches
+  // an actor's setup-free journeys into one invocation instead of interleaving
+  // them with standalone flows (the F-296 run batched 2 of 26).
+  flowFiles = options.reuseSession
+    ? orderForSessionReuse(flowFiles, stepsByFlow)
+    : orderFirstLoginFirst(flowFiles, stepsByFlow);
 
   printSequence(options);
   printDeclaredSteps(resolveDeclaredSteps(flowFiles, stepsByFlow));
@@ -834,5 +872,6 @@ module.exports = {
   parseJourneySteps,
   buildFlowRecords,
   orderFirstLoginFirst,
+  orderForSessionReuse,
   planInvocations,
 };
