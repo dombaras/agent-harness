@@ -23,6 +23,8 @@ const DEFAULT_STUCK = Object.freeze({
   same_failure_turns: 3,
   identical_tool_calls: 3,
   no_state_change_turns: 4,
+  inspect_rearm_every: 10,
+  gate_rerun_turns: 3,
 });
 
 const DEFAULT_REQUEST = Object.freeze({
@@ -255,6 +257,9 @@ function guardTexts(state, thresholds) {
   if (state?.inspectPending) texts.push(INSPECT_TEXT);
   if (state?.readPending && READ_TEXTS[state.readPending]) texts.push(READ_TEXTS[state.readPending]);
   if (state?.dumpPending) texts.push(DUMP_TEXT);
+  if (state?.editMissPending) texts.push(EDIT_MISS_TEXT);
+  if (state?.gateRerunPending) texts.push(GATE_RERUN_TEXT);
+  if (state?.waitPending) texts.push(WAIT_TEXT);
   return texts;
 }
 
@@ -349,11 +354,26 @@ function createSessionState() {
     // tool-choice / read / whole-tree hygiene (advisory one-shot nudges)
     inspectPending: false,
     inspectFlagged: false,
+    // inspect re-arm (D): count every inspection, re-arm the advisory after
+    // `inspect_rearm_every` further inspections or on a different head.
+    inspectCount: 0,
+    inspectFlaggedAt: 0,
+    inspectLastHead: null,
     readSeen: new Set(),
     readNotices: new Set(),
     readPending: null,
     dumpPending: false,
     dumpFlagged: false,
+    // edit-miss (E): a failed edit/write/apply_patch on a guessed path
+    editMissPending: false,
+    editMissFlagged: false,
+    // gate re-run (F): same gate run repeatedly with no intervening edit
+    gateRuns: new Map(),
+    gateRerunPending: false,
+    gateRerunFlagged: new Set(),
+    // wait/poll advisory (B)
+    waitPending: false,
+    waitFlagged: false,
   };
 }
 
@@ -445,6 +465,7 @@ function noteToolCall(state, tool, args, stuck) {
     state.materialSeen = true;
     state.noStateTurns = 0;
     state.noStatePending = false;
+    resetGateRuns(state); // a batched edit invalidates prior gate results
   }
   const exempt = isLoopExempt(tool, args);
   if (exempt) {
@@ -820,11 +841,19 @@ function isCodeMutationCommand(command) {
 }
 
 /* The error the plugin throws to abort a code change aimed at the main
- * checkout. Names the target and the fix (isolate) so recovery is mechanical. */
-function mainEditText(kind, target) {
+ * checkout. Names the target and the fix (isolate) so recovery is mechanical.
+ * When the feature id is known, the exact command is printed — the F-291 recon
+ * showed a bare error sends the agent hunting for the right invocation. */
+function mainEditText(kind, target, feature) {
   const what = kind === "bash" ? "a command that mutates this checkout" : `an edit to \`${target}\``;
   const noun = kind === "bash" ? "command" : "edit";
-  return `SESSION GUARD — blocked ${what}: this session is in the shared MAIN checkout, where code + git history are off-limits before isolation (the F-278 shape: work done on main cannot be finalized — \`finalize\` refuses on main and the branch switch is blocked while other sessions share the tree). Isolate FIRST from the main tree: \`node scripts/backlog.js worktree <id>\` (a human starting the worktree at a terminal adds \`--open\`), then make the change inside that worktree (set \`workdir\` to it). Only board/.agents/docs maintenance is allowed on main. The ${noun} was NOT executed.`;
+  const cmd = feature
+    ? `\`node scripts/backlog.js worktree ${feature}\``
+    : "`node scripts/backlog.js worktree <id>`";
+  const idNote = feature
+    ? `isolate \`${feature}\` first from the main tree: ${cmd}`
+    : `isolate FIRST from the main tree: ${cmd} (a human starting the worktree at a terminal adds \`--open\`)`;
+  return `SESSION GUARD — blocked ${what}: this session is in the shared MAIN checkout, where code + git history are off-limits before isolation (the F-278 shape: work done on main cannot be finalized — \`finalize\` refuses on main and the branch switch is blocked while other sessions share the tree). ${idNote}, then make the change inside that worktree (set \`workdir\` to it). Only board/.agents/docs maintenance is allowed on main. The ${noun} was NOT executed.`;
 }
 
 // ------------------------------------------- tool-choice & read-hygiene guard
@@ -933,6 +962,42 @@ const READ_TEXTS = Object.freeze({
 const DUMP_TEXT =
   "TOOL GUARD — this command scans the whole tree and dumps unbounded output (`find /`, `ls -R`). Bound it: target specific paths, use `Glob`/`git ls-files`, and keep large output out of context.";
 
+// ------------------------------------------------------- wait/poll guard
+/* Hand-rolled polling is a measured waste: the 2026-09 LibraryOS recon found 98
+ * `sleep` commands + 81 `gh` polls in 30 days (rising on device-heavy days). A
+ * blind `sleep N` either wastes minutes or forces another poll; `gh run watch`
+ * blocks but never returns a machine summary. The harness ships a real bounded
+ * waiter (`npm run wait` / the `wait` tool, and `run-detached.sh --wait` for the
+ * device matrix). This advisory names it once per session. Advisory only — a
+ * `sleep` inside a legitimate command pipeline is not a poll. */
+const WAIT_TEXT =
+  "TOOL GUARD — hand-rolled polling detected (`sleep N; grep log`, or `gh run watch`). Blocking in a loop wastes wall-clock and re-bills context per poll. Use the bounded waiter instead: the `wait` tool (or `npm run wait -- --job <record.json>` / `--ci [--commit <sha>]` / `--file <log> --grep <re>` / `--health <url>` / `--port <n>`), and `scripts/qa/mobile-e2e/run-detached.sh --wait` for a device matrix. It returns the moment the condition is met and a terminal status on timeout.";
+
+/* A `sleep` command that is a poll: a `sleep` segment followed in the SAME
+ * command by a log tail/grep or a `gh run watch|view|pr checks`. Pure. */
+function pollCommand(command) {
+  const cmd = stripQuoted(String(command || ""));
+  if (/\bgh\s+run\s+watch\b/.test(cmd)) return "gh-watch";
+  if (!/\bsleep\b/.test(cmd)) return null;
+  if (/\bgh\s+(run\s+(watch|view)|pr\s+(checks|view))\b/.test(cmd)) return "gh";
+  if (/\b(tail|cat|grep|rg|head|sed|awk|less|journalctl)\b/.test(cmd)) return "sleep+log";
+  // A bare `sleep N` with no companion read is still a poll when it is the
+  // whole first segment (wait-and-pray before re-checking by hand).
+  const first = cmd.split(/\r?\n|&&|\|\||;|\|/)[0].trim();
+  if (/^sleep\b/.test(first)) return "sleep";
+  return null;
+}
+
+/* One-shot per session: the first poll-shaped call arms the advisory. */
+function notePollCall(state, command) {
+  const kind = pollCommand(command);
+  if (!kind) return { poll: false, kind: null, firstFlag: false };
+  if (state.waitFlagged) return { poll: true, kind, firstFlag: false };
+  state.waitFlagged = true;
+  state.waitPending = true;
+  return { poll: true, kind, firstFlag: true };
+}
+
 const READ_LARGE_BYTES = 20000;
 
 /* First read of a path is silent; a second read of the SAME path in one session
@@ -979,6 +1044,97 @@ function clearOneShot(state) {
   state.inspectPending = false;
   state.readPending = null;
   state.dumpPending = false;
+  state.editMissPending = false;
+  state.gateRerunPending = false;
+  state.waitPending = false;
+}
+
+// --------------------------------------------------- inspect re-arm (D)
+/* The shell-inspection advisory used to fire at most ONCE per session; the recon
+ * showed shell inspection still at 31-38% of bash after it shipped, so a single
+ * one-shot nudge is not enough. Re-arm it after `inspect_rearm_every` (default
+ * 10) FURTHER inspections, or immediately when a DIFFERENT shell head appears
+ * (`cat` -> `grep`), so a returning habit gets a fresh, specific reminder without
+ * nagging on every call. The text is constant (cache-safe). */
+const DEFAULT_INSPECT_REARM_EVERY = 10;
+
+function noteInspect(state, head, rearmEvery) {
+  if (!head) return { fire: false, count: state.inspectCount };
+  state.inspectCount += 1;
+  const every = Number.isFinite(rearmEvery) && rearmEvery > 0 ? rearmEvery : DEFAULT_INSPECT_REARM_EVERY;
+  const differentHead = state.inspectLastHead != null && state.inspectLastHead !== head;
+  state.inspectLastHead = head;
+  const sinceFlag = state.inspectCount - state.inspectFlaggedAt;
+  if (state.inspectFlaggedAt === 0 || differentHead || sinceFlag >= every) {
+    state.inspectFlaggedAt = state.inspectCount;
+    state.inspectPending = true;
+    return { fire: true, count: state.inspectCount, differentHead };
+  }
+  return { fire: false, count: state.inspectCount };
+}
+
+// --------------------------------------------------- edit-miss guard (E)
+/* A failed `edit`/`write`/`apply_patch` is almost always a guessed or stale
+ * path (the recon measured 38 failed edits + 11 failed apply_patch, and a broken
+ * `.../.virtualLibrary/...` path was observed live). One-shot advisory: check the
+ * locations index / Glob, never re-hunt. Constant text. */
+const EDIT_MISS_TEXT =
+  "TOOL GUARD — an edit/write targeted a path that does not exist (a guessed or stale path). Check `.agents/memory/locations.md` (the canonical locations index) or use `Glob` to find the real path before editing again — never re-hunt or guess. If the file moved, locate it first, then edit the real path.";
+
+function noteEditAfter(state, failed) {
+  if (!failed) return { firstFlag: false };
+  if (state.editMissFlagged) return { firstFlag: false };
+  state.editMissFlagged = true;
+  state.editMissPending = true;
+  return { firstFlag: true };
+}
+
+// --------------------------------------------------- gate re-run guard (F)
+/* Running the same gate repeatedly with no intervening edit ("edit -> gate ->
+ * edit -> gate", or re-running an unchanged gate as a ritual) is a measured
+ * waste (153 gate runs in two days; `tsc`/`test:quick` ~25x each). Track each
+ * gate's run count; reset on a material edit. Arm when the SAME gate runs
+ * `gate_rerun_turns` (default 3) times with zero edits since its previous run.
+ * Constant text; one nudge per gate per session. */
+const GATE_RERUN_TEXT =
+  "TOOL GUARD — the same gate is being re-run with no code change in between (`tsc`/`test:quick`/`lint`). Batch a coherent set of edits, THEN run the gate once (`.agents/rules/00-operating.md` §Gate batching). A re-run is warranted only after a real edit, a new failure, an integration/rebase, or when the dispatch requires it.";
+
+const DEFAULT_GATE_RERUN_TURNS = 3;
+
+/* Normalize a bash command to the gate it runs, or null when it is not a gate.
+ * Only the project-level gates that the recon showed repeating. Pure. */
+function gateKey(command) {
+  const cmd = String(command || "");
+  if (/\btsc\b.*--noEmit|\bnpx\s+tsc\b/.test(cmd)) return "tsc";
+  const m = cmd.match(/\bnpm\s+run\s+(test:[a-z-]+|lint[a-z:-]*|build)\b/);
+  if (m) return m[1];
+  if (/\beslint\b/.test(cmd)) return "eslint";
+  return null;
+}
+
+/* Record a gate run. Any material edit (via `noteToolCall`) resets all counters,
+ * so a gate re-run after an edit never counts. Returns { fire, key, count }. */
+function noteGateRun(state, command, threshold) {
+  const key = gateKey(command);
+  if (!key) return { fire: false, key: null, count: 0 };
+  const entry = state.gateRuns.get(key) || { count: 0, atFlag: 0 };
+  entry.count += 1;
+  state.gateRuns.set(key, entry);
+  const t = Number.isFinite(threshold) && threshold > 0 ? threshold : DEFAULT_GATE_RERUN_TURNS;
+  const sinceFlag = entry.count - entry.atFlag;
+  if (!state.gateRerunFlagged.has(key) && sinceFlag >= t) {
+    state.gateRerunFlagged.add(key);
+    entry.atFlag = entry.count;
+    state.gateRerunPending = true;
+    return { fire: true, key, count: entry.count };
+  }
+  return { fire: false, key, count: entry.count };
+}
+
+/* A material edit resets the gate counters: the batched edit invalidates the
+ * previous gate result, so the next run is legitimate. */
+function resetGateRuns(state) {
+  state.gateRuns = new Map();
 }
 
 module.exports = {
@@ -1029,6 +1185,19 @@ module.exports = {
   INSPECT_TEXT,
   READ_TEXTS,
   DUMP_TEXT,
+  INSPECT_TEXT,
+  WAIT_TEXT,
+  EDIT_MISS_TEXT,
+  GATE_RERUN_TEXT,
+  pollCommand,
+  notePollCall,
+  noteInspect,
+  noteEditAfter,
+  gateKey,
+  noteGateRun,
+  resetGateRuns,
+  DEFAULT_INSPECT_REARM_EVERY,
+  DEFAULT_GATE_RERUN_TURNS,
   READ_LARGE_BYTES,
   SHELL_INSPECT_TOOLS,
   commandHead,

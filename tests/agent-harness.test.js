@@ -4289,6 +4289,8 @@ test("context-guard parses the orchestration.md tables and falls back to default
     same_failure_turns: 3,
     identical_tool_calls: 3,
     no_state_change_turns: 4,
+    inspect_rearm_every: 10,
+    gate_rerun_turns: 3,
   });
   assert.deepStrictEqual(fromTemplate.request, {
     observe: 50000,
@@ -6450,6 +6452,11 @@ function initShipRepo() {
   // ship's convergence requires the shared board-sync module (and backlog.js
   // for the board lock); copyBoardLib below deploys board-sync + merge-backlog.
   fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"), path.join(target, "scripts", "backlog.js"));
+  // ship's CI watch delegates to the shared ci-wait-lib.
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "ci-wait-lib.js"),
+    path.join(target, "scripts", "qa", "ci-wait-lib.js")
+  );
   copyBoardLib(target);
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target, encoding: "utf8" });
   execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: target });
@@ -6532,10 +6539,11 @@ test("[drift-guard] ship integrates, lands HEAD on main directly, and has no PR/
 
 test("[drift-guard] ship waits for green CI on the landed SHA (deploy runs after CI)", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
+  const lib = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "ci-wait-lib.js"));
   assert.match(src, /function waitCi/, "waits for the CI run on the landed SHA");
   assert.match(src, /function ciWorkflow/, "resolves the CI workflow by name");
   assert.match(src, /--no-ci-wait/, "has an explicit opt-out");
-  assert.match(src, /concluded "\$\{run\.conclusion\}"/, "reports a red CI as a blocker");
+  assert.match(lib, /concluded "\$\{run\.conclusion\}"/, "reports a red CI as a blocker (in the shared lib)");
   assert.doesNotMatch(src, /waitForMerge|waitWorkflow/, "no merge-train/deploy watch remains");
 });
 
@@ -8210,4 +8218,212 @@ test("capacity: a shared tier group counts as one heavy tier and the lock tracks
     if (prev === undefined) delete process.env.AGENT_HEAVY_LOCK;
     else process.env.AGENT_HEAVY_LOCK = prev;
   }
+});
+
+// ---------------------------------------------------------------- orient / wait / ci-wait (0.1.113)
+
+const ORIENT = path.join(h.TEMPLATES_DIR, "scripts", "orient.js");
+const orient = require(ORIENT);
+
+test("orient: collectOrient degrades cleanly with no board/checkpoint/git", () => {
+  const dir = tmpdir();
+  const o = orient.collectOrient({ root: dir, git: () => null, run: () => null, readCheckpoint: () => { throw new Error("no"); } });
+  assert.strictEqual(o.schema, "orient/1");
+  assert.strictEqual(o.root, path.resolve(dir));
+  assert.strictEqual(o.repo.branch, null);
+  assert.strictEqual(o.repo.dirty, null);
+  assert.strictEqual(o.feature, null);
+  assert.strictEqual(o.board, null);
+  assert.strictEqual(o.checkpoint, null);
+  assert.strictEqual(o.lastE2e, null);
+});
+
+test("orient: infers the feature from the branch or the single In-progress row", () => {
+  assert.strictEqual(orient.inferFeature(null, "f-291-fix", "/x", null), "F-291");
+  assert.strictEqual(orient.inferFeature("f-42", "main", "/x", null), "F-42");
+  assert.strictEqual(
+    orient.inferFeature(null, "main", "/x", { inprogress: [{ id: "F-7" }] }),
+    "F-7"
+  );
+  assert.strictEqual(
+    orient.inferFeature(null, "main", "/x", { inprogress: [{ id: "F-7" }, { id: "F-8" }] }),
+    null,
+    "two In-progress rows are ambiguous -> null"
+  );
+});
+
+test("orient: checkoutKind distinguishes a main tree from a linked worktree", () => {
+  const main = tmpdir();
+  fs.mkdirSync(path.join(main, ".git"));
+  assert.strictEqual(orient.checkoutKind(main), "main");
+  const linked = tmpdir();
+  fs.mkdirSync(path.join(linked, ".git"));
+  fs.rmdirSync(path.join(linked, ".git"));
+  fs.writeFileSync(path.join(linked, ".git"), "gitdir: /x/.git/worktrees/y\n");
+  assert.strictEqual(orient.checkoutKind(linked), "linked");
+});
+
+test("orient: ownedFor reads the owned-files registry for the feature", () => {
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".agents", "memory"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, ".agents", "memory", "owned-files.md"),
+    "# Owned\n- F-291: mobile/**, scripts/qa/**\n- F-9: x\n",
+    "utf8"
+  );
+  assert.strictEqual(orient.ownedFor(dir, "F-291"), "mobile/**, scripts/qa/**");
+  assert.strictEqual(orient.ownedFor(dir, "F-999"), null);
+});
+
+test("[drift-guard] orient is wired into npm scripts, the tool, and the resume/next commands", () => {
+  assert.strictEqual(h.HARNESS_SCRIPTS.orient, "node scripts/orient.js", "orient wired into HARNESS_SCRIPTS");
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "orient.ts")), "orient tool wrapper deployed");
+  const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "orient.ts"));
+  assert.match(tool, /scripts\/orient\.js/, "tool shells out to the script");
+  const resume = read(path.join(h.TEMPLATES_DIR, ".opencode", "command", "resume.md"));
+  assert.match(resume, /orient\.js/, "resume orients in one call");
+  const next = read(path.join(h.TEMPLATES_DIR, ".opencode", "command", "next.md"));
+  assert.match(next, /orient\.js/, "next orients in one call");
+});
+
+const WAIT = path.join(h.TEMPLATES_DIR, "scripts", "wait-for.js");
+const waitFor = require(WAIT);
+
+test("wait-for: port mode returns 1 on timeout and 0 when open", async () => {
+  const dead = await waitFor.tcpOpen(1);
+  assert.strictEqual(dead, false, "port 1 is not open");
+});
+
+test("wait-for: file+grep matches an existing line", () => {
+  const dir = tmpdir();
+  const f = path.join(dir, "run.log");
+  fs.writeFileSync(f, "start\nBUILD SUCCESS\n", "utf8");
+  assert.strictEqual(waitFor.fileMatches(f, /BUILD (SUCCESS|FAIL)/), true);
+  assert.strictEqual(waitFor.fileMatches(f, /NEVER/), false);
+  assert.strictEqual(waitFor.fileMatches(path.join(dir, "missing.log"), /x/), false);
+});
+
+test("wait-for: waitEvents returns 0 when matrix_done is present", () => {
+  const dir = tmpdir();
+  const ev = path.join(dir, "e.jsonl");
+  fs.writeFileSync(
+    ev,
+    [
+      JSON.stringify({ type: "matrix_start", total: 1 }),
+      JSON.stringify({ type: "flow_result", name: "a", status: "pass" }),
+      JSON.stringify({ type: "matrix_done", passed: 1, failed: 0, total: 1 }),
+    ].join("\n") + "\n",
+    "utf8"
+  );
+  const code = waitFor.waitEvents(ev, { timeoutMs: 5000, pollMs: 1, quiet: true });
+  assert.strictEqual(code, 0);
+});
+
+test("[drift-guard] wait-for is wired into npm scripts and the wait tool", () => {
+  assert.strictEqual(h.HARNESS_SCRIPTS.wait, "node scripts/wait-for.js", "wait wired into HARNESS_SCRIPTS");
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "wait.ts")), "wait tool wrapper deployed");
+  const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "wait.ts"));
+  assert.match(tool, /scripts\/wait-for\.js/);
+  assert.match(tool, /timeout/, "the wait tool is timeout-bounded");
+});
+
+const CIW = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "ci-wait-lib.js"));
+
+test("ci-wait-lib: ciWorkflow resolves from .harness.json then the CI workflow name", () => {
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".github", "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".github", "workflows", "ci.yml"), "name: Build & Test\non: push\n", "utf8");
+  assert.strictEqual(CIW.ciWorkflow(dir), null, "no workflow named CI");
+  fs.writeFileSync(path.join(dir, ".github", "workflows", "ci.yml"), "name: CI\non: push\n", "utf8");
+  assert.strictEqual(CIW.ciWorkflow(dir), "CI");
+  fs.writeFileSync(path.join(dir, ".harness.json"), JSON.stringify({ shipCiWorkflow: "CustomCI" }), "utf8");
+  assert.strictEqual(CIW.ciWorkflow(dir), "CustomCI", ".harness.json wins");
+});
+
+test("ci-wait-lib: ghJson reports a vanished cwd instead of a phantom timeout", () => {
+  const res = CIW.ghJson(path.join(tmpdir(), "gone"), ["run", "list"]);
+  assert.strictEqual(res.ok, false);
+  assert.match(res.error, /no longer exists/);
+});
+
+test("[drift-guard] ship delegates the CI watch to the shared ci-wait-lib (one implementation)", () => {
+  const ship = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
+  assert.match(ship, /require\("\.\/qa\/ci-wait-lib\.js"\)/, "ship loads the shared lib");
+  assert.match(ship, /function waitCi/, "the ship contract keeps a named waitCi");
+  assert.match(ship, /ciWait\.waitCi/, "waitCi delegates to the lib");
+  assert.match(ship, /function ciWorkflow/, "ciWorkflow stays in ship");
+});
+
+// ------------------------------------------------------- core: poll / inspect re-arm / edit-miss / gate-rerun
+
+test("context-guard: pollCommand detects hand-rolled polling", () => {
+  assert.strictEqual(cg.pollCommand("sleep 60; grep -n PASS run.log"), "sleep+log");
+  assert.strictEqual(cg.pollCommand("sleep 30 && tail -5 out.log"), "sleep+log");
+  assert.strictEqual(cg.pollCommand("gh run watch"), "gh-watch");
+  assert.strictEqual(cg.pollCommand("sleep 10; gh run view 123"), "gh");
+  assert.strictEqual(cg.pollCommand("sleep 120"), "sleep");
+  assert.strictEqual(cg.pollCommand("ls -la"), null);
+  assert.strictEqual(cg.pollCommand("npm run test:quick"), null);
+});
+
+test("context-guard: notePollCall arms the advisory once per session", () => {
+  const s = cg.createSessionState();
+  const first = cg.notePollCall(s, "sleep 5; tail -1 log");
+  assert.strictEqual(first.firstFlag, true);
+  assert.strictEqual(s.waitPending, true);
+  assert.strictEqual(cg.notePollCall(s, "sleep 5; tail -1 log").firstFlag, false, "fires once");
+  assert.ok(cg.composeGuardText(s, cg.parseThresholds("")).includes(cg.WAIT_TEXT));
+});
+
+test("context-guard: inspect advisory re-arms after N inspections and on a different head", () => {
+  const s = cg.createSessionState();
+  assert.strictEqual(cg.noteInspect(s, "grep", 10).fire, true, "first inspection fires");
+  assert.strictEqual(cg.noteInspect(s, "grep", 10).fire, false);
+  assert.strictEqual(cg.noteInspect(s, "cat", 10).fire, true, "a different head re-arms");
+  for (let i = 0; i < 9; i++) cg.noteInspect(s, "cat", 10);
+  assert.strictEqual(cg.noteInspect(s, "cat", 10).fire, true, "re-arms after the interval");
+});
+
+test("context-guard: edit-miss advisory fires once on a failed edit", () => {
+  const s = cg.createSessionState();
+  assert.strictEqual(cg.noteEditAfter(s, false).firstFlag, false, "a success is silent");
+  assert.strictEqual(cg.noteEditAfter(s, true).firstFlag, true);
+  assert.strictEqual(cg.noteEditAfter(s, true).firstFlag, false, "fires once");
+  assert.ok(cg.composeGuardText(s, cg.parseThresholds("")).includes(cg.EDIT_MISS_TEXT));
+});
+
+test("context-guard: gate-rerun advisory fires on N runs with no edit, resets on edit", () => {
+  const s = cg.createSessionState();
+  assert.strictEqual(cg.noteGateRun(s, "npx tsc --noEmit", 3).fire, false);
+  assert.strictEqual(cg.noteGateRun(s, "npx tsc --noEmit", 3).fire, false);
+  assert.strictEqual(cg.noteGateRun(s, "npx tsc --noEmit", 3).fire, true, "third identical gate run fires");
+  cg.resetGateRuns(s);
+  assert.strictEqual(cg.noteGateRun(s, "npx tsc --noEmit", 3).fire, false, "an edit resets the counter");
+  assert.strictEqual(cg.gateKey("npm run test:quick"), "test:quick");
+  assert.strictEqual(cg.gateKey("ls"), null);
+});
+
+test("context-guard: a material edit resets gate counters via noteToolCall", () => {
+  const s = cg.createSessionState();
+  cg.noteGateRun(s, "npm run test:quick", 3);
+  cg.noteGateRun(s, "npm run test:quick", 3);
+  cg.noteToolCall(s, "edit", { filePath: "a.ts" }, {});
+  assert.strictEqual(cg.noteGateRun(s, "npm run test:quick", 3).fire, false, "edit reset the run counter");
+});
+
+test("context-guard: mainEditText names the exact worktree command when the feature is known", () => {
+  const known = cg.mainEditText("bash", "/repo", "F-291");
+  assert.match(known, /backlog\.js worktree F-291/);
+  const unknown = cg.mainEditText("edit", "/repo/a.ts", null);
+  assert.match(unknown, /backlog\.js worktree <id>/);
+});
+
+test("[drift-guard] plugin wires the new advisories + isolation recovery", () => {
+  const plugin = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
+  assert.match(plugin, /notePollCall/, "poll advisory wired");
+  assert.match(plugin, /noteInspect/, "inspect re-arm wired");
+  assert.match(plugin, /noteEditAfter/, "edit-miss advisory wired");
+  assert.match(plugin, /noteGateRun/, "gate-rerun advisory wired");
+  assert.match(plugin, /via: "isolate"/, "main-checkout recovery reroots into the owned worktree");
+  assert.match(plugin, /inferBoardFeature/, "refusal names the feature to isolate");
 });

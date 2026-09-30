@@ -29,20 +29,29 @@ You own the native React Native layer and its gotchas — not shared web UI (tha
 
 ## Device / emulator runs (Android)
 
-Boot the tier with the harness helper — it right-sizes cores/RAM/GPU to the host
-and the AVD, and joins the machine-wide `mobile` heavy-tier group so the emulator
-and dev server share one budget instead of fighting the lock:
+**One command brings the whole tier up** (adb server + emulator + app
+build/install + dev server, verified healthy), idempotently — prefer it over
+hand-rolling the setup calls:
+
+```bash
+bash scripts/qa/mobile-e2e/device-up.sh              # full bring-up
+bash scripts/qa/mobile-e2e/device-down.sh --emulator # stop at session end
+```
+
+It right-sizes cores/RAM/GPU to the host and the AVD, and joins the machine-wide
+`mobile` heavy-tier group so the emulator and dev server share one budget. The
+lower-level primitive (call directly only to override sizing):
 
 ```bash
 node scripts/qa/mobile-e2e/boot-emulator.sh          # --print-profile to preview the resolved profile
 ```
 
 It starts the adb server + emulator detached via `serve.js`, then gates on a
-bounded `sys.boot_completed`. Only hand-roll `serve.js start` to override.
+bounded `sys.boot_completed`.
 
 1. **Gate on readiness, never `sleep`-and-pray:** `adb wait-for-device`, then
    `adb shell getprop sys.boot_completed` must print `1` before installing/running.
-2. **The dev server is the same tier group**:
+2. **The dev server is the same tier group** (`device-up.sh` starts it):
    `node scripts/serve.js start --cmd "npm run dev" --url http://localhost:3000 --name app-dev --group mobile`
    (list both with `node scripts/serve.js list`).
 3. **Maestro runs are launched detached, never from your shell**:

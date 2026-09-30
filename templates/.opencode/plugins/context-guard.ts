@@ -203,6 +203,27 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     }
   }
 
+  /* The feature id the session should isolate: the board's single In-progress
+   * row, or null. Best-effort and cached-ish (a fresh read per refusal only —
+   * refusals are rare). Used to hand back the exact `backlog worktree <id>`
+   * command in the main-checkout refusal, never a bare error. */
+  const inferBoardFeature = (sessionID: string): string | null => {
+    try {
+      const root = sessionBashRoot(sessionID) || directory
+      const out = gitOut(root, ["branch", "--show-current"])
+      const fromBranch = out && out.match(/^[fF]-\d+/)
+      if (fromBranch) return fromBranch[0].toUpperCase()
+      const backlog = path.join(root, "BACKLOG.md")
+      if (!fs.existsSync(backlog)) return null
+      const text = fs.readFileSync(backlog, "utf8")
+      const section = (text.split(/^##\s*In progress\s*$/m)[1] || "").split(/^##\s/m)[0]
+      const ids = [...section.matchAll(/^\|\s*([Ff]-\d+)\s*\|/gm)].map((m) => m[1].toUpperCase())
+      return ids.length === 1 ? ids[0] : null
+    } catch {
+      return null
+    }
+  }
+
   /* Trimmed stdout of a git command run in `cwd`, or null on ANY failure (git
    * absent, not a repo, bad ref). null is "unknown": the caller stays
    * conservative and blocks, so a missing git binary can never open a hole. */
@@ -458,9 +479,19 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       // allowed, so a git op is judged by the PATHS it actually moves — the
       // explicit pathspecs when present, the live index/upstream diff for a
       // whole-index `commit`/`push` — against the checkout the command selects
-      // (`git -C <main>` is resolved, not bypassed via an unrelated cwd). This
-      // MUST throw to abort the call, so it lives OUTSIDE the swallow-everything
-      // loop-guard try/catch below; only the resolution is wrapped.
+      // (`git -C <main>` is resolved, not bypassed via an unrelated cwd).
+      //
+      // FRICTIONLESS RECOVERY (the 43 main-edit blocks / 24 sessions measured in
+      // the 2026-09 recon): when the session ALREADY owns a feature worktree, a
+      // code change aimed at main is silently REROOTED into that worktree
+      // (`workdir`/`-C` rewritten) and allowed — the isolation the agent should
+      // have done is done for it, so the common "meant to be in the worktree"
+      // case never strands work. Only when NO worktree exists does the guard
+      // still refuse, now with the exact `backlog worktree <id>` command to run
+      // (never a bare error). Auto-CREATING a worktree stays opt-in via
+      // `.harness.json` `autoIsolate` (default off) — the guard must not invent a
+      // branch/branch-name on its own. This MUST throw to abort when it refuses,
+      // so it lives OUTSIDE the swallow-everything loop-guard try/catch below.
       let mainViolation: { kind: "edit" | "bash"; target: string } | null = null
       try {
         const tool = String(input?.tool || "").toLowerCase()
@@ -502,6 +533,37 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         mainViolation = null
       }
       if (mainViolation) {
+        // Recover by rerooting into the session's own feature worktree when it
+        // has one (see FRICTIONLESS RECOVERY above). A git `-C <main>` selector
+        // is rewritten to the worktree; an edit's `workdir` is set to it.
+        const reroot = sessionBashRoot(String(input?.sessionID || ""))
+        if (reroot && checkoutKind(reroot) === "linked") {
+          try {
+            const args = output?.args || {}
+            if (mainViolation.kind === "edit") {
+              args.workdir = reroot
+            } else {
+              args.workdir = reroot
+              // Rewrite an explicit `git -C <main>` to the worktree so the op
+              // applies to the isolated checkout, not the shared main tree.
+              args.command = String(args.command || "").replace(
+                /(git\s+(?:-C|--work-tree[= ])\s*)("[^"]*"|'[^']*'|\S+)/g,
+                (m, pre) => pre + JSON.stringify(reroot)
+              )
+            }
+            logEvent({
+              kind: "reroot",
+              sessionID: input?.sessionID,
+              via: "isolate",
+              dir: reroot,
+            })
+          } catch {
+            /* best-effort — if the reroot fails, fall through to the refusal */
+          }
+          return
+        }
+        // No worktree yet: refuse, but hand back the exact isolating command.
+        const feature = inferBoardFeature(String(input?.sessionID || ""))
         logEvent({
           kind: "main-edit",
           sessionID: input?.sessionID,
@@ -510,7 +572,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           commandHash:
             mainViolation.kind === "bash" ? guard.shortHash(String(output?.args?.command || "")) : null,
         })
-        const message = guard.mainEditText(mainViolation.kind, mainViolation.target)
+        const message = guard.mainEditText(mainViolation.kind, mainViolation.target, feature)
         await report(message)
         throw new Error(message)
       }
@@ -575,16 +637,27 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           if (tool === "bash") {
             const command = String(output?.args?.command || "")
             const inspect = guard.inspectCommand(command)
-            if (inspect && !state.inspectFlagged) {
-              state.inspectFlagged = true
-              state.inspectPending = true
-              logEvent({ kind: "tool-choice", sessionID: input.sessionID, tool: inspect })
+            if (inspect) {
+              const rearm = guard.noteInspect(state, inspect, loadThresholds().stuck.inspect_rearm_every)
+              if (rearm.fire) {
+                logEvent({ kind: "tool-choice", sessionID: input.sessionID, tool: inspect, rearm: true, count: rearm.count })
+              }
             }
             const dump = guard.dumpCommand(command)
             if (dump && !state.dumpFlagged) {
               state.dumpFlagged = true
               state.dumpPending = true
               logEvent({ kind: "tool-choice", sessionID: input.sessionID, tool: dump, dump: true })
+            }
+            // Wait/poll advisory (B): `sleep N; grep log` / `gh run watch`.
+            const poll = guard.notePollCall(state, command)
+            if (poll.firstFlag) {
+              logEvent({ kind: "poll", sessionID: input.sessionID, mode: poll.kind })
+            }
+            // Gate re-run advisory (F): same gate repeated with no edit between.
+            const gate = guard.noteGateRun(state, command, loadThresholds().stuck.gate_rerun_turns)
+            if (gate.fire) {
+              logEvent({ kind: "gate-rerun", sessionID: input.sessionID, gate: gate.key, count: gate.count })
             }
           } else if (tool === "read") {
             const note = guard.noteReadBefore(state, output?.args?.filePath)
@@ -627,6 +700,16 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         if (String(input?.tool || "").toLowerCase() === "read") {
           const note = guard.noteReadAfter(stateFor(input.sessionID), output?.args, output)
           if (note.firstFlag) logEvent({ kind: "read", sessionID: input.sessionID, notice: note.notice })
+        }
+        // Edit-miss advisory (E): a failed edit/write/apply_patch is a guessed or
+        // stale path — point at the locations index once per session.
+        {
+          const t = String(input?.tool || "").toLowerCase()
+          if (EDIT_TOOLS.has(t)) {
+            const failed = !!output?.error || String(output?.status || "") === "error"
+            const note = guard.noteEditAfter(stateFor(input.sessionID), failed)
+            if (note.firstFlag) logEvent({ kind: "edit-miss", sessionID: input.sessionID, tool: t })
+          }
         }
         // Only structured failure evidence may arm the funds stop (core gate): a
         // successful read/grep/dispatch returning the harness's own docs — which

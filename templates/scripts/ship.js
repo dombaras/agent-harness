@@ -41,6 +41,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const boardSync = require("./qa/board-sync.js");
 const { withLock } = require("./backlog.js");
+const ciWait = require("./qa/ci-wait-lib.js");
 
 function fail(message) {
   console.error(message);
@@ -96,16 +97,14 @@ function commitSessionHandoffs(root, entries, branch) {
 
 /* The `gh` binary (overridable for tests). */
 function ghBin() {
-  return process.env.HARNESS_SHIP_GH_BIN || "gh";
+  return ciWait.ghBin();
 }
 
 /* Synchronous sleep — a poll loop must not need async/await. `Atomics.wait` is
  * a real blocking wait (setTimeout would not block the event loop). The test
  * seam skips it so the watch tests run instantly. */
 function sleepSync(ms) {
-  if (process.env.HARNESS_SHIP_CI_NO_SLEEP) return;
-  if (!(ms > 0)) return;
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  return ciWait.sleepSync(ms);
 }
 
 /* Run a `gh` command and parse its JSON stdout. Returns `{ ok, data, error }`:
@@ -116,38 +115,14 @@ function sleepSync(ms) {
  * makes `spawnSync` fail with an opaque error and every poll silently return
  * nothing — the F-252 phantom CI timeout. */
 function ghJson(cwd, args) {
-  if (!fs.existsSync(cwd)) {
-    return { ok: false, data: null, error: `working directory ${cwd} no longer exists` };
-  }
-  const res = spawnSync(ghBin(), args, { cwd, encoding: "utf8" });
-  if (res.status !== 0) {
-    const lines = `${res.stderr || ""}\n${res.stdout || ""}`
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-    return { ok: false, data: null, error: lines[lines.length - 1] || `gh exited ${res.status}` };
-  }
-  try {
-    return { ok: true, data: JSON.parse(String(res.stdout || "null")), error: null };
-  } catch {
-    return { ok: false, data: null, error: "gh returned malformed JSON" };
-  }
+  return ciWait.ghJson(cwd, args);
 }
 
 /* Read the `name:` of each workflow file under `.github/workflows`. Used to
  * find the CI workflow whose green run confirms the landing. Best-effort:
  * a file without a `name:` is skipped. */
 function workflowNames(root) {
-  const dir = path.join(root, ".github", "workflows");
-  const names = [];
-  if (!fs.existsSync(dir)) return names;
-  for (const file of fs.readdirSync(dir)) {
-    if (!/\.ya?ml$/i.test(file)) continue;
-    const src = fs.readFileSync(path.join(dir, file), "utf8");
-    const m = src.match(/^name:\s*(.+)$/m);
-    if (m) names.push(m[1].trim().replace(/^["']|["']$/g, ""));
-  }
-  return names;
+  return ciWait.workflowNames(root);
 }
 
 /* The CI workflow whose green run on the landed SHA is the completion signal:
@@ -159,136 +134,23 @@ function ciWorkflow(root) {
 }
 
 function ciConfig(root, args) {
-  const config = readJson(path.join(root, ".harness.json")) || {};
-  // Precedence: CLI flag > test-seam env > .harness.json > default.
-  const envTimeout = Number(process.env.HARNESS_SHIP_CI_TIMEOUT_MS);
-  const envPoll = Number(process.env.HARNESS_SHIP_CI_POLL_MS);
-  const timeoutMinutes =
-    args["ci-timeout"] !== undefined
-      ? Number(args["ci-timeout"])
-      : Number.isFinite(envTimeout) && envTimeout > 0
-        ? envTimeout / 60000
-        : Number(config.shipCiTimeoutMinutes) || 20;
-  const pollSeconds =
-    args["ci-poll"] !== undefined
-      ? Number(args["ci-poll"])
-      : Number.isFinite(envPoll) && envPoll > 0
-        ? envPoll / 1000
-        : Number(config.shipCiPollSeconds) || 15;
-  return {
-    timeoutMs: Math.max(1, Math.round(timeoutMinutes * 60 * 1000)),
-    pollMs: Math.max(1, Math.round(pollSeconds * 1000)),
-  };
+  return ciWait.ciConfig(root, args);
 }
 
 /* Consecutive `gh` failures tolerated before the watch says why it is stuck.
  * `gh` can hiccup transiently, so a single failed poll is not news; a run of
  * them means the watch is blind and the operator should know. */
-const CI_GH_FAILURE_WARN = 4;
+const CI_GH_FAILURE_WARN = ciWait.CI_GH_FAILURE_WARN;
 
 /* Wait for the CI workflow's run on the landed SHA to complete. Returns 0 when
  * green (success/skipped/neutral), 1 otherwise (failed, timeout, or a watch
  * that went blind — an unobserved gate is not a passed gate).
  *
- * Polls from `opts.cwd` (the MAIN worktree), not the feature checkout `root`:
- * CI is a property of the landed SHA on the remote, so the feature worktree is
- * not needed to observe it, and a concurrent `worktree-prune` removing that
- * checkout mid-watch must not blind the poll (the F-252 race — every `gh`
- * spawn failed on the dead cwd, so a green run looked like a 20-minute
- * timeout). A vanished cwd is reported immediately, never as a phantom timeout. */
+ * Delegates to the shared `scripts/qa/ci-wait-lib.js` (one implementation for
+ * ship and `wait-for.js`); kept as a named `function waitCi` so the ship
+ * behavior contract — and the drift guard that asserts it — stay in this file. */
 function waitCi(root, sha, opts) {
-  const name = opts.workflow;
-  const cwd = opts.cwd || root;
-  if (!name) {
-    console.warn(
-      "ship: no CI workflow detected — landed, but cannot confirm CI. Add a `.github/workflows/ci.yml` (name: CI)."
-    );
-    return 0;
-  }
-  if (!has(ghBin())) {
-    fail(
-      `ship: landed ${sha.slice(0, 7)}, but \`gh\` is unavailable — CI was NOT confirmed.\n` +
-        `      Confirm manually: gh run list --workflow "${name}" --commit ${sha}`
-    );
-    return 1;
-  }
-  const deadline = Date.now() + opts.timeoutMs;
-  let failures = 0;
-  let warned = false;
-  for (;;) {
-    const res = ghJson(cwd, [
-      "run",
-      "list",
-      "--workflow",
-      name,
-      "--commit",
-      sha,
-      "--limit",
-      "10",
-      "--json",
-      "databaseId,status,conclusion,url,headSha,name",
-    ]);
-    if (!res.ok) {
-      failures += 1;
-      if (!fs.existsSync(cwd)) {
-        fail(
-          `ship: landed ${sha.slice(0, 7)}, but the CI watch lost its working directory:\n` +
-            `      ${res.error}\n` +
-            "      The checkout was removed while CI was still being watched. Confirm CI from the main tree:\n" +
-            `        gh run list --workflow "${name}" --commit ${sha}`
-        );
-        return 1;
-      }
-      if (failures >= CI_GH_FAILURE_WARN && !warned) {
-        warned = true;
-        console.warn(
-          `ship: \`gh\` has failed ${failures} times while watching CI (${res.error}) — ` +
-            `still waiting until the ${Math.round(opts.timeoutMs / 60000)}m deadline.`
-        );
-      }
-      if (Date.now() >= deadline) {
-        fail(
-          `ship: timed out after ${Math.round(opts.timeoutMs / 60000)}m waiting for ${name} on ${sha.slice(0, 7)}.\n` +
-            `      The change LANDED; CI is not confirmed. Last \`gh\` error: ${res.error}\n` +
-            "      Check:\n" +
-            `        gh run list --workflow "${name}" --commit ${sha}`
-        );
-        return 1;
-      }
-      process.stdout.write(`[ci] waiting for ${name} on ${sha.slice(0, 7)}... \r`);
-      sleepSync(opts.pollMs);
-      continue;
-    }
-    failures = 0;
-    const runs = res.data;
-    const run =
-      (runs || []).find((r) => !r.headSha || r.headSha === sha) || (runs || [])[0] || null;
-    if (run && run.status === "completed") {
-      if (["success", "skipped", "neutral"].includes(run.conclusion)) {
-        console.log(`[ci] ${name} green on ${sha.slice(0, 7)}${run.url ? " — " + run.url : ""}`);
-        return 0;
-      }
-      fail(
-        `ship: ${name} concluded "${run.conclusion}" on ${sha.slice(0, 7)}` +
-          (run.url ? " — " + run.url : "") +
-          (run.databaseId ? `\n      Failing logs: gh run view ${run.databaseId} --log-failed` : "") +
-          "\n      The change landed but CI is red — fix forward on a new branch.\n" +
-          "      Emergency rollback: re-deploy the previous good SHA\n" +
-          "        gh workflow run deploy-uat.yml --ref main -f ref=<previous-good-sha>"
-      );
-      return 1;
-    }
-    if (Date.now() >= deadline) {
-      fail(
-        `ship: timed out after ${Math.round(opts.timeoutMs / 60000)}m waiting for ${name} on ${sha.slice(0, 7)}.\n` +
-          "      The change LANDED; CI is not confirmed. Check:\n" +
-          `        gh run list --workflow "${name}" --commit ${sha}`
-      );
-      return 1;
-    }
-    process.stdout.write(`[ci] waiting for ${name} on ${sha.slice(0, 7)}... \r`);
-    sleepSync(opts.pollMs);
-  }
+  return ciWait.waitCi(root, sha, opts);
 }
 
 /* Walk up from `startDir` to the repo root (the first `.git` entry). */

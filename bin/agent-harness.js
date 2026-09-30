@@ -314,6 +314,8 @@ const HARNESS_SCRIPTS = {
   "report:cost": "node scripts/agent-report.js --cost --since=14d",
   "report:recon": "node scripts/qa/session-recon.js --since=14d",
   checkpoint: "node scripts/checkpoint.js",
+  orient: "node scripts/orient.js",
+  wait: "node scripts/wait-for.js",
   serve: "node scripts/serve.js",
   search: "bash scripts/agent-search.sh",
   ramdisk: "bash scripts/setup-tmpfs.sh up",
@@ -1317,6 +1319,7 @@ function printUsage() {
       `\n` +
       `  agent-harness list\n` +
       `  agent-harness doctor [--target <dir>]   # readiness of the ship/deploy cycle\n` +
+      `  agent-harness explain <gate>            # what a gate enforces + how to satisfy/waive it\n` +
       `  agent-harness run [--target <dir>] [--feature <id>] [--prompt <text>]\n` +
       `                     [--max-phases <n>] [--opencode <path>] [--dry-run]\n` +
       `  agent-harness --version | -v\n` +
@@ -1331,6 +1334,55 @@ function printPersonas(templatesDir) {
     const src = fs.readFileSync(path.join(agents, f), "utf8");
     const model = (src.match(/^model:\s*(.+)$/m) || [])[1] || "?";
     console.log(`  ${f.replace(/\.md$/, "").padEnd(22)} -> ${model}`);
+  }
+}
+
+// ---------------------------------------------------------------- explain
+
+/* `explain <gate>` — print the matching section of `templates/docs/gates.md`.
+ * Deterministic (no LLM): agents read the contract instead of reverse-
+ * engineering the check script (the 2026-09 recon: backlog.js read 45x,
+ * check-qa-plan.js 16x). Returns the section body, or null when not found. */
+function explainSection(name) {
+  const key = String(name || "").replace(/^npm\s+run\s+/, "").trim();
+  const doc = path.join(TEMPLATES_DIR, "docs", "gates.md");
+  if (!fs.existsSync(doc)) return null;
+  const lines = fs.readFileSync(doc, "utf8").split(/\r?\n/);
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^##\s+`([^`]+)`/);
+    if (m && m[1] === key) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n").trim();
+}
+
+function explain(name) {
+  const section = explainSection(name);
+  if (!section) {
+    console.error(`No gate named "${name}". Run \`agent-harness explain --list\` to see the gates.`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(section);
+}
+
+function explainList() {
+  const doc = path.join(TEMPLATES_DIR, "docs", "gates.md");
+  if (!fs.existsSync(doc)) return;
+  for (const line of fs.readFileSync(doc, "utf8").split(/\r?\n/)) {
+    const m = line.match(/^##\s+`([^`]+)`/);
+    if (m) console.log(`  ${m[1]}`);
   }
 }
 
@@ -1452,6 +1504,38 @@ function doctor(target) {
     fs.existsSync(path.join(target, "scripts", "finalize.js"))
       ? "`npm run finalize` available (archive + commit + land + confirm CI)"
       : "missing — re-run `agent-harness update` to deploy scripts/finalize.js"
+  );
+
+  // Session-orientation + bounded-wait tooling (harness-shipped): `orient` collapses
+  // the resume/claim prologue (measured avg 24 calls before real work), `wait-for`
+  // replaces hand-rolled polling, and `docs/gates.md` documents each gate.
+  add(
+    fs.existsSync(path.join(target, "scripts", "orient.js")) ? "ok" : "warn",
+    "orient",
+    fs.existsSync(path.join(target, "scripts", "orient.js"))
+      ? "one-call orientation available (`node scripts/orient.js`)"
+      : "missing — re-run `agent-harness update`"
+  );
+  add(
+    fs.existsSync(path.join(target, "scripts", "wait-for.js")) ? "ok" : "warn",
+    "wait",
+    fs.existsSync(path.join(target, "scripts", "wait-for.js"))
+      ? "bounded waiter available (`npm run wait -- --health <url>`)"
+      : "missing — re-run `agent-harness update`"
+  );
+  add(
+    fs.existsSync(path.join(target, ".opencode", "plugins", "job-notify.ts")) ? "ok" : "warn",
+    "job-notify plugin",
+    fs.existsSync(path.join(target, ".opencode", "plugins", "job-notify.ts"))
+      ? "detached device runs push progress/completion"
+      : "missing — mobile E2E progress will not be pushed"
+  );
+  add(
+    fs.existsSync(path.join(target, "docs", "gates.md")) ? "ok" : "warn",
+    "gate reference",
+    fs.existsSync(path.join(target, "docs", "gates.md"))
+      ? "docs/gates.md present (`agent-harness explain <gate>`)"
+      : "missing — re-run `agent-harness update`"
   );
 
   // Machine capacity (advisory only): free RAM/swap/load, live `.serve/`
@@ -1947,6 +2031,12 @@ function main() {
     case "list":
       printPersonas(TEMPLATES_DIR);
       break;
+    case "explain": {
+      const name = args.slice(1).find((a) => !a.startsWith("-"));
+      if (!name || name === "--list" || args.includes("--list")) explainList();
+      else explain(name);
+      break;
+    }
     case "doctor":
       doctor(target);
       break;
@@ -1993,6 +2083,10 @@ module.exports = {
   mapIndexRow,
   printPersonas,
   doctor,
+  explain,
+  explainSection,
+  explainList,
+  HARNESS_SCRIPTS,
   runCommand,
   TEMPLATES_DIR,
   CONFIG_FILE,

@@ -72,6 +72,8 @@ Defaults for the stuck-agent and retry-loop heuristics:
 | `same_failure_turns` | 3 | N consecutive turns with the same failure before recovery |
 | `identical_tool_calls` | 3 | N identical tool calls (same tool+args) before it is a loop |
 | `no_state_change_turns` | 4 | N turns with no material file/state change before stuck is declared |
+| `inspect_rearm_every` | 10 | N further shell inspections before the dedicated-tools advisory re-arms |
+| `gate_rerun_turns` | 3 | N runs of the same gate with no intervening edit before the batching advisory |
 
 ## Escalation
 
@@ -104,6 +106,13 @@ session:
   file/state change (a checkpoint with no progress is not progress); and
   `same_failure_turns` arms it when the same failure signature repeats across
   calls (same failure, different arguments).
+- **hygiene advisories** — `inspect_rearm_every` re-arms the dedicated-tools
+  reminder (shell `cat`/`ls`/`grep`/`find`/`sed`) after N further inspections or
+  on a new shell head, since a one-shot nudge did not move the habit;
+  `gate_rerun_turns` nudges batching when the same gate is re-run with no edit in
+  between. A failed `edit`/`write`/`apply_patch` (a guessed/stale path) and a
+  hand-rolled poll (`sleep N; grep log`, `gh run watch`) each arm a one-shot
+  advisory pointing at `.agents/memory/locations.md` / `npm run wait`.
 
 Two guards BLOCK a tool call instead of nudging:
 

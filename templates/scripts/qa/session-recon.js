@@ -31,6 +31,12 @@ const CG = require("./context-guard-core.js");
 
 const SCHEMA = "session-recon/1";
 const LARGE_OUTPUT_BYTES = 30000;
+const EDIT_TOOLS = new Set(["edit", "write", "patch", "multiedit", "apply_patch"]);
+
+/* Tools that count as "real work started" for the orientation-depth metric: the
+ * first edit/write or dispatch marks the end of the orientation prologue. A
+ * resume/claim session otherwise re-derives git/serve/capacity state by hand. */
+const WORK_TOOLS = new Set(["edit", "write", "patch", "multiedit", "apply_patch", "task"]);
 
 // ---------------------------------------------------------------- pure core
 
@@ -45,6 +51,8 @@ function classifyBashCommand(command) {
     inspect: CG.inspectCommand(effective),
     cdWrapped: /^\s*cd\s/.test(cmd),
     dump: CG.dumpCommand(cmd),
+    poll: CG.pollCommand(cmd),
+    gate: CG.gateKey(cmd),
   };
 }
 
@@ -85,6 +93,10 @@ function analyzeTools(parts) {
   let taskPromptMax = 0;
   let ghPolling = 0;
   let sleeps = 0;
+  let polls = 0;
+  let editErrors = 0;
+  const pollKinds = new Map();
+  const gateRuns = new Map();
   const readSeen = new Map(); // session_id -> Set(filePath)
 
   for (const row of parts) {
@@ -98,7 +110,7 @@ function analyzeTools(parts) {
       bash += 1;
       d.bash += 1;
       const input = parseInput(row.input);
-      const { inspect: ins, cdWrapped: cd, dump } = classifyBashCommand(input.command);
+      const { inspect: ins, cdWrapped: cd, dump, poll, gate } = classifyBashCommand(input.command);
       if (ins) {
         inspectTotal += 1;
         d.inspect += 1;
@@ -109,6 +121,11 @@ function analyzeTools(parts) {
         d.cdWrapped += 1;
       }
       if (dump) dumps += 1;
+      if (poll) {
+        polls += 1;
+        pollKinds.set(poll, (pollKinds.get(poll) || 0) + 1);
+      }
+      if (gate) gateRuns.set(gate, (gateRuns.get(gate) || 0) + 1);
       if (Number(row.outputLen) >= LARGE_OUTPUT_BYTES) bashLarge += 1;
       const command = String(input.command || "");
       if (/gh\s+(run watch|run view|pr checks|pr view)\b/.test(command) || /for .*\bgh\b/.test(command)) {
@@ -135,6 +152,8 @@ function analyzeTools(parts) {
       const bytes = typeof input.prompt === "string" ? input.prompt.length : 0;
       taskPromptBytes += bytes;
       if (bytes > taskPromptMax) taskPromptMax = bytes;
+    } else if (EDIT_TOOLS.has(tool)) {
+      if (String(row.status || "") === "error") editErrors += 1;
     }
   }
 
@@ -147,6 +166,7 @@ function analyzeTools(parts) {
   const perDayList = [...perDay.entries()]
     .map(([date, v]) => ({ date, ...v }))
     .sort((a, b) => a.date.localeCompare(b.date));
+  const orientation = analyzeOrientation(parts);
 
   return {
     tools: toolList,
@@ -157,6 +177,8 @@ function analyzeTools(parts) {
     cdWrapped,
     dumps,
     bashLarge,
+    editErrors,
+    orientation,
     read: {
       total: readTotal,
       whole: readWhole,
@@ -165,15 +187,60 @@ function analyzeTools(parts) {
       rereads: readRereads,
       wholeShare: readTotal ? readWhole / readTotal : null,
     },
+    editErrors,
     task: {
       count: taskCount,
       promptBytesTotal: taskPromptBytes,
       promptBytesAvg: taskCount ? Math.round(taskPromptBytes / taskCount) : 0,
       promptBytesMax: taskPromptMax,
     },
-    polling: { gh: ghPolling, sleep: sleeps },
+    polling: { gh: ghPolling, sleep: sleeps, poll: polls },
+    pollKinds: [...pollKinds.entries()]
+      .map(([mode, count]) => ({ mode, count }))
+      .sort((a, b) => b.count - a.count),
+    gateRuns: [...gateRuns.entries()]
+      .map(([gate, count]) => ({ gate, count }))
+      .sort((a, b) => b.count - a.count),
     perDay: perDayList,
   };
+}
+
+/* Orientation depth: how many tool calls a session spends BEFORE its first real
+ * work (an edit/write or a dispatch). A resume/claim session that hand-derives
+ * git/serve/capacity state shows a long prologue; `orient` exists to collapse it.
+ * Pure: returns { sessions, avg, max, long } where `long` counts sessions with a
+ * prologue of 10+ calls. */
+function analyzeOrientation(parts) {
+  const bySession = new Map();
+  for (const row of parts) {
+    const sid = row.session_id;
+    if (!bySession.has(sid)) bySession.set(sid, []);
+    bySession.get(sid).push(row);
+  }
+  let total = 0;
+  let n = 0;
+  let max = 0;
+  let long = 0;
+  for (const [, rows] of bySession) {
+    const sorted = rows
+      .slice()
+      .sort((a, b) => (Number(a.time_created) || 0) - (Number(b.time_created) || 0));
+    let prologue = 0;
+    let started = false;
+    for (const row of sorted) {
+      if (WORK_TOOLS.has(String(row.tool || ""))) {
+        started = true;
+        break;
+      }
+      prologue += 1;
+    }
+    if (!started) continue; // never reached real work (a pure Q&A / no-op session)
+    total += prologue;
+    n += 1;
+    if (prologue > max) max = prologue;
+    if (prologue >= 10) long += 1;
+  }
+  return { sessions: n, avg: n ? Math.round(total / n) : 0, max, long };
 }
 
 /* Turn/cost concentration across primary sessions (a session with no parent).
@@ -353,12 +420,26 @@ function printHuman(stats, agg) {
   console.log(
     `Reads: whole-file ${h.read.whole}` +
       (h.read.wholeShare == null ? "" : ` (${pct(h.read.wholeShare)})`) +
-      ` · > 30KB ${h.read.large} · in-session re-reads ${h.read.rereads} · failed (guessed path) ${h.read.errors}`
+      ` · > 30KB ${h.read.large} · in-session re-reads ${h.read.rereads} · failed (guessed path) ${h.read.errors}` +
+      ` · failed edits ${h.editErrors}`
   );
   console.log(
     `Dispatch prompts: ${h.task.count} (avg ${h.task.promptBytesAvg} B, max ${h.task.promptBytesMax} B) · ` +
       `gh polling cmds ${h.polling.gh} · sleep cmds ${h.polling.sleep}`
   );
+  console.log(
+    `Hand-rolled polls (use the bounded waiter): ${h.polling.poll}` +
+      (h.pollKinds.length ? ` — ${h.pollKinds.map((p) => p.mode + " " + p.count).join(", ")}` : "")
+  );
+  if (h.gateRuns.length) {
+    console.log(`Gate runs (re-run with no edit = batch instead): ${h.gateRuns.map((g) => g.gate + " " + g.count).join(", ")}`);
+  }
+  if (h.orientation && h.orientation.sessions) {
+    console.log(
+      `Orientation prologue (calls before first edit/dispatch): avg ${h.orientation.avg}, max ${h.orientation.max}, ` +
+        `${h.orientation.long} session(s) with 10+ — use \`orient\` to collapse it`
+    );
+  }
 
   console.log("\nTurn bands (primary sessions):");
   for (const b of agg.turnBands) {
@@ -412,6 +493,7 @@ module.exports = {
   dayOf,
   analyzeTools,
   analyzeTurnBands,
+  analyzeOrientation,
   summarizeGuardEvents,
   parseGuardEvents,
   analyze,

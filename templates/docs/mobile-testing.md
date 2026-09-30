@@ -24,12 +24,24 @@ server is ready.
 
 ## Booting the device tier
 
-Prefer the harness helper. It brings up the **adb server** first (detached via
-`serve.js`, because a bare `adb devices`/`adb start-server` hangs forever when the
-server is down — the forked daemon is reaped with the tool's process group), then
-the emulator, then runs a **bounded** readiness gate. It is safe to re-run — an
-already-booted emulator and a live adb server are reused — and it reads the AVD
-from `scripts/qa/mobile-e2e/local.json` / `MOBILE_E2E_AVD`:
+**One command brings the whole tier up** (adb server + emulator + app build/install
++ dev server, verified against the health URL), idempotently — reuse it instead of
+hand-rolling the ~15 setup calls a device session otherwise needs:
+
+```bash
+bash scripts/qa/mobile-e2e/device-up.sh              # full bring-up (reuses what is already up)
+bash scripts/qa/mobile-e2e/device-up.sh --no-dev     # emulator + app only
+bash scripts/qa/mobile-e2e/device-down.sh            # stop dev server + prune
+bash scripts/qa/mobile-e2e/device-down.sh --emulator # also stop the emulator (session end)
+```
+
+`device-up.sh` sequences the lower-level primitives, which you can still call
+directly. The **adb-server + emulator** primitive brings the adb server up first
+(detached via `serve.js`, because a bare `adb devices`/`adb start-server` hangs
+forever when the server is down — the forked daemon is reaped with the tool's
+process group), then the emulator, then runs a **bounded** readiness gate. It is
+safe to re-run — an already-booted emulator and a live adb server are reused — and
+it reads the AVD from `scripts/qa/mobile-e2e/local.json` / `MOBILE_E2E_AVD`:
 
 ```bash
 node scripts/qa/mobile-e2e/boot-emulator.sh          # auto-sizes CPU/RAM/GPU to the box

@@ -10,8 +10,12 @@ Pull the next item off the Queue and start working on it — no confirmation nee
    session can pick the same row. If it reports "no queued rows" (or "all queued
    rows are blocked"), say so and STOP — do not invent work or reach into Open.
    Remember the returned `<id>` — you own it now.
-2. Read the board + memory: `BACKLOG.md`, `.agents/memory/locations.md`,
-   `.agents/memory/model-routing.md`, `.agents/memory/product-principles.md`.
+2. **Orient in one call:** run `node scripts/orient.js --feature <id>` (the
+   `orient` tool) — it returns the tree root + branch + HEAD + dirty count, the
+   board rows, owned files, checkpoint, live serve jobs + capacity verdict, and
+   the last device-run summary in a single call. Then read the memory files it
+   points at: `.agents/memory/locations.md`, `.agents/memory/model-routing.md`,
+   `.agents/memory/product-principles.md`.
 3. Isolate from the MAIN tree: `node scripts/backlog.js worktree <id>` (creates a git
    worktree + branch and records it in the row's Handoff cell; the row is already
    In progress from step 1). Every feature works in its own worktree — `main` stays
