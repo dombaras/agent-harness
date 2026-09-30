@@ -22,23 +22,37 @@ hidden console (Windows), records the PID under `.serve/`, and polls the
 readiness target with live heartbeats. The tool call returns as soon as the
 server is ready.
 
-## Booting the emulator
+## Booting the device tier
 
-Prefer the harness helper (it wraps `serve.js`, is safe to re-run — an
-already-booted emulator is reused, never duplicated — and reads the AVD from
-`scripts/qa/mobile-e2e/local.json` / `MOBILE_E2E_AVD`):
+Prefer the harness helper. It brings up the **adb server** first (detached via
+`serve.js`, because a bare `adb devices`/`adb start-server` hangs forever when the
+server is down — the forked daemon is reaped with the tool's process group), then
+the emulator, then runs a **bounded** readiness gate. It is safe to re-run — an
+already-booted emulator and a live adb server are reused — and it reads the AVD
+from `scripts/qa/mobile-e2e/local.json` / `MOBILE_E2E_AVD`:
 
 ```bash
 node scripts/qa/mobile-e2e/boot-emulator.sh          # MOBILE_E2E_GPU=host for a GPU box
 ```
 
-It expands to:
+It expands to (adb server, then emulator, then a bounded gate):
 
 ```bash
-node scripts/serve.js start --heavy --mem-max 4G --cpu-max 250% \
+node scripts/serve.js prune
+node scripts/serve.js start --cmd "~/android-sdk/platform-tools/adb -a nodaemon server" \
+  --name adb-server --port 5037 --timeout 30000
+node scripts/serve.js start --heavy \
   --cmd "~/android-sdk/emulator/emulator -avd <avd> -no-window -no-audio -no-boot-anim -no-snapshot -cores 2 -memory 2048 -gpu host" \
   --name emulator --port 5554 --timeout 120000
+timeout 90 adb wait-for-device
+timeout 10 adb shell getprop sys.boot_completed   # must print 1
 ```
+
+Every adb call is `timeout`-wrapped: a wedged adb fails fast instead of hanging
+the tool. `run-maestro.js` also preflights adb (10 s probe) and exits with the
+exact recovery step rather than blocking. `serve.js list`/`start` auto-prune dead
+`.serve/` records, so a stale adb-server/emulator entry from a killed session
+cannot misreport the machine.
 
 On Linux with a systemd user bus, `--mem-max`/`--cpu-max` put the emulator in
 its own cgroup: if it runs away it is throttled or OOM-killed *inside the unit*
@@ -89,12 +103,24 @@ carries a performance layer; coverage and assertions are unchanged:
    tail -f /tmp/opencode/mobile-e2e-<timestamp>.log
    ```
 
-2. **`--reuse-session`** signs in **once per actor** instead of once per journey
-   and batches consecutive same-actor, setup-free journeys into one `maestro
-   test` invocation (fewer JVMs). A journey whose `actor:` (in `flows/matrix.yaml`)
-   changes is always re-established cold. This is the single biggest wall-clock
-   win. Omit it for a strictly per-journey cold run (the default, which preserves
-   `clearState` semantics).
+2. **`--reuse-session`** reuses the device session and signs in only when there
+   is none, batching consecutive same-actor, setup-free journeys into one
+   `maestro test` invocation (fewer JVMs). The shared
+   `flows/_shared/session.yaml` subflow **never `clearState`s** — it launches
+   without clearing, signs the current actor out when the journey's `actor:`
+   (in `flows/matrix.yaml`) changes (`MOBILE_E2E_SWITCH=1`), and signs in as the
+   target actor. This is the single biggest wall-clock win. Omit it for a strict
+   per-journey run (the default still switches session per flow, but no longer
+   clears app data).
+
+   **First login is one dedicated scenario.** The first-login walkthrough is
+   gated on a per-member `AsyncStorage` flag, and `clearState` (`pm clear`)
+   wipes it for *every* member. So exactly one journey declares
+   `firstLogin: true` in `flows/matrix.yaml`: it is run **first** and alone, it
+   is the only place that `clearState`s, and it asserts the fresh
+   onboarding/walkthrough. Every other journey reuses a mixed set of sessions
+   and never sees the walkthrough. Ordering the `clearState` first stops its
+   app-data wipe from resetting the sessions the rest of the run depends on.
 3. **Animations are disabled** for the run by `config.yaml`
    (`platform.android.disableAnimations: true`, passed via `maestro test
    --config`), removing the per-command animation-settle wait. Override with

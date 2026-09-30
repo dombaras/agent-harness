@@ -7969,29 +7969,44 @@ test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpe
   }
 
   // The runner's pure planner drives the entire perf layer — it must ship and
-  // behave (cold = one invocation per flow; reuse = same-actor batching; an
-  // actor change forces a cold invocation).
+  // behave (default = one invocation per flow; reuse = same-actor batching; an
+  // actor change switches user; a first-login journey is standalone).
   const runner = require(path.join(dir, "run-maestro.js"));
   const rec = (name, actor, setup = false) => ({
     file: `${name}.yaml`,
     name,
     actor,
+    endsAs: actor,
     setup: null,
     oracle: null,
     hasSetup: setup,
     hasOracle: false,
+    firstLogin: false,
   });
   const cold = runner.planInvocations([rec("a", "0502000001"), rec("b", "0502000001")], false);
   assert.strictEqual(cold.length, 2, "default is one invocation per flow");
-  assert.ok(cold.every((inv) => inv.cold), "default runs every flow cold");
+  assert.ok(cold.every((inv) => inv.switchUser), "default re-establishes the session per flow");
   const warm = runner.planInvocations(
     [rec("a", "0502000001"), rec("b", "0502000001"), rec("c", "0502000006")],
     true
   );
   assert.strictEqual(warm.length, 3, "same-actor flows batch; an actor change splits");
-  assert.strictEqual(warm[0].cold, true, "the first flow of an actor is cold");
-  assert.strictEqual(warm[1].cold, false, "the next same-actor flow reuses the session");
-  assert.strictEqual(warm[2].cold, true, "an actor change forces a cold invocation");
+  assert.strictEqual(warm[0].switchUser, true, "the first flow of an actor switches/establishes");
+  assert.strictEqual(warm[1].switchUser, false, "the next same-actor flow reuses the session");
+  assert.strictEqual(warm[2].switchUser, true, "an actor change switches the session");
+  const first = { ...rec("f", "0502000001"), firstLogin: true };
+  const firstPlan = runner.planInvocations([first, rec("a", "0502000001")], true);
+  assert.strictEqual(firstPlan[0].records.length, 1, "a firstLogin flow is standalone");
+  assert.strictEqual(firstPlan[0].switchUser, true, "a firstLogin flow establishes its own session");
+  const switcher = { ...rec("s", "0502000001"), endsAs: "0500000000" };
+  const switchPlan = runner.planInvocations([switcher, rec("n", "0502000001")], true);
+  assert.strictEqual(switchPlan[0].records.length, 1, "an actor-switching (endsAs) flow runs alone");
+  assert.strictEqual(switchPlan[1].switchUser, true, "the next actor is re-established after a switch");
+  assert.deepStrictEqual(
+    runner.orderFirstLoginFirst(["a.yaml", "b.yaml"], new Map([["b.yaml", { firstLogin: true }]])),
+    ["b.yaml", "a.yaml"],
+    "a firstLogin journey is ordered first"
+  );
   assert.strictEqual(runner.parseFailedFlows("[Failed] a (1s) (boom)\n[Passed] b").get("a"), "boom");
 
   // The config turns off animations (the dominant per-command cost).
@@ -8005,11 +8020,16 @@ test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpe
     "    flow: x.yaml",
     "    entry: mobile/app/login.tsx",
     '    actor: "0502000001"',
+    "    firstLogin: true",
     "    screens: [mobile/app/login.tsx]",
     "    states: [ideal]",
     "",
   ].join("\n");
   assert.deepStrictEqual(validator.parseMatrix(okMatrix).violations, []);
+  assert.ok(
+    validator.parseMatrix(okMatrix.replace("firstLogin: true", "firstLogin: maybe")).violations.some((v) => /firstLogin/.test(v)),
+    "a non-boolean firstLogin must fail"
+  );
   const badMatrix = [
     "journeys:",
     "  - id: x",

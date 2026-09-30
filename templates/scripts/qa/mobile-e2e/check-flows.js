@@ -126,11 +126,13 @@ function parseMatrix(content) {
         flow: '',
         entry: '',
         actor: null,
+        endsAs: null,
         screens: [],
         testids: [],
         states: [],
         setup: null,
         oracle: null,
+        firstLogin: null,
         line: lineNo,
       };
       journeys.push(current);
@@ -147,11 +149,13 @@ function parseMatrix(content) {
       if (key === 'flow') current.flow = rawValue.trim();
       else if (key === 'entry') current.entry = rawValue.trim();
       else if (key === 'actor') current.actor = rawValue.trim().replace(/^["']|["']$/g, '');
+      else if (key === 'endsAs') current.endsAs = rawValue.trim().replace(/^["']|["']$/g, '');
       else if (key === 'screens') current.screens = parseInlineList(rawValue);
       else if (key === 'testids') current.testids = parseInlineList(rawValue);
       else if (key === 'states') current.states = parseInlineList(rawValue);
       else if (key === 'setup') current.setup = rawValue.trim();
       else if (key === 'oracle') current.oracle = rawValue.trim();
+      else if (key === 'firstLogin') current.firstLogin = rawValue.trim();
       else violations.push(`matrix.yaml:${lineNo}: unknown journey key "${key}"`);
       return;
     }
@@ -173,6 +177,11 @@ function parseMatrix(content) {
     if (journey.actor === '') {
       violations.push(`matrix.yaml:${journey.line}: journey "${journey.id}" declares an empty "actor"`);
     }
+    // `endsAs:` is optional; when declared it must name the actor the flow
+    // leaves signed in (an empty declaration is meaningless).
+    if (journey.endsAs === '') {
+      violations.push(`matrix.yaml:${journey.line}: journey "${journey.id}" declares an empty "endsAs"`);
+    }
     // `setup:`/`oracle:` are optional; when a journey declares one it must carry
     // the invocation (an empty declaration is a declaration without a step).
     if (journey.setup === '') {
@@ -180,6 +189,14 @@ function parseMatrix(content) {
     }
     if (journey.oracle === '') {
       violations.push(`matrix.yaml:${journey.line}: journey "${journey.id}" declares an empty "oracle"`);
+    }
+    // `firstLogin:` is optional; when declared it must be the literal boolean
+    // `true`/`false` (the runner only recognises `true`).
+    if (journey.firstLogin != null && journey.firstLogin !== '' && !/^(true|false)$/.test(journey.firstLogin)) {
+      violations.push(`matrix.yaml:${journey.line}: journey "${journey.id}" has a non-boolean "firstLogin" ("${journey.firstLogin}")`);
+    }
+    if (journey.firstLogin === '') {
+      violations.push(`matrix.yaml:${journey.line}: journey "${journey.id}" declares an empty "firstLogin"`);
     }
   });
 

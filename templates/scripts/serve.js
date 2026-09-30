@@ -290,6 +290,10 @@ async function start(flags) {
   const errLog = logPath(name, "err");
 
   fs.mkdirSync(SERVE_DIR, { recursive: true });
+  // Reap records whose process is gone before doing anything else: a stale
+  // entry must never make a fresh start (or the capacity preflight) act on a
+  // phantom server.
+  removeDeadRecords(SERVE_DIR);
 
   // Capacity preflight: a heavy long-lived process (emulator, Metro/Next dev,
   // live tier) is what froze the box on 2026-09-29. Check the project envelope
@@ -535,44 +539,56 @@ function siblingServeDirs() {
   return out;
 }
 
-/* Remove `.serve/*.pid` records whose process is gone (and the win32 launcher
- * that went with them). Dead records cost no RAM, but they inflate the live
- * count, hide a stopped emulator, and let a stale `list` mislead an operator
- * about what is actually consuming the VM. Live servers are never touched. */
+/* Remove the dead `.serve/*.pid` records in one dir. Shared by the explicit
+ * `prune` command and the silent auto-prune that `list`/`start` perform, so a
+ * stale record (e.g. an adb-server/emulator left over from a previous session)
+ * is reaped the moment anyone looks at or launches a server instead of lingering
+ * to misreport the machine. Dead records cost no RAM, but they hide a stopped
+ * emulator and let a stale `list` mislead an operator. Live servers are never
+ * touched. `onRemove` (optional) receives each pruned pid-file path. */
+function removeDeadRecords(dir, onRemove) {
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith(".pid"));
+  } catch (_) {
+    return { removed: 0, kept: 0 };
+  }
+  let removed = 0;
+  let kept = 0;
+  for (const f of files) {
+    const p = path.join(dir, f);
+    const name = f.slice(0, -4);
+    let info = {};
+    try {
+      info = JSON.parse(fs.readFileSync(p, "utf8"));
+    } catch (_) {
+      info = {};
+    }
+    if (isAlive(info.pid)) {
+      kept++;
+      continue;
+    }
+    try {
+      fs.unlinkSync(p);
+      fs.unlinkSync(path.join(dir, name + ".cmd"));
+    } catch (_) {
+      /* already gone */
+    }
+    removed++;
+    if (onRemove) onRemove(p);
+  }
+  return { removed, kept };
+}
+
 function prune(flags) {
   const dirs = [SERVE_DIR];
   if (flags["--worktrees"]) dirs.push(...siblingServeDirs());
   let removed = 0;
   let kept = 0;
   for (const dir of dirs) {
-    let files;
-    try {
-      files = fs.readdirSync(dir).filter((f) => f.endsWith(".pid"));
-    } catch (_) {
-      continue;
-    }
-    for (const f of files) {
-      const p = path.join(dir, f);
-      const name = f.slice(0, -4);
-      let info = {};
-      try {
-        info = JSON.parse(fs.readFileSync(p, "utf8"));
-      } catch (_) {
-        info = {};
-      }
-      if (isAlive(info.pid)) {
-        kept++;
-        continue;
-      }
-      try {
-        fs.unlinkSync(p);
-        fs.unlinkSync(path.join(dir, name + ".cmd"));
-      } catch (_) {
-        /* already gone */
-      }
-      removed++;
-      console.log(`pruned stale ${path.join(dir, f)}`);
-    }
+    const result = removeDeadRecords(dir, (p) => console.log(`pruned stale ${p}`));
+    removed += result.removed;
+    kept += result.kept;
   }
   console.log(`prune: removed ${removed} stale record(s), kept ${kept} live`);
 }
@@ -588,6 +604,9 @@ function isAlive(pid) {
 }
 
 function list() {
+  // Auto-prune first, so `list` never reports a record whose process is gone
+  // (e.g. an adb-server/emulator left over from a killed session).
+  removeDeadRecords(SERVE_DIR);
   // Capacity first: free RAM/swap/load + live-serve count, so `list` is the
   // one place an operator sees the whole machine state and can spot an idle
   // emulator/dev server to reap before it freezes the box.

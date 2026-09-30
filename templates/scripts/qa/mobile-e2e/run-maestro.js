@@ -21,12 +21,17 @@
  *   * `--no-reinstall-driver` is passed to every `maestro test` (the driver
  *     APKs only need installing once per device), via `--reinstall-driver` to
  *     opt back in.
- *   * `--reuse-session` signs in once per actor instead of once per flow. A
- *     flow that includes a shared conditional-login subflow will relaunch
- *     without `clearState` and skip login when already authenticated;
- *     consecutive same-actor, setup-free journeys are batched into one
- *     `maestro test` invocation (fewer JVMs). A journey whose `actor:` changes
- *     is always run cold so the correct session is established.
+ *   * `--reuse-session` signs in once per actor instead of once per flow. The
+ *     shared `_shared/session.yaml` subflow reuses an existing session and
+ *     never `clearState`s, so each actor's one-time first-login walkthrough
+ *     stays dismissed for the whole run; consecutive same-actor, setup-free
+ *     journeys are batched into one `maestro test` invocation (fewer JVMs). A
+ *     journey whose `actor:` changes is its own invocation with
+ *     `MOBILE_E2E_SWITCH=1` (sign the current actor out, then sign in).
+ *   * A journey with `firstLogin: true` in `flows/matrix.yaml` is run first and
+ *     alone: it is the single scenario allowed to `clearState` and assert the
+ *     fresh onboarding/walkthrough, and ordering it first keeps its app-data
+ *     wipe from resetting the sessions every other journey reuses.
  *   * `--no-seed` runs `reset.js --no-seed` (mint actor auth against the
  *     existing dev data) for fast re-verification runs.
  *   * `--failed` re-runs only the journeys that failed in the previous run
@@ -94,7 +99,7 @@ function usage() {
     '  --app-id <id>        app under test (default com.libraryos.app; Expo Go = host.exp.exponent)',
     '  --no-reset           skip reset.js (use the current dev DB state)',
     '  --no-seed            run reset.js --no-seed (mint actor auth only)',
-    '  --reuse-session      sign in once per actor; batch same-actor setup-free flows',
+    '  --reuse-session      reuse the device session; batch same-actor setup-free flows (no clearState)',
     '  --failed             re-run only the journeys that failed in the last run',
     '  --config <file>      Maestro workspace config (default config.yaml — disables animations)',
     '  --reinstall-driver   force Maestro to reinstall its device driver (default: skip)',
@@ -215,7 +220,7 @@ function parseJourneySteps(matrixPath) {
     if (trimmed === 'journeys:') return;
     const idMatch = trimmed.match(/^-\s+id:\s*(.+)$/);
     if (idMatch) {
-      current = { id: idMatch[1].trim(), actor: null, setup: null, oracle: null };
+      current = { id: idMatch[1].trim(), actor: null, endsAs: null, setup: null, oracle: null, firstLogin: false };
       return;
     }
     const kvMatch = trimmed.match(/^([A-Za-z]+):\s*(.*)$/);
@@ -226,10 +231,14 @@ function parseJourneySteps(matrixPath) {
       if (current.flow) map.set(current.flow, current);
     } else if (key === 'actor') {
       current.actor = rawValue.trim().replace(/^["']|["']$/g, '');
+    } else if (key === 'endsAs') {
+      current.endsAs = rawValue.trim().replace(/^["']|["']$/g, '');
     } else if (key === 'setup') {
       current.setup = rawValue.trim();
     } else if (key === 'oracle') {
       current.oracle = rawValue.trim();
+    } else if (key === 'firstLogin') {
+      current.firstLogin = rawValue.trim() === 'true';
     }
   });
   return map;
@@ -297,6 +306,41 @@ function maestroOnPath() {
   const probe = process.platform === 'win32' ? 'where' : 'which';
   const result = spawnSync(probe, ['maestro'], { stdio: 'ignore', shell: false });
   return result.status === 0;
+}
+
+/** Resolve the project's adb: `ANDROID_HOME`/`ANDROID_SDK_ROOT`, else PATH. */
+function resolveAdb() {
+  const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+  const exe = process.platform === 'win32' ? 'adb.exe' : 'adb';
+  if (sdk) {
+    const candidate = path.join(sdk, 'platform-tools', exe);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return exe;
+}
+
+/**
+ * Bounded adb readiness preflight. A wedged/absent adb server makes `adb`
+ * hang forever (the reason a device run looks frozen before it starts), so this
+ * probes with a hard timeout and fails fast with the exact recovery step rather
+ * than blocking. `boot-emulator.sh` owns starting the server; this only checks.
+ */
+function preflightAdb() {
+  const adb = resolveAdb();
+  const probe = spawnSync(adb, ['devices'], { encoding: 'utf8', timeout: 10000 });
+  const output = `${probe.stdout || ''}\n${probe.stderr || ''}`;
+  const devices = (output.match(/^\S+\s+device\b/gm) || []).length;
+  if (!probe.error && probe.status === 0 && devices > 0) {
+    console.log(`adb: ${devices} device(s) online`);
+    return;
+  }
+  console.error('FAIL — adb has no ready device (probed with a 10s timeout, so this never hangs).');
+  console.error('  Bring up the device tier first:');
+  console.error('    node scripts/qa/mobile-e2e/boot-emulator.sh');
+  console.error('  If the adb server itself is wedged, boot-emulator.sh restarts it detached;');
+  console.error('  the equivalent is:');
+  console.error(`    node scripts/serve.js start --cmd "${adb} -a nodaemon server" --name adb-server --port 5037 --timeout 30000`);
+  process.exit(1);
 }
 
 /** Strip ANSI SGR escape sequences so a captured reason is stable text. */
@@ -409,23 +453,45 @@ function buildFlowRecords(flowFiles, stepsByFlow) {
       file,
       name,
       actor: journey.actor || DEFAULT_ACTOR,
+      endsAs: journey.endsAs || journey.actor || DEFAULT_ACTOR,
       setup: journey.setup || null,
       oracle: journey.oracle || null,
       hasSetup: Boolean(journey.setup),
       hasOracle: Boolean(journey.oracle),
+      firstLogin: Boolean(journey.firstLogin),
     };
   });
 }
 
 /**
+ * Move journeys that declare `firstLogin: true` to the front (stable). A
+ * first-login scenario `clearState`s the app to prove the fresh onboarding, and
+ * `pm clear` wipes the whole app data dir — including every actor's persisted
+ * "walkthrough seen" flag. Running it first means that wipe happens before the
+ * other journeys reuse a mixed set of sessions; running it mid-run would reset
+ * the flag and re-onboard the actors the rest of the run depends on.
+ */
+function orderFirstLoginFirst(flowFiles, stepsByFlow) {
+  const first = [];
+  const rest = [];
+  flowFiles.forEach((file) => {
+    const journey = stepsByFlow.get(path.basename(file));
+    (journey && journey.firstLogin ? first : rest).push(file);
+  });
+  return [...first, ...rest];
+}
+
+/**
  * Turn the ordered flow records into `maestro test` invocations.
  *
- * Default: one cold invocation per flow (preserves per-flow `clearState`
- * semantics and fail-fast granularity). With `reuseSession`: a run of
- * consecutive same-actor, setup-free journeys becomes one warm invocation
- * (shared session, one JVM); a journey whose actor changes — or that declares a
- * `setup:`/`oracle:` step — is always its own invocation, cold when the actor
- * changed. `cold` maps to `MOBILE_E2E_COLD` in `_shared/session.yaml`.
+ * Default: one invocation per flow (preserves per-flow fail-fast granularity).
+ * With `reuseSession`: a run of consecutive same-actor, setup/oracle-free,
+ * non-first-login journeys becomes one warm invocation (shared session, one
+ * JVM). A journey whose actor changes — or that declares a `setup:`/`oracle:`
+ * step or `firstLogin:` — is always its own invocation. `switchUser` maps to
+ * `MOBILE_E2E_SWITCH` in `_shared/session.yaml`: it means "sign the current
+ * actor out first, then sign in as this journey's actor" (never `clearState`,
+ * so the device's per-actor onboarding state survives the run).
  */
 function planInvocations(records, reuseSession) {
   const invocations = [];
@@ -433,20 +499,27 @@ function planInvocations(records, reuseSession) {
   let batch = null;
   const flush = () => {
     if (batch && batch.length > 0) {
-      invocations.push({ records: batch.slice(), actor: batch[0].actor, cold: false });
+      invocations.push({ records: batch.slice(), actor: batch[0].actor, switchUser: false });
     }
     batch = null;
   };
   records.forEach((record) => {
-    const cold = !reuseSession || record.actor !== currentActor;
-    if (reuseSession && !cold && !record.hasSetup && !record.hasOracle) {
+    const actorChanged = record.actor !== currentActor;
+    // A flow that leaves a different actor signed in (`endsAs`) changes the
+    // device session, so it must run alone and the next flow must switch.
+    const standalone = record.hasSetup || record.hasOracle || record.firstLogin || record.endsAs !== record.actor;
+    if (reuseSession && !actorChanged && !standalone) {
       if (!batch) batch = [];
       batch.push(record);
     } else {
       flush();
-      invocations.push({ records: [record], actor: record.actor, cold });
+      invocations.push({
+        records: [record],
+        actor: record.actor,
+        switchUser: !reuseSession || actorChanged || record.firstLogin,
+      });
     }
-    currentActor = record.actor;
+    currentActor = record.endsAs || record.actor;
   });
   flush();
   return invocations;
@@ -460,7 +533,7 @@ function runMaestroFlows(files, options, session) {
   }
   if (!options.reinstallDriver) args.push('--no-reinstall-driver');
   args.push('-e', `APP_ID=${options.appId}`);
-  args.push('-e', `MOBILE_E2E_COLD=${session.cold ? '1' : '0'}`);
+  args.push('-e', `MOBILE_E2E_SWITCH=${session.switchUser ? '1' : '0'}`);
   args.push('-e', `MOBILE_E2E_PHONE=${session.actor}`);
   args.push(...files);
   const result = spawnSync('maestro', args, { encoding: 'utf8', shell: false });
@@ -595,6 +668,9 @@ function main() {
     if (flowFiles.length === 0) console.error('FAIL — no flows selected (use --flows <a,b,...|all>).');
     process.exit(2);
   }
+  // A `firstLogin` journey `clearState`s the app (wiping every actor's on-device
+  // onboarding flag); run it first so the rest of the run reuses intact sessions.
+  flowFiles = orderFirstLoginFirst(flowFiles, stepsByFlow);
 
   printSequence(options);
   printDeclaredSteps(resolveDeclaredSteps(flowFiles, stepsByFlow));
@@ -605,6 +681,8 @@ function main() {
     console.error('  (requires JDK 17+). Then re-run this command.');
     process.exit(1);
   }
+
+  preflightAdb();
 
   runReset(options);
 
@@ -638,11 +716,11 @@ function main() {
     const scoped = invocation.records.length === 1 ? resolveDeclaredSteps([invocation.records[0].file], stepsByFlow) : { setups: [], oracles: [] };
     runDeclaredSteps(scoped.setups, 'setup');
 
-    console.log(`\nRunning ${invocation.records.length > 1 ? 'flows' : 'flow'} (${index + 1}/${invocations.length}): ${label} [actor=${invocation.actor}${invocation.cold ? ', cold' : ', warm'}]`);
+    console.log(`\nRunning ${invocation.records.length > 1 ? 'flows' : 'flow'} (${index + 1}/${invocations.length}): ${label} [actor=${invocation.actor}${invocation.switchUser ? ', switch' : ', reuse'}]`);
     const { status, output } = runMaestroFlows(
       invocation.records.map((record) => record.file),
       options,
-      { cold: invocation.cold, actor: invocation.actor },
+      { switchUser: invocation.switchUser, actor: invocation.actor },
     );
     const failedFlows = parseFailedFlows(output);
 
@@ -686,7 +764,7 @@ function main() {
   writeReport(REPORT_FILE, {
     startedAt,
     finishedAt: new Date().toISOString(),
-    mode: options.reuseSession ? 'reuse-session' : 'cold',
+    mode: options.reuseSession ? 'reuse-session' : 'per-flow',
     flows: results,
   });
 
@@ -706,5 +784,6 @@ module.exports = {
   parseFailedFlows,
   parseJourneySteps,
   buildFlowRecords,
+  orderFirstLoginFirst,
   planInvocations,
 };
