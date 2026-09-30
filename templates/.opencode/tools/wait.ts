@@ -11,6 +11,12 @@ import toolLib from "../../scripts/qa/tool-lib.js"
 // BOUNDED by design: a `--timeout` (default 20 min, hard-capped here at 30 min)
 // is required, so a wedged target can never hang the session. Returns the
 // waiter's stdout and its exit status via the script output.
+//
+// It runs the child ASYNC (toolLib.runScriptAsync) rather than blocking the
+// runtime: an `execFileSync` wait froze opencode's whole event loop, so the
+// `job-notify` plugin's progress interval could not tick and a healthy detached
+// run looked frozen until the wait returned (F-296). Spawning keeps the plugin
+// (toasts + first-failure/completion wakes) live while the agent blocks here.
 
 export const wait = tool({
   description:
@@ -44,9 +50,13 @@ export const wait = tool({
     const timeout = Math.min(Math.max(Number(args.timeout) || 1200, 1), 1800)
     argv.push("--timeout", String(timeout))
     if (args.poll) argv.push("--poll", String(args.poll))
-    return toolLib.runScript(context, "scripts/wait-for.js", argv, {
+    const res = await toolLib.runScriptAsync(context, "scripts/wait-for.js", argv, {
       label: "wait",
       timeout: (timeout + 60) * 1000,
     })
+    if (res.error) return `${res.error}\n${res.stderr || ""}`.trim()
+    const body = (res.stdout || "").trim()
+    const tail = (res.stderr || "").trim()
+    return [body, tail].filter(Boolean).join("\n") || `wait: exit ${res.code}`
   },
 })

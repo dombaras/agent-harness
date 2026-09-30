@@ -6238,6 +6238,34 @@ test("tool-lib is the single source for node resolution and the mid-session work
   );
 });
 
+test("tool-lib.runScriptAsync does not block the event loop (so job-notify keeps ticking during a wait)", async () => {
+  // The `wait` tool used execFileSync, which froze opencode's runtime for the
+  // whole wait and starved the job-notify plugin (F-296: a healthy 28-min run
+  // showed no live progress, then flushed every event at once). runScriptAsync
+  // spawns the child, so timers keep firing while the agent blocks.
+  const toolLib = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "tool-lib.js"));
+  assert.strictEqual(typeof toolLib.runScriptAsync, "function", "runScriptAsync is exported");
+  const root = tmpdir();
+  fs.writeFileSync(
+    path.join(root, "slow.js"),
+    "setTimeout(() => process.stdout.write('done'), 300)\n",
+    "utf8"
+  );
+  let ticked = false;
+  const timer = setInterval(() => {
+    ticked = true;
+  }, 30);
+  const res = await toolLib.runScriptAsync({ worktree: root, sessionID: "" }, "slow.js", [], {
+    label: "slow",
+    timeout: 5000,
+  });
+  clearInterval(timer);
+  assert.strictEqual(res.error, null, res.error || "");
+  assert.strictEqual(res.code, 0);
+  assert.strictEqual(res.stdout, "done");
+  assert.ok(ticked, "a timer must fire while runScriptAsync waits (event loop stays free)");
+});
+
 test("lease liveness is injectable and touchLease re-creates a missing lease", () => {
   const leases = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"));
   const now = Date.now();
@@ -8418,6 +8446,10 @@ test("[drift-guard] wait-for is wired into npm scripts and the wait tool", () =>
   const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "wait.ts"));
   assert.match(tool, /scripts\/wait-for\.js/);
   assert.match(tool, /timeout/, "the wait tool is timeout-bounded");
+  // The wait must be async: a synchronous (execFileSync) wait blocks opencode's
+  // event loop and starves the job-notify plugin's live progress (F-296).
+  assert.match(tool, /runScriptAsync\(/, "the wait tool must spawn async, not block the runtime");
+  assert.doesNotMatch(tool, /toolLib\.runScript\(/, "the wait tool must not use the sync runScript");
 });
 
 const CIW = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "ci-wait-lib.js"));

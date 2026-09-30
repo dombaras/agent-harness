@@ -23,7 +23,7 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { execFileSync } = require("child_process");
+const { execFileSync, spawn } = require("child_process");
 
 function nodeBin() {
   const override = process.env.OPENCODE_NODE;
@@ -82,4 +82,53 @@ function runScript(context, scriptRel, args, opts) {
   }
 }
 
-module.exports = { nodeBin, sessionRoot, runScript };
+/* Async twin of runScript. `runScript`'s execFileSync is fine for the quick
+ * deterministic tools (backlog/checkpoint/session, sub-second), but a long
+ * `wait` (up to 30 min) run synchronously freezes the whole opencode runtime —
+ * including the `job-notify` plugin's 3 s progress interval — so a healthy
+ * detached run produces no toasts/wakes and looks dead until the wait returns
+ * (the F-296 "frozen" session). Spawning frees the event loop so pushes keep
+ * flowing while the agent blocks. Resolves `{ code, stdout, stderr, error }`
+ * and never rejects; `error` is set when the child could not be spawned.
+ * `opts`: { marker, env, timeout (ms), label }. */
+function runScriptAsync(context, scriptRel, args, opts) {
+  const root = sessionRoot(context, opts && opts.marker);
+  const script = path.join(root, scriptRel);
+  const label = (opts && opts.label) || scriptRel;
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(nodeBin(), [script, ...args], {
+        cwd: root,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, ...((opts && opts.env) || {}) },
+      });
+    } catch (e) {
+      resolve({ code: null, stdout: "", stderr: "", error: `${label}: ${e.message}` });
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let timer = null;
+    const done = (res) => {
+      if (timer) clearTimeout(timer);
+      resolve(res);
+    };
+    if (opts && opts.timeout) {
+      timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* already exited */
+        }
+      }, opts.timeout);
+      if (typeof timer.unref === "function") timer.unref();
+    }
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("error", (e) => done({ code: null, stdout, stderr, error: `${label}: ${e.message}` }));
+    child.on("close", (code) => done({ code, stdout, stderr, error: null }));
+  });
+}
+
+module.exports = { nodeBin, sessionRoot, runScript, runScriptAsync };

@@ -178,6 +178,14 @@ carries a performance layer; coverage and assertions are unchanged:
    scripts/qa/mobile-e2e/run-detached.sh --flows all --reuse-session --wait
    ```
 
+   The plugin and a blocking waiter are no longer mutually exclusive. The
+   general `wait` tool (`scripts/wait-for.js`, e.g. `wait --job <record.json>`)
+   spawns its child asynchronously, so it does **not** freeze opencode's event
+   loop — the plugin's toasts and first-failure/completion wakes keep flowing
+   while the agent blocks. (Before 0.1.115 the `wait` tool used `execFileSync`
+   and starved the notifier: every event flushed in one burst when the wait
+   returned, which is why the F-296 run looked frozen.)
+
 2. **`--reuse-session`** reuses the device session and signs in only when there
    is none, batching consecutive same-actor, setup-free journeys into one
    `maestro test` invocation (fewer JVMs). The shared
