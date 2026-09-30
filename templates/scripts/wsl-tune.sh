@@ -10,6 +10,9 @@
 #   - sysctls: low swappiness, small min_free_kbytes floor, bounded dirty ratios
 #   - a systemd user.slice resource ceiling (MemoryHigh/MemoryMax/CPUQuota), so a
 #     runaway is throttled/OOM-killed inside its cgroup, not the whole VM
+#   - a SOFT init.scope MemoryHigh backstop (agent-wsl-backstop.service) for the
+#     cgroup agents/emulators actually run in — WSL puts the wsl.exe session in
+#     init.scope, NOT user.slice, so the ceiling above never binds the workload
 #   - `.wslconfig` keys (processors, swap, vmIdleTimeout, reclaim) merged safely
 #     via scripts/qa/wslconfig-merge.js
 #
@@ -32,6 +35,9 @@ MERGERS="$SCRIPT_DIR/qa/wslconfig-merge.js"
 SYSCTL_FILE="${AGENT_WSL_TUNE_SYSCTL:-/etc/sysctl.d/99-agent-wsl.conf}"
 SLICE_DIR="${AGENT_WSL_TUNE_SLICE_DIR:-/etc/systemd/system/user.slice.d}"
 SLICE_FILE="$SLICE_DIR/90-agent-cap.conf"
+UNIT_DIR="${AGENT_WSL_TUNE_UNIT_DIR:-/etc/systemd/system}"
+BACKSTOP_UNIT="$UNIT_DIR/agent-wsl-backstop.service"
+BACKSTOP="${AGENT_WSL_TUNE_BACKSTOP:-8G}"
 DRY_RUN="${AGENT_WSL_TUNE_DRY_RUN:-0}"
 
 log() { printf '%s\n' "$*"; }
@@ -90,6 +96,30 @@ CPUQuota=800%
 EOF
 }
 
+# The user.slice ceiling above never binds the real workload: WSL's wsl.exe
+# session — and so every agent, emulator, and dev server — is in init.scope, a
+# sibling of user.slice, not a child. This oneshot runs at boot and puts a SOFT
+# MemoryHigh on init.scope. Soft is deliberate: MemoryHigh reclaims/throttles as
+# the line is approached and never OOM-kills, so a spike degrades instead of
+# thrash-freezing every terminal. Heavy tiers also get a per-unit cap from
+# serve.js; this backstop covers the agents themselves.
+backstop_body() {
+  cat <<EOF
+# Managed by @dombaras/agent-harness (scripts/wsl-tune.sh). Idempotent; 'wsl-tune.sh down' removes it.
+[Unit]
+Description=agent-harness WSL memory backstop (soft MemoryHigh on init.scope)
+After=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'systemctl set-property init.scope MemoryHigh=${BACKSTOP}'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 apply_wslconfig() {
   local cfg sets=()
   cfg="$(find_config)"
@@ -127,6 +157,12 @@ do_status() {
     cq="$(systemctl show user.slice -p CPUQuotaPerSecUSec --value 2>/dev/null || true)"
     [ -n "$mm" ] && log "           user.slice MemoryMax=$mm CPUQuota=$cq"
   fi
+  if [ -f "$BACKSTOP_UNIT" ]; then log "  backstop: $BACKSTOP_UNIT present"; else log "  backstop: not applied ($BACKSTOP_UNIT missing)"; fi
+  if command -v systemctl >/dev/null 2>&1; then
+    local ih
+    ih="$(systemctl show init.scope -p MemoryHigh --value 2>/dev/null || true)"
+    [ -n "$ih" ] && log "           init.scope MemoryHigh=$ih (the cgroup agents/emulators actually run in)"
+  fi
   local cfg; cfg="$(find_config)"
   if [ -n "$cfg" ] && [ -f "$cfg" ]; then
     log "  wslconfig: $cfg"
@@ -145,7 +181,8 @@ do_apply() {
   if [ "$DRY_RUN" = "1" ]; then
     log "wsl-tune: would write $SYSCTL_FILE:"; printf '%s\n' "$SYSCTL_BODY" | sed 's/^/    /'
     log "wsl-tune: would write $SLICE_FILE:"; slice_body | sed 's/^/    /'
-    log "wsl-tune: would reload sysctl + systemd"
+    log "wsl-tune: would write $BACKSTOP_UNIT:"; backstop_body | sed 's/^/    /'
+    log "wsl-tune: would reload sysctl + systemd, enable agent-wsl-backstop.service"
     apply_wslconfig
     return 0
   fi
@@ -169,6 +206,17 @@ do_apply() {
     systemctl set-property --runtime user.slice MemoryHigh=8G MemoryMax=9G CPUQuota=800% 2>/dev/null || true
     log "wsl-tune: applied user.slice ceiling"
   fi
+  printf '%s\n' "$(backstop_body)" > "$BACKSTOP_UNIT"
+  log "wsl-tune: wrote $BACKSTOP_UNIT"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+    if systemctl enable --now agent-wsl-backstop.service >/dev/null 2>&1; then
+      log "wsl-tune: applied soft init.scope backstop (MemoryHigh=$BACKSTOP)"
+    else
+      warn "wsl-tune: could not start agent-wsl-backstop.service — run it after reboot, or apply manually:"
+      warn "           systemctl set-property init.scope MemoryHigh=$BACKSTOP"
+    fi
+  fi
   apply_wslconfig
   log ""
   log "wsl-tune: done. MANUAL STEP — from Windows PowerShell run:  wsl --shutdown"
@@ -182,6 +230,11 @@ do_down() {
   fi
   rm -f "$SYSCTL_FILE" && log "wsl-tune: removed $SYSCTL_FILE" || true
   rm -f "$SLICE_FILE" && log "wsl-tune: removed $SLICE_FILE" || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now agent-wsl-backstop.service >/dev/null 2>&1 || true
+    systemctl set-property init.scope MemoryHigh=infinity >/dev/null 2>&1 || true
+  fi
+  rm -f "$BACKSTOP_UNIT" && log "wsl-tune: removed $BACKSTOP_UNIT" || true
   sysctl --system >/dev/null 2>&1 || true
   command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload 2>/dev/null || true
   log "wsl-tune: .wslconfig left untouched (restore a .bak-* file if you want to revert it)."

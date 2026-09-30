@@ -43,6 +43,16 @@ const DEFAULT_ENVELOPE = {
   idleReapMinutes: 90,
   emulatorRamMb: 2048,
   heavyLockTtlMinutes: 240,
+  // A heavy tier (emulator, Metro/Next dev, live E2E) is capped in its own
+  // cgroup by default (serve.js). The cap is deliberately generous — above the
+  // observed peak (an AVD from a 2048 MB guest peaks ~3.9 GB RSS) — so normal
+  // E2E is never throttled, but a runaway is OOM-killed inside its slice
+  // instead of freezing every terminal. Overridable per launch with --mem-max.
+  heavyMemMaxMb: 5120,
+  // Soft `MemoryHigh` backstop for the cgroup that actually holds the agents
+  // (WSL puts the `wsl.exe` session in init.scope, NOT user.slice). Soft: it
+  // throttles/reclaims near the freeze line and never OOM-kills.
+  backstopMemHighMb: 8192,
   // PSI (`/proc/pressure/*`) is the earliest true freeze signal — load average
   // lies, but memory "some avg10" climbing means processes are already stalled
   // on reclaim. Warning thresholds, not hard failures.
@@ -58,6 +68,8 @@ const ENVELOPE_KEYS = {
   idle_reap_minutes: "idleReapMinutes",
   emulator_ram_mb: "emulatorRamMb",
   heavy_lock_ttl_minutes: "heavyLockTtlMinutes",
+  heavy_mem_max_mb: "heavyMemMaxMb",
+  backstop_mem_high_mb: "backstopMemHighMb",
   max_mem_pressure_avg10: "maxMemPressureAvg10",
   max_cpu_pressure_avg10: "maxCpuPressureAvg10",
 };
@@ -241,8 +253,16 @@ function readHost() {
 }
 
 /* Whether the one-time in-WSL tuning (`scripts/wsl-tune.sh apply`) is present:
- * a low swappiness and the user.slice resource ceiling. Doctor reads this to
- * tell the operator the single command that finishes the setup. */
+ * a low swappiness, the user.slice resource ceiling, and the soft init.scope
+ * backstop. Doctor reads this to tell the operator the single command that
+ * finishes the setup.
+ *
+ * The cgroup facts are the important part. WSL's `wsl.exe` session — and so
+ * every agent, emulator, and dev server — lands in `init.scope`, NOT
+ * `user.slice`; a ceiling only on `user.slice` never binds the real workload.
+ * `workloadCapped` is true only when the cgroup that holds the workload carries
+ * a finite limit (`init.scope` MemoryHigh/MemoryMax). `sliceApplied` alone is
+ * not enough, which is exactly the gap this detects. */
 function readTuning() {
   const sysctlDir = process.env.AGENT_TUNING_SYSCTL_DIR || "/proc/sys";
   let swappiness = null;
@@ -255,7 +275,31 @@ function readTuning() {
   }
   const sliceFile =
     process.env.AGENT_TUNING_SLICE_FILE || "/etc/systemd/system/user.slice.d/90-agent-cap.conf";
-  return { swappiness, sliceFile, sliceApplied: fs.existsSync(sliceFile) };
+  const backstopUnit =
+    process.env.AGENT_TUNING_BACKSTOP_UNIT || "/etc/systemd/system/agent-wsl-backstop.service";
+  const cgroupRoot = process.env.AGENT_TUNING_CGROUP_ROOT || "/sys/fs/cgroup";
+  const readCg = (rel) => {
+    try {
+      return fs.readFileSync(path.join(cgroupRoot, rel), "utf8").trim();
+    } catch (_) {
+      return null;
+    }
+  };
+  const finite = (v) => v != null && v !== "" && v !== "max";
+  const initHigh = readCg("init.scope/memory.high");
+  const initMax = readCg("init.scope/memory.max");
+  const userSliceMax = readCg("user.slice/memory.max");
+  return {
+    swappiness,
+    sliceFile,
+    sliceApplied: fs.existsSync(sliceFile),
+    backstopUnit,
+    backstopApplied: fs.existsSync(backstopUnit),
+    initHigh,
+    initMax,
+    userSliceMax,
+    workloadCapped: finite(initHigh) || finite(initMax),
+  };
 }
 
 /* Live long-lived processes recorded by `serve.js` under `.serve/*.pid`. A pid

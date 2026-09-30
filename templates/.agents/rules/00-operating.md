@@ -112,17 +112,27 @@ mechanical guards read it.
   --name <label>` / `stop-all`. A dev server is stopped after its tier; an
   emulator is reused *within a session* and stopped at session end. `serve.js
   list` shows each process's age — treat an old one as an idle-reap candidate.
-- **Cap the heavy process.** `serve.js start --mem-max 4G --cpu-max 250%` runs it
-  as a systemd transient unit (Linux) so a runaway is throttled/OOM-killed in its
-  own cgroup instead of thrashing the VM. Graceful no-op without systemd.
+- **Cap the heavy process.** Heavy tiers (emulator, `next dev`, live E2E) are
+  capped **by default**: `serve.js start` runs them as a systemd transient unit
+  under `user.slice` with a `MemoryMax` from the envelope (`heavy_mem_max_mb`,
+  default 5 GB — above the observed peak, so normal E2E is not throttled), so a
+  runaway is throttled/OOM-killed in its own cgroup instead of thrashing the VM.
+  `--mem-max 4G --cpu-max 250%` overrides; `--no-cap` opts out. Graceful no-op
+  without systemd.
 - **Know the pressure.** `npm run test:capacity` (`node scripts/qa/check-capacity.js`)
   reports free RAM / swap / **PSI memory pressure** / live serves and fails when
   the envelope is already exceeded. `agent-harness doctor` adds host-aware
   `.wslconfig` advice and whether the one-time tuning is applied.
 - **Tune the VM once.** `sudo bash scripts/wsl-tune.sh apply` sets low-swappiness
-  sysctls, a `user.slice` memory/CPU ceiling, and merges safe `.wslconfig` keys;
-  `status`/`down` inspect/remove. The only manual step is `wsl --shutdown` on
-  Windows for the `.wslconfig` half to take effect.
+  sysctls, a `user.slice` memory/CPU ceiling, a **soft `init.scope` `MemoryHigh`
+  backstop** (the cgroup the `wsl.exe` session — and so every agent/emulator —
+  actually runs in; the `user.slice` ceiling alone never binds it), and merges
+  safe `.wslconfig` keys; `status`/`down` inspect/remove. The only manual step is
+  `wsl --shutdown` on Windows for the `.wslconfig` half to take effect.
+- **Reap stale records.** `node scripts/serve.js prune [--worktrees]` removes
+  `.serve/*.pid` records for processes that are gone, so a stopped emulator or
+  dead dev server can't misreport a live heavy tier; `stop-all` at session end
+  actually frees the RAM.
 - **The tmpfs cache is RAM.** The RAM-backed cache (`npm run ramdisk`) competes
   with the emulator and agents; keep it small (`AGENT_TMPFS_PERCENT=25`) while
   running device tiers.

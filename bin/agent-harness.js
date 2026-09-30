@@ -1472,10 +1472,17 @@ function doctor(target) {
     if (tuning.swappiness != null && tuning.swappiness > 20) {
       add("warn", "wsl tuning", `vm.swappiness=${tuning.swappiness} — run \`sudo scripts/wsl-tune.sh apply\` (targets 10)`);
     }
-    if (!tuning.sliceApplied) {
+    if (!tuning.workloadCapped && capacity.isWsl()) {
+      add(
+        "warn",
+        "wsl tuning",
+        "no MemoryHigh/MemoryMax on init.scope — the cgroup agents/emulators actually run in " +
+          "(a ceiling on user.slice is inert here). Run `sudo scripts/wsl-tune.sh apply`"
+      );
+    } else if (!tuning.sliceApplied) {
       add("warn", "wsl tuning", "no user.slice resource ceiling — run `sudo scripts/wsl-tune.sh apply`");
     } else if (tuning.swappiness != null && tuning.swappiness <= 20) {
-      add("ok", "wsl tuning", "swappiness + user.slice ceiling applied");
+      add("ok", "wsl tuning", `swappiness + user.slice ceiling + init.scope backstop applied`);
     }
   } catch (err) {
     add("ok", "capacity", `not sampled (${err && err.message ? err.message : "unavailable"})`);

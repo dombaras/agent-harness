@@ -7760,6 +7760,7 @@ test("wsl-tune status reports and apply --dry-run changes nothing", () => {
     AGENT_WSL_TUNE_FORCE: "1",
     AGENT_WSL_TUNE_SYSCTL: path.join(dir, "99-agent-wsl.conf"),
     AGENT_WSL_TUNE_SLICE_DIR: path.join(dir, "user.slice.d"),
+    AGENT_WSL_TUNE_UNIT_DIR: path.join(dir, "units"),
     AGENT_WSL_CONFIG: path.join(dir, ".wslconfig"),
   });
   const status = spawnSync("bash", [WSL_TUNE, "status"], { encoding: "utf8", env });
@@ -7773,8 +7774,11 @@ test("wsl-tune status reports and apply --dry-run changes nothing", () => {
   assert.strictEqual(dry.status, 0, dry.stdout + dry.stderr);
   assert.match(dry.stdout, /would write/);
   assert.match(dry.stdout, /MemoryMax=9G/);
+  assert.match(dry.stdout, /agent-wsl-backstop\.service/, "the soft init.scope backstop is written");
+  assert.match(dry.stdout, /set-property init\.scope MemoryHigh/, "the backstop targets init.scope");
   assert.ok(!exists(path.join(dir, "99-agent-wsl.conf")), "dry-run writes nothing");
   assert.ok(!exists(path.join(dir, "user.slice.d")), "dry-run creates no slice dir");
+  assert.ok(!exists(path.join(dir, "units")), "dry-run creates no unit dir");
 });
 
 test("wsl-tune wslconfig merges the host keys into .wslconfig", () => {
@@ -7811,4 +7815,149 @@ test("[drift-guard] serve caps + wsl-tune are wired end to end", () => {
   assert.match(tune, /vm\.swappiness=10/, "wsl-tune lowers swappiness");
   const bin = read(path.join(__dirname, "..", "bin", "agent-harness.js"));
   assert.match(bin, /wsl-tune/, "the wsl-tune script is wired into the deploy");
+});
+
+test("capacity: envelope declares the heavy-tier cap and the init.scope backstop", () => {
+  const env = capacity.parseEnvelope(
+    read(path.join(h.TEMPLATES_DIR, ".agents", "memory", "orchestration.md"))
+  );
+  assert.strictEqual(env.heavyMemMaxMb, 5120, "a default heavy-tier cgroup cap is declared");
+  assert.strictEqual(env.backstopMemHighMb, 8192, "a soft init.scope backstop is declared");
+  assert.strictEqual(capacity.DEFAULT_ENVELOPE.heavyMemMaxMb, 5120, "default fallback matches");
+});
+
+test("capacity: readTuning detects whether the real workload cgroup is capped", () => {
+  const dir = tmpdir();
+  const cg = path.join(dir, "cgroup");
+  fs.mkdirSync(path.join(cg, "init.scope"), { recursive: true });
+  fs.mkdirSync(path.join(cg, "user.slice"), { recursive: true });
+  fs.writeFileSync(path.join(cg, "user.slice", "memory.max"), "9663676416\n");
+  const unit = path.join(dir, "agent-wsl-backstop.service");
+  const prev = {
+    root: process.env.AGENT_TUNING_CGROUP_ROOT,
+    unit: process.env.AGENT_TUNING_BACKSTOP_UNIT,
+  };
+  process.env.AGENT_TUNING_CGROUP_ROOT = cg;
+  process.env.AGENT_TUNING_BACKSTOP_UNIT = unit;
+  try {
+    fs.writeFileSync(path.join(cg, "init.scope", "memory.high"), "max\n");
+    fs.writeFileSync(path.join(cg, "init.scope", "memory.max"), "max\n");
+    assert.strictEqual(
+      capacity.readTuning().workloadCapped,
+      false,
+      "an uncapped init.scope is detected (the user.slice ceiling does not cover it)"
+    );
+    fs.writeFileSync(path.join(cg, "init.scope", "memory.high"), "8589934592\n");
+    assert.strictEqual(
+      capacity.readTuning().workloadCapped,
+      true,
+      "a finite init.scope MemoryHigh counts as capped"
+    );
+    assert.strictEqual(capacity.readTuning().backstopApplied, false, "no backstop unit yet");
+    fs.writeFileSync(unit, "[Service]\n");
+    assert.strictEqual(
+      capacity.readTuning().backstopApplied,
+      true,
+      "an installed backstop unit counts as applied"
+    );
+  } finally {
+    if (prev.root === undefined) delete process.env.AGENT_TUNING_CGROUP_ROOT;
+    else process.env.AGENT_TUNING_CGROUP_ROOT = prev.root;
+    if (prev.unit === undefined) delete process.env.AGENT_TUNING_BACKSTOP_UNIT;
+    else process.env.AGENT_TUNING_BACKSTOP_UNIT = prev.unit;
+  }
+});
+
+test("serve.js prune removes dead records and keeps live ones", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, ".serve"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".serve", "dead.pid"),
+    JSON.stringify({ pid: 999999, name: "dead", cmd: "npm run dev" })
+  );
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "ignore" });
+  fs.writeFileSync(
+    path.join(target, ".serve", "live.pid"),
+    JSON.stringify({ pid: child.pid, name: "live", cmd: "node srv.js" })
+  );
+  const serve = path.join(h.TEMPLATES_DIR, "scripts", "serve.js");
+  try {
+    const r = spawnSync(process.execPath, [serve, "prune"], { cwd: target, encoding: "utf8" });
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    assert.ok(!exists(path.join(target, ".serve", "dead.pid")), "dead record removed");
+    assert.ok(exists(path.join(target, ".serve", "live.pid")), "live record kept");
+    assert.match(r.stdout, /removed 1 stale record\(s\), kept 1 live/);
+  } finally {
+    try {
+      process.kill(child.pid, "SIGKILL");
+    } catch (_) {
+      /* already gone */
+    }
+  }
+});
+
+const HAS_SYSTEMD_USER = (() => {
+  try {
+    const r = spawnSync("systemctl", ["--user", "is-system-running"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return r.status === 0 || /running|degraded|starting|maintenance/.test(r.stdout || "");
+  } catch (_) {
+    return false;
+  }
+})();
+
+test(
+  "serve.js caps a heavy tier by default and runs it under user.slice",
+  { skip: !HAS_SYSTEMD_USER ? "no systemd --user bus" : false },
+  () => {
+    const target = tmpdir();
+    const serve = path.join(h.TEMPLATES_DIR, "scripts", "serve.js");
+    // "next dev" classifies as heavy; the trailing comment keeps the command
+    // trivial so the launch is quick, while the cap path is fully exercised.
+    const r = spawnSync(
+      process.execPath,
+      [serve, "start", "--cmd", "sleep 20 # next dev", "--name", "capdemo"],
+      {
+        cwd: target,
+        encoding: "utf8",
+        env: Object.assign({}, process.env, { AGENT_CAPACITY_DISABLE: "1" }),
+      }
+    );
+    try {
+      assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+      assert.match(r.stdout, /mem≤5120M/, "the default envelope cap is announced");
+      const info = JSON.parse(read(path.join(target, ".serve", "capdemo.pid")));
+      assert.ok(info.unit, "the heavy tier ran as a transient unit");
+      assert.strictEqual(info.memMax, "5120M", "the envelope default cap is recorded");
+      const cg = spawnSync("systemctl", ["--user", "show", info.unit, "-p", "ControlGroup", "--value"], {
+        encoding: "utf8",
+      }).stdout.trim();
+      assert.match(
+        cg,
+        /\/user\.slice\//,
+        "the heavy tier runs under user.slice, where the wsl-tune ceiling binds"
+      );
+    } finally {
+      spawnSync(process.execPath, [serve, "stop", "--name", "capdemo"], {
+        cwd: target,
+        encoding: "utf8",
+      });
+    }
+  }
+);
+
+test("[drift-guard] serve caps heavy tiers by default and wsl-tune installs the backstop", () => {
+  const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));
+  assert.match(serve, /--no-cap/, "serve.js exposes --no-cap");
+  assert.match(serve, /AGENT_SERVE_NO_CAP/, "serve.js has an env opt-out");
+  assert.match(serve, /heavyMemMaxMb/, "serve.js applies the envelope's default heavy cap");
+  assert.match(serve, /case "prune"/, "serve.js exposes prune");
+  const tune = read(WSL_TUNE);
+  assert.match(tune, /agent-wsl-backstop\.service/, "wsl-tune installs the init.scope backstop unit");
+  assert.match(tune, /set-property init\.scope MemoryHigh/, "the backstop targets init.scope");
+  const cap = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "capacity-lib.js"));
+  assert.match(cap, /workloadCapped/, "capacity-lib detects whether the workload cgroup is capped");
 });

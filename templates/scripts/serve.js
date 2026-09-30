@@ -26,21 +26,29 @@
  * server never became ready.
  *
  * Usage:
- *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force] [--mem-max 4G] [--cpu-max 250%]
+ *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
  *   node scripts/serve.js stop  [--name <label>] [--port <n>]
  *   node scripts/serve.js stop-all
  *   node scripts/serve.js list
+ *   node scripts/serve.js prune [--worktrees]
  *
  * - start: runs <cmd> detached (own hidden console on win32); polls --url/--port
  *   until ready or --timeout. Exits 0 on ready; exits 1 (after printing the log
  *   tail) on timeout. Always prints a "launching" line first + heartbeats while
  *   waiting, so an in-progress start is never silent.
- * - --mem-max / --cpu-max (systemd user bus available): the process tree runs as
- *   a transient `systemd-run --user` unit with MemoryMax/CPUQuota, so a runaway
- *   is throttled or OOM-killed *inside its cgroup* instead of taking the whole
- *   WSL VM into swap-thrash (the 2026-09-29 freeze). Graceful no-op where
- *   systemd is absent; `stop` tears the unit down.
+ * - A heavy command (emulator, Metro/Next dev, live tier) is capped BY DEFAULT:
+ *   it runs as a transient `systemd-run --user` unit (under `user.slice`) with
+ *   MemoryMax from the envelope (`heavy_mem_max_mb`, default 5 GB — above the
+ *   observed peak, so normal E2E is never throttled), so a runaway is
+ *   throttled/OOM-killed *inside its cgroup* instead of taking the whole WSL VM
+ *   into swap-thrash (the 2026-09-29 freeze). `--no-cap` opts out, `--mem-max`
+ *   overrides. Graceful no-op where systemd is absent; `stop` tears the unit down.
+ * - --mem-max / --cpu-max (systemd user bus available): MemoryMax/CPUQuota on
+ *   that transient unit. Passes the caller's cwd + env through.
  * - stop: kills the recorded PID and its process tree, removes the PID file.
+ * - prune: removes `.serve/*.pid` records whose process is gone (`--worktrees`
+ *   also clears sibling agent worktrees), so a stale record cannot misreport a
+ *   live heavy tier. Live servers are never touched.
  * - PID files + logs + the generated launcher live in <project>/.serve/
  *   (excluded clone-locally by the harness).
  * - A child's stdout is buffered while it runs; the log flushes on exit, so a
@@ -82,7 +90,7 @@ function parseArgs(argv) {
       a === "--cpu-max"
     ) {
       flags[a] = argv[++i];
-    } else if (a === "--heavy" || a === "--force") {
+    } else if (a === "--heavy" || a === "--force" || a === "--no-cap" || a === "--worktrees") {
       flags[a] = true;
     } else {
       flags._.push(a);
@@ -318,19 +326,33 @@ async function start(flags) {
 
   const fullCmd = `${flags["--cmd"]} > "${outLog}" 2> "${errLog}"`;
 
-  // Resource caps: when requested and a systemd user bus exists, run the tree as
-  // a transient unit so MemoryMax/CPUQuota bound it in its own cgroup. A runaway
-  // then degrades or OOMs inside the slice instead of dragging the whole VM into
-  // swap-thrash. On win32 / without systemd the flags are ignored with a warning.
-  const wantLimits = !!(flags["--mem-max"] || flags["--cpu-max"]);
+  // Resource caps: heavy tiers are capped BY DEFAULT and run as a transient
+  // systemd user unit (under `user.slice`), so a runaway is throttled/OOM-killed
+  // inside its cgroup instead of dragging the whole VM into swap-thrash. This is
+  // also what makes the `user.slice` ceiling installed by `wsl-tune.sh` actually
+  // bind heavy work: WSL's `wsl.exe` session lives in `init.scope`, which that
+  // ceiling does NOT cover, so a heavy tree launched inline would escape it.
+  // Non-heavy processes are left alone; `--no-cap` opts a heavy tier out;
+  // `--mem-max` overrides the default envelope cap. Without a systemd user bus
+  // the cap degrades to a warning (Linux+systemd only).
+  const capDisabled = process.env.AGENT_SERVE_NO_CAP === "1";
+  const shouldCap =
+    !flags["--no-cap"] &&
+    !capDisabled &&
+    (!!flags["--mem-max"] || !!flags["--cpu-max"] || !!heavyLabel);
+  let memMax = flags["--mem-max"] || null;
+  if (!memMax && heavyLabel && shouldCap) {
+    const envelope = capacity.readEnvelope(process.cwd());
+    if (envelope.heavyMemMaxMb > 0) memMax = `${envelope.heavyMemMaxMb}M`;
+  }
   let unit = null;
   let pid = null;
-  if (wantLimits) {
+  if (shouldCap) {
     if (systemdUserAvailable()) {
       const safe = String(name).replace(/[^a-zA-Z0-9_.-]/g, "_");
       unit = `agent-serve-${safe}-${Date.now()}`;
       const args = ["--user", "--unit", unit, "--collect"];
-      if (flags["--mem-max"]) args.push("-p", `MemoryMax=${flags["--mem-max"]}`);
+      if (memMax) args.push("-p", `MemoryMax=${memMax}`);
       if (flags["--cpu-max"]) args.push("-p", `CPUQuota=${flags["--cpu-max"]}`);
       // A transient unit gets the user manager's env + cwd, not the caller's.
       // Pass both through so the command resolves and behaves exactly as it
@@ -358,7 +380,7 @@ async function start(flags) {
       }
     } else {
       console.warn(
-        "serve start: --mem-max/--cpu-max ignored — no systemd user bus (Linux+systemd only)"
+        "serve start: resource caps ignored — no systemd user bus (Linux+systemd only)"
       );
     }
   }
@@ -380,6 +402,11 @@ async function start(flags) {
     }
   }
 
+  // Record the cap only when it was actually applied (a transient unit). An
+  // uncapped fallback (no systemd, systemd-run failed) must not claim mem≤N.
+  const appliedMemMax = unit ? memMax : null;
+  const appliedCpuMax = unit ? flags["--cpu-max"] || null : null;
+
   fs.writeFileSync(
     pidFile(name),
     JSON.stringify(
@@ -391,8 +418,8 @@ async function start(flags) {
         url: flags["--url"] || null,
         heavy: !!heavyLabel,
         unit: unit || null,
-        memMax: flags["--mem-max"] || null,
-        cpuMax: flags["--cpu-max"] || null,
+        memMax: appliedMemMax,
+        cpuMax: appliedCpuMax,
         startedAt: new Date().toISOString(),
       },
       null,
@@ -402,7 +429,8 @@ async function start(flags) {
   );
 
   console.log(
-    `serve start: launching ${name} (pid ${pid || "?"}${unit ? `, unit ${unit}` : ""}) → ${outLog}`
+    `serve start: launching ${name} (pid ${pid || "?"}${unit ? `, unit ${unit}` : ""}` +
+      `${appliedMemMax ? `, mem≤${appliedMemMax}` : ""}) → ${outLog}`
   );
   if (process.platform === "win32") console.log(`  launcher: ${launcherPath(name)}`);
 
@@ -487,6 +515,68 @@ function stopAll() {
   for (const name of names) stop({ "--name": name });
 }
 
+/* Sibling worktree `.serve/` dirs, when this checkout lives under the harness
+ * layout `<repo>/../.worktrees/<repo>/<id>`. Dead pid files there are invisible
+ * to a `prune` run in the main checkout, yet they misreport live serves and hide
+ * which heavy tiers were left behind — so `prune --worktrees` clears them. */
+function siblingServeDirs() {
+  const m = process.cwd().match(/^(.*[\\/])\.worktrees[\\/]([^\\/]+)[\\/][^\\/]+/);
+  if (!m) return [];
+  const base = path.join(m[1], ".worktrees", m[2]);
+  const out = [];
+  try {
+    for (const id of fs.readdirSync(base)) {
+      const dir = path.join(base, id, ".serve");
+      if (fs.existsSync(dir)) out.push(dir);
+    }
+  } catch (_) {
+    /* no worktrees — nothing to add */
+  }
+  return out;
+}
+
+/* Remove `.serve/*.pid` records whose process is gone (and the win32 launcher
+ * that went with them). Dead records cost no RAM, but they inflate the live
+ * count, hide a stopped emulator, and let a stale `list` mislead an operator
+ * about what is actually consuming the VM. Live servers are never touched. */
+function prune(flags) {
+  const dirs = [SERVE_DIR];
+  if (flags["--worktrees"]) dirs.push(...siblingServeDirs());
+  let removed = 0;
+  let kept = 0;
+  for (const dir of dirs) {
+    let files;
+    try {
+      files = fs.readdirSync(dir).filter((f) => f.endsWith(".pid"));
+    } catch (_) {
+      continue;
+    }
+    for (const f of files) {
+      const p = path.join(dir, f);
+      const name = f.slice(0, -4);
+      let info = {};
+      try {
+        info = JSON.parse(fs.readFileSync(p, "utf8"));
+      } catch (_) {
+        info = {};
+      }
+      if (isAlive(info.pid)) {
+        kept++;
+        continue;
+      }
+      try {
+        fs.unlinkSync(p);
+        fs.unlinkSync(path.join(dir, name + ".cmd"));
+      } catch (_) {
+        /* already gone */
+      }
+      removed++;
+      console.log(`pruned stale ${path.join(dir, f)}`);
+    }
+  }
+  console.log(`prune: removed ${removed} stale record(s), kept ${kept} live`);
+}
+
 function isAlive(pid) {
   if (!pid || pid === "?") return false;
   try {
@@ -554,9 +644,12 @@ function main() {
     case "list":
       list();
       break;
+    case "prune":
+      prune(flags);
+      break;
     default:
       console.error(
-        'usage: node scripts/serve.js <start|stop|stop-all|list> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force] [--mem-max 4G] [--cpu-max 250%]'
+        'usage: node scripts/serve.js <start|stop|stop-all|list|prune> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--worktrees] [--mem-max 4G] [--cpu-max 250%]'
       );
       process.exitCode = 1;
   }

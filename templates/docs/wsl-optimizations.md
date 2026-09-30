@@ -140,21 +140,28 @@ not.**
 The envelope is project-owned and machine-readable in
 `.agents/memory/orchestration.md` (`min_available_mem_mb`, `max_swap_used_pct`,
 `max_live_serves`, `max_heavy_tiers`, `idle_reap_minutes`, `emulator_ram_mb`,
-`heavy_lock_ttl_minutes`). One owner of the numbers, read by every surface:
+`heavy_mem_max_mb`, `backstop_mem_high_mb`, `heavy_lock_ttl_minutes`). One owner
+of the numbers, read by every surface:
 
 | Surface | Role |
 | --- | --- |
-| `scripts/qa/capacity-lib.js` | samples `/proc` + PSI + `.serve/`, parses the envelope, owns the machine-wide heavy lock |
-| `scripts/serve.js start` | **refuses** a heavy launch that would exceed the envelope or a held heavy lock (naming what is up); `--force` overrides; `--mem-max`/`--cpu-max` cap the tree; `list` shows capacity + ages + caps |
+| `scripts/qa/capacity-lib.js` | samples `/proc` + PSI + `.serve/`, parses the envelope, owns the machine-wide heavy lock, detects whether the real workload cgroup is capped |
+| `scripts/serve.js start` | **refuses** a heavy launch that would exceed the envelope or a held heavy lock (naming what is up); `--force` overrides; caps a heavy tier **by default** (transient `user.slice` unit, `heavy_mem_max_mb`); `--mem-max`/`--cpu-max` override; `--no-cap` opts out; `list` shows capacity + ages + caps |
+| `scripts/serve.js prune` | removes `.serve/*.pid` records whose process is gone (all agent worktrees with `--worktrees`) so a stopped heavy tier is never misreported as live |
 | `scripts/qa/check-capacity.js` (`npm run test:capacity`) | reports free RAM/swap/load/PSI/live serves; **fails** when the envelope is already exceeded; skips on non-Linux / `AGENT_CAPACITY_DISABLE=1` |
 | `context-guard` plugin | blocks an over-envelope `serve.js start`, nudges any other heavy command, logs `kind:"capacity"` to `.agents/guard-events.jsonl` |
-| `agent-harness doctor` | capacity + **PSI** + host-aware `.wslconfig` advice + in-WSL tuning status |
+| `agent-harness doctor` | capacity + **PSI** + host-aware `.wslconfig` advice + in-WSL tuning status (including whether the cgroup agents actually run in is capped) |
 
-`serve.js --mem-max/--cpu-max` runs the process tree as a transient
-`systemd-run --user` unit with `MemoryMax`/`CPUQuota`, so a runaway is throttled
-or OOM-killed **inside its cgroup** instead of dragging the VM into swap-thrash;
-it passes the caller's cwd + environment through and is a graceful no-op where
-systemd is absent.
+A heavy launch (`serve.js start` on an emulator / Metro / Next dev / live tier)
+is capped **by default** — not only when `--mem-max` is passed. It runs as a
+transient `systemd-run --user` unit under `user.slice` with `MemoryMax` from the
+envelope (`heavy_mem_max_mb`, default 5 GB, deliberately above the observed
+emulator peak so normal E2E is never throttled). A runaway is then
+throttled/OOM-killed **inside its cgroup** instead of dragging the VM into
+swap-thrash; it passes the caller's cwd + environment through and is a graceful
+no-op where systemd is absent. `--mem-max`/`--cpu-max` override the default,
+`--no-cap` opts out. Running heavy tiers under `user.slice` is also what makes
+the `user.slice` ceiling below actually bind them (see the backstop note).
 
 The machine-wide heavy lock (`~/.agent-harness/heavy.lock`, TTL + dead-pid
 detection) is what lets many agents coexist while guaranteeing **one
@@ -171,6 +178,15 @@ does it all (auto-sudo where passwordless), idempotently:
 - **user.slice ceiling** (`/etc/systemd/system/user.slice.d/90-agent-cap.conf`):
   `MemoryHigh=8G`, `MemoryMax=9G`, `CPUQuota=800%` — a backstop so user work can
   never consume the whole VM and starve the kernel/relay.
+- **init.scope soft backstop** (`agent-wsl-backstop.service`, enabled): a
+  `MemoryHigh` (`backstop_mem_high_mb`, default 8 GB) on the cgroup the workload
+  actually lives in. This is the important correction: WSL's `wsl.exe` session —
+  and so every agent, emulator, and dev server — runs in **`init.scope`**, a
+  sibling of `user.slice`, **not** a child, so the ceiling above never binds it.
+  `MemoryHigh` is deliberately *soft*: as the line is approached the kernel
+  reclaims and throttles instead of thrash-freezing, and it never OOM-kills.
+  Verified live: agents/emulators show `ControlGroup=/init.scope` while the
+  `user.slice` drop-in applies to a cgroup holding ~4 MB.
 - **`.wslconfig`** keys merged safely by `scripts/qa/wslconfig-merge.js`
   (processors = host CPUs − 4, swap 4 GB, 2 h idle timeout, reclaim on); the
   only manual step is `wsl --shutdown` from Windows PowerShell, because the VM
