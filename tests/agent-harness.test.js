@@ -365,6 +365,84 @@ test("opencode.json merge ships agent.build.steps as an ADD-ONLY default", () =>
   assert.strictEqual(merged.agent.explore.model, "custom/explore");
 });
 
+test("opencode.json ships a least-privilege external-directory policy", () => {
+  const target = tmpdir();
+  const workspaceRoot = h.workspaceRootFor(target);
+  const merged = JSON.parse(
+    h.mergeOpencodeJson(target, {
+      PROJECT_NAME: "Demo",
+      PROJECT_DOMAIN: "x",
+      WORKSPACE_ROOT: workspaceRoot,
+    })
+  );
+  const ext = merged.permission.external_directory;
+
+  // Work + test artifacts are auto-allowed (the F-291 Maestro prompt fix).
+  assert.strictEqual(ext["/tmp/**"], "allow");
+  assert.strictEqual(ext["~/.maestro/**"], "allow", "Maestro E2E artifacts are auto-allowed");
+  assert.strictEqual(ext["~/.android/**"], "allow", "the emulator AVD is auto-allowed");
+  assert.strictEqual(ext[`${workspaceRoot}/**`], "allow", "repo + sibling worktrees are allowed");
+
+  // Credential stores are denied even though the work root is allowed. Because
+  // the last matching rule wins, the denies must follow the allows in the file.
+  for (const p of [
+    "~/.ssh/**",
+    "~/.aws/**",
+    "~/.gnupg/**",
+    "~/.config/gh/**",
+    "~/.netrc",
+    "~/.git-credentials",
+    "~/.config/opencode/auth.json",
+  ]) {
+    assert.strictEqual(ext[p], "deny", `${p} must be denied`);
+  }
+  assert.ok(
+    !Object.prototype.hasOwnProperty.call(ext, "*"),
+    "no blanket allow: an unmatched external path must still prompt"
+  );
+
+  // Write separation: the agent cannot rewrite its own policy/config or system.
+  assert.strictEqual(merged.permission.edit["~/.config/opencode/**"], "deny");
+  assert.strictEqual(merged.permission.edit["/etc/**"], "deny");
+  assert.strictEqual(merged.permission.bash["sudo *"], "deny");
+});
+
+test("opencode.json permission merge keeps a project's own rules", () => {
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify(
+      { permission: { external_directory: { "~/custom/**": "allow" }, edit: "deny" } },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+  const merged = JSON.parse(
+    h.mergeOpencodeJson(target, {
+      PROJECT_NAME: "Demo",
+      PROJECT_DOMAIN: "x",
+      WORKSPACE_ROOT: "/w",
+    })
+  );
+  assert.strictEqual(merged.permission.edit, "deny", "a project's scalar rule is preserved");
+  assert.strictEqual(
+    merged.permission.external_directory["~/custom/**"],
+    "allow",
+    "a project's external_directory rule is added"
+  );
+  assert.strictEqual(
+    merged.permission.external_directory["~/.maestro/**"],
+    "allow",
+    "the harness baseline still applies"
+  );
+  assert.strictEqual(
+    merged.permission.external_directory["~/.ssh/**"],
+    "deny",
+    "secret denies survive the merge"
+  );
+});
+
 test("update is non-interactive (never prompts)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: false, isUpdate: true });

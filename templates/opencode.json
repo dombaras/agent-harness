@@ -10,5 +10,46 @@
     "explore": {
       "model": "opencode-go/glm-5.3-flash"
     }
+  },
+  "permission": {
+    "external_directory": {
+      "{{WORKSPACE_ROOT}}/**": "allow",
+      "/tmp/**": "allow",
+      "~/AppData/Local/Temp/**": "allow",
+      "~/.maestro/**": "allow",
+      "~/.android/**": "allow",
+      "~/.local/share/opencode/**": "allow",
+      "~/.config/opencode/**": "allow",
+      "~/.config/agent-harness/**": "allow",
+      "/etc/**": "allow",
+      "/proc/**": "allow",
+      "~/.ssh/**": "deny",
+      "~/.aws/**": "deny",
+      "~/.gnupg/**": "deny",
+      "~/.config/gh/**": "deny",
+      "~/.docker/**": "deny",
+      "~/.kube/**": "deny",
+      "~/.netrc": "deny",
+      "~/.git-credentials": "deny",
+      "~/.config/opencode/auth.json": "deny",
+      "~/.local/share/opencode/auth.json": "deny"
+    },
+    "edit": {
+      "~/.config/opencode/**": "deny",
+      "~/.local/share/opencode/**": "deny",
+      "~/.config/agent-harness/**": "deny",
+      "~/.ssh/**": "deny",
+      "~/.aws/**": "deny",
+      "~/.gnupg/**": "deny",
+      "~/.config/gh/**": "deny",
+      "/etc/**": "deny",
+      "/proc/**": "deny"
+    },
+    "bash": {
+      "sudo *": "deny",
+      "rm -rf /*": "deny",
+      "rm -rf ~": "deny",
+      "rm -rf ~/*": "deny"
+    }
   }
 }

@@ -183,6 +183,16 @@ function ask(question, fallback, yes) {
   });
 }
 
+/* The work root a target's sibling worktrees live under: the target's parent
+ * directory — e.g. `/home/ronen/develop` for `~/develop/PublicVirtualLibrary`.
+ * Normalized to forward slashes so it is a valid glob on every platform. This
+ * is substituted into `templates/opencode.json` as `{{WORKSPACE_ROOT}}` so the
+ * `external_directory` policy allows the repo + its sibling worktrees without
+ * hardcoding a machine-specific path. */
+function workspaceRootFor(target) {
+  return path.dirname(path.resolve(target)).split(path.sep).join("/");
+}
+
 function resolveVars(target, args) {
   const existing = readConfig(target);
   const projectName = args["--name"] || existing.projectName || path.basename(target);
@@ -191,7 +201,11 @@ function resolveVars(target, args) {
     projectName,
     projectDomain,
     existing,
-    VARIABLES: { PROJECT_NAME: projectName, PROJECT_DOMAIN: projectDomain },
+    VARIABLES: {
+      PROJECT_NAME: projectName,
+      PROJECT_DOMAIN: projectDomain,
+      WORKSPACE_ROOT: workspaceRootFor(target),
+    },
   };
 }
 
@@ -232,7 +246,37 @@ function mergeOpencodeJson(target, variables) {
     }
     merged.agent = agent;
   }
+  // The permission block is a least-privilege baseline (external_directory
+  // allowlist + secret denies). Deep-merge it so a project's own permission
+  // keys are never dropped: within a key the harness rules come first and the
+  // project's appended after (project rules win on a pattern collision), and a
+  // project's scalar rule (e.g. `edit: "deny"`) replaces the harness object.
+  if (harness.permission && typeof harness.permission === "object" && !Array.isArray(harness.permission)) {
+    merged.permission = mergePermission(harness.permission, existing.permission);
+  }
   return JSON.stringify(merged, null, 2) + "\n";
+}
+
+/* Merge a harness permission block with a project's. Per permission key:
+ * plain-object rules are shallow-merged (project last, so it wins collisions);
+ * anything else (a scalar like `"deny"`) is taken from the project when
+ * present. Keys only the harness defines are added. */
+function mergePermission(harnessPerm, priorPerm) {
+  const prior =
+    priorPerm && typeof priorPerm === "object" && !Array.isArray(priorPerm) ? priorPerm : {};
+  const out = { ...harnessPerm };
+  for (const [name, rule] of Object.entries(prior)) {
+    const base = out[name];
+    const bothObjects =
+      base &&
+      typeof base === "object" &&
+      !Array.isArray(base) &&
+      rule &&
+      typeof rule === "object" &&
+      !Array.isArray(rule);
+    out[name] = bothObjects ? { ...base, ...rule } : rule;
+  }
+  return out;
 }
 
 // Harness-shipped npm scripts auto-wired into the target project's package.json
@@ -831,7 +875,11 @@ async function deploy(target, opts) {
   if (!projectDomain && !isUpdate && !yes && process.stdin.isTTY) {
     projectDomain = await ask(`Project domain (one line) for "${projectName}": `, "");
   }
-  const VARIABLES = { PROJECT_NAME: projectName, PROJECT_DOMAIN: projectDomain };
+  const VARIABLES = {
+    PROJECT_NAME: projectName,
+    PROJECT_DOMAIN: projectDomain,
+    WORKSPACE_ROOT: workspaceRootFor(target),
+  };
 
   // All writes/commits run under a per-target deploy lock (a no-op outside a git
   // repo and on dry-run) so two updates can never interleave their read-modify-
@@ -1913,7 +1961,9 @@ module.exports = {
   sha256,
   readConfig,
   resolveVars,
+  workspaceRootFor,
   mergeOpencodeJson,
+  mergePermission,
   deploy,
   migrateBacklog,
   splitCells,
