@@ -126,6 +126,16 @@ mechanical guards read it.
   runaway is throttled/OOM-killed in its own cgroup instead of thrashing the VM.
   `--mem-max 4G --cpu-max 250%` overrides; `--no-cap` opts out. Graceful no-op
   without systemd.
+- **Cap a heavy ONE-SHOT too.** A build or a heavy test tier is heavy but not a
+  long-lived tier, so it may run alongside the device tier — but it must be
+  capped. Run it synchronously through `node scripts/serve.js run --cmd "<cmd>"
+  [--mem-max 3G]` (a transient systemd scope with a `MemoryMax`), never inline.
+  The APK build (`scripts/qa/mobile-e2e/build-apk.sh`) does this by default. An
+  inline `./gradlew assembleRelease` is the 2026-09-30 freeze.
+- **One budget per tier group.** Members of a `serve.js --group` (the `mobile`
+  emulator + dev server) share ONE combined `group_mem_max_mb` budget; `serve.js`
+  tightens a new member to the group's remainder so the pair cannot each take
+  5 GB and fill the VM.
 - **Know the pressure.** `npm run test:capacity` (`node scripts/qa/check-capacity.js`)
   reports free RAM / swap / **PSI memory pressure** / live serves and fails when
   the envelope is already exceeded. `agent-harness doctor` adds host-aware

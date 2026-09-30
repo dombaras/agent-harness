@@ -22,6 +22,20 @@ hidden console (Windows), records the PID under `.serve/`, and polls the
 readiness target with live heartbeats. The tool call returns as soon as the
 server is ready.
 
+A **one-shot** heavy command (the APK/Gradle build, a heavy test tier) must run
+**capped** too — synchronously, via `run`:
+
+```bash
+node scripts/serve.js run --cmd "<one-shot command>" [--name <label>] [--mem-max 3G] [--cpu-max 600%]
+```
+
+`run` executes the command in a transient systemd scope with a `MemoryMax`,
+streams its output, and returns its exit code; a build that balloons is
+OOM-killed inside its own cgroup instead of thrashing the VM. It leaves no
+`.serve/` record (there is nothing to stop). An **inline** `./gradlew
+assembleRelease` with no cgroup is exactly the 2026-09-30 freeze (Gradle + the
+emulator + the dev server filled the 10 GB VM).
+
 ## Booting the device tier
 
 **One command brings the whole tier up** (adb server + emulator + app build/install
@@ -75,6 +89,21 @@ the emulator and the dev server are two heavy processes that legitimately run
 together for device E2E, so they share ONE budgeted tier instead of tripping the
 single-heavy-tier lock. Start the dev server in the same group (see below). A
 third, unrelated heavy tier is still refused.
+
+The group shares ONE **combined** memory budget (`group_mem_max_mb`, default 7 GB):
+each member's per-process cap is generous (a 2048 MB AVD peaks ~4.4 GB RSS), so
+`serve.js` tightens a new member to the group's remaining budget instead of letting
+emulator + dev server each take 5 GB and fill the VM. An explicit `--mem-max` wins;
+a near-exhausted budget refuses (`--force` overrides).
+
+### Building the APK (always capped)
+
+`scripts/qa/mobile-e2e/build-apk.sh` builds the release APK: it runs `expo prebuild`
+only when `mobile/android/` is absent, patches `usesCleartextTraffic` into the
+generated manifest, right-sizes Gradle (no daemon, one worker, one ABI, 1 GB heap),
+and runs `assembleRelease` through `serve.js run` (default `mem≤3G`). Run the
+build BEFORE the dev server is up, and never call `./gradlew assembleRelease`
+inline — that is the 2026-09-30 freeze. `device-up.sh` calls it automatically:
 
 Every adb call is `timeout`-wrapped: a wedged adb fails fast instead of hanging
 the tool. `run-maestro.js` also preflights adb (10 s probe) and exits with the

@@ -140,16 +140,17 @@ not.**
 The envelope is project-owned and machine-readable in
 `.agents/memory/orchestration.md` (`min_available_mem_mb`, `max_swap_used_pct`,
 `max_live_serves`, `max_heavy_tiers`, `idle_reap_minutes`, `emulator_ram_mb`,
-`heavy_mem_max_mb`, `backstop_mem_high_mb`, `heavy_lock_ttl_minutes`). One owner
-of the numbers, read by every surface:
+`heavy_mem_max_mb`, `group_mem_max_mb`, `backstop_mem_high_mb`,
+`heavy_lock_ttl_minutes`). One owner of the numbers, read by every surface:
 
 | Surface | Role |
 | --- | --- |
-| `scripts/qa/capacity-lib.js` | samples `/proc` + PSI + `.serve/`, parses the envelope, owns the machine-wide heavy lock, detects whether the real workload cgroup is capped |
-| `scripts/serve.js start` | **refuses** a heavy launch that would exceed the envelope or a held heavy lock (naming what is up); `--force` overrides; caps a heavy tier **by default** (transient `user.slice` unit, `heavy_mem_max_mb`); `--mem-max`/`--cpu-max` override; `--no-cap` opts out; `list` shows capacity + ages + caps |
+| `scripts/qa/capacity-lib.js` | samples `/proc` + PSI + `.serve/`, parses the envelope, owns the machine-wide heavy lock, classifies heavy commands (long-lived vs one-shot), detects whether the real workload cgroup is capped |
+| `scripts/serve.js start` | **refuses** a heavy launch that would exceed the envelope or a held heavy lock (naming what is up); `--force` overrides; caps a heavy tier **by default** (transient `user.slice` unit, `heavy_mem_max_mb`); tightens a `--group` member to the group's remaining `group_mem_max_mb`; `--mem-max`/`--cpu-max` override; `--no-cap` opts out; `list` shows capacity + ages + caps |
+| `scripts/serve.js run` | runs a heavy **one-shot** (build/test tier) in a transient systemd scope with `MemoryMax` (default `heavy_mem_max_mb`, `--mem-max` overrides), streaming output and returning its exit code; leaves no `.serve/` record; the APK build wrapper uses it |
 | `scripts/serve.js prune` | removes `.serve/*.pid` records whose process is gone (all agent worktrees with `--worktrees`) so a stopped heavy tier is never misreported as live |
 | `scripts/qa/check-capacity.js` (`npm run test:capacity`) | reports free RAM/swap/load/PSI/live serves; **fails** when the envelope is already exceeded; skips on non-Linux / `AGENT_CAPACITY_DISABLE=1` |
-| `context-guard` plugin | blocks an over-envelope `serve.js start`, nudges any other heavy command, logs `kind:"capacity"` to `.agents/guard-events.jsonl` |
+| `context-guard` plugin | **blocks** any over-envelope heavy command (long-lived counts as a tier; a one-shot build/test is gated by the free-RAM floor), logs `kind:"capacity"` to `.agents/guard-events.jsonl` |
 | `agent-harness doctor` | capacity + **PSI** + host-aware `.wslconfig` advice + in-WSL tuning status (including whether the cgroup agents actually run in is capped) |
 
 A heavy launch (`serve.js start` on an emulator / Metro / Next dev / live tier)
@@ -162,6 +163,16 @@ swap-thrash; it passes the caller's cwd + environment through and is a graceful
 no-op where systemd is absent. `--mem-max`/`--cpu-max` override the default,
 `--no-cap` opts out. Running heavy tiers under `user.slice` is also what makes
 the `user.slice` ceiling below actually bind them (see the backstop note).
+
+A heavy **one-shot** — a build or a heavy test tier — is heavy but not a
+long-lived tier, so `serve.js start`'s lock does not cover it. Run it through
+`serve.js run` (a transient `--scope` with `MemoryMax`, streaming output, exit
+code propagated) so it, too, is contained. The 2026-09-30 freeze was exactly a
+miss: an inline `bash .../build-dev-apk.sh` (Gradle daemon + Kotlin daemon + R8)
+ran uncapped while the emulator and `next dev` were up, and the three filled the
+10 GB VM. The APK wrapper (`scripts/qa/mobile-e2e/build-apk.sh`) now runs the
+build through `serve.js run` and right-sizes Gradle (no daemon, one worker, one
+ABI, 1 GB heap).
 
 The machine-wide heavy lock (`~/.agent-harness/heavy.lock`, TTL + dead-pid
 detection) is what lets many agents coexist while guaranteeing **one

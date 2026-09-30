@@ -27,6 +27,7 @@
  *
  * Usage:
  *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--group <tier>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
+ *   node scripts/serve.js run   --cmd "<one-shot command>" [--name <label>] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
  *   node scripts/serve.js stop  [--name <label>] [--port <n>]
  *   node scripts/serve.js stop-all
  *   node scripts/serve.js list
@@ -366,6 +367,33 @@ async function start(flags) {
     const envelope = capacity.readEnvelope(process.cwd());
     if (envelope.heavyMemMaxMb > 0) memMax = `${envelope.heavyMemMaxMb}M`;
   }
+  // Combined tier-group budget. Each member's per-process cap is generous (a
+  // 2048 MB AVD peaks ~4.4 GB RSS), so an emulator + dev server could each take
+  // 5 GB and fill a 10 GB VM all by themselves (the 2026-09-30 freeze). Tighten
+  // this member's cap to the group's remaining budget so the pair stays inside
+  // ONE budgeted tier; a near-exhausted budget refuses rather than launching a
+  // member that will be OOM-killed on arrival. An explicit `--mem-max` wins.
+  if (shouldCap && heavyLabel && tierGroup && !flags["--mem-max"]) {
+    const envelope = capacity.readEnvelope(process.cwd());
+    if (envelope.groupMemMaxMb > 0) {
+      const budget = capacity.groupBudget(capacity.readServes(process.cwd()), tierGroup, envelope);
+      const desired = capacity.parseMemMb(memMax) || envelope.heavyMemMaxMb;
+      if (budget.remainingMb != null && desired > budget.remainingMb) {
+        if (budget.remainingMb < 512 && !flags["--force"]) {
+          console.error(
+            `refused: tier group "${tierGroup}" has only ${budget.remainingMb} MB left of its ` +
+              `${budget.totalMb} MB budget (group_mem_max_mb) — stop a member ` +
+              `(node scripts/serve.js stop --name <name>) or re-run with --force`
+          );
+          process.exit(2);
+        }
+        memMax = `${Math.max(512, budget.remainingMb)}M`;
+        console.log(
+          `serve start: tier group "${tierGroup}" has ${budget.remainingMb} MB left — capping ${name} at ${memMax}`
+        );
+      }
+    }
+  }
   let unit = null;
   let pid = null;
   if (shouldCap) {
@@ -678,6 +706,93 @@ function list() {
   }
 }
 
+/* Run an UNCAPPED heavy command extractor through a stable name. */
+function runDirect(cmd) {
+  const r = spawnSync(cmd, { cwd: process.cwd(), shell: true, stdio: "inherit" });
+  if (r.error) {
+    console.error(`serve run: ${r.error.message}`);
+    return 1;
+  }
+  return r.status == null ? 1 : r.status;
+}
+
+/* run — execute a SYNCHRONOUS one-shot heavy command inside a capped cgroup.
+ *
+ * `start` handles long-lived servers; a build or a heavy test tier is a
+ * one-shot that must still be contained. This is the 2026-09-30 fix: the APK
+ * build ran inline as `bash .../build-dev-apk.sh` (no serve.js), so its Gradle
+ * daemon + Kotlin daemon + R8/D8 job had no MemoryMax and dragged the whole VM
+ * into swap-thrash. `run` executes the command in a transient systemd scope with
+ * `MemoryMax` from the envelope (or `--mem-max`), streams its output, and returns
+ * its exit code — so a runaway is OOM-killed inside its own cgroup instead of
+ * freezing every terminal. `--no-cap` opts out; a non-systemd host degrades to a
+ * plain run with a warning. One-shot commands are not counted as an extra
+ * concurrent tier (a build legitimately runs while the emulator is up), but the
+ * free-RAM floor still refuses to start when the box is already out of memory.
+ */
+function runCommand(flags) {
+  const cmd = flags["--cmd"];
+  if (!cmd) {
+    console.error('serve run: --cmd "<command>" is required');
+    process.exit(1);
+  }
+  const name = flags["--name"] || "run";
+  const label = capacity.classifyHeavy(cmd);
+  const capacityDisabled = process.env.AGENT_CAPACITY_DISABLE === "1";
+  if (label && !flags["--force"] && !capacityDisabled) {
+    const sample = capacity.sample(process.cwd());
+    const longLived = capacity.isLongLivedHeavy(cmd);
+    const ev = capacity.evaluate(sample, {
+      pendingHeavy: longLived ? 1 : 0,
+      pendingLive: longLived ? 1 : 0,
+      pendingGroup: flags["--group"] || null,
+    });
+    if (!ev.ok) {
+      console.error(capacity.formatSummary(sample));
+      console.error(capacity.heavyBlockText(label, ev, sample));
+      process.exit(2);
+    }
+    for (const w of ev.warnings) console.error(`capacity warning: ${w}`);
+  }
+
+  const noCap = !!flags["--no-cap"] || process.env.AGENT_SERVE_NO_CAP === "1";
+  let memMax = flags["--mem-max"] || null;
+  if (!memMax && !noCap) {
+    const envelope = capacity.readEnvelope(process.cwd());
+    if (envelope.heavyMemMaxMb > 0) memMax = `${envelope.heavyMemMaxMb}M`;
+  }
+
+  const started = Date.now();
+  let status;
+  if (!noCap && systemdUserAvailable()) {
+    const args = [
+      "--user",
+      "--scope",
+      "--quiet",
+      "--expand-environment=no",
+      `--working-directory=${process.cwd()}`,
+    ];
+    if (memMax) args.push("-p", `MemoryMax=${memMax}`);
+    if (flags["--cpu-max"]) args.push("-p", `CPUQuota=${flags["--cpu-max"]}`);
+    args.push("--", "sh", "-c", cmd);
+    console.log(`serve run: ${name}${memMax ? ` (mem≤${memMax})` : ""} — capped one-shot, streaming output`);
+    const r = spawnSync("systemd-run", args, { cwd: process.cwd(), stdio: "inherit" });
+    if (r.error) {
+      console.warn(`serve run: systemd-run failed (${r.error.message}) — running without caps`);
+      status = runDirect(cmd);
+    } else {
+      status = r.status;
+    }
+  } else {
+    if (!noCap) console.warn("serve run: resource caps ignored — no systemd user bus (Linux+systemd only)");
+    status = runDirect(cmd);
+  }
+
+  const secs = Math.round((Date.now() - started) / 1000);
+  console.log(`serve run: ${name} exited ${status == null ? "?" : status} after ${secs}s`);
+  process.exit(status == null ? 1 : status);
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const sub = argv[0];
@@ -688,6 +803,9 @@ function main() {
         console.error(e);
         process.exit(1);
       });
+      break;
+    case "run":
+      runCommand(flags);
       break;
     case "stop":
       stop(flags);
@@ -703,7 +821,7 @@ function main() {
       break;
     default:
       console.error(
-        'usage: node scripts/serve.js <start|stop|stop-all|list|prune> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--group <tier>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--worktrees] [--mem-max 4G] [--cpu-max 250%]'
+        'usage: node scripts/serve.js <start|run|stop|stop-all|list|prune> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--group <tier>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--worktrees] [--mem-max 4G] [--cpu-max 250%]'
       );
       process.exitCode = 1;
   }

@@ -7658,11 +7658,104 @@ test("[drift-guard] capacity guard is one envelope owned by every surface", () =
   assert.match(serve, /acquireHeavyLock/, "serve.js takes the machine-wide heavy lock");
   const plugin = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
   assert.match(plugin, /capacity-lib\.js/, "the guard plugin reads the shared capacity lib");
-  assert.match(plugin, /heavyBlockText/, "the plugin blocks an over-envelope heavy start");
+  assert.match(plugin, /heavyBlockText/, "the plugin blocks an over-envelope heavy command");
+  assert.match(plugin, /isLongLivedHeavy/, "the plugin distinguishes long-lived from one-shot heavy commands");
+  assert.match(plugin, /AGENT_CAPACITY_DISABLE/, "the plugin honours the capacity-disable override");
+  assert.doesNotMatch(plugin, /const blocked =/, "the plugin no longer blocks only serve.js start");
+  assert.match(serve, /case "run":/, "serve.js exposes the capped one-shot runner");
+  assert.match(serve, /groupBudget/, "serve.js enforces the combined tier-group budget");
   const ship = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
   assert.match(ship, /"test:capacity"/, "ship runs the capacity gate when no hook is installed");
   const prePush = read(path.join(h.TEMPLATES_DIR, ".husky", "pre-push"));
   assert.match(prePush, /test:capacity/, "the pre-push battery includes the capacity gate");
+});
+
+test("capacity: classifier covers the 2026-09-30 build/test gap and splits long-lived vs one-shot", () => {
+  assert.strictEqual(capacity.classifyHeavy("CI=1 bash scripts/qa/mobile-e2e/build-dev-apk.sh"), "apk build");
+  assert.strictEqual(capacity.classifyHeavy("bash scripts/qa/mobile-e2e/build-apk.sh"), "apk build");
+  assert.strictEqual(capacity.classifyHeavy("cd mobile/android && ./gradlew assembleRelease"), "apk build");
+  assert.strictEqual(capacity.classifyHeavy("npx expo prebuild -p android"), "apk build");
+  assert.strictEqual(capacity.classifyHeavy("npm run test:quick"), "heavy test tier");
+  // Only a long-lived heavy command adds a concurrent tier; a one-shot build or
+  // test tier may run alongside the device tier (the live-tier test pattern).
+  assert.strictEqual(capacity.isLongLivedHeavy("npm run dev"), true);
+  assert.strictEqual(capacity.isLongLivedHeavy("~/android-sdk/emulator/emulator -avd x"), true);
+  assert.strictEqual(capacity.isLongLivedHeavy("bash scripts/qa/mobile-e2e/build-apk.sh"), false);
+  assert.strictEqual(capacity.isLongLivedHeavy("npm run test:quick"), false);
+  assert.strictEqual(capacity.isLongLivedHeavy("maestro test flow.yaml"), false);
+  assert.strictEqual(capacity.isLongLivedHeavy("git status"), false);
+});
+
+test("capacity: a tier group is budgeted as one combined cap, not per process", () => {
+  const e = Object.assign({}, capacity.DEFAULT_ENVELOPE);
+  assert.ok(e.groupMemMaxMb >= e.heavyMemMaxMb, "the group budget covers a full member plus headroom");
+  const sample = {
+    root: ".",
+    envelope: e,
+    mem: { total: 10240, available: 4096, swapTotal: 4096, swapFree: 4096, swapUsedPct: 0 },
+    load: { load1: 1, cpus: 10 },
+    psi: null,
+    tmpfs: [],
+    wsl: true,
+    serves: [
+      { name: "emulator", alive: true, heavy: true, ageMs: 1000, group: "mobile", memMaxMb: 5120 },
+      { name: "app-dev", alive: true, heavy: true, ageMs: 1000, group: "mobile", memMaxMb: 5120 },
+    ],
+  };
+  const ev = capacity.evaluate(sample, {});
+  assert.match(ev.warnings.join(" "), /tier group "mobile" is budgeted/, "an over-budget group warns");
+  const b = capacity.groupBudget(sample.serves, "mobile", e);
+  assert.strictEqual(b.usedMb, 10240, "the group budget sums the live members' caps");
+  assert.strictEqual(b.remainingMb, e.groupMemMaxMb - 10240, "and reports the remainder");
+});
+
+test("serve.js run executes a one-shot command and propagates its exit code", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const serve = path.join(target, "scripts", "serve.js");
+  const r = spawnSync(process.execPath, [serve, "run", "--no-cap", "--name", "t", "--cmd", 'node -e "process.exit(5)"'], {
+    cwd: target,
+    encoding: "utf8",
+    env: Object.assign({}, process.env, { AGENT_HEAVY_LOCK: path.join(target, "heavy.lock") }),
+  });
+  assert.strictEqual(r.status, 5, r.stdout + r.stderr);
+  assert.match(r.stdout, /serve run: t exited 5/);
+});
+
+test("serve.js run refuses an over-envelope heavy one-shot before executing it", () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const meminfo = path.join(target, "meminfo-fixture");
+  fs.writeFileSync(meminfo, "MemTotal:       10240000 kB\nMemAvailable:     200000 kB\n");
+  const marker = path.join(target, "RAN-MARKER");
+  const serve = path.join(target, "scripts", "serve.js");
+  const r = spawnSync(
+    process.execPath,
+    [serve, "run", "--name", "apk-build", "--cmd", `bash scripts/qa/mobile-e2e/build-apk.sh && touch ${marker}`],
+    {
+      cwd: target,
+      encoding: "utf8",
+      env: Object.assign({}, process.env, {
+        AGENT_CAPACITY_MEMINFO: meminfo,
+        AGENT_HEAVY_LOCK: path.join(target, "heavy.lock"),
+      }),
+    }
+  );
+  assert.strictEqual(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stderr, /would exceed the machine capacity envelope/);
+  assert.ok(!exists(marker), "the refused build never ran");
+});
+
+test("capacity: the capped APK build wrapper is deployed and routes Gradle through serve.js run", () => {
+  const buildSh = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "build-apk.sh"));
+  assert.match(buildSh, /serve\.js" run/, "the APK build runs through serve.js run");
+  assert.match(buildSh, /--mem-max/, "the APK build is capped");
+  assert.match(buildSh, /PreactNativeArchitectures=\$\{ABIS\}/, "one ABI, not all four");
+  assert.match(buildSh, /--no-daemon --max-workers=1/, "Gradle is right-sized");
+  const deviceUp = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "device-up.sh"));
+  assert.match(deviceUp, /build-apk\.sh/, "device-up builds via the capped wrapper");
 });
 
 // ---------------------------------------------------------------- WSL tuning

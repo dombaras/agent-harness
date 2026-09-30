@@ -49,6 +49,14 @@ const DEFAULT_ENVELOPE = {
   // E2E is never throttled, but a runaway is OOM-killed inside its slice
   // instead of freezing every terminal. Overridable per launch with --mem-max.
   heavyMemMaxMb: 5120,
+  // Combined budget for ONE tier group (serve.js --group, e.g. the `mobile`
+  // emulator + dev server). Each member's per-process cap (`heavy_mem_max_mb`)
+  // is generous, so two members could legally fill the whole VM (2 × 5 GB on a
+  // 10 GB box — the 2026-09-30 freeze, where the emulator + `next dev` + an
+  // inline Gradle build together exhausted RAM). `serve.js` tightens a new
+  // member's cap to the group's remaining budget so the pair stays inside one
+  // tier; `evaluate` warns when a live group overshoots.
+  groupMemMaxMb: 6144,
   // Soft `MemoryHigh` backstop for the cgroup that actually holds the agents
   // (WSL puts the `wsl.exe` session in init.scope, NOT user.slice). Soft: it
   // throttles/reclaims near the freeze line and never OOM-kills. 8.5 GB sits
@@ -71,6 +79,7 @@ const ENVELOPE_KEYS = {
   emulator_ram_mb: "emulatorRamMb",
   heavy_lock_ttl_minutes: "heavyLockTtlMinutes",
   heavy_mem_max_mb: "heavyMemMaxMb",
+  group_mem_max_mb: "groupMemMaxMb",
   backstop_mem_high_mb: "backstopMemHighMb",
   max_mem_pressure_avg10: "maxMemPressureAvg10",
   max_cpu_pressure_avg10: "maxCpuPressureAvg10",
@@ -88,11 +97,35 @@ const HEAVY_PATTERNS = [
   [/\bvite\b[^\n]*\b(dev|serve|preview)\b/i, "vite"],
   [/\bwebpack\b|\bturbopack\b/i, "bundler"],
   [/npm\s+run\s+(dev|develop|start:dev)\b/i, "dev server"],
-  [/npm\s+run\s+(test:api|test:verify|test:e2e|test:mobile|test:data|test:integration)\b/i, "heavy test tier"],
+  [/npm\s+run\s+(test:quick|test:api|test:verify|test:e2e|test:mobile|test:data|test:integration)\b/i, "heavy test tier"],
   [/\bdocker\s+(build|run|compose)\b/i, "docker"],
+  // The Android APK build is the 2026-09-30 freeze: a Gradle daemon + Kotlin
+  // daemon + R8/D8 job that ran INLINE (not via serve.js), so it had no cgroup
+  // cap and no envelope preflight. Match the wrapper script name — the top-level
+  // bash command is `bash scripts/qa/mobile-e2e/build-dev-apk.sh`, which never
+  // contains `gradlew` — as well as the gradle task/wrapper itself.
+  [/build-dev-apk\.sh|build-apk\.sh|\bassemble(Release|Debug)\b|expo\s+prebuild|react-native\s+(build|run-android)/i, "apk build"],
   [/\b(gradlew|gradle|xcodebuild)\b/i, "native build"],
   [/prisma\s+(migrate|generate)|\btsc\b[^\n]*--build|turbo\s+(run|build)|nx\s+(run|build)/i, "build"],
 ];
+
+/* Heavy labels that are LONG-LIVED tiers: they hold RAM for their whole
+ * lifetime and must not run two at once (emulator + `next dev` + a third dev
+ * server). Everything else heavy (a build, a test tier, `maestro`) is a
+ * ONE-SHOT command: it spikes RAM but releases it, so it is legitimate to run
+ * while a dev server is up (the live-tier test pattern) and must NOT be counted
+ * as an extra concurrent tier. The distinction is what keeps the guard from
+ * blocking `test:api` next to a running dev server, while still refusing a
+ * second emulator. */
+const LONG_LIVED_HEAVY = new Set([
+  "emulator",
+  "next dev",
+  "metro",
+  "vite",
+  "bundler",
+  "dev server",
+  "docker",
+]);
 
 function procPath(envKey, fallback) {
   return process.env[envKey] || fallback;
@@ -118,6 +151,27 @@ function classifyHeavy(cmd) {
 
 function isHeavyCommand(cmd) {
   return classifyHeavy(cmd) !== null;
+}
+
+/* True when a command is a long-lived heavy tier (holds RAM for its lifetime),
+ * as opposed to a one-shot heavy command (build/test/maestro). Callers use this
+ * to decide whether adding the command would introduce a concurrent tier. */
+function isLongLivedHeavy(cmd) {
+  const label = classifyHeavy(cmd);
+  return label !== null && LONG_LIVED_HEAVY.has(label);
+}
+
+/* Parse a MemoryMax-style value (`5120M`, `4G`, `1024`) to whole MB; null when
+ * absent/unparseable. Used to sum a tier group's live budget. */
+function parseMemMb(value) {
+  if (value == null) return null;
+  const m = String(value).match(/^\s*([0-9.]+)\s*([KMGT]?)B?\s*$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const unit = (m[2] || "M").toUpperCase();
+  const mult = unit === "K" ? 1 / 1024 : unit === "M" ? 1 : unit === "G" ? 1024 : 1024 * 1024;
+  return Math.round(n * mult);
 }
 
 /* `| \`key\` | 2048 | ... |` rows. Non-envelope keyed rows (turn/stuck) are
@@ -328,6 +382,7 @@ function readServes(root) {
     const startedAt = info.startedAt ? Date.parse(info.startedAt) : null;
     const ageMs = Number.isFinite(startedAt) ? Date.now() - startedAt : null;
     const cmd = info.cmd || "";
+    const memMax = info.memMax || null;
     out.push({
       name,
       pid: Number.isFinite(pid) ? pid : null,
@@ -339,6 +394,8 @@ function readServes(root) {
       ageMs,
       alive: isAlive(pid),
       heavy: info.heavy != null ? !!info.heavy : isHeavyCommand(cmd),
+      memMax,
+      memMaxMb: parseMemMb(memMax),
     });
   }
   return out;
@@ -431,6 +488,25 @@ function evaluate(s, opts) {
       `${live.length + pendingLive} live serve process(es); envelope suggests max ${e.maxLiveServes}`
     );
   }
+  // Combined per-group budget: each heavy member is capped generously
+  // (`heavy_mem_max_mb`), so without this a two-member mobile tier could fill
+  // the VM. `serve.js` enforces it by tightening a new member's cap; this warns
+  // when an already-live group is over budget.
+  if (e.groupMemMaxMb > 0) {
+    const groupMem = new Map();
+    for (const x of heavy) {
+      if (!x.group || x.memMaxMb == null) continue;
+      groupMem.set(x.group, (groupMem.get(x.group) || 0) + x.memMaxMb);
+    }
+    for (const [g, sum] of groupMem) {
+      if (sum > e.groupMemMaxMb) {
+        warnings.push(
+          `tier group "${g}" is budgeted ${sum} MB (group_mem_max_mb ${e.groupMemMaxMb} MB) — ` +
+            `lower a member with --mem-max or stop one`
+        );
+      }
+    }
+  }
   if (s && s.mem && s.mem.swapTotal > 0 && s.mem.swapUsedPct >= e.maxSwapUsedPct) {
     warnings.push(`swap ${s.mem.swapUsedPct}% used (envelope max ${e.maxSwapUsedPct}%)`);
   }
@@ -451,6 +527,20 @@ function evaluate(s, opts) {
     }
   }
   return { ok: reasons.length === 0, reasons, warnings, live, heavy };
+}
+
+/* Live memory budget of one tier group: sum of the live members' applied caps,
+ * and what remains of `group_mem_max_mb`. `serve.js` uses `remainingMb` to
+ * tighten a new member's cap so the group stays inside one budget. */
+function groupBudget(serves, group, envelope) {
+  const e = envelope || DEFAULT_ENVELOPE;
+  const total = e.groupMemMaxMb > 0 ? e.groupMemMaxMb : Infinity;
+  let used = 0;
+  for (const x of serves || []) {
+    if (!x.alive || x.group !== group || x.memMaxMb == null) continue;
+    used += x.memMaxMb;
+  }
+  return { usedMb: used, totalMb: e.groupMemMaxMb, remainingMb: total === Infinity ? null : total - used };
 }
 
 function formatSummary(s) {
@@ -754,6 +844,9 @@ module.exports = {
   ENVELOPE_KEYS,
   classifyHeavy,
   isHeavyCommand,
+  isLongLivedHeavy,
+  parseMemMb,
+  groupBudget,
   parseEnvelope,
   envelopePath,
   readEnvelopeText,

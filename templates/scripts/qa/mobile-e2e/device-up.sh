@@ -57,6 +57,8 @@ DEV_NAME="${MOBILE_E2E_DEV_NAME:-$(cfg devName)}"
 [ -z "$DEV_CMD" ] && DEV_CMD="npm run dev"
 [ -z "$DEV_URL" ] && DEV_URL="http://localhost:3000"
 [ -z "$DEV_NAME" ] && DEV_NAME="app-dev"
+# Conventional Expo/RN release output when local.json declares no `apk`.
+[ -z "$APK" ] && APK="$ROOT/mobile/android/app/build/outputs/apk/release/app-release.apk"
 
 echo "device-up: app=${APP_ID:-?} apk=${APK:-<auto>} dev=${DEV_URL} group=${TIER_GROUP}"
 
@@ -69,23 +71,26 @@ if [ ! -x "$ADB" ]; then
   exit 1
 fi
 
-# 2. Build + install the APK (skip when already installed at the same version).
-#    The build command is project-owned; default to the conventional Gradle
-#    release/apk path and let MOBILE_E2E_APK override the output.
-if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ] && [ -n "$APP_ID" ]; then
+# 2. Build + install the APK. The build runs through build-apk.sh, which is
+#    CAPPED (serve.js run) so the Gradle job cannot freeze the VM; a project may
+#    keep its own build-dev-apk.sh, which is used as a fallback.
+if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ]; then
   if [ "${MOBILE_E2E_SKIP_BUILD:-0}" != "1" ]; then
-    echo "[2/4] building the app (project build; override with MOBILE_E2E_SKIP_BUILD=1)"
-    if [ -n "$APK" ] && [ -x "$ROOT/scripts/qa/mobile-e2e/build-apk.sh" ]; then
+    echo "[2/4] building the app (capped via build-apk.sh; override with MOBILE_E2E_SKIP_BUILD=1)"
+    if [ -x "$ROOT/scripts/qa/mobile-e2e/build-apk.sh" ]; then
       bash "$ROOT/scripts/qa/mobile-e2e/build-apk.sh"
+    elif [ -x "$ROOT/scripts/qa/mobile-e2e/build-dev-apk.sh" ]; then
+      echo "  (using project build-dev-apk.sh — route it through \`serve.js run\` so it is capped)"
+      bash "$ROOT/scripts/qa/mobile-e2e/build-dev-apk.sh"
     else
-      echo "  (no scripts/qa/mobile-e2e/build-apk.sh; set MOBILE_E2E_SKIP_BUILD=1 if the APK is prebuilt)"
+      echo "  (no build-apk.sh / build-dev-apk.sh; set MOBILE_E2E_SKIP_BUILD=1 if the APK is prebuilt)"
     fi
   fi
-  if [ -n "$APK" ] && [ -f "$APK" ]; then
+  if [ -n "$APP_ID" ] && [ -f "$APK" ]; then
     echo "[2/4] installing $APK"
     timeout 300 "$ADB" install -r "$APK"
   else
-    echo "[2/4] no APK path resolved (set local.json .apk or MOBILE_E2E_APK) — skipping install"
+    echo "[2/4] no APK at $APK (set local.json .apk or MOBILE_E2E_APK) — skipping install"
   fi
 else
   echo "[2/4] install skipped"

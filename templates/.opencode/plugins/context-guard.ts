@@ -578,24 +578,39 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       }
       // Capacity guard. WSL2 is one VM with no per-agent limits: an emulator +
       // agents + `next dev` exhausts RAM and starves the host<->VM relay, which
-      // froze every terminal at once (2026-09-29). A heavy long-lived launch is
-      // sampled against the project envelope; a `serve.js start` that would
-      // exceed it is BLOCKED (naming what is already up), any other heavy
-      // command gets an injected nudge. This MUST throw to abort the tool call,
-      // so it lives outside the swallow-everything loop-guard try/catch; only
-      // the sampling is wrapped. A trivial command is never gated.
+      // froze every terminal at once (2026-09-29). A heavy command is sampled
+      // against the project envelope and BLOCKED when it would exceed it
+      // (naming what is already up); `--force` / AGENT_CAPACITY_DISABLE are the
+      // deliberate overrides. This MUST throw to abort the tool call, so it
+      // lives outside the swallow-everything loop-guard try/catch; only the
+      // sampling is wrapped. A trivial command is never gated.
+      //
+      // Long-lived heavy commands (emulator/dev server/metro) add a concurrent
+      // tier; a ONE-SHOT heavy command (a build, a test tier, `maestro`) does
+      // not — it legitimately runs alongside the live device tier (the
+      // live-tier test pattern), so it is gated only by the free-RAM floor. The
+      // 2026-09-30 freeze was a one-shot `build-dev-apk.sh` (Gradle) that ran
+      // inline, uncapped and unclassified — the old code blocked only
+      // `serve.js start`, so it sailed through.
       let capViolation: { label: string; ev: any; sample: any } | null = null
       let capNotice: string | null = null
       let capCommand = ""
       try {
-        if (String(input?.tool || "").toLowerCase() === "bash") {
+        if (
+          String(input?.tool || "").toLowerCase() === "bash" &&
+          process.env.AGENT_CAPACITY_DISABLE !== "1"
+        ) {
           capCommand = String(output?.args?.command || "")
           const label = capacity.classifyHeavy(capCommand)
           if (label) {
             const sample = capacity.sample(directory)
-            const ev = capacity.evaluate(sample, { pendingHeavy: 1, pendingLive: 1 })
-            const blocked = /serve\.js\s+start/.test(capCommand) && !/--force/.test(capCommand)
-            if (!ev.ok && blocked) capViolation = { label, ev, sample }
+            const longLived = capacity.isLongLivedHeavy(capCommand)
+            const ev = capacity.evaluate(sample, {
+              pendingHeavy: longLived ? 1 : 0,
+              pendingLive: longLived ? 1 : 0,
+            })
+            const forced = /--force\b/.test(capCommand)
+            if (!ev.ok && !forced) capViolation = { label, ev, sample }
             else if (!ev.ok) capNotice = capacity.notice(ev)
           }
         }

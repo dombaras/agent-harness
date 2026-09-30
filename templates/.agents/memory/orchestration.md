@@ -36,9 +36,11 @@ even when the turn count is low.
 WSL2 is one Linux VM: every agent, worktree, emulator, dev server, and gate
 shares its RAM/CPU/swap with no per-agent cgroup limit. When the working set
 exceeds the VM cap the kernel thrashes reclaim/swap and starves the host↔VM
-vsock relay — every terminal freezes at once (the 2026-09-29 freeze: `memory=10GB`,
-4 GB swap full, load 60). **Parallel agents are fine; parallel heavy tiers are
-not.** These numbers are the machine-readable envelope that `serve.js`,
+vsock relay — every terminal freezes at once (2026-09-29: `memory=10GB`, 4 GB swap
+full, load 60; 2026-09-30: the same class via an inline, uncapped Gradle APK build
+plus the emulator + dev server). **Parallel agents are fine; parallel heavy tiers
+are not — and a heavy one-shot build must run capped.** These numbers are the
+machine-readable envelope that `serve.js`,
 `test:capacity`, the `context-guard` plugin, and `agent-harness doctor` all read
 (one owner, one set of numbers). Tune them to the host, not to hope.
 
@@ -48,9 +50,19 @@ not.** These numbers are the machine-readable envelope that `serve.js`,
 | `max_heavy_tiers` | 1 | emulator/dev-server/live-tier launches allowed at once, machine-wide; members of ONE tier group (`serve.js --group <tier>`, e.g. the `mobile` emulator + dev server) count as a single tier |
 | `idle_reap_minutes` | 90 | age at which a running serve is flagged as an idle-reap candidate |
 | `emulator_ram_mb` | 2048 | budget for the Android emulator (it used ~3 GB with software GPU); `boot-emulator.sh` reads this as the guest RAM default |
-| `heavy_mem_max_mb` | 5120 | default cgroup `MemoryMax` for a heavy tier (`serve.js` applies it; above the observed peak so E2E is not throttled; `--mem-max` overrides). Keep ≥ `emulator_ram_mb` + ~2 GB QEMU overhead, or the emulator is OOM-killed inside its own unit |
+| `heavy_mem_max_mb` | 5120 | default cgroup `MemoryMax` for ONE heavy process (`serve.js start`/`run` applies it; above the observed peak so E2E is not throttled; `--mem-max` overrides). Keep ≥ `emulator_ram_mb` + ~2 GB QEMU overhead, or the emulator is OOM-killed inside its own unit |
+| `group_mem_max_mb` | 7168 | combined cgroup budget for ONE tier group (`serve.js --group`, e.g. the `mobile` emulator + dev server). Each member's cap is generous, so `serve.js` tightens a new member to the group's remainder — two members can no longer fill the VM (the 2026-09-30 emulator + `next dev` shape). Keep ≥ `heavy_mem_max_mb` + ~2 GB |
 | `backstop_mem_high_mb` | 8704 | soft `MemoryHigh` on `init.scope` (`wsl-tune.sh`) — the cgroup agents actually run in; 8.5 GB is above the observed non-reclaimable set (~6.9 GB) so it only reclaims cache in normal E2E, and below the ~9.5 GB freeze peak; never OOM-kills |
 | `heavy_lock_ttl_minutes` | 240 | TTL before a crashed heavy-tier lock is considered stale |
+
+**One-shot heavy commands.** A long-lived heavy tier (emulator/dev server/Metro)
+holds RAM and is limited to `max_heavy_tiers`; a **one-shot** heavy command (the
+APK/Gradle build, a heavy test tier, `maestro`) spikes RAM and releases it, so it
+may run alongside the device tier (the live-tier test pattern) — but it MUST be
+capped. Run it through `node scripts/serve.js run --cmd "<build>" [--mem-max 3G]`
+(a cgroup `MemoryMax` scope) rather than inline; the APK build wrapper
+(`scripts/qa/mobile-e2e/build-apk.sh`) does this by default. An inline
+`./gradlew assembleRelease` with no cgroup is the 2026-09-30 freeze.
 
 ## Dispatch fan-out review
 
