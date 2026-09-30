@@ -7868,14 +7868,84 @@ test("serve.js run refuses an over-envelope heavy one-shot before executing it",
   assert.ok(!exists(marker), "the refused build never ran");
 });
 
+test("serve.js run refuses a heavy one-shot that would overrun a live tier group (F-296)", () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const meminfo = path.join(target, "meminfo-fixture");
+  // Healthy free RAM: this refusal must come from the GROUP budget, not the floor.
+  fs.writeFileSync(meminfo, "MemTotal:       10240000 kB\nMemAvailable:     6000000 kB\n");
+  // A live emulator + dev pair already fills the mobile group's combined budget.
+  fs.mkdirSync(path.join(target, ".serve"), { recursive: true });
+  for (const n of ["emulator", "app-dev"]) {
+    fs.writeFileSync(
+      path.join(target, ".serve", `${n}.pid`),
+      JSON.stringify({
+        name: n,
+        pid: process.pid,
+        group: "mobile",
+        heavy: true,
+        memMax: "5120M",
+        cmd: n === "emulator" ? "emulator -avd x" : "npm run dev",
+        startedAt: new Date().toISOString(),
+      })
+    );
+  }
+  const marker = path.join(target, "RAN-MARKER");
+  const serve = path.join(target, "scripts", "serve.js");
+  const r = spawnSync(
+    process.execPath,
+    [serve, "run", "--name", "apk-build", "--cmd", `bash scripts/qa/mobile-e2e/build-apk.sh && touch ${marker}`],
+    {
+      cwd: target,
+      encoding: "utf8",
+      env: Object.assign({}, process.env, {
+        AGENT_CAPACITY_MEMINFO: meminfo,
+        AGENT_HEAVY_LOCK: path.join(target, "heavy.lock"),
+      }),
+    }
+  );
+  assert.strictEqual(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stderr, /tier group "mobile" has only/);
+  assert.match(r.stderr, /Build BEFORE booting the group/);
+  assert.ok(!exists(marker), "the refused build never ran");
+});
+
 test("capacity: the capped APK build wrapper is deployed and routes Gradle through serve.js run", () => {
   const buildSh = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "build-apk.sh"));
   assert.match(buildSh, /serve\.js" run/, "the APK build runs through serve.js run");
   assert.match(buildSh, /--mem-max/, "the APK build is capped");
   assert.match(buildSh, /PreactNativeArchitectures=\$\{ABIS\}/, "one ABI, not all four");
   assert.match(buildSh, /--no-daemon --max-workers=1/, "Gradle is right-sized");
+  // F-296: a cold release D8 needs ~4-6 GB; 1 GB OOM'd and a 3 GB cap killed the
+  // emulator. The managed block is REFRESHED (not append-once) so a prebuild or a
+  // hand-edit cannot silently leave a stale heap.
+  assert.match(buildSh, /MOBILE_E2E_APK_MEM_MAX:-6G/, "the APK cgroup cap default fits a cold release");
+  assert.match(buildSh, /Xmx4096m/, "the Gradle heap default fits a cold release");
+  assert.match(buildSh, /indexOf\(MARKER\)/, "the managed Gradle block is refreshed, not appended once");
   const deviceUp = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "device-up.sh"));
   assert.match(deviceUp, /build-apk\.sh/, "device-up builds via the capped wrapper");
+  // Build the heavy one-shot BEFORE booting the heavy long-lived tier, so the two
+  // never overlap on a ~10 GB VM (the F-296 build-vs-emulator OOM/kill).
+  assert.ok(
+    deviceUp.indexOf("[1/5] building the app") < deviceUp.indexOf("[2/5] adb server + emulator"),
+    "device-up builds the APK before booting the emulator"
+  );
+});
+
+test("[drift-guard] the device tier boots the build before the emulator and falls back from a crashing GPU", () => {
+  const meDir = path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e");
+  const boot = read(path.join(meDir, "boot-emulator.sh"));
+  assert.match(boot, /start_emulator\(\)/, "boot-emulator.sh factors the launch for a retry");
+  assert.match(boot, /auto-selected gpu=.*crashed/, "boot-emulator.sh names the crashing backend");
+  assert.match(boot, /-z "\$\{MOBILE_E2E_GPU:-\}"/, "the fallback defers to an explicitly pinned GPU");
+  assert.match(boot, /swiftshader_indirect/, "the fallback uses the software rasterizer");
+
+  const det = read(path.join(meDir, "run-detached.sh"));
+  assert.match(det, /--wait blocks this shell/, "run-detached.sh warns that --wait blocks the tool");
+
+  const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));
+  assert.match(serve, /lockMembers\(lock\)/, "serve.js list reports the heavy-lock member pids, not an undefined pid");
 });
 
 // ---------------------------------------------------------------- WSL tuning
@@ -8309,7 +8379,8 @@ test("[drift-guard] device tier is right-sized, group-budgeted, and notifyable",
   // `-gpu host` cannot silently fall back to llvmpipe (F-296).
   assert.match(boot, /GALLIUM_DRIVER=d3d12/, "boot-emulator.sh selects the d3d12 driver on WSL");
   assert.match(boot, /GPU_ENV/, "boot-emulator.sh passes the GL env to the emulator launch");
-  assert.match(boot, /\$GPU_ENV \$EMULATOR/, "the emulator command supplies GPU_ENV");
+  assert.match(boot, /\$gpu_env \$EMULATOR/, "the emulator command supplies GPU_ENV");
+  assert.match(boot, /start_emulator "\$GPU" "\$GPU_ENV"/, "the launch is invoked with the resolved GPU and env");
   assert.match(boot, /wsl-gpu\.sh/, "boot-emulator.sh points at the wsl-gpu.sh fix");
 
   const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));

@@ -201,21 +201,27 @@ carries a performance layer; coverage and assertions are unchanged:
    failure** and at **completion** — so the agent resumes on real results instead
    of polling. The report lands at `.serve/mobile-e2e-last-run.json`.
 
-   When no plugin is watching (headless, or a fresh session), add `--wait`: the
-   launch blocks until the run finishes, streaming each scenario line and
-   returning the run's exit code:
+   **To block for the run's exit code, prefer the async `wait` TOOL, not a
+   `--wait` shell call.** The general `wait` tool (`scripts/wait-for.js`, e.g.
+   `wait --job <record.json>`) spawns its child asynchronously, so it does
+   **not** freeze opencode's event loop — the plugin's toasts and
+   first-failure/completion wakes keep flowing while the agent waits. (Before
+   0.1.115 the `wait` tool used `execFileSync` and starved the notifier: every
+   event flushed in one burst when the wait returned, which is why the F-296 run
+   looked frozen.)
+
+   `--wait` on the helper is the **headless fallback** (no plugin watching, e.g.
+   a bare CI shell). It blocks the calling shell for the entire run:
 
    ```bash
+   # headless only — from an agent `bash` call this holds the tool for the whole
+   # matrix and leaves the transcript blind (the F-296 resume did exactly this).
    scripts/qa/mobile-e2e/run-detached.sh --flows all --reuse-session --wait
    ```
 
-   The plugin and a blocking waiter are no longer mutually exclusive. The
-   general `wait` tool (`scripts/wait-for.js`, e.g. `wait --job <record.json>`)
-   spawns its child asynchronously, so it does **not** freeze opencode's event
-   loop — the plugin's toasts and first-failure/completion wakes keep flowing
-   while the agent blocks. (Before 0.1.115 the `wait` tool used `execFileSync`
-   and starved the notifier: every event flushed in one burst when the wait
-   returned, which is why the F-296 run looked frozen.)
+   Because that foot-gun recurs, `run-detached.sh` prints a loud warning before
+   blocking. From an agent session: launch detached, then either let the plugin
+   push, or call the `wait` tool — never `--wait`.
 
 2. **`--reuse-session`** reuses the device session and signs in only when there
    is none, batching consecutive same-actor, setup-free journeys into one

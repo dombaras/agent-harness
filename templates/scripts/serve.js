@@ -27,7 +27,7 @@
  *
  * Usage:
  *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--group <tier>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
- *   node scripts/serve.js run   --cmd "<one-shot command>" [--name <label>] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
+ *   node scripts/serve.js run   --cmd "<one-shot command>" [--name <label>] [--group <tier>] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
  *   node scripts/serve.js stop  [--name <label>] [--port <n>]
  *   node scripts/serve.js stop-all
  *   node scripts/serve.js list
@@ -679,7 +679,12 @@ function list() {
     /* capacity is best-effort */
   }
   const lock = capacity.readLock();
-  if (lock) console.log(`heavy lock: "${lock.name}" pid ${lock.pid} since ${lock.since}`);
+  if (lock) {
+    const members = capacity.lockMembers(lock);
+    const who = members.map((m) => `${m.name}(pid ${m.pid})`).join(", ") || "none";
+    const stale = capacity.lockIsStale(lock) ? " [stale]" : "";
+    console.log(`heavy lock: "${lock.name}" [${who}] since ${lock.since}${stale}`);
+  }
   const names = listNames();
   if (names.length === 0) {
     console.log("no servers running");
@@ -726,9 +731,12 @@ function runDirect(cmd) {
  * `MemoryMax` from the envelope (or `--mem-max`), streams its output, and returns
  * its exit code — so a runaway is OOM-killed inside its own cgroup instead of
  * freezing every terminal. `--no-cap` opts out; a non-systemd host degrades to a
- * plain run with a warning. One-shot commands are not counted as an extra
- * concurrent tier (a build legitimately runs while the emulator is up), but the
- * free-RAM floor still refuses to start when the box is already out of memory.
+ * plain run with a warning. A heavy ONE-SHOT is not a long-lived tier, but it
+ * still needs several GB: sharing the box with a live emulator+dev group OOMs
+ * the build AND gets the emulator killed on a small VM (F-296, 2026-09-30). So
+ * `run` joins the live heavy group (or an explicit `--group`), caps the one-shot
+ * to the group's remaining budget, and refuses when the remainder is below the
+ * one-shot floor — a build must run BEFORE the group boots, or not at all.
  */
 function runCommand(flags) {
   const cmd = flags["--cmd"];
@@ -739,13 +747,25 @@ function runCommand(flags) {
   const name = flags["--name"] || "run";
   const label = capacity.classifyHeavy(cmd);
   const capacityDisabled = process.env.AGENT_CAPACITY_DISABLE === "1";
+
+  const noCap = !!flags["--no-cap"] || process.env.AGENT_SERVE_NO_CAP === "1";
+  const envelope = capacity.readEnvelope(process.cwd());
+  let memMax = flags["--mem-max"] || null;
+  if (!memMax && !noCap && envelope.heavyMemMaxMb > 0) memMax = `${envelope.heavyMemMaxMb}M`;
+
   if (label && !flags["--force"] && !capacityDisabled) {
     const sample = capacity.sample(process.cwd());
     const longLived = capacity.isLongLivedHeavy(cmd);
+    // If exactly one heavy group is live, the one-shot joins it (one budgeted
+    // tier) so `evaluate` does not wrongly count two live members as two tiers.
+    const liveGroups = [
+      ...new Set(sample.serves.filter((x) => x.alive && x.heavy && x.group).map((x) => x.group)),
+    ];
+    const joinGroup = flags["--group"] || (liveGroups.length === 1 ? liveGroups[0] : null);
     const ev = capacity.evaluate(sample, {
       pendingHeavy: longLived ? 1 : 0,
       pendingLive: longLived ? 1 : 0,
-      pendingGroup: flags["--group"] || null,
+      pendingGroup: joinGroup,
     });
     if (!ev.ok) {
       console.error(capacity.formatSummary(sample));
@@ -753,13 +773,37 @@ function runCommand(flags) {
       process.exit(2);
     }
     for (const w of ev.warnings) console.error(`capacity warning: ${w}`);
-  }
 
-  const noCap = !!flags["--no-cap"] || process.env.AGENT_SERVE_NO_CAP === "1";
-  let memMax = flags["--mem-max"] || null;
-  if (!memMax && !noCap) {
-    const envelope = capacity.readEnvelope(process.cwd());
-    if (envelope.heavyMemMaxMb > 0) memMax = `${envelope.heavyMemMaxMb}M`;
+    // A heavy one-shot must also fit the live tier group's remaining budget. The
+    // free-RAM floor above only catches an already-empty box; a live emulator+dev
+    // group (each capped generously) plus a 5-6 GB build exceeds a 10 GB VM even
+    // while free RAM still looks healthy. Join the one live heavy group (or an
+    // explicit --group), cap to the remainder, and refuse when it is too small.
+    if (!longLived && envelope.groupMemMaxMb > 0 && joinGroup) {
+      const budget = capacity.groupBudget(sample.serves, joinGroup, envelope);
+      const minOneShotMb = Number(process.env.AGENT_ONESHOT_MIN_MB) || 2048;
+      const requested = capacity.parseMemMb(memMax) || envelope.heavyMemMaxMb || minOneShotMb;
+      if (budget.remainingMb != null && budget.remainingMb < minOneShotMb) {
+        const members = sample.serves
+          .filter((x) => x.alive && x.group === joinGroup)
+          .map((x) => x.name)
+          .join(", ");
+        console.error(capacity.formatSummary(sample));
+        console.error(
+          `refused: one-shot "${label}" needs ≥ ${minOneShotMb} MB, but tier group "${joinGroup}" ` +
+            `has only ${budget.remainingMb} MB left of ${budget.totalMb} MB (${members}). ` +
+            `Build BEFORE booting the group, or stop one member ` +
+            `(node scripts/serve.js stop --name <name>).`
+        );
+        process.exit(2);
+      }
+      if (budget.remainingMb != null && requested > budget.remainingMb) {
+        console.error(
+          `capacity warning: tightening one-shot "${name}" to the "${joinGroup}" group remainder (${budget.remainingMb} MB)`
+        );
+        memMax = `${budget.remainingMb}M`;
+      }
+    }
   }
 
   const started = Date.now();

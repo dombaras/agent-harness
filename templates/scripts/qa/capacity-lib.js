@@ -475,7 +475,10 @@ function evaluate(s, opts) {
   const heavyGroups = new Set(heavy.map((x) => x.group).filter(Boolean));
   const joinsRunningGroup =
     !!pendingGroup && heavy.length > 0 && heavyGroups.size === 1 && heavyGroups.has(pendingGroup);
-  const heavyTiers = joinsRunningGroup ? heavy.length : heavy.length + pendingHeavy;
+  // A process joining an already-live group shares that ONE tier (emulator +
+  // dev server + a one-shot build = one budgeted `mobile` tier), so it does not
+  // add to the count even when several group members are already live (F-296).
+  const heavyTiers = joinsRunningGroup ? 1 : heavy.length + pendingHeavy;
   if (heavyTiers > e.maxHeavyTiers) {
     reasons.push(
       `${heavyTiers} heavy tier(s) would run at once ` +

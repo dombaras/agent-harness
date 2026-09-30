@@ -26,6 +26,9 @@
 #     behind /dev/dxg) and, when accelerated, launches the emulator with the
 #     matching GL env — otherwise Mesa silently picks llvmpipe even with a GPU
 #     (F-296). Enable it once with `bash scripts/wsl-gpu.sh apply`.
+#   * If an AUTO-selected backend fails to boot, the tier retries once with
+#     `swiftshader_indirect` (the observed d3d12 segfault), unless
+#     MOBILE_E2E_GPU pins one explicitly.
 #   MOBILE_E2E_CORES / MOBILE_E2E_MEMORY / MOBILE_E2E_GPU override each.
 #
 # Tunables (env; `local.json` supplies `avd`):
@@ -213,26 +216,62 @@ fi
 # 3. Start (or reuse) the emulator, detached, ready when its adb port answers.
 #    `--group` lets the emulator and the dev server share one machine-wide
 #    mobile-tier budget instead of fighting the single-heavy-tier lock.
-node scripts/serve.js start \
-  --cmd "$GPU_ENV $EMULATOR -avd $AVD -no-window -no-audio -no-boot-anim -no-snapshot -gpu $GPU -cores $CORES -memory $MEMORY" \
-  --name emulator --port 5554 --group "$TIER_GROUP" --timeout 180000
+start_emulator() {
+  local gpu="$1" gpu_env="$2"
+  node scripts/serve.js start \
+    --cmd "$gpu_env $EMULATOR -avd $AVD -no-window -no-audio -no-boot-anim -no-snapshot -gpu $gpu -cores $CORES -memory $MEMORY" \
+    --name emulator --port 5554 --group "$TIER_GROUP" --timeout 180000
+}
 
 # 4. Bounded readiness gate — never sleep-and-pray, and never let a wedged adb
 #    hang the tool. `adb wait-for-device` returns once a device is attached; then
-#    poll `sys.boot_completed` (bounded) until Android is fully up.
-echo "waiting for the device to finish booting (bounded)…"
-timeout 90 "$ADB" wait-for-device
-boot=""
-for _ in $(seq 1 30); do
-  boot="$(timeout 10 "$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
-  [ "$boot" = "1" ] && break
-  sleep 2
-done
-if [ "$boot" != "1" ]; then
-  echo "FAIL — emulator did not finish booting (sys.boot_completed != 1)." >&2
+#    poll `sys.boot_completed` (bounded) until Android is fully up. Returns
+#    non-zero when the device never finishes booting (a dead/segfaulted qemu).
+wait_boot() {
+  echo "waiting for the device to finish booting (bounded)…"
+  timeout 90 "$ADB" wait-for-device
+  boot=""
+  for _ in $(seq 1 30); do
+    boot="$(timeout 10 "$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+    [ "$boot" = "1" ] && break
+    sleep 2
+  done
+  [ "$boot" = "1" ]
+}
+
+log_emulator_failure() {
   echo "  adb devices (bounded):" >&2
   timeout 10 "$ADB" devices >&2 || true
-  exit 1
+  if [ -f ".serve/emulator.err.log" ]; then
+    echo "  .serve/emulator.err.log (tail):" >&2
+    tail -8 .serve/emulator.err.log >&2 || true
+  fi
+}
+
+start_emulator "$GPU" "$GPU_ENV"
+if ! wait_boot; then
+  # A healthy emulator uses a GPU backend that actually boots. If it did not, and
+  # the user did not pin MOBILE_E2E_GPU, fall back ONCE to the software
+  # rasterizer: the 2026-09-30 F-296 case was the auto-selected WSL `host`+d3d12
+  # path segfaulting qemu, and the run only proceeded after a manual
+  # `MOBILE_E2E_GPU=swiftshader_indirect`. Bake that recovery in.
+  echo "FAIL — emulator did not finish booting (sys.boot_completed != 1)." >&2
+  log_emulator_failure
+  if [ -z "${MOBILE_E2E_GPU:-}" ] && [ "$GPU" != "swiftshader_indirect" ]; then
+    echo "  auto-selected gpu=$GPU crashed; retrying once with the software rasterizer (gpu=swiftshader_indirect)…" >&2
+    node scripts/serve.js stop --name emulator >/dev/null 2>&1 || true
+    node scripts/serve.js prune >/dev/null 2>&1 || true
+    GPU="swiftshader_indirect"
+    GPU_ENV=""
+    start_emulator "$GPU" "$GPU_ENV"
+    if ! wait_boot; then
+      echo "FAIL — emulator still did not boot with swiftshader_indirect." >&2
+      log_emulator_failure
+      exit 1
+    fi
+  else
+    exit 1
+  fi
 fi
 echo "boot ok"
 node scripts/serve.js list

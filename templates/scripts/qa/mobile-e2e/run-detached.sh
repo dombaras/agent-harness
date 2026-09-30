@@ -78,6 +78,13 @@ if [ "$WAIT" != "1" ]; then
   exit 0
 fi
 
+# --wait blocks THIS shell for the whole run. From an agent, prefer detached +
+# the job-notify plugin (or the async `wait` tool): a blocking bash call leaves
+# the tool "running" and the transcript blind for the entire matrix (F-296).
+echo "run-detached: --wait blocks this shell until the run finishes." >&2
+echo "  In an agent session prefer detached + job-notify, or the async \`wait\` tool;" >&2
+echo "  use --wait only headless. Progress every ${MOBILE_E2E_WAIT_HEARTBEAT:-20}s below." >&2
+
 # --wait: block here, streaming each new scenario line, then return the run's
 # exit code. A zombie (exited, not yet reaped) must not read as "running".
 is_running() {

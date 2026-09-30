@@ -11,6 +11,10 @@
 # the single entry point; the primitives stay where they are (boot-emulator.sh,
 # serve.js) and this only sequences them.
 #
+# Order matters: the APK build (a heavy one-shot) runs BEFORE the emulator (a
+# heavy long-lived tier) so the two never overlap on a ~10 GB VM — building while
+# the emulator is up OOMs the build and can get the emulator killed (F-296).
+#
 # Idempotent: an already-booted emulator, a live adb server, an installed APK of
 # the same version, and a running dev server are all REUSED (never restarted).
 #
@@ -62,8 +66,29 @@ DEV_NAME="${MOBILE_E2E_DEV_NAME:-$(cfg devName)}"
 
 echo "device-up: app=${APP_ID:-?} apk=${APK:-<auto>} dev=${DEV_URL} group=${TIER_GROUP}"
 
-# 1. adb server + emulator + bounded boot gate (the primitive owns readiness).
-echo "[1/4] adb server + emulator (boot-emulator.sh)"
+# 1. Build the APK FIRST, as a capped one-shot, BEFORE the emulator exists. The
+#    build is a heavy one-shot (Gradle daemon + Kotlin daemon + R8/D8) and the
+#    emulator is a heavy long-lived tier; running both at once on a ~10 GB VM
+#    OOMs the build AND can get the emulator killed (F-296, 2026-09-30). Build
+#    then boot serializes the two heavy phases. `serve.js run` also refuses a
+#    build that does not fit a live group budget, so a rebuild while an emulator
+#    is already up fails loudly instead of thrashing the box.
+if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ] && [ "${MOBILE_E2E_SKIP_BUILD:-0}" != "1" ]; then
+  echo "[1/5] building the app (capped via build-apk.sh; override with MOBILE_E2E_SKIP_BUILD=1)"
+  if [ -x "$ROOT/scripts/qa/mobile-e2e/build-apk.sh" ]; then
+    bash "$ROOT/scripts/qa/mobile-e2e/build-apk.sh"
+  elif [ -x "$ROOT/scripts/qa/mobile-e2e/build-dev-apk.sh" ]; then
+    echo "  (using project build-dev-apk.sh — route it through \`serve.js run\` so it is capped)"
+    bash "$ROOT/scripts/qa/mobile-e2e/build-dev-apk.sh"
+  else
+    echo "  (no build-apk.sh / build-dev-apk.sh; set MOBILE_E2E_SKIP_BUILD=1 if the APK is prebuilt)"
+  fi
+else
+  echo "[1/5] build skipped"
+fi
+
+# 2. adb server + emulator + bounded boot gate (the primitive owns readiness).
+echo "[2/5] adb server + emulator (boot-emulator.sh)"
 bash scripts/qa/mobile-e2e/boot-emulator.sh
 
 if [ ! -x "$ADB" ]; then
@@ -71,41 +96,28 @@ if [ ! -x "$ADB" ]; then
   exit 1
 fi
 
-# 2. Build + install the APK. The build runs through build-apk.sh, which is
-#    CAPPED (serve.js run) so the Gradle job cannot freeze the VM; a project may
-#    keep its own build-dev-apk.sh, which is used as a fallback.
+# 3. Install the (now-built) APK onto the booted device.
 if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ]; then
-  if [ "${MOBILE_E2E_SKIP_BUILD:-0}" != "1" ]; then
-    echo "[2/4] building the app (capped via build-apk.sh; override with MOBILE_E2E_SKIP_BUILD=1)"
-    if [ -x "$ROOT/scripts/qa/mobile-e2e/build-apk.sh" ]; then
-      bash "$ROOT/scripts/qa/mobile-e2e/build-apk.sh"
-    elif [ -x "$ROOT/scripts/qa/mobile-e2e/build-dev-apk.sh" ]; then
-      echo "  (using project build-dev-apk.sh — route it through \`serve.js run\` so it is capped)"
-      bash "$ROOT/scripts/qa/mobile-e2e/build-dev-apk.sh"
-    else
-      echo "  (no build-apk.sh / build-dev-apk.sh; set MOBILE_E2E_SKIP_BUILD=1 if the APK is prebuilt)"
-    fi
-  fi
   if [ -n "$APP_ID" ] && [ -f "$APK" ]; then
-    echo "[2/4] installing $APK"
+    echo "[3/5] installing $APK"
     timeout 300 "$ADB" install -r "$APK"
   else
-    echo "[2/4] no APK at $APK (set local.json .apk or MOBILE_E2E_APK) — skipping install"
+    echo "[3/5] no APK at $APK (set local.json .apk or MOBILE_E2E_APK) — skipping install"
   fi
 else
-  echo "[2/4] install skipped"
+  echo "[3/5] install skipped"
 fi
 
-# 3. Dev server, in the SAME heavy-tier group so the pair is one budget.
+# 4. Dev server, in the SAME heavy-tier group so the pair is one budget.
 if [ "$WITH_DEV" = "1" ]; then
-  echo "[3/4] dev server ($DEV_NAME) via serve.js --group $TIER_GROUP"
+  echo "[4/5] dev server ($DEV_NAME) via serve.js --group $TIER_GROUP"
   node scripts/serve.js start --cmd "$DEV_CMD" --url "$DEV_URL" --name "$DEV_NAME" --group "$TIER_GROUP"
 else
-  echo "[3/4] dev server skipped (--no-dev)"
+  echo "[4/5] dev server skipped (--no-dev)"
 fi
 
-# 4. Bounded readiness of the whole tier.
-echo "[4/4] readiness"
+# 5. Bounded readiness of the whole tier.
+echo "[5/5] readiness"
 timeout 30 "$ADB" wait-for-device
 boot=""
 for _ in $(seq 1 30); do
