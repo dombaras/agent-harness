@@ -6146,7 +6146,7 @@ test("deploy ships agent-search.sh + setup-tmpfs.sh, executable and LF, wired in
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
-  for (const rel of ["scripts/agent-search.sh", "scripts/setup-tmpfs.sh"]) {
+  for (const rel of ["scripts/agent-search.sh", "scripts/setup-tmpfs.sh", "scripts/wsl-gpu.sh"]) {
     const p = path.join(target, rel);
     assert.ok(exists(p), `${rel} deployed`);
     const src = read(p);
@@ -6158,6 +6158,7 @@ test("deploy ships agent-search.sh + setup-tmpfs.sh, executable and LF, wired in
   const pkg = JSON.parse(read(path.join(target, "package.json")));
   assert.strictEqual(pkg.scripts.search, "bash scripts/agent-search.sh");
   assert.strictEqual(pkg.scripts.ramdisk, "bash scripts/setup-tmpfs.sh up");
+  assert.strictEqual(pkg.scripts.gpu, "bash scripts/wsl-gpu.sh");
 
   const search = read(path.join(target, "scripts", "agent-search.sh"));
   assert.doesNotMatch(search, /\brg\b[^\n]*--no-ignore/, "rg is never invoked with --no-ignore");
@@ -6207,6 +6208,29 @@ test("setup-tmpfs.sh is a no-op outside WSL and idempotent/dry-runnable with ove
   assert.strictEqual(envOut.status, 0, envOut.stderr);
   assert.match(envOut.stdout, /^export /m);
   assert.match(envOut.stdout, /PIP_CACHE_DIR|npm_config_cache/);
+});
+
+test("wsl-gpu.sh enables the WSL GPU (vgem + d3d12) and is a clean no-op off WSL", () => {
+  const script = path.join(h.TEMPLATES_DIR, "scripts", "wsl-gpu.sh");
+  const src = read(script);
+  // The two missing pieces this exists to fix (F-296).
+  assert.match(src, /modprobe/, "loads the DRM module");
+  assert.match(src, /modules-load\.d/, "persists the module across WSL restarts");
+  assert.match(src, /d3d12/, "selects Mesa's d3d12 driver");
+  assert.match(src, /GALLIUM_DRIVER/, "exports the GL driver selection");
+  assert.match(src, /\/dev\/dxg/, "gates on WSL GPU passthrough");
+
+  const chk = spawnSync("bash", ["-n", script], { encoding: "utf8" });
+  assert.strictEqual(chk.status, 0, chk.stderr);
+
+  // No /dev/dxg and not forced: status is a clean no-op.
+  const env = { ...process.env };
+  delete env.AGENT_WSL_GPU_FORCE;
+  const off = spawnSync("bash", [script, "status"], { encoding: "utf8", env });
+  assert.strictEqual(off.status, 0, off.stderr);
+  if (!fs.existsSync("/dev/dxg")) {
+    assert.match(off.stdout, /not WSL GPU passthrough/);
+  }
 });
 
 // ---------------------------------------------------------------- tool-lib + lease-lib
@@ -8213,6 +8237,12 @@ test("[drift-guard] device tier is right-sized, group-budgeted, and notifyable",
   assert.match(boot, /detect_gpu|swiftshader_indirect/, "boot-emulator.sh auto-detects the GPU backend");
   assert.match(boot, /nproc/, "boot-emulator.sh derives cores from the host");
   assert.match(boot, /--group/, "boot-emulator.sh joins a tier group");
+  // WSL GPU: the probe forces d3d12 and the launch carries the matching env, so
+  // `-gpu host` cannot silently fall back to llvmpipe (F-296).
+  assert.match(boot, /GALLIUM_DRIVER=d3d12/, "boot-emulator.sh selects the d3d12 driver on WSL");
+  assert.match(boot, /GPU_ENV/, "boot-emulator.sh passes the GL env to the emulator launch");
+  assert.match(boot, /\$GPU_ENV \$EMULATOR/, "the emulator command supplies GPU_ENV");
+  assert.match(boot, /wsl-gpu\.sh/, "boot-emulator.sh points at the wsl-gpu.sh fix");
 
   const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));
   assert.match(serve, /a === "--group"/, "serve.js parses --group");
@@ -8282,6 +8312,7 @@ test("boot-emulator.sh --print-profile derives the profile from the host and AVD
   assert.strictEqual(derived.cores, 2, "cores are capped by the AVD's 2-core config");
   assert.strictEqual(derived.memory, 2048, "RAM default comes from the capacity envelope");
   assert.ok(["host", "swiftshader_indirect"].includes(derived.gpu), "GPU backend is auto-detected");
+  assert.ok("gpuEnv" in derived, "the profile carries the resolved GL env (null off WSL)");
 
   const over = run({
     MOBILE_E2E_AVD: "t",

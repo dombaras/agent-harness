@@ -1,6 +1,6 @@
 # WSL2 / agentic-development optimizations
 
-Three harness-managed, re-runnable mechanisms that keep recursive work cheap and
+Four harness-managed, re-runnable mechanisms that keep recursive work cheap and
 the VM healthy on a 10 GB / 10 CPU WSL2 box while staying safe outside it:
 
 1. **Ignore-aware search** — a canonical `.ignore` plus `scripts/agent-search.sh`
@@ -11,6 +11,9 @@ the VM healthy on a 10 GB / 10 CPU WSL2 box while staying safe outside it:
    enforced by `serve.js`, `test:capacity`, the `context-guard` plugin, and
    `agent-harness doctor`, so parallel agents can never stack parallel *heavy
    tiers* into a freeze.
+4. **WSL2 GPU acceleration** — `scripts/wsl-gpu.sh` loads `vgem` and selects
+   Mesa's `d3d12` driver so the device E2E emulator renders on the Windows GPU
+   instead of the CPU software rasterizer.
 
 All are scripts/config/docs only; none touches application source.
 
@@ -208,3 +211,42 @@ Env overrides (also used to test the guards): `AGENT_CAPACITY_MEMINFO`,
 `AGENT_CAPACITY_FORCE_WSL`, `AGENT_CAPACITY_DISABLE`, `AGENT_HEAVY_LOCK`,
 `AGENT_WSL_CONFIG`, `AGENT_HOST_RAM_MB`, `AGENT_HOST_CPUS`,
 `AGENT_TUNING_SYSCTL_DIR`, `AGENT_TUNING_SLICE_FILE`, `AGENT_WSL_TUNE_*`.
+
+## 4. GPU acceleration for the device emulator: `scripts/wsl-gpu.sh`
+
+The Android E2E emulator is the slowest, most CPU-bound part of a mobile run:
+on a software renderer each Maestro command costs ~2.5 s and QEMU pins ~3 cores
+just compositing (F-291/F-296). WSL2 can render on the Windows GPU, but Mesa
+does not use it unless two things are true — and on a typical WSL install
+neither is:
+
+- **`vgem` must be loaded.** WSL kernels ≥ 2.5 ship `vgem` as a *loadable*
+  module and never auto-load it, so `/dev/dri` is absent and the GL stack falls
+  back to `llvmpipe` (WSL issues #12702 / #11837). The Windows GPU is still
+  exposed at `/dev/dxg`; only the DRM render node is missing.
+- **Mesa must select `d3d12`.** Even with `/dev/dri` present, the default
+  renderer stays `llvmpipe`; `GALLIUM_DRIVER=d3d12`
+  (`MESA_LOADER_DRIVER_OVERRIDE=d3d12`, with `/usr/lib/wsl/lib` on the loader
+  path) is required.
+
+```bash
+bash scripts/wsl-gpu.sh status    # /dev/dxg? vgem? which d3d12 renderer?
+bash scripts/wsl-gpu.sh apply     # load + persist vgem, verify (auto-sudo)
+bash scripts/wsl-gpu.sh env       # print the GL exports for a process
+```
+
+`apply` runs `modprobe vgem` and persists it via
+`/etc/modules-load.d/vgem.conf`, then verifies with a forced-d3d12 `glxinfo`.
+`doctor` warns when `/dev/dxg` exists but `/dev/dri` is missing (the
+not-loaded state). `boot-emulator.sh` probes the same path: it forces the
+`d3d12` driver when `/dev/dxg` is present, and when that reports an accelerated
+renderer it launches the emulator with `-gpu host` **and** the matching
+`GALLIUM_DRIVER`/`MESA_LOADER_DRIVER_OVERRIDE` env (serve.js forwards the
+caller's env into the transient unit). Otherwise it stays on
+`swiftshader_indirect` and prints the `wsl-gpu.sh apply` hint.
+
+No-op outside WSL (no `/dev/dxg`). Env: `AGENT_WSL_GPU_DRIVER` (default
+`d3d12`), `AGENT_WSL_GPU_MODULE` (`vgem`), `AGENT_WSL_GPU_MODULES_FILE`,
+`AGENT_WSL_GPU_GLXINFO`, `AGENT_WSL_GPU_FORCE`. If `apply` loads `vgem` but the
+renderer is still software, the Windows GPU driver lacks WSL support — update
+it to the vendor's WSL driver and `wsl --shutdown`.

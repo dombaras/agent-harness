@@ -321,6 +321,7 @@ const HARNESS_SCRIPTS = {
   ramdisk: "bash scripts/setup-tmpfs.sh up",
   "ramdisk:down": "bash scripts/setup-tmpfs.sh down",
   "wsl-tune": "bash scripts/wsl-tune.sh",
+  gpu: "bash scripts/wsl-gpu.sh",
 };
 
 /* Detect a project's own indentation so a merge never reformats package.json
@@ -1581,6 +1582,25 @@ function doctor(target) {
       add("warn", "wsl tuning", "no user.slice resource ceiling — run `sudo scripts/wsl-tune.sh apply`");
     } else if (tuning.swappiness != null && tuning.swappiness <= 20) {
       add("ok", "wsl tuning", `swappiness + user.slice ceiling + init.scope backstop applied`);
+    }
+    // WSL GPU passthrough: /dev/dxg present but no DRM render node means the
+    // `vgem` module isn't loaded, so Mesa falls back to llvmpipe and the
+    // Android emulator renders several times slower than it needs to (F-296).
+    try {
+      if (fs.existsSync("/dev/dxg")) {
+        const render = fs.existsSync("/dev/dri")
+          ? fs.readdirSync("/dev/dri").some((n) => n.startsWith("renderD"))
+          : false;
+        if (render) add("ok", "wsl gpu", "GPU passthrough available (/dev/dri render node present)");
+        else
+          add(
+            "warn",
+            "wsl gpu",
+            "GPU passthrough present but /dev/dri is missing (vgem not loaded) — run `bash scripts/wsl-gpu.sh apply`"
+          );
+      }
+    } catch {
+      /* device probing is best-effort */
     }
   } catch (err) {
     add("ok", "capacity", `not sampled (${err && err.message ? err.message : "unavailable"})`);

@@ -22,6 +22,10 @@
 #   * The GPU backend is auto-detected: `host` only when a real GPU/renderer is
 #     present, else `swiftshader_indirect` (the safe WSL2 fallback). `-gpu host`
 #     on a box whose only renderer is llvmpipe is software GL anyway.
+#     On WSL2 the detection probes with Mesa's `d3d12` driver (the Windows GPU
+#     behind /dev/dxg) and, when accelerated, launches the emulator with the
+#     matching GL env — otherwise Mesa silently picks llvmpipe even with a GPU
+#     (F-296). Enable it once with `bash scripts/wsl-gpu.sh apply`.
 #   MOBILE_E2E_CORES / MOBILE_E2E_MEMORY / MOBILE_E2E_GPU override each.
 #
 # Tunables (env; `local.json` supplies `avd`):
@@ -99,21 +103,34 @@ resolve_memory() {
   echo "$m"
 }
 
-detect_gpu() {
-  # Real GPU passthrough (DRM render node) or an NVIDIA driver answers.
-  if [ -d /dev/dri ] && ls /dev/dri/renderD* >/dev/null 2>&1; then echo host; return; fi
-  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then echo host; return; fi
-  # Otherwise, trust glxinfo when present: a software renderer means host GL is
-  # llvmpipe and `host` buys nothing over swiftshader.
-  if command -v glxinfo >/dev/null 2>&1; then
-    local r
-    r="$(glxinfo -B 2>/dev/null | tr 'A-Z' 'a-z' || true)"
-    case "$r" in
-      *llvmpipe*|*softpipe*|*swrast*|*"software rasterizer"*) echo swiftshader_indirect; return ;;
-    esac
-    echo "$r" | grep -q 'opengl renderer' && { echo host; return; }
+# GL renderer as the emulator's `-gpu host` would actually see it. On WSL the
+# Windows GPU is behind /dev/dxg and Mesa defaults to llvmpipe, so the probe
+# forces the d3d12 driver (exactly what `wsl-gpu.sh apply` verifies); without
+# that, a real GPU reads as software and the emulator never uses it (F-296).
+is_wsl_gpu() { [ -e /dev/dxg ]; }
+
+gl_renderer() {
+  command -v glxinfo >/dev/null 2>&1 || return 0
+  if is_wsl_gpu; then
+    MESA_LOADER_DRIVER_OVERRIDE=d3d12 GALLIUM_DRIVER=d3d12 glxinfo -B 2>/dev/null \
+      | grep -i 'OpenGL renderer string' | head -1 | sed 's/.*: //' || true
+  else
+    glxinfo -B 2>/dev/null | grep -i 'OpenGL renderer string' | head -1 | sed 's/.*: //' || true
   fi
-  echo swiftshader_indirect
+}
+
+detect_gpu() {
+  # An NVIDIA driver answers directly (no GL probe needed).
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then echo host; return; fi
+  # Otherwise trust the effective renderer: a software renderer means `host` GL
+  # is llvmpipe and buys nothing over swiftshader.
+  local r
+  r="$(gl_renderer | tr 'A-Z' 'a-z')"
+  case "$r" in
+    *llvmpipe*|*softpipe*|*swrast*|*"software rasterizer"*) echo swiftshader_indirect; return ;;
+    "") echo swiftshader_indirect; return ;;
+  esac
+  echo host
 }
 
 HOST_CPUS="$(nproc 2>/dev/null || echo 2)"
@@ -124,14 +141,29 @@ GPU="${MOBILE_E2E_GPU:-$(detect_gpu)}"
 case "$CORES" in ''|*[!0-9]*) CORES=2 ;; esac
 case "$MEMORY" in ''|*[!0-9]*) MEMORY=2048 ;; esac
 
+# When the backend is a real GPU reached over WSL's d3d12 path, the emulator
+# inherits the same driver selection (serve.js runs the command through a shell
+# and forwards the caller's env) — otherwise `-gpu host` would still use llvmpipe.
+GPU_ENV=""
+if [ "$GPU" = "host" ] && is_wsl_gpu; then
+  GPU_ENV="MESA_LOADER_DRIVER_OVERRIDE=d3d12 GALLIUM_DRIVER=d3d12"
+fi
+
+# WSL GPU passthrough available but GL resolved to software: the emulator is
+# about to render at a fraction of the speed for no reason. Name the fix.
+if [ "$GPU" != "host" ] && is_wsl_gpu && [ -z "${MOBILE_E2E_GPU:-}" ]; then
+  echo "! WSL GPU passthrough is present but GL is software (llvmpipe)." >&2
+  echo "  Enable D3D12 acceleration once:  bash scripts/wsl-gpu.sh apply" >&2
+fi
+
 if [ "$PRINT_PROFILE" = "2" ]; then
   sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
 if [ "$PRINT_PROFILE" = "1" ]; then
-  node -e "process.stdout.write(JSON.stringify({avd:process.argv[1]||null,hostCpus:Number(process.argv[2]),avdCores:Number(process.argv[3]),cores:Number(process.argv[4]),memory:Number(process.argv[5]),gpu:process.argv[6],tierGroup:process.argv[7]},null,2)+'\n')" \
-    "$AVD" "$HOST_CPUS" "$AVD_CORES" "$CORES" "$MEMORY" "$GPU" "$TIER_GROUP"
+  node -e "process.stdout.write(JSON.stringify({avd:process.argv[1]||null,hostCpus:Number(process.argv[2]),avdCores:Number(process.argv[3]),cores:Number(process.argv[4]),memory:Number(process.argv[5]),gpu:process.argv[6],gpuEnv:process.argv[7]||null,tierGroup:process.argv[8]},null,2)+'\n')" \
+    "$AVD" "$HOST_CPUS" "$AVD_CORES" "$CORES" "$MEMORY" "$GPU" "$GPU_ENV" "$TIER_GROUP"
   exit 0
 fi
 
@@ -152,7 +184,7 @@ fi
 
 cd "$ROOT"
 
-echo "device profile: avd=$AVD cores=$CORES/$HOST_CPUS memory=${MEMORY}MB gpu=$GPU (avd declares ${AVD_CORES} cores)"
+echo "device profile: avd=$AVD cores=$CORES/$HOST_CPUS memory=${MEMORY}MB gpu=$GPU${GPU_ENV:+ ($GPU_ENV)} (avd declares ${AVD_CORES} cores)"
 if [ "$CORES" -gt "$AVD_CORES" ]; then
   echo "  ! cores ($CORES) exceed the AVD's hw.cpu.ncore ($AVD_CORES); the guest may cap them." >&2
 fi
@@ -182,7 +214,7 @@ fi
 #    `--group` lets the emulator and the dev server share one machine-wide
 #    mobile-tier budget instead of fighting the single-heavy-tier lock.
 node scripts/serve.js start \
-  --cmd "$EMULATOR -avd $AVD -no-window -no-audio -no-boot-anim -no-snapshot -gpu $GPU -cores $CORES -memory $MEMORY" \
+  --cmd "$GPU_ENV $EMULATOR -avd $AVD -no-window -no-audio -no-boot-anim -no-snapshot -gpu $GPU -cores $CORES -memory $MEMORY" \
   --name emulator --port 5554 --group "$TIER_GROUP" --timeout 180000
 
 # 4. Bounded readiness gate — never sleep-and-pray, and never let a wedged adb

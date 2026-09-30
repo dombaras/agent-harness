@@ -79,10 +79,41 @@ timeout 10 adb shell getprop sys.boot_completed   # must print 1
 `boot-emulator.sh` derives the profile instead of hardcoding it —
 `cores = min(AVD hw.cpu.ncore, nproc − reserve)`, guest RAM from the envelope's
 `emulator_ram_mb` (the single owner of that number), and the GPU backend is
-auto-detected (`host` only when a real DRM/NVIDIA renderer is present, else
+auto-detected (`host` only when a real renderer answers, else
 `swiftshader_indirect`; `-gpu host` on a box whose only renderer is `llvmpipe` is
 software GL anyway). Override any of them with `MOBILE_E2E_CORES`,
 `MOBILE_E2E_MEMORY`, `MOBILE_E2E_GPU`.
+
+### GPU acceleration on WSL2 (the biggest wall-clock lever)
+
+On a software renderer the emulator is CPU-bound — ~2.5 s/command, ~3.6 s/tap
+(F-291/F-296), pinned near 3 cores just compositing. WSL2 can pass the Windows
+GPU through, but Mesa does **not** use it by default, and the DRM node is often
+missing too, so `boot-emulator.sh` silently resolves to `swiftshader_indirect`
+even on a capable box. Two things are needed, both handled by
+`scripts/wsl-gpu.sh`:
+
+1. **Load `vgem`.** Modern WSL kernels (≥ 2.5) ship the DRM module but do not
+   auto-load it, so `/dev/dri` is absent and every GL app falls back to
+   `llvmpipe` (WSL issues [#12702](https://github.com/microsoft/WSL/issues/12702),
+   [#11837](https://github.com/microsoft/WSL/issues/11837)).
+2. **Select the `d3d12` driver.** Even with `/dev/dri` present, Mesa still picks
+   `llvmpipe` unless `GALLIUM_DRIVER=d3d12` (with `/usr/lib/wsl/lib` on the
+   loader path) is set.
+
+```bash
+bash scripts/wsl-gpu.sh status    # diagnose: /dev/dxg, vgem, d3d12 renderer
+bash scripts/wsl-gpu.sh apply     # load + persist vgem, verify d3d12 (auto-sudo)
+```
+
+Once active, `glxinfo -B` reports `D3D12 (<Windows GPU>)` and `Accelerated: yes`,
+and `boot-emulator.sh --print-profile` resolves `gpu: "host"` with a `gpuEnv`
+that exports the two variables to the emulator (serve.js forwards the caller's
+env). Verification on this box: before — `llvmpipe`, `Accelerated: no`; after —
+`D3D12 (Intel(R) Graphics)`, `Accelerated: yes`. The script is a no-op outside
+WSL (no `/dev/dxg`). The Huawei/Xiaomi/etc. GPU must have a WSL-capable driver
+(the Intel/AMD/NVIDIA "WSL" driver); if `apply` loads `vgem` but d3d12 still
+reports software, `wsl --shutdown` from Windows and retry.
 
 The emulator joins the machine-wide **`mobile` tier group** (`--group mobile`):
 the emulator and the dev server are two heavy processes that legitimately run
