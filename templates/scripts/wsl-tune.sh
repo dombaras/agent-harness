@@ -37,7 +37,7 @@ SLICE_DIR="${AGENT_WSL_TUNE_SLICE_DIR:-/etc/systemd/system/user.slice.d}"
 SLICE_FILE="$SLICE_DIR/90-agent-cap.conf"
 UNIT_DIR="${AGENT_WSL_TUNE_UNIT_DIR:-/etc/systemd/system}"
 BACKSTOP_UNIT="$UNIT_DIR/agent-wsl-backstop.service"
-BACKSTOP="${AGENT_WSL_TUNE_BACKSTOP:-8G}"
+BACKSTOP="${AGENT_WSL_TUNE_BACKSTOP:-8704M}"
 DRY_RUN="${AGENT_WSL_TUNE_DRY_RUN:-0}"
 
 log() { printf '%s\n' "$*"; }

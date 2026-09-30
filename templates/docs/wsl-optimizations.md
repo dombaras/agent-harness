@@ -179,7 +179,7 @@ does it all (auto-sudo where passwordless), idempotently:
   `MemoryHigh=8G`, `MemoryMax=9G`, `CPUQuota=800%` — a backstop so user work can
   never consume the whole VM and starve the kernel/relay.
 - **init.scope soft backstop** (`agent-wsl-backstop.service`, enabled): a
-  `MemoryHigh` (`backstop_mem_high_mb`, default 8 GB) on the cgroup the workload
+  `MemoryHigh` (`backstop_mem_high_mb`, default 8.5 GB) on the cgroup the workload
   actually lives in. This is the important correction: WSL's `wsl.exe` session —
   and so every agent, emulator, and dev server — runs in **`init.scope`**, a
   sibling of `user.slice`, **not** a child, so the ceiling above never binds it.

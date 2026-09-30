@@ -51,8 +51,10 @@ const DEFAULT_ENVELOPE = {
   heavyMemMaxMb: 5120,
   // Soft `MemoryHigh` backstop for the cgroup that actually holds the agents
   // (WSL puts the `wsl.exe` session in init.scope, NOT user.slice). Soft: it
-  // throttles/reclaims near the freeze line and never OOM-kills.
-  backstopMemHighMb: 8192,
+  // throttles/reclaims near the freeze line and never OOM-kills. 8.5 GB sits
+  // above the observed non-reclaimable working set (~6.9 GB) so the cap only
+  // reclaims page cache in normal E2E, and below the ~9.5 GB freeze peak.
+  backstopMemHighMb: 8704,
   // PSI (`/proc/pressure/*`) is the earliest true freeze signal — load average
   // lies, but memory "some avg10" climbing means processes are already stalled
   // on reclaim. Warning thresholds, not hard failures.

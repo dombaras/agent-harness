@@ -49,7 +49,7 @@ not.** These numbers are the machine-readable envelope that `serve.js`,
 | `idle_reap_minutes` | 90 | age at which a running serve is flagged as an idle-reap candidate |
 | `emulator_ram_mb` | 2048 | budget for the Android emulator (it used ~3 GB with software GPU) |
 | `heavy_mem_max_mb` | 5120 | default cgroup `MemoryMax` for a heavy tier (`serve.js` applies it; above the observed peak so E2E is not throttled; `--mem-max` overrides) |
-| `backstop_mem_high_mb` | 8192 | soft `MemoryHigh` on `init.scope` (`wsl-tune.sh`) — the cgroup agents actually run in; throttles near the freeze line, never OOM-kills |
+| `backstop_mem_high_mb` | 8704 | soft `MemoryHigh` on `init.scope` (`wsl-tune.sh`) — the cgroup agents actually run in; 8.5 GB is above the observed non-reclaimable set (~6.9 GB) so it only reclaims cache in normal E2E, and below the ~9.5 GB freeze peak; never OOM-kills |
 | `heavy_lock_ttl_minutes` | 240 | TTL before a crashed heavy-tier lock is considered stale |
 
 ## Dispatch fan-out review

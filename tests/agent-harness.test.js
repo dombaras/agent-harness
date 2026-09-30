@@ -7822,7 +7822,7 @@ test("capacity: envelope declares the heavy-tier cap and the init.scope backstop
     read(path.join(h.TEMPLATES_DIR, ".agents", "memory", "orchestration.md"))
   );
   assert.strictEqual(env.heavyMemMaxMb, 5120, "a default heavy-tier cgroup cap is declared");
-  assert.strictEqual(env.backstopMemHighMb, 8192, "a soft init.scope backstop is declared");
+  assert.strictEqual(env.backstopMemHighMb, 8704, "a soft init.scope backstop is declared");
   assert.strictEqual(capacity.DEFAULT_ENVELOPE.heavyMemMaxMb, 5120, "default fallback matches");
 });
 
