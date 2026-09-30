@@ -609,11 +609,15 @@ function main() {
   runReset(options);
 
   const records = buildFlowRecords(flowFiles, stepsByFlow);
-  const missingActor = records.filter((record) => !record.actor);
-  if (missingActor.length > 0) {
-    console.error(`FAIL — no actor for: ${missingActor.map((record) => record.name).join(', ')}`);
-    console.error('  Add `actor: "<phone>"` to the journey in flows/matrix.yaml, or set local.json `defaultActor`.');
-    process.exit(2);
+  // Actor is only needed to decide session reuse/batching; a cold per-flow run
+  // does not use it, so a project that has not adopted `actor:` yet still runs.
+  if (options.reuseSession) {
+    const missingActor = records.filter((record) => !record.actor);
+    if (missingActor.length > 0) {
+      console.error(`FAIL — --reuse-session needs an actor for: ${missingActor.map((record) => record.name).join(', ')}`);
+      console.error('  Add `actor: "<phone>"` to the journey in flows/matrix.yaml, or set local.json `defaultActor`.');
+      process.exit(2);
+    }
   }
   const invocations = planInvocations(records, options.reuseSession);
   const startedAt = new Date().toISOString();
