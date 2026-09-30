@@ -244,6 +244,31 @@ test("update fails closed on a locally-modified harness-owned file (no --accept-
   assert.notStrictEqual(original, "", "guard did not accidentally deploy an empty file");
 });
 
+test("update treats a CRLF *.ps1 (checked out per .gitattributes) as unchanged, not a local edit", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const ps1 = path.join(target, "scripts", "switch-reasoning-model.ps1");
+  const lf = read(ps1);
+  const crlf = lf.replace(/\r?\n/g, "\r\n");
+  fs.writeFileSync(ps1, crlf, "utf8");
+
+  // A line-ending-only difference must neither fail closed nor be rewritten to
+  // LF (which would leave the working tree dirty against the CRLF pin).
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  const after = read(ps1);
+  assert.ok(after.includes("\r\n"), "the correctly checked-out CRLF script is left as-is");
+  assert.ok(!after.includes("\r\r"), "no doubled carriage returns are introduced");
+
+  // A real content edit is still caught.
+  fs.writeFileSync(ps1, `${crlf}\r\n# local edit\r\n`, "utf8");
+  await assert.rejects(
+    () => h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true }),
+    /locally-modified harness-owned file/,
+    "a real edit to the script is still refused"
+  );
+});
+
 test("update fails closed on a modified QA script and points upstream (F-289 shape)", async () => {
   const target = tmpdir();
   git(target, ["init", "-q", "-b", "main"]);

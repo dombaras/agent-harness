@@ -152,8 +152,19 @@ function isOpencodeJson(rel) {
   return relKey(rel) === "opencode.json";
 }
 
+/* Canonical text form for checksums: CRLF is folded to LF so a file's line
+ * endings can never masquerade as a local edit. `.gitattributes` pins `*.ps1`
+ * to CRLF on checkout, so a correctly-checked-out Windows script arrives CRLF
+ * while the harness template is LF — hashing raw bytes flagged that as a
+ * hand-edit and made `update` fail closed (and rewriting it LF left git dirty).
+ * Templates are LF-pinned, so folding CRLF→LF leaves every existing recorded
+ * hash valid. */
+function normalizeEol(text) {
+  return String(text).replace(/\r\n/g, "\n");
+}
+
 function sha256(str) {
-  return crypto.createHash("sha256").update(str, "utf8").digest("hex");
+  return crypto.createHash("sha256").update(normalizeEol(str), "utf8").digest("hex");
 }
 
 function safeJson(text, fallback) {
@@ -1069,7 +1080,10 @@ async function deploy(target, opts) {
     const content = substitute(fs.readFileSync(abs, "utf8"), VARIABLES);
     if (fs.existsSync(targetAbs)) {
       const current = fs.readFileSync(targetAbs, "utf8");
-      if (current !== content) {
+      // Compare canonically so a line-ending-only difference (a CRLF `*.ps1`
+      // that git checked out per `.gitattributes`) is not mistaken for a change
+      // and rewritten to LF — which would leave the working tree dirty.
+      if (normalizeEol(current) !== normalizeEol(content)) {
         const deployedHash = previousFiles[key];
         const locallyModified = !!deployedHash && deployedHash !== sha256(current);
         actions.push({ rel: key, kind: locallyModified ? "overwrite (backup)" : "overwrite" });
