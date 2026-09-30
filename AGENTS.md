@@ -1,88 +1,23 @@
-# agent-harness — repo workflow
+# agent-harness — Agent Operating Rules
 
-Standing workflow for every change to the harness (`bin/`, `templates/`,
-`docs/`, tests). The authoritative checkout is WSL2 at `~/develop/agent-harness`;
-the Windows checkout (`C:\develop\agent-harness`) is a deprecated fallback.
+The always-loaded rules summary lives in [`.agents/rules/00-operating.md`](.agents/rules/00-operating.md) (wired into `opencode.json` `instructions`). The full, canonical rulebook is [`.agents/AGENTS.md`](.agents/AGENTS.md) — read it before any non-trivial work.
 
-1. Bump `package.json` version (the version-bump test enforces this).
-2. `npm run lint` and `npm test` must both be green.
-3. Commit + push to `main` with a `feat:`/`fix:` message ending in `(0.1.x)`.
-4. Deploy to the active projects from this local checkout (always after harness changes):
+It governs: Step Zero subagent dispatch, zero-speculation debugging, data integrity, UI/RTL ergonomics, stack-version discipline, token efficiency, right-sized QA tiers, and the commit-and-push gate.
 
-   ```bash
-   node ~/develop/agent-harness/bin/agent-harness.js update --target ~/develop/PublicVirtualLibrary
-   ```
+- **Dispatch personas** via the `task` tool (see `.agents/rules/00-operating.md` §Step Zero); consult the relevant `.agents/skills/<persona>/SKILL.md`.
+- **Features**: capture a found item as one light row in the canonical `BACKLOG.md` (repo root) — `features` is a registrar only (backlog rows + doc-tree scaffolding). Update the board with the `backlog_*` tools (or `node scripts/backlog.js`), never hand-edit `BACKLOG.md`. When a feature is picked up, author the per-feature doc chain (intent/scope/plan/tests) by dispatching each author persona **directly** (`product-manager` → intent, `system-architect` → scope, `planner` → plan, `qa-architect` → tests) — never via `features`. For an "investigate + plan" request, dispatch `planner` / `product-manager` directly.
+- **Provider funds stop**: a provider funds/quota error (`insufficient balance`/`funds`/`credits`, usage limit, 402) pauses the session — announce the failed provider/model and the exact unfinished step, checkpoint, and wait for the user's explicit top-up-complete message; never retry, degrade inline, or silently skip. Model priority is OpenCode Go (`opencode-go/*`) first, DeepSeek direct (`deepseek/*`) fallback — the V4 Pro architect tier (`planner`/`qa-architect`/`system-architect`/`security-engineer`) always pins direct `deepseek/deepseek-v4-pro` — announce every fallback immediately.
+- **Product-first planning**: planning is value-led, not tech-led — define the user (actor/need/outcome/acceptance) before code, sequence work value-first against `.agents/memory/product-principles.md`, and let `npm run test:product` enforce it.
+- **Report value-first, at the reader's level**: completion reports open with what value shipped (plain language — what the user now gets, why it matters) + the main "how", before any file/test/commit detail. Write for someone who knows the product, not the code: lead with behavior in plain terms and use a code identifier only when precision needs it (glossed on first use); stay concrete and technical, never abstract.
+- **Docs**: human-facing docs (`README.md`, `CHANGELOG.md`, `docs/**`) are owned by the `docs` persona — docs point at code, never duplicate it, and `npm run test:docs` enforces no placeholders / no dangling links / well-formed ADRs / every shipped commit has a changelog entry.
+- **Finalize with one call**: `npm run finalize -- --feature <id>` archives the row, commits the tail, and runs `ship` — which integrates on `origin/main`, runs the branch gates (and, when no pre-push hook is installed, the harness process gates itself, so a missing hook cannot skip them), lands the branch with a **direct fast-forward push to `main`**, and then waits (bounded) for **CI to go green on the landed SHA**. There is no PR, no landing label, and no merge train; the deploy runs after CI (`.github/workflows/deploy-uat.yml`). A direct `git push origin main` is the sanctioned route; a concurrent landing is resolved by re-fetch + rebase + retry. `ship` exits 0 only when landed + CI green; a red CI is a blocker to record. **`finalize` is one blocking call, so when only the tail remains run it once and let it complete — do NOT checkpoint-and-stop** (the `/finish` command is the short fresh context that writes the CHANGELOG first). `agent-harness doctor --target .` reports whether the cycle is ready.
+- **Every change touching code paths gets a QA plan** (a per-change file under `.agents/qa-plans/`) from `qa-architect` — if it isn't dispatched, the main orchestrator plans in its place. `npm run test:qa-plan` fails on any changed code path with no covering assertion or waiver, and on any touched flow (`.agents/memory/flow-map.md`) whose sibling surfaces / declared variants the plan doesn't address. The plan also carries the test-design record (`## Test budget`, `## Oracle & owner`, `## Test-design self-check`); `npm run test:wiring` fails orphaned tests and the linger check flags passing-but-idling suites (T1–T10 → `.agents/memory/test-design-parameters.md`).
+- **Three environments**: `development` (dirty by design — QA/test data lives here), `uat`, and `production` (both enforced clean). Only code + schema migrations + idempotent seeds move forward; data never crosses the boundary (`.agents/memory/environments.md`). Finalizing a task means the branch is landed on `main` and **CI deploys the landed SHA** to **uat** (`.github/workflows/deploy-uat.yml`, triggered after CI succeeds), then `test:data-hygiene -- --env uat`; a local `deploy:uat` is the emergency path only; production is human-gated.
+- **At session start**, run `node scripts/orient.js` (the `orient` tool) — one call returning the tree/branch/HEAD/dirty, active feature, checkpoint, board rows, owned files, live serve jobs + capacity, and last device-run summary — then read `.agents/memory/locations.md`, `.agents/memory/model-routing.md`, `.agents/memory/orchestration.md` (context/turn budgets), `.agents/memory/product-principles.md`, `.agents/memory/environments.md`, and `BACKLOG.md`. For review work, read `.agents/memory/quality-parameters.md` (the P1–P8 rubric) and write deliverables under `.agents/reviews/<id>/` (never `.agents/features/`).
+- **Bounded orchestration**: one bounded context per work unit — checkpoint into the session's `.agents/handoffs/<feature-id>.md` when approaching the budgets in `.agents/memory/orchestration.md`, and prefer a fresh context that resumes from the checkpoint over unbounded transcript growth.
+- **Ignore-aware search**: never `rg --no-ignore`/`-u` (it walks `node_modules`/build trees and floods time + context). Use `npm run search -- <pattern>` (`scripts/agent-search.sh`, honours the canonical `.ignore`, capped, `--files` for cheap discovery) for content search, and `git grep -n <symbol>` for tracked-symbol searches (tracked files only, reads the index). Details: `docs/wsl-optimizations.md`.
+- **RAM-backed caches**: on WSL2, `npm run ramdisk` (`scripts/setup-tmpfs.sh`) mounts a tmpfs cache root and exports the build/cache env vars for installed toolchains; `install` persists it per boot/shell. It is **volatile** — caches/build artifacts only, never source or git state. Details: `docs/wsl-optimizations.md`.
+- **Machine capacity guardrail**: parallel sessions are fine, parallel **heavy tiers** are not — WSL2 is one VM, and an emulator + agents + `next dev` exhausts RAM and freezes every terminal at once. Launch long-lived processes through `node scripts/serve.js` (it checks the envelope + a machine-wide heavy lock and refuses an over-budget heavy start; heavy tiers are capped **by default** in a transient `user.slice` cgroup at `heavy_mem_max_mb` — `--mem-max`/`--cpu-max` override, `--no-cap` opts out), run a heavy **one-shot** (an APK/Gradle build, a heavy test tier) capped through `node scripts/serve.js run --cmd "<cmd>"` (never inline uncapped), and note that a `--group` shares ONE combined `group_mem_max_mb` budget so emulator + dev server cannot each take the full per-process cap. Stop dev servers when a tier passes and the emulator at session end (`stop-all`; `prune` clears dead records), and check pressure with `npm run test:capacity`. One-time VM tuning: `sudo bash scripts/wsl-tune.sh apply` (sysctls + user.slice ceiling + a soft `init.scope` backstop + `.wslconfig`; then `wsl --shutdown` on Windows). One-time GPU enablement: `bash scripts/wsl-gpu.sh apply` (loads `vgem` + selects Mesa `d3d12` so the device emulator renders on the Windows GPU instead of CPU llvmpipe; no-op off WSL) — `boot-emulator.sh` probes for it and uses `-gpu host` automatically. Envelope: `.agents/memory/orchestration.md`; details: `docs/wsl-optimizations.md`.
+- **Session telemetry**: at wrap-up, record the `session:` line from the `session_info` tool in the handoff's `## Session metadata`, alongside `work_type` / `outcome` / `termination_reason`. `npm run report -- --cost --since=14d` then joins observed provider cost/tokens/turns to the feature.
 
-Active projects: **LibraryOS** at `~/develop/PublicVirtualLibrary` (WSL, primary)
-and **FamilyBudget** at `/mnt/c/develop/FamilyBudget` (still on the Windows drive,
-so a deploy prints the `/mnt` slowdown warning — a non-blocker). Deploy both from
-**this** WSL checkout:
-
-```bash
-node ~/develop/agent-harness/bin/agent-harness.js update --target /mnt/c/develop/FamilyBudget
-```
-
-The Windows checkout (`C:\develop\agent-harness`) is a deprecated fallback and is
-far behind (0.1.62) — do **not** deploy from it; its downgrade guard will refuse a
-target already on a newer harness. Publishing to npm is optional and done on the
-user's side — the local-checkout updates above are the authoritative way to push
-harness changes to the projects.
-
-## Harness-owned files are fixed upstream, never in a project
-
-`scripts/qa/**`, `scripts/*.js`, `.opencode/**`, `.agents/skills/**`,
-`.agents/rules/**`, `.agents/AGENTS.md`, `AGENTS.md`, and opencode config are
-**harness-owned**: `update` copies the `templates/` version into every project. If
-a project needs one changed (a gate fix, a QA-script fix), do it in this repo's
-`templates/` — add a drift-guard test when it is a gate/QA script — bump + release,
-then `update` the projects. A hand-edit inside a project is a latent clobber.
-
-As of **0.1.100**, `update` **fails closed** on a harness-owned file whose bytes
-differ from the `.harness.json` checksum: it aborts before writing and lists the
-files. `--accept-harness` overwrites deliberately (backing up first); after an
-accepted overwrite it runs the target's `test:quick` and rolls the clobber back if
-the suite is red. This is the fix for the F-289 incident (the 0.1.99 deploy
-silently reverted a project-side `board-sync.js` fix and broke `test:quick` for
-everyone). When a deploy *does* clobber a project file, check
-`.harness-backup/<timestamp>/` — the previous bytes are there.
-
-## WSL environment
-
-The harness's primary environment is WSL2 (Ubuntu). These rules keep it healthy
-across the Windows/Linux boundary:
-
-- **Run Node from ext4, never `/mnt/c`.** Windows drives under `/mnt/<drive>/`
-  are 9p/virtio-fs — orders of magnitude slower, worst on `node_modules` churn.
-  Keep the authoritative checkout and projects under `~/develop`
-  (`~/develop/agent-harness`, `~/develop/PublicVirtualLibrary`,
-  `~/develop/.worktrees/...`). `deploy`/`update` prints a warning when a target
-  is on a `/mnt/` mount; treat it as a prompt to migrate that project to WSL,
-  not a blocker. CLI, tests, and gates all run natively from the WSL checkout.
-- **Line endings are pinned.** `.gitattributes` (repo root and the harness-managed
-  section deployed into each project) pins `*.sh` to LF and `*.ps1` to CRLF, so a
-  Windows-side checkout/commit can never CRLF a POSIX script (`bash` fails with
-  `bad interpreter: ...\r`). Never hand-flip line endings on `templates/scripts/`.
-- **opencode external-directory allowlist.** The harness isolates each feature in
-  a sibling worktree (`<repo>/../.worktrees/<repo>/<id>`), which is *outside* the
-  project root, so `~/.config/opencode/opencode.jsonc` must allow `~/develop/**`
-  (worktrees) and `/mnt/c/develop/**` (FamilyBudget fallback). Config is read once
-  at startup — restart opencode after editing it.
-- **Git.** SSH key at `~/.ssh/id_ed25519`; the auto-commit + push in
-  `init`/`update` works over SSH from WSL. Do not deploy WSL targets with the
-  Windows checkout's CLI.
-- **Ignore-aware search.** Every deploy ships a canonical `.ignore` (merged,
-  never clobbering project entries) and `scripts/agent-search.sh`, an ignore-aware
-  `rg` wrapper that refuses `--no-ignore`/`--unrestricted`/`--hidden`, caps output,
-  and has a `--files` mode. Never run `rg --no-ignore` in an agent workspace; use
-  `npm run search -- <pattern>` for content search and `git grep -n <symbol>` for
-  tracked-symbol searches (tracked files only, reads the index). This is enforcement for cheaper, cleaner recursive
-  discovery — see `templates/docs/wsl-optimizations.md`.
-- **RAM-backed build/cache storage.** Every deploy ships
-  `scripts/setup-tmpfs.sh`, which mounts a WSL2 tmpfs cache root
-  (`/mnt/ramdisk`, 25–40% of RAM) and exports cache/build env vars for only the
-  installed toolchains (`PIP_CACHE_DIR`, `npm_config_cache`, `PNPM_STORE_DIR`,
-  `YARN_CACHE_FOLDER`, `CARGO_TARGET_DIR`, `GOCACHE`, `GRADLE_USER_HOME`,
-  `CCACHE_DIR`/`SCCACHE_DIR`, `RUSTC_WRAPPER=sccache`). It is idempotent, no-ops
-  outside WSL, and `install` persists it (systemd `--user` unit + `~/.bashrc`
-  hook). **tmpfs is volatile** — caches/build artifacts only, never source code
-  or git state. See `templates/docs/wsl-optimizations.md`.
+> Deployed and maintained by `@dombaras/agent-harness` (`npx @dombaras/agent-harness init` / `update`). Harness-owned files (`scripts/qa/**`, `scripts/*.js`, `.opencode/**`, `.agents/skills/**`, `.agents/rules/**`, `.agents/AGENTS.md`, `AGENTS.md`, opencode config) must be fixed **upstream in the harness `templates/`**, not hand-edited here — `update` fails closed on a hand-edit and points at `templates/`; `--accept-harness` overwrites deliberately after a backup.

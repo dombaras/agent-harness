@@ -1,0 +1,35 @@
+#!/bin/sh
+# Harness pre-push battery. Created by @dombaras/agent-harness if missing;
+# project-owned afterwards — edit freely.
+#
+# Cross-platform npm launcher: on Windows (Git Bash / MSYS / Cygwin) the hook
+# must call `npm.cmd`; plain `npm` there resolves to a bash-shebang shim. On
+# POSIX (WSL/Linux/macOS) it must call `npm`.
+#
+# `set -e` makes EVERY gate fatal: without it a trailing success could mask an
+# earlier failure.
+set -e
+
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) NPM=npm.cmd ;;
+  *)                    NPM=npm ;;
+esac
+
+# 1. Process gates (harness-owned). `--if-present` so a project that has not
+#    wired a gate yet is not blocked by its absence.
+$NPM run --if-present test:dispatch
+$NPM run --if-present test:governance
+$NPM run --if-present test:concurrency
+$NPM run --if-present test:capacity
+$NPM run --if-present test:backlog
+$NPM run --if-present test:wiring
+$NPM run --if-present test:integrate
+$NPM run --if-present test:qa-plan -- --base=origin/main
+$NPM run --if-present test:product
+$NPM run --if-present test:docs
+$NPM run --if-present test:quality
+
+# 2. Project test gates (project-owned; edit for your stack).
+$NPM run --if-present lint:hooks
+$NPM run --if-present test:schema
+$NPM run --if-present test:quick

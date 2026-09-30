@@ -5,3 +5,10 @@
 *.js text eol=lf
 *.ts text eol=lf
 *.ps1 text eol=crlf
+
+# agent-harness (managed below)
+BACKLOG.md merge=backlog-agent-harness
+**/BACKLOG.md merge=backlog-agent-harness
+*.sh text eol=lf
+*.ps1 text eol=crlf
+# agent-harness (managed end)

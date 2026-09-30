@@ -1,0 +1,57 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "small_model": "opencode-go/glm-5.3-flash",
+  "instructions": [
+    ".agents/rules/00-operating.md"
+  ],
+  "agent": {
+    "build": {
+      "steps": 100
+    },
+    "explore": {
+      "model": "opencode-go/glm-5.3-flash"
+    }
+  },
+  "permission": {
+    "external_directory": {
+      "/home/ronen/develop/**": "allow",
+      "/tmp/**": "allow",
+      "~/AppData/Local/Temp/**": "allow",
+      "~/.maestro/**": "allow",
+      "~/.android/**": "allow",
+      "~/.local/share/opencode/**": "allow",
+      "~/.config/opencode/**": "allow",
+      "~/.config/agent-harness/**": "allow",
+      "/etc/**": "allow",
+      "/proc/**": "allow",
+      "~/.ssh/**": "deny",
+      "~/.aws/**": "deny",
+      "~/.gnupg/**": "deny",
+      "~/.config/gh/**": "deny",
+      "~/.docker/**": "deny",
+      "~/.kube/**": "deny",
+      "~/.netrc": "deny",
+      "~/.git-credentials": "deny",
+      "~/.config/opencode/auth.json": "deny",
+      "~/.local/share/opencode/auth.json": "deny"
+    },
+    "edit": {
+      "~/.config/opencode/**": "deny",
+      "~/.local/share/opencode/**": "deny",
+      "~/.config/agent-harness/**": "deny",
+      "~/.ssh/**": "deny",
+      "~/.aws/**": "deny",
+      "~/.gnupg/**": "deny",
+      "~/.config/gh/**": "deny",
+      "/etc/**": "deny",
+      "/proc/**": "deny"
+    },
+    "bash": {
+      "sudo *": "deny",
+      "rm -rf /*": "deny",
+      "rm -rf ~": "deny",
+      "rm -rf ~/*": "deny"
+    }
+  }
+}
