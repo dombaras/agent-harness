@@ -49,6 +49,15 @@ harness changes to the projects.
    main repo. F-296 (2026-09-30) sat at 0.1.113 through two releases for exactly
    this reason.
 
+   A machine-level **safety net** complements this manual step: the global opencode
+   plugin `harness-freshness.ts` (`contrib/global-plugins/`, installed with
+   `agent-harness install-global`) checks every session's checkout against this
+   local harness on start and refreshes it only when safe (worktree fast-forward, or
+   the main-checkout `update`); otherwise it blocks and asks the user. It is global
+   because a stale checkout loads its own stale harness. Both stay: the manual sweep
+   is deterministic and runs at deploy time; the plugin covers sessions started
+   without it. See `contrib/global-plugins/README.md`.
+
 ## Harness-owned files are fixed upstream, never in a project
 
 `scripts/qa/**`, `scripts/*.js`, `.opencode/**`, `.agents/skills/**`,
