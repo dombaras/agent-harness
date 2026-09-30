@@ -28,6 +28,27 @@ target already on a newer harness. Publishing to npm is optional and done on the
 user's side — the local-checkout updates above are the authoritative way to push
 harness changes to the projects.
 
+5. **Refresh every ACTIVE WORKTREE of a project too.** `update` only writes the
+   project's main checkout; each feature runs in a sibling
+   `git worktree` (`<repo>/../.worktrees/<repo>/<id>`) that is a *separate*
+   checkout with its own (stale) copy of the harness. An unrefreshed worktree
+   keeps the old plugins/tools/scripts, so a resumed feature silently misses the
+   fix. After updating a project, bring each linked worktree to the same commit:
+
+   ```bash
+   for wt in $(git -C ~/develop/PublicVirtualLibrary worktree list --porcelain \
+       | awk '/^worktree /{print $2}' | tail -n +2); do
+     git -C "$wt" merge --ff-only origin/main \
+       || echo "MANUAL: $wt did not fast-forward — merge origin/main by hand"
+   done
+   ```
+
+   Do **not** `agent-harness update --target <worktree>`: the harness rewrites
+   `opencode.json`'s `{{WORKSPACE_ROOT}}`, and for a worktree that resolves to the
+   worktree's parent, narrowing the `external_directory` allowlist away from the
+   main repo. F-296 (2026-09-30) sat at 0.1.113 through two releases for exactly
+   this reason.
+
 ## Harness-owned files are fixed upstream, never in a project
 
 `scripts/qa/**`, `scripts/*.js`, `.opencode/**`, `.agents/skills/**`,
