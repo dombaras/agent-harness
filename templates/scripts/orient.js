@@ -121,6 +121,7 @@ const MEMORY_FILES = [
   "orchestration.md",
   "locations.md",
   "product-principles.md",
+  "dev-loop.md",
 ];
 const MAX_SECTIONS = 8;
 const MAX_TABLE_ROWS = 6;

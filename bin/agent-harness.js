@@ -270,7 +270,39 @@ function mergeOpencodeJson(target, variables) {
   if (harness.permission && typeof harness.permission === "object" && !Array.isArray(harness.permission)) {
     merged.permission = mergePermission(harness.permission, existing.permission);
   }
+  // MCP servers are keyed by name. A project owns its own `mcp` block (servers
+  // are project-side, e.g. a dev-DB server), so if the harness ever ships a
+  // default server the top-level spread would replace the WHOLE block. Deep-merge
+  // by server NAME instead: a project's same-named server wins (its keys win on
+  // a collision), project-only servers are preserved, harness-only servers are
+  // added. This is the guard the backlog requires before any default `mcp` block
+  // can ship in templates/opencode.json.
+  if (harness.mcp && typeof harness.mcp === "object" && !Array.isArray(harness.mcp)) {
+    merged.mcp = mergeMcp(harness.mcp, existing.mcp);
+  }
   return JSON.stringify(merged, null, 2) + "\n";
+}
+
+/* Merge a harness `mcp` block with a project's, by server name. Two plain-object
+ * server configs for the same name are shallow-merged (project last, so it wins
+ * a key collision); anything else (e.g. a project replacing a server) is taken
+ * from the project. Servers only the harness defines are added. */
+function mergeMcp(harnessMcp, priorMcp) {
+  const prior =
+    priorMcp && typeof priorMcp === "object" && !Array.isArray(priorMcp) ? priorMcp : {};
+  const out = { ...harnessMcp };
+  for (const [name, server] of Object.entries(prior)) {
+    const base = out[name];
+    const bothObjects =
+      base &&
+      typeof base === "object" &&
+      !Array.isArray(base) &&
+      server &&
+      typeof server === "object" &&
+      !Array.isArray(server);
+    out[name] = bothObjects ? { ...base, ...server } : server;
+  }
+  return out;
 }
 
 /* Merge a harness permission block with a project's. Per permission key:
@@ -2208,6 +2240,7 @@ module.exports = {
   workspaceRootFor,
   mergeOpencodeJson,
   mergePermission,
+  mergeMcp,
   deploy,
   migrateBacklog,
   splitCells,

@@ -8,6 +8,12 @@ found `scripts/backlog.js` read 45× and `check-qa-plan.js` 16× for exactly thi
 
 `agent-harness explain <gate>` prints the matching section.
 
+**Choosing a gate:** load the `dev-loop` skill (`skill` tool → `dev-loop`) —
+it carries the cheapest-scoped-check rule (`npm run gates -- --phase=quick`),
+the project test-tier map in `.agents/memory/dev-loop.md`, and "read the failing
+gate, don't re-run it blind". `npm run where` / the `where` tool maps a changed
+path to its owning tier.
+
 ---
 
 ## `test:dispatch` — dispatch-config preflight

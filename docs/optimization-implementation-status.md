@@ -18,16 +18,59 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.120` |
+| Version | `0.1.121` |
 | Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget); `0.1.88` direct-land cycle — `ship` fast-forward pushes `HEAD:main` (bounded retry) and waits for green CI, `deploy-uat` runs after CI success; PR/landing-label/merge-train/watch and the `check-push-refs` guard removed; `0.1.89` reconciled local-only board rows are committed + pushed; `0.1.90` CI watch from the main worktree + never prune a live session's worktree; `0.1.91` guard-nudge attribution + live request-token band; `0.1.92` single-authority board transaction (every canonical mutation reconciles + publishes; converge under the board lock; redundant-dirt clear; session-start `backlog sync`; doctor staleness warn) |
-| Lint / tests | green (`npm run lint`, `npm test` — 367 pass) |
-| LibraryOS | `0.1.88` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
+| Lint / tests | green (`npm run lint`, `npm test` — 371 pass) |
+| LibraryOS | `0.1.121` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
-| Open work | [`docs/open-work.md`](open-work.md) — canonical list (incl. H-23 measurement, H-25 explore, H-31 skills, H-32 MCP); deferred C/D detail in [`docs/mcp-skills-backlog.md`](mcp-skills-backlog.md) |
+| Open work | [`docs/open-work.md`](open-work.md) — canonical list (incl. H-23 measurement, H-25 explore adoption); the deferred C/D detail in [`docs/mcp-skills-backlog.md`](mcp-skills-backlog.md) shipped in `0.1.121` |
 
 ---
 
 ## What shipped
+
+### `0.1.121` — C (skills) + D (MCP): the `dev-loop` skill, bounded `explore`, project-scoped MCP
+
+Basis: the deferred scope C/D captured in
+[`docs/mcp-skills-backlog.md`](mcp-skills-backlog.md) from the `0.1.120` recon.
+The recon showed the *how-to-run-things* knowledge was re-derived every session
+(`serve.js list` 91×, ~700 individual gate invocations, ~219 session-start
+memory-file reads) while persona skills *were* adopted (24·21·18…) — so a
+dev-loop skill would be used. MCP was deferred because every MCP tool schema is
+billed on every request and opencode spawns MCP servers outside the `serve.js`
+capacity envelope.
+
+- **C1 — `dev-loop` skill** (`templates/.opencode/skills/dev-loop/SKILL.md`,
+  harness-owned) + **`templates/.agents/memory/dev-loop.md`** (project-owned,
+  create-if-missing): the universal run/verify/debug loop (`orient`, the
+  cheapest covering gate, single-test iteration, "read the failing gate, don't
+  re-run it blind", the `serve.js` start/stop/run lifecycle, bounded `wait`,
+  dev-only cleanup) with a project-owned half holding the concrete commands.
+  `orient`'s `MEMORY_FILES` now includes `dev-loop.md`, so it is digested at
+  session start. **Location note:** `.opencode/skills/` (not `.agents/skills/`)
+  because `check-dispatch-config.js` enforces 1:1 persona parity between
+  `.agents/skills/<name>/SKILL.md` and `.opencode/agents/<name>.md`; `dev-loop`
+  is a capability skill, not a persona. Verified discovered by opencode from
+  `.opencode/skills/*/SKILL.md`.
+- **C2 — bounded `explore` contract** (`templates/.opencode/skills/bounded-explore/SKILL.md`)
+  + `agent.explore.steps: 40` in `templates/opencode.json`: fixes the input
+  contract (exact paths + one answerable question + a result budget) and the
+  output contract (`file:line` pointers + a ≤15-line summary, no whole-file
+  dumps). An unbounded explore measured ~465K input tokens/dispatch (H-25).
+- **D prerequisite — `mcp` deep-merge** (`bin/agent-harness.js` `mergeMcp`):
+  `mergeOpencodeJson` now deep-merges a harness `mcp` block **by server name**
+  (project wins per key, project-only servers preserved, harness-only added) —
+  the guard the backlog required before any default MCP block can ship.
+- **D1/D2 guidance** (`templates/docs/mcp-integrations.md`, deployed): the
+  per-agent, dev-only MCP pattern (disable globally `"tools": { "<server>*": false }`,
+  re-enable per persona), the capacity caveat (MCP is outside `serve.js`), and
+  the included servers — **D1 Prisma/Postgres** (`npx -y prisma mcp`, dev DB
+  only) and **D2 Playwright** (`npx -y @playwright/mcp@latest --headless`).
+  **D3 GitHub MCP is deliberately not enabled** (most token-heavy; mostly
+  obviated by direct-land). Rules (`AGENTS.md`, `.agents/AGENTS.md` §5,
+  `00-operating.md`, `docs/gates.md`) point at the skills and the MCP doc.
+- **Deploy:** the concrete project-side MCP config + the filled `dev-loop.md`
+  live in LibraryOS (project-owned), not the harness.
 
 ### `0.1.120` — adoption: orient injection + memory digest, structural tool blocks, `gates`/`where`/`feature`, prefix size budget
 

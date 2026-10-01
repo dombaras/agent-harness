@@ -37,6 +37,7 @@ Dispatch the relevant personas via the `task` tool — each runs on its own `mod
 - **Escalation is evidence-based** (see `.agents/AGENTS.md` §5): escalate to the Pro tier only on repeated failure, contradictory evidence, cross-module ambiguity, security-sensitive ambiguity, or an unsafe-workaround risk — never on a long answer or vague uncertainty.
 - **Parallel = genuinely disjoint.** Never fan out to N personas because N roles exist; launch the minimum that maximizes useful independent work (disjoint owned files AND contracts). Small tasks are usually cheaper serial.
 - **Compact results downstream.** Pass a persona's structured `Result`/`Evidence`/`Deferred & risks` summary — never a full verbose transcript — to the next consumer.
+- **Bound `explore` before dispatching it.** Load the `bounded-explore` skill (its input contract: exact paths + one answerable question + a result budget; output contract: `file:line` pointers + a ≤15-line summary, no whole-file dumps/transcripts). An unbounded explore is the most expensive dispatch in the harness (~465K input tokens/call, `0.1.120` recon). A known path or single-symbol lookup is orchestrator work — search/read it inline, don't dispatch.
 
 ## Context budget & lifecycle (bounded orchestration)
 
@@ -78,6 +79,13 @@ session grow without bound. Thresholds are tunable in
   test dump live forever in a long-lived context — checkpoint and move on.
 
 ## Verification & retry discipline (deterministic)
+
+- **How to run things is a skill, not a re-derivation.** Before running/seeding/
+  booting/checking anything, load the `dev-loop` skill (`skill` tool → `dev-loop`)
+  and read `.agents/memory/dev-loop.md` (its project-owned command half, digested
+  by `orient` at session start). It carries the test-tier map, the single-test
+  invocation, `serve.js` lifecycle, `gates`/`where`, and "read the failing gate,
+  don't re-run it blind". Stop hand-deriving the commands.
 
 - **Gate batching**: make a coherent set of related edits, THEN run the gate once —
   avoid edit → gate → edit → gate per micro-edit. A gate stays mandatory when the
@@ -153,6 +161,12 @@ mechanical guards read it.
 - **The tmpfs cache is RAM.** The RAM-backed cache (`npm run ramdisk`) competes
   with the emulator and agents; keep it small (`AGENT_TMPFS_PERCENT=25`) while
   running device tiers.
+- **MCP servers are context + RAM.** Every MCP tool schema is billed on every
+  request that can see it, and opencode spawns the server outside the `serve.js`
+  capacity envelope. Scope MCP **per agent, dev-only** (disable globally via
+  `"tools": { "<server>*": false }`, re-enable for the one persona that needs it;
+  DB servers point at the development database only). Details:
+  `docs/mcp-integrations.md`.
 
 ## Non-negotiable laws
 

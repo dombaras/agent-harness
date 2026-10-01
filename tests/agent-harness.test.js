@@ -468,6 +468,46 @@ test("opencode.json permission merge keeps a project's own rules", () => {
   );
 });
 
+test("opencode.json mcp is project-owned and deep-merged by server name (D prerequisite)", () => {
+  // MCP is wired project-side. A project's `mcp` block, top-level `tools` disable,
+  // and per-agent `tools` enable must all survive a re-merge untouched.
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify(
+      {
+        mcp: { pg: { type: "local", command: ["npx", "-y", "prisma", "mcp"], enabled: true } },
+        tools: { "pg*": false },
+        agent: { "data-engineer": { tools: { "pg*": true } } },
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+  const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
+  assert.ok(merged.mcp && merged.mcp.pg, "project mcp server preserved");
+  assert.strictEqual(merged.tools["pg*"], false, "top-level MCP tool disable preserved");
+  assert.strictEqual(
+    merged.agent["data-engineer"].tools["pg*"],
+    true,
+    "per-agent MCP tool enable preserved"
+  );
+
+  // A future harness default server merges BY NAME (project wins), never clobbers
+  // the whole block, and a harness-only server is added.
+  const out = h.mergeMcp(
+    { pg: { type: "local", command: ["npx", "harness-pg"] }, other: { type: "remote", url: "https://x" } },
+    { pg: { enabled: false } }
+  );
+  assert.deepStrictEqual(
+    out.pg,
+    { type: "local", command: ["npx", "harness-pg"], enabled: false },
+    "same-named server merged key-by-key with the project winning"
+  );
+  assert.ok(out.other, "harness-only server added");
+});
+
 test("update is non-interactive (never prompts)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: false, isUpdate: true });
@@ -3958,6 +3998,44 @@ test("skills/features SKILL.md is harness-owned (overwritten), not project scaff
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
   assert.match(read(skill), /registrar only/, "features skill restored on update (harness-owned)");
+});
+
+test("dev-loop skill ships with a create-if-missing project-owned command file (C1)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const skillPath = path.join(target, ".opencode", "skills", "dev-loop", "SKILL.md");
+  assert.ok(exists(skillPath), "dev-loop skill deployed");
+  const skill = read(skillPath);
+  assert.match(skill, /^---\nname: dev-loop\n/m, "frontmatter name matches the directory");
+  assert.match(skill, /\.agents\/memory\/dev-loop\.md/, "points at the project-owned command file");
+  assert.match(skill, /serve\.js/, "covers the serve.js lifecycle");
+  assert.match(skill, /gates/, "points at the cheapest scoped gates");
+
+  // project-owned memory half: scaffolded create-if-missing, never overwritten
+  const mem = path.join(target, ".agents", "memory", "dev-loop.md");
+  assert.ok(exists(mem), "dev-loop memory scaffold created");
+  fs.writeFileSync(mem, "# my run commands\n", "utf8");
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(mem), "# my run commands\n", "project dev-loop memory preserved on update");
+});
+
+test("bounded-explore skill ships with its input/output contract (C2)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const skill = read(path.join(target, ".opencode", "skills", "bounded-explore", "SKILL.md"));
+  assert.match(skill, /^---\nname: bounded-explore\n/m);
+  assert.match(skill, /file:line/, "output contract is file:line pointers");
+  assert.match(skill, /no whole-file dumps/i);
+});
+
+test("MCP guidance is deployed and the explore dispatch is step-bounded (D/C2)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  assert.ok(exists(path.join(target, "docs", "mcp-integrations.md")), "MCP guidance doc deployed");
+
+  const cfg = JSON.parse(read(path.join(h.TEMPLATES_DIR, "opencode.json")));
+  assert.strictEqual(cfg.agent.explore.steps, 40, "explore is step-bounded");
 });
 
 // ---------------------------------------------------------------- test:quality gate (M4)
@@ -8745,6 +8823,10 @@ test("orient: memoryDigest reads session-start memory files and degrades for mis
   );
   const digest = orient.memoryDigest(dir);
   assert.strictEqual(digest.length, orient.MEMORY_FILES.length);
+  assert.ok(
+    orient.MEMORY_FILES.includes("dev-loop.md"),
+    "the project-owned dev-loop commands are digested at session start"
+  );
   const env = digest.find((d) => d.file === "environments.md");
   assert.strictEqual(env.exists, true);
   assert.deepStrictEqual(env.sections, ["Registry"]);

@@ -1,6 +1,10 @@
 # Deferred backlog — Skills (C) and MCP (D)
 
-**Status:** not started. Captured 2026-10-01 from the LibraryOS recon whose
+**Status:** **shipped in harness `0.1.121`** (2026-10-01). C1 `dev-loop` skill,
+C2 bounded `explore`, the `mergeOpencodeJson` `mcp` deep-merge, and the D1/D2
+per-agent/dev-only MCP guidance all landed; D3 (GitHub MCP) was deliberately not
+enabled per its own recommendation below. The original recon design is kept here
+as the record. Captured 2026-10-01 from the LibraryOS recon whose
 scope A/B/E shipped in harness `0.1.120`. This file is self-contained: a clean
 context should be able to implement any item without re-running the recon.
 
