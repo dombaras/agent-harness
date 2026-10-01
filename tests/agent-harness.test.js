@@ -1570,6 +1570,24 @@ test("test:docs fails on placeholder, dangling link, and malformed ADR", () => {
   assert.match(r.out, /missing .* Context/);
 });
 
+test("test:docs ignores a placeholder quoted inside a code span (F-305 false positive)", () => {
+  const t = scaffoldDocsTarget();
+  fs.writeFileSync(
+    path.join(t, "README.md"),
+    "# Demo\n\nThe gate rejects an un-substituted `{{PLACEHOLDER}}` in prose:\n\n```\n{{PROJECT_NAME}}\n```\n",
+    "utf8"
+  );
+  const ok = runDocsGate(t);
+  assert.strictEqual(ok.status, 0, ok.out);
+  assert.match(ok.out, /no un-substituted template placeholders/);
+
+  // a real un-substituted placeholder in prose is still caught
+  fs.writeFileSync(path.join(t, "README.md"), "# Demo\n\nleaked {{PROJECT_NAME}} here\n", "utf8");
+  const bad = runDocsGate(t);
+  assert.strictEqual(bad.status, 1, bad.out);
+  assert.match(bad.out, /un-substituted placeholder/);
+});
+
 test("test:docs fails when a shipped commit is missing from CHANGELOG.md", () => {
   const t = scaffoldDocsTarget();
   fs.writeFileSync(path.join(t, "README.md"), "# Demo\n", "utf8");
@@ -3501,8 +3519,17 @@ test("backlog worktree publishes the take before creating the checkout", () => {
   assert.strictEqual(git(t, ["status", "--porcelain", "--untracked-files=no"]), "", "main is clean after the take");
 });
 
-test("test:concurrency + run-clean are deployed and auto-wired", async () => {
-  const target = tmpdir();
+test("backlog worktree refuses a checkout inside the repository (orphan .worktrees guard)", () => {
+  const { t } = canonicalBacklogRepo();
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+  const inside = path.join(t, ".worktrees", path.basename(t), "f-001");
+  const r = runBacklogCli(t, ["worktree", "F-001", "--branch", `inside-${path.basename(t)}`, "--dir", inside]);
+  assert.notStrictEqual(r.status, 0, r.out);
+  assert.match(r.out, /refusing a worktree inside the repository/);
+  assert.ok(!exists(inside), "no in-repo worktree directory was created");
+});
+
+test("test:concurrency + run-clean are deployed and auto-wired", async () => {  const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
   assert.ok(exists(path.join(target, "scripts", "qa", "check-concurrency.js")), "check-concurrency.js deployed");
@@ -4804,6 +4831,7 @@ test("main-checkout guard detects git mutations + in-place writes, not reads or 
     "printf y >> scripts/backlog.js",
     "npm run build > out.txt",
     "cat a | tee app/x.ts",
+    "npx tsx -e '(async () => { await make() })()' > src/out.ts",
   ]) {
     assert.strictEqual(cg.isCodeMutationCommand(command), true, `mutation: ${command}`);
   }
@@ -4830,6 +4858,9 @@ test("main-checkout guard detects git mutations + in-place writes, not reads or 
     "sed -i s/a/b/ .agents/memory/history.md",
     "perl -pi -e 's/a/b/' README.md",
     "cat a | tee docs/guide.md",
+    "for d in $(ls -1dt /tmp/x/ 2>/dev/null); do echo \"$(basename $d)\"; done",
+    "npx tsx -e '(async () => { await p.user.findUnique({ where: { id: 1 } }); })()'",
+    "npx tsx -e \"const rows = await p.user.findMany(); console.log(rows)\" 2>&1",
     "",
     null,
   ]) {
@@ -5643,6 +5674,28 @@ test("provider-stats collects by project id (worktree-aware) and detects canonic
   assert.deepStrictEqual(scoped.sessions.map((s) => s.id), ["ses_a", "ses_a1"]);
 });
 
+test("provider-stats resolves --session from a linked feature-worktree root (session_info never fabricates 'unavailable')", () => {
+  // The F-304/F-305 shape: session_info runs after a mid-session worktree reroot,
+  // so `--root` is the worktree — which no project/project_directory row matches.
+  // The session id is the global join key, so the scan must widen to the
+  // session's own project id instead of reporting an empty (store-unreachable) result.
+  const rows = [
+    { id: "ses_w", parent_id: null, title: "primary", directory: "C:/develop/Demo/.worktrees/Demo/F-1", agent: "build", model: '{"id":"deepseek-flash","providerID":"deepseek"}', cost: 0.5, tokens_input: 10, tokens_output: 5, tokens_reasoning: 1, tokens_cache_read: 90, tokens_cache_write: 0, time_created: 1, time_updated: 2 },
+  ];
+  const runDb = (sql) => {
+    if (sql.includes("FROM project_directory")) return []; // the worktree root is not registered
+    if (sql.includes("project_id AS id FROM session")) return [{ id: "p-main" }];
+    if (sql.includes("FROM session s")) return rows;
+    if (sql.includes("FROM message")) return [{ session_id: "ses_w", turns: 7 }];
+    if (sql.includes("FROM part")) return [];
+    return [];
+  };
+  const stats = ps.collectStats({ root: "C:/develop/Demo/.worktrees/Demo/F-1", session: "ses_w", runDb });
+  assert.deepStrictEqual(stats.meta.projectIds, ["p-main"], "the session's own project widens the scan");
+  assert.strictEqual(stats.meta.scope.rootId, "ses_w");
+  assert.deepStrictEqual(stats.sessions.map((s) => s.id), ["ses_w"]);
+});
+
 test("provider-stats CLI reads a fixture, prints observed telemetry, and exports a round-trippable snapshot", () => {
   const target = tmpdir();
   const sessions = [
@@ -6150,6 +6203,24 @@ test("checkpoint writes a deterministic bounded-state block and resume prints it
   const empty = cp("write", "--feature", "F-999");
   assert.strictEqual(empty.status, 1);
   assert.match(empty.stderr, /empty checkpoint/);
+
+  // H-14 — a tool call that omits `feature` forwards the literal "undefined"
+  // (it matches the slug regex), which used to write `.agents/handoffs/undefined.md`.
+  for (const sentinel of ["undefined", "null", "None", ""]) {
+    const w = cp("write", "--feature", sentinel, "--phase", "x");
+    assert.strictEqual(w.status, 1, `write --feature ${JSON.stringify(sentinel)} must be refused`);
+    assert.match(w.stderr, /requires --feature/);
+    const r = cp("resume", "--feature", sentinel);
+    assert.strictEqual(r.status, 1, `resume --feature ${JSON.stringify(sentinel)} must be refused`);
+    assert.match(r.stderr, /requires --feature/);
+  }
+  assert.ok(
+    !exists(path.join(target, ".agents", "handoffs", "undefined.md")),
+    "no stray undefined.md handoff is ever written"
+  );
+  // the tool wrapper rejects the sentinel before shelling out (defence in depth)
+  const cpTool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "checkpoint.ts"));
+  assert.match(cpTool, /requireFeature/, "checkpoint tool validates the feature id");
 });
 
 test("checkpoint writes into the feature worktree when the session root is main", async () => {
@@ -6956,8 +7027,44 @@ test("ship rebases onto a concurrently-advanced origin/main and still lands", ()
   assert.match(log, /other landing/, "the concurrent landing is preserved");
 });
 
-test("ship exits non-zero when CI is red on the landed SHA", () => {
-  const { target } = initShipRepoWithOrigin();
+test("ship auto-resolves an append-only CHANGELOG conflict on a concurrent landing (F-303/F-305)", () => {
+  const { origin, target } = initShipRepoWithOrigin();
+  fs.writeFileSync(path.join(target, "CHANGELOG.md"), "# Changelog\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "changelog"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  execFileSync("git", ["checkout", "-q", "-b", "f-conf"], { cwd: target });
+  fs.writeFileSync(path.join(target, "CHANGELOG.md"), "# Changelog\n- feature entry (f-conf)\n", "utf8");
+  fs.writeFileSync(path.join(target, "feature.txt"), "feature\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "feat: conf"]);
+  commitCiWorkflow(target);
+
+  // A concurrent landing appends a DIFFERENT entry at the same hunk — the exact
+  // `UU CHANGELOG.md` shape that forced manual resolution during F-303/F-305.
+  const other = tmpdir();
+  execFileSync("git", ["clone", "-q", origin, other], { encoding: "utf8" });
+  git(other, ["config", "user.email", "o@o.o"]);
+  git(other, ["config", "user.name", "o"]);
+  fs.writeFileSync(path.join(other, "CHANGELOG.md"), "# Changelog\n- other entry (concurrent)\n", "utf8");
+  git(other, ["add", "-A"]);
+  git(other, ["commit", "-q", "-m", "other changelog"]);
+  git(other, ["push", "-q", "origin", "main"]);
+
+  const ghPath = writeGhStub(target, { sha: "0000000", runConclusion: "success" });
+  const res = runShip(target, ghPath);
+  assert.strictEqual(res.status, 0, res.out);
+  assert.match(res.out, /auto-resolved append-only conflict: CHANGELOG\.md/);
+  const log = execFileSync("git", ["--git-dir", origin, "log", "--oneline", "main"], { encoding: "utf8" });
+  assert.match(log, /feat: conf/, "our feature landed");
+  assert.match(log, /other changelog/, "the concurrent landing is preserved");
+  const cl = execFileSync("git", ["--git-dir", origin, "show", "main:CHANGELOG.md"], { encoding: "utf8" });
+  assert.match(cl, /feature entry \(f-conf\)/, "our changelog entry survived the union");
+  assert.match(cl, /other entry \(concurrent\)/, "the concurrent changelog entry is preserved");
+});
+
+test("ship exits non-zero when CI is red on the landed SHA", () => {  const { target } = initShipRepoWithOrigin();
   execFileSync("git", ["checkout", "-q", "-b", "f-red"], { cwd: target });
   fs.writeFileSync(path.join(target, "feature.txt"), "f\n", "utf8");
   git(target, ["add", "-A"]);
@@ -7346,6 +7453,49 @@ test("[drift-guard] every canonical board mutation reconciles + publishes via th
   assert.match(src, /boardSync\.publishBoard/, "mutations publish the board (never leave working-tree dirt)");
   assert.match(src, /cmdWorktreePlan/, "the worktree take is planned separately so it can publish before the checkout is created");
   assert.match(src, /function cmdWorktreeApply/, "the worktree checkout is created after the publish");
+});
+
+test("board-sync rebases an unpublished local harness commit onto upstream and still publishes (F-303/F-304 divergence)", () => {
+  const bs = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-sync.js"));
+  const origin = tmpdir();
+  execFileSync("git", ["init", "--bare", "-q", "-b", "main"], { cwd: origin });
+  const target = tmpdir();
+  execFileSync("git", ["clone", "-q", origin, target]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  fs.writeFileSync(path.join(target, "BACKLOG.md"), VALID_BACKLOG, "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "board"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  // A local harness deploy commit that was never pushed (the divergence).
+  fs.writeFileSync(path.join(target, "harness.txt"), "h\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "chore(harness): deploy"]);
+
+  // Upstream advances with a feature landing (non-board file + board change).
+  const other = tmpdir();
+  execFileSync("git", ["clone", "-q", origin, other]);
+  git(other, ["config", "user.email", "o@o.o"]);
+  git(other, ["config", "user.name", "o"]);
+  fs.writeFileSync(path.join(other, "feature.txt"), "f\n", "utf8");
+  fs.writeFileSync(
+    path.join(other, "BACKLOG.md"),
+    read(path.join(other, "BACKLOG.md")).replace("| F-001 | P1 | flow | block something | user report |\n", ""),
+    "utf8"
+  );
+  git(other, ["add", "-A"]);
+  git(other, ["commit", "-q", "-m", "feat: landing"]);
+  git(other, ["push", "-q", "origin", "main"]);
+
+  const res = bs.convergeCanonical(target, "origin/main");
+  assert.strictEqual(res.ok, true, JSON.stringify(res.notes));
+  assert.strictEqual(res.canPublish, true, "a clean rebase makes the checkout publishable again");
+  assert.ok(res.notes.some((n) => /rebased 1 local commit/.test(n)), res.notes.join(" | "));
+  const log = execFileSync("git", ["-C", target, "log", "--oneline"], { encoding: "utf8" });
+  assert.match(log, /chore\(harness\): deploy/, "the local commit is replayed, not dropped");
+  assert.match(log, /feat: landing/, "the upstream landing is preserved");
+  assert.doesNotMatch(log, /rebase in progress/i, "no rebase is left in progress");
 });
 
 test("[drift-guard] ship runs the process gates itself; CI is the post-land gate", () => {
@@ -8398,6 +8548,73 @@ test("serve.js prune removes dead records and keeps live ones", () => {
   }
 });
 
+test("serve.js stop-all spans the main checkout + worktrees and clears an orphaned heavy lock (F-302 leak)", () => {
+  const target = tmpdir();
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  fs.mkdirSync(path.join(target, ".serve"), { recursive: true });
+  fs.writeFileSync(path.join(target, ".serve", ".keep"), "x");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed"]);
+
+  // MAIN starts a dev server (record + a live heavy-lock member).
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "ignore" });
+  fs.writeFileSync(
+    path.join(target, ".serve", "app-dev.pid"),
+    JSON.stringify({ pid: child.pid, name: "app-dev", group: "mobile", cmd: "npm run dev" })
+  );
+  // A second lock member with NO serve record anywhere — the leaked tier whose
+  // `.pid` was lost in another tree (the F-302 shape).
+  const orphan = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "ignore" });
+  const lockFile = path.join(target, "heavy.lock");
+  fs.writeFileSync(
+    lockFile,
+    JSON.stringify({
+      name: "app-dev",
+      group: "mobile",
+      since: new Date().toISOString(),
+      members: [
+        { name: "app-dev", pid: child.pid, unit: null },
+        { name: "ghost-dev", pid: orphan.pid, unit: null },
+      ],
+    })
+  );
+
+  // A linked feature worktree (the mid-session reroot target).
+  const wtBase = path.join(target, "..", ".worktrees", path.basename(target));
+  const wt = path.join(wtBase, "F-1");
+  fs.mkdirSync(wtBase, { recursive: true });
+  execFileSync("git", ["-C", target, "worktree", "add", "-q", "-b", "f-1", wt, "HEAD"], { encoding: "utf8" });
+
+  const serve = path.join(h.TEMPLATES_DIR, "scripts", "serve.js");
+  try {
+    const r = spawnSync(process.execPath, [serve, "stop-all"], {
+      cwd: wt,
+      encoding: "utf8",
+      env: Object.assign({}, process.env, { AGENT_HEAVY_LOCK: lockFile }),
+    });
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    assert.ok(
+      !exists(path.join(target, ".serve", "app-dev.pid")),
+      "the MAIN checkout's record is stopped even though the command ran in the worktree"
+    );
+    assert.ok(!exists(lockFile), "the orphaned heavy lock is cleared");
+    assert.match(r.stdout, /cleared heavy lock/);
+  } finally {
+    try {
+      process.kill(child.pid, "SIGKILL");
+    } catch (_) {
+      /* already gone */
+    }
+    try {
+      process.kill(orphan.pid, "SIGKILL");
+    } catch (_) {
+      /* already gone */
+    }
+  }
+});
+
 const HAS_SYSTEMD_USER = (() => {
   try {
     const r = spawnSync("systemctl", ["--user", "is-system-running"], {
@@ -8652,6 +8869,50 @@ test("mobile E2E job-events reduce the progress stream for the notifier", () => 
   const f = path.join(dir, "ev.jsonl");
   fs.writeFileSync(f, `${JSON.stringify(seq[0])}\n{partial`);
   assert.strictEqual(j.readEvents(f).length, 1);
+});
+
+test("run-maestro --failed reports resolve across the main checkout + worktrees (F-302)", () => {
+  const runner = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
+
+  // parseArgs accepts --report (absolute).
+  const parsed = runner.parseArgs(["--failed", "--report", "/tmp/x/last.json"]);
+  assert.strictEqual(parsed.report, path.resolve("/tmp/x/last.json"));
+
+  // A missing explicit report is refused; an existing one is used.
+  const base = tmpdir();
+  const explicit = path.join(base, "explicit.json");
+  fs.writeFileSync(explicit, JSON.stringify({ flows: [{ name: "a", status: "fail" }] }));
+  assert.strictEqual(runner.resolveFailedReport(explicit), explicit);
+  assert.strictEqual(runner.resolveFailedReport(path.join(base, "missing.json")), null);
+
+  // The F-302 shape: the worktree's own report is absent; the MAIN checkout's
+  // report is found and is the newest candidate.
+  const mainRoot = path.join(base, "Demo");
+  fs.mkdirSync(path.join(mainRoot, ".serve"), { recursive: true });
+  const mainReport = path.join(mainRoot, ".serve", "mobile-e2e-last-run.json");
+  fs.writeFileSync(mainReport, JSON.stringify({ flows: [{ name: "book-detail", status: "fail" }] }));
+  const resolved = runner.resolveFailedReport(null, {
+    primaryReport: path.join(base, "worktree", ".serve", "mobile-e2e-last-run.json"),
+    mainRoot,
+  });
+  assert.strictEqual(resolved, mainReport, "the main checkout's report is used from a worktree");
+  assert.deepStrictEqual(runner.readFailedFlowNames(resolved), ["book-detail"]);
+
+  // A stale sibling-worktree report loses to a newer main report (newest wins).
+  const wt = path.join(path.dirname(mainRoot), ".worktrees", path.basename(mainRoot), "F-1");
+  fs.mkdirSync(path.join(wt, ".serve"), { recursive: true });
+  const wtReport = path.join(wt, ".serve", "mobile-e2e-last-run.json");
+  fs.writeFileSync(wtReport, JSON.stringify({ flows: [{ name: "stale", status: "fail" }] }));
+  const past = new Date(Date.now() - 60000);
+  fs.utimesSync(wtReport, past, past);
+  assert.strictEqual(
+    runner.resolveFailedReport(null, { primaryReport: null, mainRoot }),
+    mainReport,
+    "the newer main report wins over a stale worktree report"
+  );
+
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
+  assert.match(src, /git-common-dir/, "resolves the main worktree via git-common-dir");
 });
 
 test("boot-emulator.sh --print-profile derives the profile from the host and AVD", () => {

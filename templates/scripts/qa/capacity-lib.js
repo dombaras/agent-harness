@@ -738,6 +738,20 @@ function releaseHeavyLock(name, group) {
   }
 }
 
+/* Remove the machine-wide heavy lock unconditionally. Teardown only:
+ * `serve.js stop-all` has already stopped every member — including an orphaned
+ * lock member whose `.serve/` record was lost in another worktree (the F-302
+ * leak: a dev server started in MAIN survived a worktree-scoped stop-all and
+ * pinned RAM, refusing the F-304/F-305 device tiers). */
+function clearHeavyLock() {
+  try {
+    fs.unlinkSync(lockPath());
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 /* --------------------------------------------------------------- .wslconfig
  * Doctor-only: read the Windows-side `.wslconfig` (best-effort) and turn its
  * vmIdleTimeout/memory/swap/autoMemoryReclaim into concrete advice. */
@@ -874,6 +888,7 @@ module.exports = {
   acquireHeavyLock,
   updateHeavyMember,
   releaseHeavyLock,
+  clearHeavyLock,
   isAlive,
   parseWslConfig,
   readWslConfig,

@@ -44,5 +44,5 @@ else
   fi
 fi
 
-node scripts/serve.js prune || true
+node scripts/serve.js prune --worktrees || true
 node scripts/serve.js list || true

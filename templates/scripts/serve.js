@@ -107,12 +107,12 @@ function deriveName(flags) {
   return "default";
 }
 
-function pidFile(name) {
-  return path.join(SERVE_DIR, name + ".pid");
+function pidFile(name, dir = SERVE_DIR) {
+  return path.join(dir, name + ".pid");
 }
 
-function logPath(name, stream) {
-  return path.join(SERVE_DIR, name + "." + stream + ".log");
+function logPath(name, stream, dir = SERVE_DIR) {
+  return path.join(dir, name + "." + stream + ".log");
 }
 
 function sleep(ms) {
@@ -234,8 +234,8 @@ function logTail(p) {
   }
 }
 
-function launcherPath(name) {
-  return path.join(SERVE_DIR, name + ".cmd");
+function launcherPath(name, dir = SERVE_DIR) {
+  return path.join(dir, name + ".cmd");
 }
 
 // win32 detach: give the server its OWN hidden console so its process tree can
@@ -528,9 +528,20 @@ async function start(flags) {
   process.exit(1);
 }
 
-function stop(flags) {
+function stop(flags, dir) {
   const name = deriveName(flags);
-  const p = pidFile(name);
+  // Resolve which `.serve/` holds this record: the caller's dir, else the
+  // current checkout, else any other serve dir on the machine (a server started
+  // in the MAIN checkout before a mid-session worktree reroot lives outside the
+  // worktree's `.serve/`).
+  if (!dir) {
+    dir = SERVE_DIR;
+    if (!fs.existsSync(pidFile(name, dir))) {
+      const found = allServeDirs().find((d) => fs.existsSync(pidFile(name, d)));
+      if (found) dir = found;
+    }
+  }
+  const p = pidFile(name, dir);
   if (!fs.existsSync(p)) {
     // No record: release this name's own lock (covers a lock left after a crash).
     capacity.releaseHeavyLock(name);
@@ -559,7 +570,7 @@ function stop(flags) {
     fs.unlinkSync(p);
   } catch (_) {}
   try {
-    fs.unlinkSync(launcherPath(name));
+    fs.unlinkSync(launcherPath(name, dir));
   } catch (_) {}
   // Remove this member from the heavy lock; the lock file itself is deleted only
   // when the last member is gone, so a shared group (emulator + dev server)
@@ -567,18 +578,71 @@ function stop(flags) {
   capacity.releaseHeavyLock(name, group);
 }
 
-function listNames() {
-  if (!fs.existsSync(SERVE_DIR)) return [];
-  return fs.readdirSync(SERVE_DIR).filter((f) => f.endsWith(".pid")).map((f) => f.slice(0, -4));
+function listNames(dir = SERVE_DIR) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter((f) => f.endsWith(".pid")).map((f) => f.slice(0, -4));
 }
 
-function stopAll() {
-  const names = listNames();
-  if (names.length === 0) {
-    console.log("no servers running");
-    return;
+/* The MAIN worktree root (where a device tier started before a mid-session
+ * worktree reroot left its `.serve/`), or null outside a git repo. */
+function mainWorktreeRoot() {
+  try {
+    const r = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+    if (r.status === 0 && r.stdout && r.stdout.trim()) {
+      const common = r.stdout.trim();
+      if (path.basename(common) === ".git") return path.dirname(common);
+    }
+    const r2 = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: process.cwd(), encoding: "utf8" });
+    if (r2.status === 0 && r2.stdout && r2.stdout.trim()) return r2.stdout.trim();
+  } catch (_) {
+    /* not a git checkout */
   }
-  for (const name of names) stop({ "--name": name });
+  return null;
+}
+
+/* Every `.serve/` dir this machine's sessions may have written: the current
+ * checkout's, the MAIN worktree's, and sibling feature worktrees'. `list` and
+ * `stop-all` must span all of them — a server started in the MAIN checkout is
+ * invisible to a session that re-rooted into its worktree, so a worktree-scoped
+ * `stop-all` reported "no servers running" while the dev server survived and
+ * pinned RAM for hours (the F-302 leak that starved F-304/F-305 device runs). */
+function allServeDirs() {
+  const dirs = new Set();
+  const add = (d) => {
+    if (d && fs.existsSync(d)) dirs.add(path.resolve(d));
+  };
+  add(SERVE_DIR);
+  const main = mainWorktreeRoot();
+  if (main) add(path.join(main, ".serve"));
+  for (const d of siblingServeDirs()) add(d);
+  return [...dirs];
+}
+
+/* Stop every recorded server across every serve dir, then reconcile the
+ * machine-wide heavy lock (an orphaned member whose server record was lost in
+ * another tree would otherwise wedge the capacity guard). */
+function stopAll() {
+  const entries = [];
+  for (const dir of allServeDirs()) for (const name of listNames(dir)) entries.push({ dir, name });
+  if (entries.length === 0) console.log("no servers running");
+  else for (const { dir, name } of entries) stop({ "--name": name }, dir);
+
+  const lock = capacity.readLock();
+  if (lock) {
+    const members = capacity.lockMembers(lock);
+    let killed = 0;
+    for (const m of members) {
+      if (!m.pid || !capacity.isAlive(m.pid)) continue;
+      if (m.unit ? stopUnit(m.unit) : killTree(m.pid)) killed++;
+    }
+    capacity.clearHeavyLock();
+    console.log(
+      `stop-all: cleared heavy lock "${lock.name}" (${members.length} member(s)${killed ? `, ${killed} stopped` : ""})`
+    );
+  }
 }
 
 /* Sibling worktree `.serve/` dirs, when this checkout lives under the harness
@@ -667,8 +731,10 @@ function isAlive(pid) {
 
 function list() {
   // Auto-prune first, so `list` never reports a record whose process is gone
-  // (e.g. an adb-server/emulator left over from a killed session).
-  removeDeadRecords(SERVE_DIR);
+  // (e.g. an adb-server/emulator left over from a killed session). Prune every
+  // serve dir the machine may have written, not just the current checkout's.
+  const dirs = allServeDirs();
+  for (const dir of dirs) removeDeadRecords(dir);
   // Capacity first: free RAM/swap/load + live-serve count, so `list` is the
   // one place an operator sees the whole machine state and can spot an idle
   // emulator/dev server to reap before it freezes the box.
@@ -685,18 +751,20 @@ function list() {
     const stale = capacity.lockIsStale(lock) ? " [stale]" : "";
     console.log(`heavy lock: "${lock.name}" [${who}] since ${lock.since}${stale}`);
   }
-  const names = listNames();
-  if (names.length === 0) {
+  const entries = [];
+  for (const dir of dirs) for (const name of listNames(dir)) entries.push({ dir, name });
+  const recordedPids = new Set();
+  if (entries.length === 0) {
     console.log("no servers running");
-    return;
   }
-  for (const name of names) {
+  for (const { dir, name } of entries) {
     let info;
     try {
-      info = JSON.parse(fs.readFileSync(pidFile(name), "utf8"));
+      info = JSON.parse(fs.readFileSync(pidFile(name, dir), "utf8"));
     } catch (_) {
       info = { pid: "?", name };
     }
+    if (info.pid && info.pid !== "?") recordedPids.add(String(info.pid));
     const started = info.startedAt ? Date.parse(info.startedAt) : NaN;
     const age = Number.isFinite(started) ? ` · up ${Math.round((Date.now() - started) / 60000)}m` : "";
     const heavy = info.heavy ? " [heavy]" : "";
@@ -705,9 +773,24 @@ function list() {
       .filter(Boolean)
       .join(" ");
     const capped = caps ? ` {${caps}${info.unit ? `, ${info.unit}` : ""}}` : "";
+    const where = path.resolve(dir) === path.resolve(SERVE_DIR) ? "" : ` @ ${dir}`;
     console.log(
-      `${name}: pid ${info.pid} (${isAlive(info.pid) ? "running" : "stale"})${heavy}${group}${capped}${age} — ${info.cmd || "?"}`
+      `${name}: pid ${info.pid} (${isAlive(info.pid) ? "running" : "stale"})${heavy}${group}${capped}${age}${where} — ${info.cmd || "?"}`
     );
+  }
+  // Warn about a lock member with no backing serve record anywhere — the leaked
+  // tier that a worktree-scoped stop-all used to miss. `stop-all` clears it.
+  if (lock) {
+    const orphans = capacity
+      .lockMembers(lock)
+      .filter((m) => m.pid && capacity.isAlive(m.pid) && !recordedPids.has(String(m.pid)));
+    if (orphans.length) {
+      console.log(
+        `heavy lock: ${orphans.length} orphan member(s) with no serve record (${orphans
+          .map((m) => `${m.name}(pid ${m.pid})`)
+          .join(", ")}) — reaping with \`node scripts/serve.js stop-all\``
+      );
+    }
   }
 }
 

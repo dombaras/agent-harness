@@ -638,6 +638,17 @@ function collectStats(opts = {}) {
   const runDb = opts.runDb || ((sql) => runDbJson(opencode, sql, opts));
 
   const projectIds = runDb(projectIdsSql(root)).map((r) => r.id).filter(Boolean);
+  // `--root` may be a linked feature worktree that no `project`/`project_directory`
+  // row matches, so the requested session (which belongs to the MAIN project) is
+  // invisible and the tool reports "store not reachable from this machine". The
+  // session id is the global join key: widen the scan to the session's own
+  // project id so `--session` works from any linked worktree.
+  if (opts.session) {
+    const owner = runDb(`SELECT project_id AS id FROM session WHERE id = ${sqlString(opts.session)}`)
+      .map((r) => r.id)
+      .filter(Boolean);
+    for (const id of owner) if (!projectIds.includes(id)) projectIds.push(id);
+  }
   const meta = {
     schema: SCHEMA,
     generatedAt: new Date(opts.now || Date.now()).toISOString(),

@@ -101,6 +101,23 @@ function handoffPath(feature) {
   return path.join(base, ".agents", "handoffs", feature + ".md");
 }
 
+/* A feature id must be a real slug. Reject the stringified sentinels a tool
+ * wrapper produces from an unset arg (`undefined`/`null`), which otherwise
+ * match the slug regex and silently write a `.agents/handoffs/undefined.md`
+ * (the H-14 stray-handoff defect: `.agents/handoffs/undefined.md` left on main
+ * by a `checkpoint_write` call that omitted `feature`). */
+const RESERVED_FEATURE = new Set(["undefined", "null", "none", "nan", "nil"]);
+function assertFeature(raw, verb) {
+  const feature = String(raw == null ? "" : raw).trim();
+  if (!feature || RESERVED_FEATURE.has(feature.toLowerCase()) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(feature)) {
+    throw new Error(
+      `${verb} requires --feature <id or slug> (letters, digits, dot, dash, underscore); ` +
+        `refusing the value ${JSON.stringify(raw == null ? "" : raw)} — pass the BACKLOG row id (e.g. F-001)`
+    );
+  }
+  return feature;
+}
+
 /* Split the file into [before, checkpointBody, after] around the existing
  * `## Checkpoint` section (until the next heading), any of which may be null. */
 function splitCheckpoint(src) {
@@ -134,10 +151,7 @@ function renderBlock(args, feature, count) {
 }
 
 function writeCheckpoint(args) {
-  const feature = args.feature;
-  if (!feature || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(feature)) {
-    throw new Error("write requires --feature <id or slug> (letters, digits, dot, dash, underscore)");
-  }
+  const feature = assertFeature(args.feature, "write");
   const hasState =
     Object.values(args.scalars).some((v) => v != null && String(v).trim()) ||
     Object.values(args.lists).some((v) => v && v.length);
@@ -193,10 +207,7 @@ function parseBlock(body) {
 }
 
 function readCheckpoint(args) {
-  const feature = args.feature;
-  if (!feature || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(feature)) {
-    throw new Error("resume requires --feature <id or slug>");
-  }
+  const feature = assertFeature(args.feature, "resume");
   const file = handoffPath(feature);
   if (!fs.existsSync(file)) throw new Error(`no handoff found for "${feature}" (${path.relative(root, file)})`);
   const parts = splitCheckpoint(fs.readFileSync(file, "utf8"));
@@ -246,4 +257,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { SCHEMA, splitCheckpoint, renderBlock, parseBlock, writeCheckpoint, readCheckpoint, handoffPath };
+module.exports = { SCHEMA, splitCheckpoint, renderBlock, parseBlock, writeCheckpoint, readCheckpoint, handoffPath, assertFeature };

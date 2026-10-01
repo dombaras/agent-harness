@@ -37,6 +37,7 @@
  * `HARNESS_SHIP_CI_TIMEOUT_MS` / `HARNESS_SHIP_CI_POLL_MS` (timings).
  */
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const boardSync = require("./qa/board-sync.js");
@@ -95,9 +96,93 @@ function commitSessionHandoffs(root, entries, branch) {
   return run("git", ["commit", "-m", `docs(${branch}): session checkpoint`], { cwd: root });
 }
 
+/* Append-only files whose conflicts are safe to auto-resolve during the landing
+ * rebase: two sessions that each appended an entry at the top (CHANGELOG) or a
+ * line (owned-files) collide on the same hunk. A union merge keeps every line
+ * from both sides, so the one-call `finalize` contract survives a concurrent
+ * landing — F-303 and F-305 both hit `UU CHANGELOG.md` and had to resolve by
+ * hand. Any other conflict is still left to the operator. */
+const APPEND_ONLY_CONFLICTS = ["CHANGELOG.md", ".agents/memory/owned-files.md"];
+
+function conflictedPaths(root) {
+  return out("git", ["diff", "--name-only", "--diff-filter=U"], { cwd: root })
+    .split(/\r?\n/)
+    .filter(Boolean);
+}
+
+/* Union-merge one conflicted append-only file (drop exact duplicate lines,
+ * preserve order + the rest of both sides) and stage it. */
+function unionResolveFile(root, rel) {
+  const stage = (n) => {
+    const r = spawnSync("git", ["show", `:${n}:${rel}`], { cwd: root, encoding: "utf8" });
+    return r.status === 0 ? String(r.stdout || "") : "";
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-union-"));
+  const write = (name, text) => {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, text, "utf8");
+    return p;
+  };
+  const r = spawnSync(
+    "git",
+    ["merge-file", "-p", "--union", write("ours", stage(2)), write("base", stage(1)), write("theirs", stage(3))],
+    { encoding: "utf8" }
+  );
+  const mergedRaw = String(r.stdout || "");
+  if (!mergedRaw || /^<{7}|^={7}|^>{7}/m.test(mergedRaw)) {
+    console.error(`[ship] could not union-resolve ${rel} (unexpected merge output).`);
+    return false;
+  }
+  const seen = new Set();
+  const merged = mergedRaw
+    .split("\n")
+    .filter((line) => {
+      if (line.trim() === "") return true;
+      if (seen.has(line)) return false;
+      seen.add(line);
+      return true;
+    })
+    .join("\n");
+  fs.writeFileSync(path.join(root, rel), merged.endsWith("\n") ? merged : merged + "\n", "utf8");
+  run("git", ["add", "--", rel], { cwd: root });
+  console.log(`[ship] auto-resolved append-only conflict: ${rel}`);
+  return true;
+}
+
+/* Rebase onto origin/<base>, auto-resolving append-only conflicts and
+ * continuing. Returns true when the rebase completed. */
+function rebaseOntoMain(root, base) {
+  if (run("git", ["rebase", `origin/${base}`], { cwd: root })) return true;
+  for (let guard = 0; guard < 20; guard++) {
+    const conflicted = conflictedPaths(root);
+    if (conflicted.length === 0) {
+      fail(
+        `ship: rebase onto origin/${base} did not complete — inspect \`git status\` and run \`git rebase --continue\`.`
+      );
+      return false;
+    }
+    const unresolved = conflicted.filter((p) => !APPEND_ONLY_CONFLICTS.includes(p));
+    if (unresolved.length > 0) {
+      fail(
+        `ship: rebase onto origin/${base} has conflicts in ${unresolved.join(", ")}.\n` +
+          "      Resolve them, `git rebase --continue`, then re-run `npm run ship`."
+      );
+      return false;
+    }
+    for (const rel of conflicted) if (!unionResolveFile(root, rel)) return false;
+    const cont = spawnSync("git", ["rebase", "--continue"], {
+      cwd: root,
+      encoding: "utf8",
+      env: Object.assign({}, process.env, { GIT_EDITOR: "true" }),
+    });
+    if (cont.status === 0) return true;
+  }
+  fail(`ship: rebase onto origin/${base} could not be auto-resolved.`);
+  return false;
+}
+
 /* The `gh` binary (overridable for tests). */
-function ghBin() {
-  return ciWait.ghBin();
+function ghBin() {  return ciWait.ghBin();
 }
 
 /* Synchronous sleep — a poll loop must not need async/await. `Atomics.wait` is
@@ -299,12 +384,7 @@ function landOnMain(root, base, args) {
       const counts = out("git", ["rev-list", "--left-right", "--count", `HEAD...origin/${base}`], { cwd: root });
       const behind = counts ? parseInt(counts.trim().split(/\s+/)[1], 10) || 0 : 0;
       if (behind > 0) {
-        if (!run("git", ["rebase", `origin/${base}`], { cwd: root })) {
-          return fail(
-            `ship: rebase onto origin/${base} failed (conflicts) after a concurrent landing.\n` +
-              "      Resolve them, `git rebase --continue`, then re-run `npm run ship`."
-          );
-        }
+        if (!rebaseOntoMain(root, base)) return null;
       }
     }
     const res = spawnSync("git", ["push", "origin", `HEAD:${base}`], {
@@ -414,12 +494,7 @@ function main() {
 
   if (!args["no-rebase"]) {
     if (!run("git", ["fetch", "origin"], { cwd: root })) return fail("ship: `git fetch origin` failed.");
-    if (!run("git", ["rebase", `origin/${base}`], { cwd: root })) {
-      return fail(
-        `ship: rebase onto origin/${base} failed (conflicts).\n` +
-          "      Resolve them, `git rebase --continue`, then re-run `npm run ship`."
-      );
-    }
+    if (!rebaseOntoMain(root, base)) return;
   }
 
   if (!args["no-gate"]) {

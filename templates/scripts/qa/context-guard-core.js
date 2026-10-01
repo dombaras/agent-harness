@@ -802,7 +802,11 @@ function contentCodeMutation(tokens, cmd) {
   }
   // A redirect into the tree is conservative code regardless of extension: it
   // is a build/command output, not the board/docs maintenance carve-out.
-  const redir = />>?\s*([^\s;&|]+)/g;
+  // The lookbehind skips a `>` that is part of an arrow (`=>`) or comparison
+  // (`>=`) — a JS one-liner passed through `npx tsx -e` was read as a redirect.
+  // The target class stops at shell metacharacters so `2>/dev/null)` and
+  // `>/dev/null;` resolve to the allowed `/dev/null`, not `/dev/null)`.
+  const redir = /(?<![=<>!-])>>?\s*([^\s;&|(){}<>'"]+)/g;
   let m;
   while ((m = redir.exec(stripQuoted(cmd)))) {
     if (!isAllowedWriteTarget(m[1])) return true;

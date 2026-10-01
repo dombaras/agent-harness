@@ -73,10 +73,19 @@ if (docFiles.length === 0) {
 }
 
 // ---- 1. no un-substituted template placeholders -----------------------------
+// Only flag placeholders in prose: a doc that *documents* the token (e.g.
+// `docs/gates.md` quoting `{{PLACEHOLDER}}` in a code span) must pass, while a
+// real un-substituted var in prose still fails. Strip fenced blocks + inline
+// code spans first (the F-305 docs-gate false positive).
+function stripCode(src) {
+  return String(src)
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`[^`\n]*`/g, "");
+}
 const PLACEHOLDER = /\{\{[A-Z_]+\}\}/;
 for (const { abs, rel } of docFiles) {
   const src = fs.readFileSync(abs, "utf8");
-  const m = src.match(PLACEHOLDER);
+  const m = stripCode(src).match(PLACEHOLDER);
   if (m) fail(`${rel}: un-substituted placeholder \`${m[0]}\` \u2014 deploy substitutes it`);
   else pass(`${rel}: no un-substituted template placeholders`);
 }

@@ -102,6 +102,7 @@ function usage() {
     '  --no-seed            run reset.js --no-seed (mint actor auth only)',
     '  --reuse-session      reuse the device session; batch same-actor setup-free flows (no clearState)',
     '  --failed             re-run only the journeys that failed in the last run',
+    '  --report <file>      last-run report for --failed (default: this checkout, then the main checkout)',
     '  --config <file>      Maestro workspace config (default config.yaml — disables animations)',
     '  --reinstall-driver   force Maestro to reinstall its device driver (default: skip)',
     '  --max-same-reason <n> stop after n flows fail for the same reason (default 3; 0 disables)',
@@ -142,6 +143,7 @@ function parseArgs(argv) {
     reinstallDriver: false,
     maxSameReason: 3,
     root: REPO_ROOT,
+    report: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -156,6 +158,8 @@ function parseArgs(argv) {
     else if (arg === '--no-seed') options.noSeed = true;
     else if (arg === '--reuse-session') options.reuseSession = true;
     else if (arg === '--failed') options.failed = true;
+    else if (arg === '--report' && argv[i + 1]) options.report = path.resolve(argv[++i]);
+    else if (arg.startsWith('--report=')) options.report = path.resolve(arg.slice('--report='.length));
     else if (arg === '--config' && argv[i + 1]) options.config = path.resolve(argv[++i]);
     else if (arg.startsWith('--config=')) options.config = path.resolve(arg.slice('--config='.length));
     else if (arg === '--reinstall-driver') options.reinstallDriver = true;
@@ -646,6 +650,56 @@ function readFailedFlowNames(reportPath) {
   }
 }
 
+/** The MAIN worktree root, or null. A feature worktree has its OWN empty
+ * `.serve/`, so `--failed` run from a worktree cannot see the report the matrix
+ * wrote in the MAIN checkout (the F-302 "nothing to re-run" dead end). */
+function mainWorktreeRoot() {
+  try {
+    const r = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    });
+    if (r.status === 0 && r.stdout && r.stdout.trim()) {
+      const common = r.stdout.trim();
+      if (path.basename(common) === '.git') return path.dirname(common);
+    }
+  } catch {
+    /* not a git checkout */
+  }
+  return null;
+}
+
+/** Resolve the last-run report `--failed` reads: an explicit `--report`, else the
+ * newest report among this checkout, the MAIN checkout, and sibling worktrees.
+ * `opts` (primaryReport/mainRoot) is a test seam. */
+function resolveFailedReport(explicit, opts = {}) {
+  if (explicit) return fs.existsSync(explicit) ? explicit : null;
+  const candidates = [opts.primaryReport || REPORT_FILE];
+  const main = opts.mainRoot !== undefined ? opts.mainRoot : mainWorktreeRoot();
+  if (main) {
+    candidates.push(path.join(main, '.serve', 'mobile-e2e-last-run.json'));
+    const wtBase = path.join(path.dirname(main), '.worktrees', path.basename(main));
+    try {
+      for (const id of fs.readdirSync(wtBase)) {
+        candidates.push(path.join(wtBase, id, '.serve', 'mobile-e2e-last-run.json'));
+      }
+    } catch {
+      /* no sibling worktrees */
+    }
+  }
+  let best = null;
+  for (const c of candidates) {
+    let stat;
+    try {
+      stat = fs.statSync(c);
+    } catch {
+      continue;
+    }
+    if (stat.isFile() && (!best || stat.mtimeMs > best.mtimeMs)) best = { file: c, mtimeMs: stat.mtimeMs };
+  }
+  return best ? best.file : null;
+}
+
 /**
  * Persist a compact machine report so `--failed` (and post-hoc analysis) can
  * re-run exactly the journeys that were red. Best-effort: a write failure must
@@ -685,13 +739,20 @@ function main() {
 
   let flowFiles;
   if (options.failed) {
-    const failedNames = readFailedFlowNames(REPORT_FILE);
+    const reportFile = resolveFailedReport(options.report);
+    if (!reportFile) {
+      console.log(
+        'No previous run report found (checked this checkout, the main checkout, and sibling worktrees) — nothing to re-run.'
+      );
+      process.exit(0);
+    }
+    const failedNames = readFailedFlowNames(reportFile);
     if (failedNames.length === 0) {
-      console.log(`No failed journeys recorded in ${path.relative(options.root, REPORT_FILE)} — nothing to re-run.`);
+      console.log(`No failed journeys recorded in ${reportFile} — nothing to re-run.`);
       process.exit(0);
     }
     flowFiles = failedNames.map((name) => path.join(FLOWS_DIR, name.endsWith('.yaml') ? name : `${name}.yaml`));
-    console.log(`Re-running ${flowFiles.length} failed journey(s) from ${path.relative(options.root, REPORT_FILE)}.`);
+    console.log(`Re-running ${flowFiles.length} failed journey(s) from ${reportFile}.`);
   } else {
     flowFiles = resolveFlowFiles(options.flows) || [];
   }
@@ -864,6 +925,8 @@ if (require.main === module) main();
 module.exports = {
   parseArgs,
   resolveFlowFiles,
+  resolveFailedReport,
+  readFailedFlowNames,
   runReset,
   normaliseFailureReason,
   extractFailureReason,

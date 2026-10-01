@@ -18,16 +18,78 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.121` |
+| Version | `0.1.122` |
 | Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget); `0.1.88` direct-land cycle — `ship` fast-forward pushes `HEAD:main` (bounded retry) and waits for green CI, `deploy-uat` runs after CI success; PR/landing-label/merge-train/watch and the `check-push-refs` guard removed; `0.1.89` reconciled local-only board rows are committed + pushed; `0.1.90` CI watch from the main worktree + never prune a live session's worktree; `0.1.91` guard-nudge attribution + live request-token band; `0.1.92` single-authority board transaction (every canonical mutation reconciles + publishes; converge under the board lock; redundant-dirt clear; session-start `backlog sync`; doctor staleness warn) |
-| Lint / tests | green (`npm run lint`, `npm test` — 371 pass) |
-| LibraryOS | `0.1.121` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
+| Lint / tests | green (`npm run lint`, `npm test` — 378 pass) |
+| LibraryOS | `0.1.122` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — canonical list (incl. H-23 measurement, H-25 explore adoption); the deferred C/D detail in [`docs/mcp-skills-backlog.md`](mcp-skills-backlog.md) shipped in `0.1.121` |
 
 ---
 
 ## What shipped
+
+### `0.1.122` — field hardening from the F-302…F-305 mobile-matrix sessions
+
+Basis: a post-hoc review of the LibraryOS sessions that ran the 26-journey
+device matrix and resolved its residuals (F-302 device run → F-303/F-304/F-305),
+plus the 2026-10-01 one-day recon of the `0.1.120`/`0.1.121` adoption. The
+optimizations themselves landed (`dev-loop` loaded in **4/4** sessions, `orient`
+in 3/4, async `wait` on the 26-journey job, worktree/`backlog_*` claim tools) —
+but the review surfaced eight concrete defects/frictions, each fixed upstream
+with a regression test.
+
+- **`checkpoint_write` stray `undefined.md` (H-14, closed).** A tool call that
+  omitted `feature` forwarded the literal string `"undefined"`, which matched the
+  slug regex and wrote `.agents/handoffs/undefined.md` — polluting `git status`
+  and the finalize dirt check. `scripts/checkpoint.js` (`assertFeature`) and
+  `tools/checkpoint.ts` (`requireFeature`) now reject `undefined`/`null`/empty
+  with an actionable message. Reproduced from the F-302 iteration-2 checkpoint.
+- **Leaked dev server across a mid-session worktree reroot (P1).** `serve.js
+  stop-all`/`list` were cwd-scoped, so a dev server a device tier started in the
+  MAIN checkout was invisible to a session re-rooted into its worktree: F-302's
+  session-end `stop-all` reported "no servers running" while the process stayed
+  alive under the heavy lock and pinned RAM, directly refusing the F-304/F-305
+  device tiers (`test:quick` at 323 MB free). `serve.js` now spans the current
+  checkout, the MAIN worktree, and sibling worktrees for `stop`/`stop-all`/`list`,
+  and `stop-all` reconciles+clears the machine-wide heavy lock
+  (`capacity.clearHeavyLock`). `device-down.sh` prunes `--worktrees`.
+- **`session_info` reported the opencode store unreachable (P1).** Run after a
+  worktree reroot, `provider-stats.js --root <worktree>` matched no
+  `project`/`project_directory` row, so the handoff `session:` join key came back
+  "unavailable" (F-304/F-305). `--session` now widens the scan to the session's
+  own `project_id` (the global key), so telemetry resolves from any linked
+  worktree.
+- **`finalize`/`ship` CHANGELOG rebase conflict (P2).** Concurrent landings both
+  appended a CHANGELOG head entry, so the landing rebase hit `UU CHANGELOG.md`
+  and forced manual `git rebase --continue` (F-303 and F-305), breaking the
+  one-call `finalize` contract. `ship.js` now auto-resolves append-only conflicts
+  (`CHANGELOG.md`, `.agents/memory/owned-files.md`) with a `git merge-file
+  --union` replay and continues; any other conflict still stops.
+- **`run-maestro --failed` was empty in a worktree (P2).** `--failed` read the
+  worktree's own `.serve/mobile-e2e-last-run.json` (absent), so it selected
+  nothing (F-302). It now resolves the newest report across this checkout, the
+  MAIN checkout, and sibling worktrees, with a `--report <file>` override.
+- **Board publish silently skipped on a local harness commit (P2).** A deploy
+  commit that was never pushed left main 1 ahead / N behind, so every board
+  mutation printed "not publishing" and main drifted (F-303/F-304). `board-sync
+  convergeCanonical` now performs the documented `git pull --rebase` itself when
+  the tree is otherwise clean (board dirt reconciled first), aborting to the
+  manual instruction only on a real conflict. LibraryOS `main` was reconciled and
+  pushed.
+- **`test:docs` placeholder false positive (P3).** `docs/gates.md` documents
+  `{{PLACEHOLDER}}` in a code span and the scanner flagged it (F-305).
+  `check-docs.js` now strips fenced blocks + inline spans before matching.
+- **In-repo orphan worktree + read-only session-guard false positives (P3).**
+  `backlog worktree` refuses a `--dir` inside the repository (the stray
+  `<repo>/.worktrees/<repo>/f-301`); the `mainEdit` classifier no longer reads
+  `2>/dev/null` or a JS arrow (`=>`) in `npx tsx -e` as a redirect, so read-only
+  commands are not blocked ("mutates this checkout").
+
+- Tests: +9 (checkpoint sentinel guard, serve cross-tree stop-all + orphan lock,
+  provider-stats worktree session, ship append-only union resolve, run-maestro
+  report resolution, board-sync clean rebase, docs code-span placeholder,
+  worktree-in-repo refusal, mainEdit redirect lookbehind). Lint green.
 
 ### `0.1.121` — C (skills) + D (MCP): the `dev-loop` skill, bounded `explore`, project-scoped MCP
 

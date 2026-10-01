@@ -190,6 +190,18 @@ function aheadOnlyBoard(root, upstream) {
   return true;
 }
 
+/* True when every commit HEAD carries over `upstream` is a local harness deploy
+ * commit (`chore(harness): …`). Those are safe to replay onto upstream with a
+ * plain rebase — the object was a deploy that committed but never pushed while
+ * upstream advanced with feature landings (the F-303/F-304 "not publishing"
+ * drift). Arbitrary local work is NOT replayed: it keeps the report-only path. */
+function aheadOnlyHarness(root, upstream) {
+  const r = gitCmd(root, ["log", "--format=%s", `${upstream}..HEAD`]);
+  if (r.status !== 0) return false;
+  const subjects = String(r.stdout || "").split(/\r?\n/).filter(Boolean);
+  return subjects.length > 0 && subjects.every((s) => /^chore\(harness\)/.test(s));
+}
+
 /* Replay local board-only commits onto `upstream` using the same row-aware
  * reconcile as the rest of the module — NOT `git rebase`, which depends on the
  * per-clone merge driver being registered (a fresh clone that never ran
@@ -281,18 +293,44 @@ function convergeCanonical(root, upstream, opts) {
       notes.push(`replayed ${ahead} local board commit(s) onto ${upstream}`);
       return { ok: true, behind: 0, ahead: 0, notes, board: readWorkingBoard(root), canPublish: true };
     }
-    // Diverged: local non-board commits. Reconcile the board so it is not stale,
-    // but never push (that would land the unrelated local commits).
+    // Diverged: local non-board commits. The common case is a local harness
+    // deploy commit that was never pushed while upstream advanced with feature
+    // landings — the note below already names `git pull --rebase` as the remedy,
+    // so do exactly that automatically when the tree is otherwise clean (board
+    // dirt is reconciled into `rec.board` first). A conflicting replay is
+    // aborted and stays manual, so genuine divergence is never silently
+    // rewritten. Without this, every board mutation skipped the publish and main
+    // drifted stale ("board: not published (main is diverged)", F-303/F-304).
+    const dirty = classifyDirty(root, upstream);
     const rec = reconcileWorkingBoard(root, upstream);
-    if (rec.ok) {
-      fs.writeFileSync(path.join(root, "BACKLOG.md"), rec.board, "utf8");
-      if (rec.dropped.length) notes.push(`reconciled its board (archived upstream: ${rec.dropped.join(", ")})`);
+    if (!rec.ok) {
+      notes.push(`main checkout board has conflicting rows (${(rec.conflicts || []).join(", ") || "unknown"}) — resolve manually`);
+      return { ok: false, behind, ahead, blockedBy: rec.conflicts || [], notes, board: readWorkingBoard(root) };
     }
+    let rebased = false;
+    if (dirty.genuine.length === 0 && aheadOnlyHarness(root, upstream)) {
+      const saved = readWorkingBoard(root);
+      gitCmd(root, ["checkout", "--", "BACKLOG.md"]);
+      const rebase = gitCmd(root, ["rebase", upstream]);
+      if (rebase.status === 0) {
+        rebased = true;
+      } else {
+        gitCmd(root, ["rebase", "--abort"]);
+        fs.writeFileSync(path.join(root, "BACKLOG.md"), saved, "utf8");
+      }
+    }
+    fs.writeFileSync(path.join(root, "BACKLOG.md"), rec.board, "utf8");
+    if (rebased) {
+      notes.push(`rebased ${ahead} local commit(s) onto ${upstream}`);
+      if (rec.dropped.length) notes.push(`reconciled its board (archived upstream: ${rec.dropped.join(", ")})`);
+      return { ok: true, behind: 0, ahead: 0, notes, board: rec.board, dropped: rec.dropped, canPublish: true };
+    }
+    if (rec.dropped.length) notes.push(`reconciled its board (archived upstream: ${rec.dropped.join(", ")})`);
     notes.push(
       `main is ${behind} behind and ${ahead} ahead of ${upstream} — local commits touch non-board files; ` +
         `not publishing (reconcile manually: git pull --rebase)`
     );
-    return { ok: true, behind, ahead, notes, board: rec.ok ? rec.board : readWorkingBoard(root), canPublish: false };
+    return { ok: true, behind, ahead, notes, board: rec.board, canPublish: false };
   }
 
   if (behind === 0) {

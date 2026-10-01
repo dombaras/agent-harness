@@ -1171,6 +1171,18 @@ function cmdWorktreePlan(state, argv) {
     ? path.resolve(argv.dir)
     : path.resolve(root, "..", ".worktrees", path.basename(root), slug);
 
+  // A worktree inside the repository pollutes `git status` (the nested
+  // `.worktrees/` shows as untracked in every session) and confuses the
+  // board/landing gates. Guard it even though the default is outside (a
+  // mis-resolved root once left `<repo>/.worktrees/<repo>/f-301` behind).
+  const rootAbs = path.resolve(root);
+  if (dir === rootAbs || dir.startsWith(rootAbs + path.sep)) {
+    throw new Error(
+      `worktree: refusing a worktree inside the repository (${dir}). ` +
+        `Use the default ../.worktrees/${path.basename(rootAbs)}/${slug} or a --dir outside the repo.`
+    );
+  }
+
   const found = findRow(state.lines, id);
   if (!found) throw new Error(`worktree: no row ${id} in BACKLOG.md.`);
   if (found.key === "archive") throw new Error(`worktree: ${id} is archived.`);

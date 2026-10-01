@@ -21,6 +21,21 @@ function items(value: unknown): string[] {
     .filter(Boolean)
 }
 
+// An unset `feature` reaches the wrapper as the literal string "undefined" (the
+// only shape the runner forwards); the CLI now rejects it, but fail here first
+// with an actionable message instead of a stray `.agents/handoffs/undefined.md`.
+const RESERVED_FEATURE = new Set(["undefined", "null", "none", "nan", "nil"])
+function requireFeature(raw: unknown, verb: string): string {
+  const feature = String(raw ?? "").trim()
+  if (!feature || RESERVED_FEATURE.has(feature.toLowerCase())) {
+    throw new Error(
+      `checkpoint ${verb} needs the feature id (e.g. "F-001") — got ${JSON.stringify(raw ?? "")}. ` +
+        `Pass the BACKLOG row (or slug) you are checkpointing; never the literal string "undefined".`
+    )
+  }
+  return feature
+}
+
 export const write = tool({
   description:
     "Write (or replace) the deterministic bounded-state checkpoint in `.agents/handoffs/<feature>.md` — objective/phase, completed + active work, files changed, contracts, facts, decisions, risks, next action. Use when approaching the turn/context budgets so a fresh session can resume from the checkpoint instead of the transcript. Rewriting identical state is a no-op; changed state increments checkpoint_count. Never invent a field — omit it.",
@@ -39,7 +54,8 @@ export const write = tool({
     session: tool.schema.string().describe("primary orchestrator session id from session_info (optional)"),
   },
   async execute(args, context) {
-    const argv = ["write", "--feature", args.feature]
+    const feature = requireFeature(args.feature, "write")
+    const argv = ["write", "--feature", feature]
     if (args.objective) argv.push("--objective", args.objective)
     if (args.phase) argv.push("--phase", args.phase)
     if (args.nextAction) argv.push("--next-action", args.nextAction)
@@ -63,7 +79,8 @@ export const resume = tool({
     json: tool.schema.boolean().describe("print the parsed state as JSON instead of markdown (optional)"),
   },
   async execute(args, context) {
-    const argv = ["resume", "--feature", args.feature]
+    const feature = requireFeature(args.feature, "resume")
+    const argv = ["resume", "--feature", feature]
     if (args.json) argv.push("--json")
     return run(context, argv)
   },
