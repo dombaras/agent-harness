@@ -1819,6 +1819,33 @@ test("update auto-commits only harness files and a no-op update makes no commit"
   assert.strictEqual(committedCount, 2, "no new commit was made on a no-op update");
 });
 
+test("update re-adds a present-but-untracked harness file (worktree/cache safety)", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true, push: false });
+
+  // The field bug: a harness-owned file is on disk with the correct bytes but is
+  // untracked (a deploy that skipped its commit). An "unchanged" file is never in
+  // changedRels, so before the fix it was never re-added — and a linked worktree
+  // (a fresh checkout) silently missed it. apk-cache.js went missing this way.
+  const rel = "scripts/qa/mobile-e2e/apk-cache.js";
+  assert.ok(fs.existsSync(path.join(target, rel)), "harness file deployed to disk");
+  git(target, ["rm", "--cached", "-q", rel]);
+  assert.ok(
+    git(target, ["ls-files", "--others", "--exclude-standard", "--", rel]).includes(rel),
+    "file is untracked after the cached removal"
+  );
+
+  const result = await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true, push: false });
+  assert.strictEqual(result.nothingToUpdate, false, "an untracked harness file makes the update non-trivial");
+  assert.ok(result.commitResult && result.commitResult.committed, "the untracked harness file was committed");
+  assert.ok(git(target, ["ls-files", "--", rel]).includes(rel), "the harness file is tracked again");
+});
+
 test("update auto-commit never sweeps a path another session already staged", async () => {
   const target = tmpdir();
   git(target, ["init", "-q"]);
@@ -8313,9 +8340,16 @@ test("[drift-guard] device-up instrumented + quickboot snapshot with a cold-boot
   assert.match(boot, /-snapshot \$SNAPSHOT_NAME/, "the emulator boots from a quickboot snapshot");
   assert.match(boot, /WITHOUT a snapshot/, "a failed snapshot retries cold");
   assert.match(boot, /MOBILE_E2E_SNAPSHOT/, "and can be disabled");
+  assert.match(
+    boot,
+    /ANDROID_EMU_FORCE_QUICKBOOT_FILE_BACKED/,
+    "file-backed quickboot is forced on (this AVD's qcow2 snapshots fail to load otherwise)"
+  );
+  assert.match(boot, /ram\.bin/, "an incomplete snapshot (no ram.bin) is discarded before booting");
 
   const down = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "device-down.sh"));
   assert.match(down, /snapshot save/, "device-down saves the snapshot before stopping the emulator");
+  assert.match(down, /snapshot-save\.log/, "and surfaces a save failure instead of swallowing it");
 
   const pkg = JSON.parse(read(path.join(__dirname, "..", "package.json")));
   assert.match(pkg.scripts.lint, /apk-cache\.js/, "apk-cache.js is syntax-checked by lint");
@@ -9195,6 +9229,56 @@ test("run-maestro --failed reports resolve across the main checkout + worktrees 
 
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
   assert.match(src, /git-common-dir/, "resolves the main worktree via git-common-dir");
+});
+
+test("run-maestro seed fingerprint auto-skips only subset re-runs (mobile matrix speed)", () => {
+  const runner = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
+
+  // Pure decision table: auto-skip ONLY for a subset re-run with a match.
+  assert.strictEqual(
+    runner.shouldAutoNoSeed({ explicitNoSeed: false, noReset: false, forceReset: false, subset: true, stateMatches: true }),
+    true
+  );
+  assert.strictEqual(runner.shouldAutoNoSeed({ subset: false, stateMatches: true }), false, "full matrix always reseeds");
+  assert.strictEqual(runner.shouldAutoNoSeed({ subset: true, stateMatches: false }), false, "changed fingerprint reseeds");
+  assert.strictEqual(runner.shouldAutoNoSeed({ subset: true, stateMatches: true, explicitNoSeed: true }), false);
+  assert.strictEqual(runner.shouldAutoNoSeed({ subset: true, stateMatches: true, forceReset: true }), false);
+  assert.strictEqual(runner.shouldAutoNoSeed({ subset: true, stateMatches: true, noReset: true }), false);
+
+  // Fingerprint: stable, keyed on the seed inputs, ignores app-code changes.
+  const root = tmpdir();
+  const scripts = path.join(root, "scripts");
+  fs.mkdirSync(path.join(scripts, "qa", "mobile-e2e"), { recursive: true });
+  fs.writeFileSync(path.join(scripts, "qa", "mobile-e2e", "reset.js"), "// reset\n");
+  fs.writeFileSync(path.join(scripts, "db-seed.js"), "// db seed\n");
+  fs.writeFileSync(path.join(scripts, "seed-realworld.ts"), "// seed v1\n");
+  fs.writeFileSync(
+    path.join(scripts, "env-util.js"),
+    "module.exports={databaseUrlFor:()=>'postgresql://localhost/dev'};\n"
+  );
+  fs.writeFileSync(path.join(scripts, "deploy-env.js"), "// app code, not a seed input\n");
+
+  const saved = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  try {
+    const a = runner.seedFingerprint(root);
+    assert.strictEqual(runner.seedFingerprint(root), a, "fingerprint is stable across calls");
+    assert.strictEqual(
+      runner.resolveDevDatabaseUrl(root),
+      "postgresql://localhost/dev",
+      "resolves the dev URL from the project env-util (no false warning)"
+    );
+
+    fs.writeFileSync(path.join(scripts, "seed-realworld.ts"), "// seed v2\n");
+    assert.notStrictEqual(runner.seedFingerprint(root), a, "a seed-source change invalidates the fingerprint");
+
+    const b = runner.seedFingerprint(root);
+    fs.writeFileSync(path.join(scripts, "deploy-env.js"), "// unrelated app change\n");
+    assert.strictEqual(runner.seedFingerprint(root), b, "an app-code change keeps the fingerprint stable");
+  } finally {
+    if (saved === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = saved;
+  }
 });
 
 test("boot-emulator.sh --print-profile derives the profile from the host and AVD", () => {

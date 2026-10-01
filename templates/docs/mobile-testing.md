@@ -233,9 +233,19 @@ cold build.
   (`prewarm.sh` classifies as an "apk build" one-shot), so it refuses when a
   heavy tier is live rather than thrashing the VM.
 - **Quickboot snapshot.** `boot-emulator.sh` boots with `-snapshot agent-e2e`
-  when enabled, so a warm snapshot turns the ~40-60 s cold boot into seconds.
-  Because a snapshot is stateful, a failed boot retries once **cold** before the
-  GPU fallback; `device-down.sh --emulator` saves the snapshot before stopping.
+  when enabled, so a warm snapshot turns the ~24-31 s cold boot into seconds.
+  This VHD/AVD keeps its data in a qcow2 overlay and the emulator ships with
+  `Feature QuickbootFileBacked` **off** ("disabled due to stability issues"), so
+  a snapshot save/load silently fails (`Device 'cache' does not have the
+  requested snapshot`) and every bring-up cold-boots. `boot-emulator.sh` now
+  forces `ANDROID_EMU_FORCE_QUICKBOOT_FILE_BACKED=1`, which is what makes it
+  actually work — measured **9 s wall-clock / ~4 s to restore** vs 24-31 s cold
+  on this box. An incomplete save (a stray `snapshot.pb` with no `ram.bin`) is
+  discarded up front. Because a snapshot is stateful, a failed boot retries once
+  **cold** before the GPU fallback; `device-down.sh --emulator` saves the
+  snapshot before stopping and reports a save failure to
+  `.serve/snapshot-save.log` instead of swallowing it. Disable it entirely with
+  `MOBILE_E2E_SNAPSHOT=0` if quickboot ever proves unstable.
 - **Overlap.** The dev-server start (independent of the device) runs
   concurrently with the emulator boot; the install joins both. `device-up.sh`
   prints `device-up:timings {…}` per phase and appends it to

@@ -33,15 +33,25 @@ done
 
 # Persist a quickboot snapshot before the emulator goes away, so the next
 # device-up boots in seconds. Best-effort: a device that is already gone (or a
-# save the emulator refuses) must never fail the teardown.
+# save the emulator refuses) must never fail the teardown — but the failure is
+# SURFACED (to stderr + `.serve/snapshot-save.log`), because a silent save
+# failure is what made every bring-up cold-boot while the runbook claimed warm
+# booting.
 save_snapshot() {
   [ "${MOBILE_E2E_SNAPSHOT:-1}" = "0" ] && return 0
   local sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/android-sdk}}"
   local adb="$sdk/platform-tools/adb"
+  local name="${MOBILE_E2E_SNAPSHOT_NAME:-agent-e2e}"
+  local log="$ROOT/.serve/snapshot-save.log"
   [ -x "$adb" ] || return 0
   timeout 10 "$adb" get-state >/dev/null 2>&1 || return 0
-  echo "device-down: saving quickboot snapshot (${MOBILE_E2E_SNAPSHOT_NAME:-agent-e2e})"
-  timeout 60 "$adb" emu avd snapshot save "${MOBILE_E2E_SNAPSHOT_NAME:-agent-e2e}" >/dev/null 2>&1 || true
+  echo "device-down: saving quickboot snapshot ($name)"
+  mkdir -p "$ROOT/.serve"
+  if timeout 120 "$adb" emu avd snapshot save "$name" >"$log" 2>&1; then
+    echo "device-down: snapshot saved ($name)"
+  else
+    echo "device-down: ! snapshot save failed — next device-up will cold boot (see $log)" >&2
+  fi
 }
 
 if [ "$MODE" = "all" ]; then

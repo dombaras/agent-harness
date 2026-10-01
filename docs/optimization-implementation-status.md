@@ -18,16 +18,57 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.122` |
+| Version | `0.1.127` |
 | Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget); `0.1.88` direct-land cycle — `ship` fast-forward pushes `HEAD:main` (bounded retry) and waits for green CI, `deploy-uat` runs after CI success; PR/landing-label/merge-train/watch and the `check-push-refs` guard removed; `0.1.89` reconciled local-only board rows are committed + pushed; `0.1.90` CI watch from the main worktree + never prune a live session's worktree; `0.1.91` guard-nudge attribution + live request-token band; `0.1.92` single-authority board transaction (every canonical mutation reconciles + publishes; converge under the board lock; redundant-dirt clear; session-start `backlog sync`; doctor staleness warn) |
-| Lint / tests | green (`npm run lint`, `npm test` — 378 pass) |
-| LibraryOS | `0.1.122` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
+| Lint / tests | green (`npm run lint`, `npm test` — 389 pass) |
+| LibraryOS | `0.1.127` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — canonical list (incl. H-23 measurement, H-25 explore adoption); the deferred C/D detail in [`docs/mcp-skills-backlog.md`](mcp-skills-backlog.md) shipped in `0.1.121` |
 
 ---
 
 ## What shipped
+
+### `0.1.127` — device-tier startup: the APK cache reaches worktrees, quickboot actually works, subset re-runs skip the seed
+
+Basis: the 2026-10-01 timing recon of the mobile matrix after `0.1.122`→`0.1.126`
+(see `open-work.md` H-23). Measured before this release on LibraryOS:
+`device-up` ~49-78 s (build ~0.05 s cache hit, boot ~31 s, install 7-37 s, ready
+~9.5 s per `device-up:timings`), and `run-maestro` paid a fixed ~104 s
+reset+seed prelude before every run. Three concrete regressions remained.
+
+- **The APK build cache never reached a worktree (P1).** `scripts/qa/mobile-e2e/apk-cache.js`
+  (shipped in `0.1.124`) was untracked in LibraryOS and missing from every linked
+  worktree, so `build-apk.sh`'s `[ -f "$CACHE_JS" ]` guard skipped the cache and
+  every worktree device run paid a full cold Gradle build (7-11 min) instead of a
+  ~7-30 s overlay. Root cause: `deploy()` auto-commits only files it
+  created/overwrote this run; a harness file already present with correct bytes
+  (`unchanged`) never entered `changedRels`, so a present-but-untracked file was
+  never committed. `bin/agent-harness.js` now sweeps in untracked, non-ignored
+  harness files (`git ls-files --others --exclude-standard`) so the auto-commit
+  records them; a truly-clean same-version update still makes no commit.
+  Regression test added.
+- **Quickboot was silently dead (P1).** The emulator ships with
+  `Feature QuickbootFileBacked` disabled ("stability issues") and this AVD stores
+  data in a qcow2 overlay, so `-snapshot agent-e2e` failed to load
+  (`Device 'cache' does not have the requested snapshot`) and every bring-up
+  cold-booted (~24-31 s); `device-down.sh` swallowed the save failure. Forcing
+  `ANDROID_EMU_FORCE_QUICKBOOT_FILE_BACKED=1` makes it work: measured **9 s
+  wall-clock / ~4 s to restore** vs 24-31 s cold. `boot-emulator.sh` now sets it
+  (opt out with `MOBILE_E2E_SNAPSHOT=0`), discards an incomplete snapshot
+  (no `ram.bin`) before booting, and `device-down.sh` surfaces a save failure to
+  `.serve/snapshot-save.log` instead of hiding it.
+- **Subset re-runs paid the full seed (P2).** `run-maestro.js` now content-addresses
+  the seed inputs (reset script + `db-seed.js` + `seed-*` + `env-util.js` + the dev
+  URL) into `.serve/mobile-e2e-seed.json`. A subset re-run (`--failed` or an
+  explicit flow list) whose fingerprint is unchanged runs `reset.js --no-seed`
+  (mint actor auth only) — the ~90 s seed is skipped, with a fallback to a full
+  seed if the DB state is stale. The authoritative `--flows all` run always
+  reseeds; `--force-reset` overrides. The false `DATABASE_URL is not set` warning
+  (it fired whenever the URL lived in `.env`) is fixed by resolving through the
+  project's own `scripts/env-util.js` — the same resolver `reset.js` uses.
+- Tests: +3 (untracked harness file re-added, seed fingerprint/auto-skip decision,
+  quickboot file-backed + save-log drift-guard). 389 pass, lint green.
 
 ### `0.1.122` — field hardening from the F-302…F-305 mobile-matrix sessions
 

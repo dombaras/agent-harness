@@ -85,6 +85,100 @@ function readLocalConfig() {
 const LOCAL_CONFIG = readLocalConfig();
 const DEFAULT_APP_ID = process.env.MOBILE_E2E_APP_ID || LOCAL_CONFIG.appId || 'com.example.app';
 const DEFAULT_ACTOR = process.env.MOBILE_E2E_DEFAULT_ACTOR || LOCAL_CONFIG.defaultActor || '';
+const SEED_STATE_FILE = 'mobile-e2e-seed.json';
+
+/**
+ * Resolve the development DATABASE_URL exactly the way `reset.js` does — process
+ * env wins, then `.env`/`.env.local`, then the localhost dev fallback — by
+ * importing the project's own `scripts/env-util.js`. The runner and the reset can
+ * therefore never disagree, and the runner stops printing the false
+ * "DATABASE_URL is not set" warning when the value lives in `.env` (which is the
+ * normal local setup and made the old warning fire on every run).
+ */
+function resolveDevDatabaseUrl(root = REPO_ROOT) {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  try {
+    const util = require(path.join(root, 'scripts', 'env-util.js'));
+    if (util && typeof util.databaseUrlFor === 'function') {
+      return util.databaseUrlFor('development') || '';
+    }
+  } catch {
+    /* project has no env-util: fall through to the bare env value */
+  }
+  return process.env.DATABASE_URL || '';
+}
+
+/**
+ * Content-addressed seed fingerprint: the reset script + the project's seed
+ * scripts + `env-util.js` + the resolved dev URL. A change to any of these
+ * invalidates it and forces a full reseed; an app-code change (which does not
+ * touch seed inputs) keeps it stable so a subset re-run can skip the ~90 s seed.
+ */
+function seedFingerprint(root = REPO_ROOT) {
+  const crypto = require('crypto');
+  const hash = crypto.createHash('sha256');
+  const scriptsDir = path.join(root, 'scripts');
+  const rels = new Set(['qa/mobile-e2e/reset.js', 'db-seed.js', 'env-util.js']);
+  try {
+    for (const name of fs.readdirSync(scriptsDir)) {
+      if (/^seed[-_.]/.test(name) || name === 'seed.ts' || name === 'seed.js') rels.add(name);
+    }
+  } catch {
+    /* no scripts dir */
+  }
+  for (const rel of [...rels].sort()) {
+    hash.update(rel);
+    hash.update('\0');
+    try {
+      hash.update(fs.readFileSync(path.join(scriptsDir, rel)));
+    } catch {
+      hash.update('MISSING');
+    }
+    hash.update('\0');
+  }
+  hash.update('db=');
+  hash.update(resolveDevDatabaseUrl(root));
+  return hash.digest('hex');
+}
+
+/**
+ * The dev Postgres is one shared database across every worktree, so the seed
+ * state lives in the MAIN checkout's `.serve/` (a worktree's own `.serve/` is
+ * separate and would miss the seed another tree performed).
+ */
+function seedStatePath() {
+  const main = mainWorktreeRoot();
+  return path.join(main || REPO_ROOT, '.serve', SEED_STATE_FILE);
+}
+
+function readSeedState() {
+  try {
+    return JSON.parse(fs.readFileSync(seedStatePath(), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeSeedState(state) {
+  try {
+    const file = seedStatePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Pure decision seam (unit-tested). Auto-skip the full seed ONLY for a subset
+ * re-run with an unchanged fingerprint; a full matrix run always reseeds (it
+ * lands the known baseline), and an explicit --no-seed / --no-reset /
+ * --force-reset always wins.
+ */
+function shouldAutoNoSeed({ explicitNoSeed, noReset, forceReset, subset, stateMatches }) {
+  if (explicitNoSeed || noReset || forceReset) return false;
+  return Boolean(subset && stateMatches);
+}
 
 function usage() {
   return [
@@ -100,6 +194,7 @@ function usage() {
     '  --app-id <id>        app under test (default com.libraryos.app; Expo Go = host.exp.exponent)',
     '  --no-reset           skip reset.js (use the current dev DB state)',
     '  --no-seed            run reset.js --no-seed (mint actor auth only)',
+    '  --force-reset        always run the full seed (disable the automatic subset skip)',
     '  --reuse-session      reuse the device session; batch same-actor setup-free flows (no clearState)',
     '  --failed             re-run only the journeys that failed in the last run',
     '  --report <file>      last-run report for --failed (default: this checkout, then the main checkout)',
@@ -137,6 +232,7 @@ function parseArgs(argv) {
     appId: DEFAULT_APP_ID,
     noReset: false,
     noSeed: false,
+    forceReset: false,
     reuseSession: false,
     failed: false,
     config: CONFIG_FILE,
@@ -156,6 +252,7 @@ function parseArgs(argv) {
     else if (arg.startsWith('--app-id=')) options.appId = arg.slice('--app-id='.length);
     else if (arg === '--no-reset') options.noReset = true;
     else if (arg === '--no-seed') options.noSeed = true;
+    else if (arg === '--force-reset') options.forceReset = true;
     else if (arg === '--reuse-session') options.reuseSession = true;
     else if (arg === '--failed') options.failed = true;
     else if (arg === '--report' && argv[i + 1]) options.report = path.resolve(argv[++i]);
@@ -174,7 +271,7 @@ function parseArgs(argv) {
 }
 
 function assertDevDatabase() {
-  const dbUrl = process.env.DATABASE_URL;
+  const dbUrl = resolveDevDatabaseUrl();
   if (!dbUrl) {
     console.warn('  ! DATABASE_URL is not set — the flows need a dedicated DEV database.');
     console.warn('    Set DATABASE_URL to the local dev connection before running.');
@@ -616,8 +713,15 @@ function printSequence(options) {
  * owns the uat/prod boundary guard + seed + actor UserAuth mint) unless
  * `--no-reset` was passed. `--no-seed` is forwarded so a re-verification run can
  * mint actor auth without re-seeding everything.
+ *
+ * Speed: for a SUBSET re-run whose seed fingerprint is unchanged, the ~90 s full
+ * seed is skipped automatically (mint actor auth only). The full matrix
+ * (`--flows all`) always reseeds so it lands a known baseline, and an explicit
+ * `--no-seed`/`--force-reset` always wins. A matched fingerprint can still be
+ * stale (the dev DB volume was recreated), so a failed `--no-seed` retries once
+ * with the full seed instead of failing the run.
  */
-function runReset(options) {
+function runReset(options, ctx = {}) {
   if (options.noReset) {
     console.log('Skipping reset (--no-reset); using the current dev DB state.');
     return;
@@ -626,15 +730,49 @@ function runReset(options) {
     console.log('No reset.js in this project — skipping the dev-DB reset.');
     return;
   }
-  const args = [RESET_SCRIPT];
-  if (options.noSeed) args.push('--no-seed');
-  console.log(`Resetting the dev database + minting actor auth: ${path.relative(options.root, RESET_SCRIPT)}${options.noSeed ? ' --no-seed' : ''}`);
-  const result = spawnSync(process.execPath, args, { stdio: 'inherit', shell: false });
+
+  const dbUrl = resolveDevDatabaseUrl();
+  const fingerprint = seedFingerprint();
+  const state = readSeedState();
+  const stateMatches = !!(state && state.fingerprint === fingerprint && state.db === dbUrl);
+  const autoNoSeed = shouldAutoNoSeed({
+    explicitNoSeed: options.noSeed,
+    noReset: options.noReset,
+    forceReset: options.forceReset,
+    subset: !!ctx.subset,
+    stateMatches,
+  });
+  const useNoSeed = options.noSeed || autoNoSeed;
+
+  if (autoNoSeed) {
+    console.log('Seed fingerprint unchanged; subset re-run — minting actor auth only (use --force-reset to reseed).');
+  }
+
+  const attempt = (noSeed) => {
+    const args = [RESET_SCRIPT];
+    if (noSeed) args.push('--no-seed');
+    console.log(
+      `Resetting the dev database + minting actor auth: ${path.relative(options.root, RESET_SCRIPT)}${noSeed ? ' --no-seed' : ''}`
+    );
+    return spawnSync(process.execPath, args, { stdio: 'inherit', shell: false });
+  };
+
+  let result = attempt(useNoSeed);
+  // A matched fingerprint can be stale/wiped (docker volume recreated): recover
+  // with a full seed rather than aborting the run. Never second-guess an
+  // EXPLICIT --no-seed (the operator asked for exactly that).
+  if (result.status !== 0 && useNoSeed && !options.noSeed) {
+    console.log('  ! --no-seed reset failed (stale DB state?) — falling back to a full seed.');
+    result = attempt(false);
+  }
   if (result.status !== 0) {
     console.error(`FAIL — reset.js exited ${result.status}.`);
     console.error('  Run it manually to inspect: node scripts/qa/mobile-e2e/reset.js');
     process.exit(result.status === null ? 1 : result.status);
   }
+  // Only a full seed earns the fingerprint; a --no-seed run leaves the prior
+  // state untouched (and there may be none for a first-ever subset run).
+  if (!useNoSeed) writeSeedState({ fingerprint, db: dbUrl, at: new Date().toISOString() });
 }
 
 /** Read the previous run report's failed journeys (for `--failed`). */
@@ -784,7 +922,11 @@ function main() {
 
   preflightAdb();
 
-  runReset(options);
+  // A subset selection (--failed, or an explicit list rather than `all`) may skip
+  // the full seed when the seed fingerprint is unchanged; a full matrix run
+  // always reseeds. See runReset.
+  const subset = options.failed || (typeof options.flows === 'string' && options.flows.trim() !== 'all');
+  runReset(options, { subset });
 
   const records = buildFlowRecords(flowFiles, stepsByFlow);
   // Actor is only needed to decide session reuse/batching; a cold per-flow run
@@ -928,6 +1070,9 @@ module.exports = {
   resolveFailedReport,
   readFailedFlowNames,
   runReset,
+  resolveDevDatabaseUrl,
+  seedFingerprint,
+  shouldAutoNoSeed,
   normaliseFailureReason,
   extractFailureReason,
   suggestFix,

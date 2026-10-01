@@ -998,6 +998,10 @@ async function deploy(target, opts) {
   const previousFiles = existing.files || {};
   const actions = [];
   const manifest = {};
+  // Harness-owned files present on disk with the correct bytes ("unchanged").
+  // They are not in `changedRels`, so a present-but-untracked one would never be
+  // committed by this deploy (see the untracked sweep after the loop).
+  const harnessOwnedPresent = [];
 
   // Fail closed on a locally-modified harness-owned file BEFORE writing anything.
   // A silent overwrite destroys a project-side fix to a harness file (F-289:
@@ -1133,6 +1137,7 @@ async function deploy(target, opts) {
         if (locallyModified && !dryRun) backup(target, rel, current);
       } else {
         actions.push({ rel: key, kind: "unchanged" });
+        harnessOwnedPresent.push(key);
         // Record what is actually on disk (== content), not the stale hash from a
         // prior deploy: an F-289-style local restore can have left .harness.json
         // pointing at an older template, which would falsely flag the file as
@@ -1159,12 +1164,30 @@ async function deploy(target, opts) {
     }
   }
 
+  // Present-but-untracked harness files. An "unchanged" file is never in
+  // `changedRels`, so a deploy that left it untracked (a skipped commit, or a
+  // file restored by the freshness plugin) would NEVER bring it into git — and a
+  // linked worktree is a fresh checkout, so it silently misses the file. That is
+  // exactly how `scripts/qa/mobile-e2e/apk-cache.js` went missing from every
+  // LibraryOS worktree and disabled the APK build cache (a 7-11 min cold Gradle
+  // build instead of a ~7-30 s overlay). Sweep in any untracked, non-ignored
+  // harness file so the auto-commit records it. Ignored paths are left alone here
+  // (the force-add below still commits them when their content actually changes).
+  if (!dryRun && harnessOwnedPresent.length > 0 && isGitRepo(target)) {
+    const others = runGit(target, ["ls-files", "--others", "--exclude-standard", "--", ...harnessOwnedPresent]);
+    if (others.ok) {
+      for (const rel of (others.out || "").split(/\r?\n/).filter(Boolean).map(relKey)) {
+        actions.push({ rel, kind: "add-untracked" });
+      }
+    }
+  }
+
   // Nothing-to-update detection: an update that made no effective change to any
   // harness-owned file and was already running this exact version is a no-op —
   // report it clearly instead of printing a zero-delta "Updated", and leave the
   // target byte-for-byte untouched (no .harness.json timestamp churn, no commit).
   const changedRelsAll = actions
-    .filter((a) => ["create", "overwrite", "overwrite (backup)", "merge"].includes(a.kind))
+    .filter((a) => ["create", "overwrite", "overwrite (backup)", "merge", "add-untracked"].includes(a.kind))
     .map((a) => a.rel);
   const nothingToUpdate =
     !!isUpdate && changedRelsAll.length === 0 && compareVersions(existing.version || "0", PKG.version) === 0;

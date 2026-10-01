@@ -49,6 +49,9 @@
 #   MOBILE_E2E_TIER_GROUP  heavy-tier group    (default: mobile)
 #   MOBILE_E2E_SNAPSHOT    quickboot snapshot  (default 1; `0` = cold boot)
 #   MOBILE_E2E_SNAPSHOT_NAME snapshot name      (default agent-e2e)
+#     Quickboot forces ANDROID_EMU_FORCE_QUICKBOOT_FILE_BACKED=1 (the emulator
+#     disables file-backed snapshots by default; this AVD needs them to save/load
+#     at all). A snapshot without `ram.bin` is discarded as a failed save.
 #   ANDROID_HOME           Android SDK root    (default ~/android-sdk)
 #
 # Boot speed: a quickboot snapshot turns the ~40-60 s cold boot into a few
@@ -259,6 +262,27 @@ fi
 #    mobile-tier budget instead of fighting the single-heavy-tier lock.
 SNAPSHOT="${MOBILE_E2E_SNAPSHOT:-1}"
 SNAPSHOT_NAME="${MOBILE_E2E_SNAPSHOT_NAME:-agent-e2e}"
+
+# Quickboot on this AVD needs FILE-BACKED snapshots. The emulator ships with
+# `Feature QuickbootFileBacked` OFF ("disabled due to stability issues") and the
+# AVD keeps its data in a qcow2 overlay, so a snapshot save/load silently fails
+# (the boot log: `Device 'cache' does not have the requested snapshot`) and every
+# bring-up pays a full cold boot. Forcing it on is what makes the warm boot
+# actually work on WSL: measured 9 s wall-clock / ~4 s to restore the snapshot
+# vs ~24-31 s cold (F-30x device-tier startup). It is stateful; a failed boot
+# still retries cold below. Opt out entirely with MOBILE_E2E_SNAPSHOT=0.
+if [ "$SNAPSHOT" != "0" ]; then
+  export ANDROID_EMU_FORCE_QUICKBOOT_FILE_BACKED="${ANDROID_EMU_FORCE_QUICKBOOT_FILE_BACKED:-1}"
+fi
+
+# An incomplete snapshot save leaves a stray tiny `snapshot.pb` and no `ram.bin`;
+# loading it fails and the emulator cold-boots anyway. Discard it up front so the
+# next boot starts clean and re-saves, instead of logging a failed load every run.
+SNAP_DIR="$HOME/.android/avd/${AVD}.avd/snapshots/${SNAPSHOT_NAME}"
+if [ "$SNAPSHOT" != "0" ] && [ -d "$SNAP_DIR" ] && [ ! -f "$SNAP_DIR/ram.bin" ]; then
+  echo "quickboot: discarding an incomplete snapshot '$SNAPSHOT_NAME' (no ram.bin) — cold-booting once to re-save"
+  rm -rf "$SNAP_DIR" 2>/dev/null || true
+fi
 
 start_emulator() {
   local gpu="$1" gpu_env="$2" gpu_extra="$3" snap="$4" snaparg
