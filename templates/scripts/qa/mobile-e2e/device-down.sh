@@ -31,13 +31,28 @@ for arg in "$@"; do
   esac
 done
 
+# Persist a quickboot snapshot before the emulator goes away, so the next
+# device-up boots in seconds. Best-effort: a device that is already gone (or a
+# save the emulator refuses) must never fail the teardown.
+save_snapshot() {
+  [ "${MOBILE_E2E_SNAPSHOT:-1}" = "0" ] && return 0
+  local sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/android-sdk}}"
+  local adb="$sdk/platform-tools/adb"
+  [ -x "$adb" ] || return 0
+  timeout 10 "$adb" get-state >/dev/null 2>&1 || return 0
+  echo "device-down: saving quickboot snapshot (${MOBILE_E2E_SNAPSHOT_NAME:-agent-e2e})"
+  timeout 60 "$adb" emu avd snapshot save "${MOBILE_E2E_SNAPSHOT_NAME:-agent-e2e}" >/dev/null 2>&1 || true
+}
+
 if [ "$MODE" = "all" ]; then
   echo "device-down: stop-all + prune"
+  save_snapshot
   node scripts/serve.js stop-all || true
 else
   echo "device-down: stop dev server ($DEV_NAME)"
   node scripts/serve.js stop --name "$DEV_NAME" || true
   if [ "$MODE" = "emulator" ]; then
+    save_snapshot
     echo "device-down: stop emulator"
     node scripts/serve.js stop --name emulator || true
     node scripts/serve.js stop --name adb-server || true

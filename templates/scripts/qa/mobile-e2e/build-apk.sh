@@ -24,6 +24,13 @@
 # cleartext is NEVER set in `mobile/app.json` — production would inherit it; it
 # is patched into the generated (gitignored) manifest only.
 #
+# Caching (apk-cache.js): the native shell and the JS bundle are content-
+# addressed independently, so a fresh worktree reuses the invariant native
+# compile and only re-bundles JS. Order: full-key cache hit -> native-base +
+# fresh-bundle OVERLAY (re-sign only) -> full Gradle build. The cache is a pure
+# accelerator: any miss or doubt falls through to a real build, and the overlay
+# never touches resources.arsc.
+#
 # Project config: `scripts/qa/mobile-e2e/local.json` (`appId`, `avd`); the paths
 # below follow the conventional Expo/React-Native layout. Tunables (env):
 #   MOBILE_E2E_APK           output APK path (default: conventional Gradle path)
@@ -31,6 +38,9 @@
 #   MOBILE_E2E_APK_MEM_MAX   cgroup MemoryMax  (default: 6G — a cold release
 #                            D8/dex-merge needs ~4-6 GB; 3G OOMs)
 #   MOBILE_E2E_APK_CPU_MAX   cgroup CPUQuota   (default: 600%)
+#   MOBILE_E2E_SKIP_CACHE    set 1 to bypass the cache entirely
+#   MOBILE_E2E_APK_OVERLAY   set 0 to disable the native-base overlay (full
+#                            build on every JS change instead)
 #
 # Usage:
 #   scripts/qa/mobile-e2e/build-apk.sh [--api-url http://10.0.2.2:3000]
@@ -65,6 +75,31 @@ echo "Mobile E2E release APK build (capped: mem≤${MEM_MAX}, cpu≤${CPU_MAX}, 
 echo "  repo:    ${ROOT}"
 echo "  api url: ${API_URL}"
 echo ""
+
+# The bundle key bakes the API URL, so the cache and the build must agree on it.
+export MOBILE_E2E_API_URL="${API_URL}"
+CACHE_JS="${ROOT}/scripts/qa/mobile-e2e/apk-cache.js"
+
+# 0. Reuse before building. A full-key hit means native + JS are unchanged; the
+#    overlay re-signs a fresh bundle onto the cached native base. Both are pure
+#    accelerators — any failure (exit != 0) falls through to the Gradle build.
+if [ "${MOBILE_E2E_SKIP_CACHE:-0}" != "1" ] && [ -f "${CACHE_JS}" ]; then
+  if hit="$(node "${CACHE_JS}" get 2>/dev/null)"; then
+    echo "cache hit (native + JS unchanged): reusing ${hit}"
+    echo ""
+    echo "APK=${hit}"
+    exit 0
+  fi
+  if [ "${MOBILE_E2E_APK_OVERLAY:-1}" != "0" ]; then
+    if hit="$(node "${CACHE_JS}" overlay 2>/dev/null)"; then
+      echo "cache overlay (native base + fresh JS bundle): ${hit}"
+      echo ""
+      echo "APK=${hit}"
+      exit 0
+    fi
+  fi
+  echo "cache miss — building (override with MOBILE_E2E_SKIP_CACHE=1)"
+fi
 
 # 1. Generate the native project only when it is absent. Never prebuild over an
 #    existing android/ (it would wipe the cleartext patch below).
@@ -117,7 +152,14 @@ const block =
   "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=768m\n" +
   "org.gradle.parallel=false\n" +
   "org.gradle.workers.max=1\n" +
-  "kotlin.daemon.jvmargs=-Xmx1024m\n";
+  "kotlin.daemon.jvmargs=-Xmx1024m\n" +
+  // Reuse invariant task outputs across worktrees (the shared build cache lives
+  // in the common ~/.gradle). The configuration cache skips re-configuring the
+  // project each run; `problems=warn` degrades to a normal configure instead of
+  // failing if a React-Native/Expo plugin is not yet configuration-cache safe.
+  "org.gradle.caching=true\n" +
+  "org.gradle.configuration-cache=true\n" +
+  "org.gradle.configuration-cache.problems=warn\n";
 fs.writeFileSync(file, text + block);
 NODE
 
@@ -127,7 +169,7 @@ NODE
 #    whole VM. One ABI (the emulator's) keeps the native build from compiling
 #    all four.
 echo "-> serve.js run: ./gradlew assembleRelease (EXPO_PUBLIC_API_URL=${API_URL})"
-GRADLE_CMD="cd \"${ANDROID_DIR}\" && EXPO_PUBLIC_API_URL=\"${API_URL}\" ./gradlew --no-daemon --max-workers=1 -PreactNativeArchitectures=${ABIS} assembleRelease"
+GRADLE_CMD="cd \"${ANDROID_DIR}\" && EXPO_PUBLIC_API_URL=\"${API_URL}\" ./gradlew --no-daemon --build-cache --configuration-cache --max-workers=1 -PreactNativeArchitectures=${ABIS} assembleRelease"
 node "${ROOT}/scripts/serve.js" run \
   --name apk-build \
   --mem-max "${MEM_MAX}" \
@@ -137,6 +179,13 @@ node "${ROOT}/scripts/serve.js" run \
 if [ ! -f "${APK}" ]; then
   echo "FAIL: expected APK not found at ${APK}" >&2
   exit 1
+fi
+
+# 5. Populate the cache for the next run/worktree (best-effort): the native base
+#    (reused by the overlay) and the full-key artifact (instant no-op reuse).
+if [ "${MOBILE_E2E_SKIP_CACHE:-0}" != "1" ] && [ -f "${CACHE_JS}" ]; then
+  node "${CACHE_JS}" base-put "${APK}" >/dev/null 2>&1 || true
+  node "${CACHE_JS}" put "${APK}" >/dev/null 2>&1 || true
 fi
 
 echo ""

@@ -104,7 +104,7 @@ const HEAVY_PATTERNS = [
   // cap and no envelope preflight. Match the wrapper script name — the top-level
   // bash command is `bash scripts/qa/mobile-e2e/build-dev-apk.sh`, which never
   // contains `gradlew` — as well as the gradle task/wrapper itself.
-  [/build-dev-apk\.sh|build-apk\.sh|\bassemble(Release|Debug)\b|expo\s+prebuild|react-native\s+(build|run-android)/i, "apk build"],
+  [/build-dev-apk\.sh|build-apk\.sh|prewarm\.sh|\bassemble(Release|Debug)\b|expo\s+(prebuild|export)|react-native\s+(build|run-android)/i, "apk build"],
   [/\b(gradlew|gradle|xcodebuild)\b/i, "native build"],
   [/prisma\s+(migrate|generate)|\btsc\b[^\n]*--build|turbo\s+(run|build)|nx\s+(run|build)/i, "build"],
 ];

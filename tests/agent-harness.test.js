@@ -8140,6 +8140,69 @@ test("capacity: classifier covers the 2026-09-30 build/test gap and splits long-
   assert.strictEqual(capacity.isLongLivedHeavy("npm run test:quick"), false);
   assert.strictEqual(capacity.isLongLivedHeavy("maestro test flow.yaml"), false);
   assert.strictEqual(capacity.isLongLivedHeavy("git status"), false);
+  assert.strictEqual(capacity.classifyHeavy("bash scripts/qa/mobile-e2e/prewarm.sh"), "apk build");
+  assert.strictEqual(capacity.isLongLivedHeavy("bash scripts/qa/mobile-e2e/prewarm.sh"), false);
+});
+
+test("[drift-guard] device-tier startup cache: content-addressed overlay with a full-build fallback", () => {
+  const cache = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "apk-cache.js"));
+  assert.match(cache, /nativeKey/, "the cache keys the native shell");
+  assert.match(cache, /bundleKey/, "and the JS bundle separately");
+  assert.match(cache, /assets\/index\.android\.bundle/, "the overlay replaces only the JS bundle");
+  assert.match(cache, /aapt2/, "resource compatibility is checked via aapt2 before overlaying");
+  assert.match(cache, /apksigner/, "the overlaid APK is re-signed");
+  assert.match(cache, /zipalign/, "and re-aligned");
+  assert.ok(!/resources\.arsc/.test(cache.split("PY_REWRITE")[1] || ""), "the rewrite never touches resources.arsc");
+
+  const build = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "build-apk.sh"));
+  assert.match(build, /apk-cache\.js/, "build-apk.sh consults the cache");
+  assert.match(build, /CACHE_JS" overlay|" overlay 2>\/dev\/null/, "and tries the overlay before a full build");
+  assert.match(build, /org\.gradle\.caching=true/, "the managed Gradle block enables the build cache");
+  assert.match(build, /org\.gradle\.configuration-cache=true/, "and the configuration cache");
+  assert.match(build, /--build-cache/, "and the assemble runs with --build-cache");
+
+  const prewarm = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "prewarm.sh"));
+  assert.match(prewarm, /apk-cache\.js/, "prewarm uses the cache");
+  assert.match(prewarm, /--detach/, "and can run detached off the critical path");
+
+  const cli = read(path.join(__dirname, "..", "bin", "agent-harness.js"));
+  assert.match(cli, /maybePrewarm/, "agent-harness update can warm the cache");
+  assert.match(cli, /AGENT_HARNESS_PREWARM/, "gated behind an explicit opt-in");
+});
+
+test("[drift-guard] device-up instrumented + quickboot snapshot with a cold-boot fallback", () => {
+  const up = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "device-up.sh"));
+  assert.match(up, /device-up:timings/, "device-up emits per-phase timings");
+  assert.match(up, /device-up-timings\.jsonl/, "and persists them");
+  assert.match(up, /MOBILE_E2E_OVERLAP/, "the dev server overlaps the boot");
+
+  const boot = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "boot-emulator.sh"));
+  assert.match(boot, /-snapshot \$SNAPSHOT_NAME/, "the emulator boots from a quickboot snapshot");
+  assert.match(boot, /WITHOUT a snapshot/, "a failed snapshot retries cold");
+  assert.match(boot, /MOBILE_E2E_SNAPSHOT/, "and can be disabled");
+
+  const down = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "device-down.sh"));
+  assert.match(down, /snapshot save/, "device-down saves the snapshot before stopping the emulator");
+
+  const pkg = JSON.parse(read(path.join(__dirname, "..", "package.json")));
+  assert.match(pkg.scripts.lint, /apk-cache\.js/, "apk-cache.js is syntax-checked by lint");
+});
+
+test("apk-cache hashTree is deterministic and content-sensitive", () => {
+  const cache = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "apk-cache.js"));
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, "app"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "app", "a.js"), "export const a = 1;\n");
+  fs.writeFileSync(path.join(dir, "app", "b.js"), "export const b = 2;\n");
+  const h1 = cache.hashTree(["app"], dir);
+  const h2 = cache.hashTree(["app"], dir);
+  assert.strictEqual(h1, h2, "the same tree hashes the same");
+  fs.writeFileSync(path.join(dir, "app", "b.js"), "export const b = 3;\n");
+  assert.notStrictEqual(cache.hashTree(["app"], dir), h1, "a content change changes the hash");
+  // keys are stable across calls and independent dimensions
+  assert.strictEqual(cache.nativeKey(), cache.nativeKey());
+  assert.strictEqual(cache.bundleKey(), cache.bundleKey());
+  assert.strictEqual(cache.fullKey(), cache.fullKey());
 });
 
 test("capacity: a tier group is budgeted as one combined cap, not per process", () => {
@@ -8252,7 +8315,7 @@ test("capacity: the capped APK build wrapper is deployed and routes Gradle throu
   assert.match(buildSh, /serve\.js" run/, "the APK build runs through serve.js run");
   assert.match(buildSh, /--mem-max/, "the APK build is capped");
   assert.match(buildSh, /PreactNativeArchitectures=\$\{ABIS\}/, "one ABI, not all four");
-  assert.match(buildSh, /--no-daemon --max-workers=1/, "Gradle is right-sized");
+  assert.match(buildSh, /--no-daemon .*--max-workers=1/, "Gradle is right-sized");
   // F-296: a cold release D8 needs ~4-6 GB; 1 GB OOM'd and a 3 GB cap killed the
   // emulator. The managed block is REFRESHED (not append-once) so a prebuild or a
   // hand-edit cannot silently leave a stale heap.
@@ -8888,7 +8951,7 @@ test("[drift-guard] device tier is right-sized, group-budgeted, and notifyable",
   assert.match(boot, /GALLIUM_DRIVER=d3d12/, "boot-emulator.sh selects the d3d12 driver on WSL");
   assert.match(boot, /GPU_ENV/, "boot-emulator.sh passes the GL env to the emulator launch");
   assert.match(boot, /\$gpu_env \$EMULATOR/, "the emulator command supplies GPU_ENV");
-  assert.match(boot, /start_emulator "\$GPU" "\$GPU_ENV" "\$GPU_EXTRA"/, "the launch is invoked with the resolved GPU, env, and feature args");
+  assert.match(boot, /try_boot "\$GPU" "\$GPU_ENV" "\$GPU_EXTRA"/, "the launch is invoked with the resolved GPU, env, and feature args");
   // On the WSL d3d12 path the gfxstream Vulkan backend segfaults qemu mid-boot;
   // disabling it keeps `-gpu host` GLES acceleration stable (F-296).
   assert.match(boot, /-feature -Vulkan/, "boot-emulator.sh disables Vulkan on the WSL host path");

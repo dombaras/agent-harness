@@ -174,6 +174,57 @@ warning elsewhere.
   tier — start it in the **same group** so the pair is budgeted as one:
   `node scripts/serve.js start --cmd "npm run dev" --url http://localhost:3000 --name app-dev --group mobile`.
 
+### Startup speed: content-addressed APK cache + quickboot
+
+The cold `assembleRelease` dominates the tier (7-11 min on a fresh worktree; the
+reanimated/worklets C++ compile, new-arch codegen, and dex merge are the cost).
+Almost all of it is invariant across worktrees for a fixed dependency set — only
+the JS bundle changes. `scripts/qa/mobile-e2e/apk-cache.js` content-addresses each
+stage so the invariant work is done once:
+
+```
+~/.cache/agent-harness/mobile-e2e/
+├── native/<nativeKey>/base.apk      native shell  (deps/toolchain; ignores JS)
+├── bundle/<bundleKey>/              Hermes bundle + exported assets (JS sources)
+└── apk/<fullKey>/app-release.apk    ready-to-install APK (native + JS)
+```
+
+`build-apk.sh` (and therefore `device-up.sh`) tries, in order: **full-key hit →
+overlay → full build**. The overlay re-bundles only JS, drops it into the cached
+native base, and re-signs with the app's debug keystore (`zipalign` +
+`apksigner`); it never touches `resources.arsc`, and it declines (falling back to
+Gradle) if the bundle references an asset the base lacks or if any verify step
+fails. It is a pure accelerator — correctness never depends on it. Measured on
+LibraryOS: **~7 s warm / ~20-30 s cold** for the overlay versus minutes for a
+cold build.
+
+| env | default | effect |
+| --- | --- | --- |
+| `MOBILE_E2E_SKIP_CACHE` | `0` | `1` bypasses the cache entirely |
+| `MOBILE_E2E_APK_OVERLAY` | `1` | `0` disables the overlay (full build on JS change) |
+| `MOBILE_E2E_SNAPSHOT` | `1` | `0` disables the emulator quickboot snapshot |
+| `MOBILE_E2E_SNAPSHOT_NAME` | `agent-e2e` | snapshot name |
+| `MOBILE_E2E_OVERLAP` | `1` | `0` starts the dev server after the boot, not with it |
+
+- **Gradle reuse.** The managed `gradle.properties` block now enables
+  `org.gradle.caching` (shared local cache in `~/.gradle`) and the configuration
+  cache, and the assemble runs with `--build-cache --configuration-cache`, so a
+  fresh worktree reuses invariant task outputs instead of recompiling.
+- **Prewarm off the critical path.** `scripts/qa/mobile-e2e/prewarm.sh` warms the
+  cache (hit/overlay/build, capped) and is idempotent; `prewarm.sh --detach`
+  runs it in the background. Set `AGENT_HARNESS_PREWARM=1` to have
+  `agent-harness update` launch it automatically. It obeys the capacity envelope
+  (`prewarm.sh` classifies as an "apk build" one-shot), so it refuses when a
+  heavy tier is live rather than thrashing the VM.
+- **Quickboot snapshot.** `boot-emulator.sh` boots with `-snapshot agent-e2e`
+  when enabled, so a warm snapshot turns the ~40-60 s cold boot into seconds.
+  Because a snapshot is stateful, a failed boot retries once **cold** before the
+  GPU fallback; `device-down.sh --emulator` saves the snapshot before stopping.
+- **Overlap.** The dev-server start (independent of the device) runs
+  concurrently with the emulator boot; the install joins both. `device-up.sh`
+  prints `device-up:timings {…}` per phase and appends it to
+  `.serve/device-up-timings.jsonl`.
+
 ### Readiness gate (never `sleep`-and-pray)
 
 ```bash

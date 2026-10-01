@@ -1935,6 +1935,25 @@ async function update(target, flags) {
   printSummary(result, true);
   printUnpublishedWarning();
   printCommitResult(result);
+  maybePrewarm(target);
+}
+
+/* Opt-in (AGENT_HARNESS_PREWARM=1): after an update, warm the device-tier APK
+ * cache in the background off the critical path, so the next `device-up.sh` is
+ * a fast cache hit/overlay instead of a 7-11 min cold Gradle build. Best-effort
+ * and non-blocking; a project without the mobile device tier is a no-op. */
+function maybePrewarm(target) {
+  if (!process.env.AGENT_HARNESS_PREWARM) return;
+  const script = path.join(target, "scripts", "qa", "mobile-e2e", "prewarm.sh");
+  if (!fs.existsSync(script)) return;
+  try {
+    const { spawn } = require("child_process");
+    const child = spawn("bash", [script, "--detach"], { cwd: target, detached: true, stdio: "ignore" });
+    child.unref();
+    console.log("  prewarm: device-tier APK cache warming in the background");
+  } catch (_) {
+    /* prewarm is an accelerator — never fail an update for it */
+  }
 }
 
 // ---------------------------------------------------------------- run (E2E auto-resume)

@@ -15,6 +15,12 @@
 # heavy long-lived tier) so the two never overlap on a ~10 GB VM — building while
 # the emulator is up OOMs the build and can get the emulator killed (F-296).
 #
+# Speed (F-30x device-tier startup): the build reuses the content-addressed
+# native base + JS bundle via `build-apk.sh`/`apk-cache.js`, so only the JS
+# bundle is re-signed per feature revision; the emulator boots from a quickboot
+# snapshot when one is valid; and the dev-server start overlaps the emulator
+# boot (both are independent). `device-up:timings {…}` is printed per phase.
+#
 # Idempotent: an already-booted emulator, a live adb server, an installed APK of
 # the same version, and a running dev server are all REUSED (never restarted).
 #
@@ -26,7 +32,8 @@
 #   devUrl           dev-server health URL      (default: http://localhost:3000)
 #   devName          serve.js label             (default: app-dev)
 # Env overrides: MOBILE_E2E_APK / MOBILE_E2E_DEV_CMD / MOBILE_E2E_DEV_URL /
-#   MOBILE_E2E_DEV_NAME / MOBILE_E2E_SKIP_BUILD / MOBILE_E2E_SKIP_INSTALL.
+#   MOBILE_E2E_DEV_NAME / MOBILE_E2E_SKIP_BUILD / MOBILE_E2E_SKIP_INSTALL /
+#   MOBILE_E2E_OVERLAP (default 1).
 #
 # Usage:
 #   scripts/qa/mobile-e2e/device-up.sh            # full bring-up
@@ -39,6 +46,7 @@ LOCAL_CONFIG="$ROOT/scripts/qa/mobile-e2e/local.json"
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/android-sdk}}"
 ADB="$SDK/platform-tools/adb"
 TIER_GROUP="${MOBILE_E2E_TIER_GROUP:-mobile}"
+SERVE_DIR="$ROOT/.serve"
 
 WITH_DEV=1
 for arg in "$@"; do
@@ -64,6 +72,14 @@ DEV_NAME="${MOBILE_E2E_DEV_NAME:-$(cfg devName)}"
 # Conventional Expo/RN release output when local.json declares no `apk`.
 [ -z "$APK" ] && APK="$ROOT/mobile/android/app/build/outputs/apk/release/app-release.apk"
 
+mkdir -p "$SERVE_DIR"
+now_ms() { date +%s%3N; }
+T_START="$(now_ms)"
+T_BUILD="$T_START"
+T_BOOT="$T_START"
+T_INSTALL="$T_START"
+T_DEV="$T_START"
+
 echo "device-up: app=${APP_ID:-?} apk=${APK:-<auto>} dev=${DEV_URL} group=${TIER_GROUP}"
 
 # 1. Build the APK FIRST, as a capped one-shot, BEFORE the emulator exists. The
@@ -73,10 +89,19 @@ echo "device-up: app=${APP_ID:-?} apk=${APK:-<auto>} dev=${DEV_URL} group=${TIER
 #    then boot serializes the two heavy phases. `serve.js run` also refuses a
 #    build that does not fit a live group budget, so a rebuild while an emulator
 #    is already up fails loudly instead of thrashing the box.
+#
+#    build-apk.sh owns the cache: it reuses a full-key hit, else overlays a fresh
+#    JS bundle onto the cached native base, else runs Gradle. It prints the APK
+#    path as `APK=…`, which we adopt (the cached/overlaid path differs from the
+#    conventional one).
 if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ] && [ "${MOBILE_E2E_SKIP_BUILD:-0}" != "1" ]; then
-  echo "[1/5] building the app (capped via build-apk.sh; override with MOBILE_E2E_SKIP_BUILD=1)"
+  echo "[1/5] building the app (cached via apk-cache.js; override with MOBILE_E2E_SKIP_BUILD=1)"
+  BUILD_LOG="$SERVE_DIR/device-up-build.log"
   if [ -x "$ROOT/scripts/qa/mobile-e2e/build-apk.sh" ]; then
-    bash "$ROOT/scripts/qa/mobile-e2e/build-apk.sh"
+    bash "$ROOT/scripts/qa/mobile-e2e/build-apk.sh" 2>&1 | tee "$BUILD_LOG"
+    # PIPESTATUS[0] is build-apk.sh's status under `set -o pipefail`.
+    parsed="$(sed -n 's/^APK=//p' "$BUILD_LOG" | tail -1)"
+    [ -n "$parsed" ] && APK="$parsed"
   elif [ -x "$ROOT/scripts/qa/mobile-e2e/build-dev-apk.sh" ]; then
     echo "  (using project build-dev-apk.sh — route it through \`serve.js run\` so it is capped)"
     bash "$ROOT/scripts/qa/mobile-e2e/build-dev-apk.sh"
@@ -86,10 +111,32 @@ if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ] && [ "${MOBILE_E2E_SKIP_BUILD:-0}"
 else
   echo "[1/5] build skipped"
 fi
+T_BUILD="$(now_ms)"
 
 # 2. adb server + emulator + bounded boot gate (the primitive owns readiness).
+#    4. The dev server is independent of the device, so when overlap is on it is
+#    started concurrently with the boot and joined after the install.
+start_dev() {
+  echo "[4/5] dev server ($DEV_NAME) via serve.js --group $TIER_GROUP"
+  node scripts/serve.js start --cmd "$DEV_CMD" --url "$DEV_URL" --name "$DEV_NAME" --group "$TIER_GROUP"
+}
+
 echo "[2/5] adb server + emulator (boot-emulator.sh)"
-bash scripts/qa/mobile-e2e/boot-emulator.sh
+OVERLAP="${MOBILE_E2E_OVERLAP:-1}"
+DEV_PID=""
+if [ "$WITH_DEV" = "1" ] && [ "$OVERLAP" = "1" ]; then
+  # Boot in the foreground, dev server in the background; joined after install.
+  start_dev &
+  DEV_PID=$!
+  if ! bash scripts/qa/mobile-e2e/boot-emulator.sh; then
+    kill "$DEV_PID" 2>/dev/null || true
+    echo "FAIL — emulator bring-up failed; see boot-emulator.sh output and .serve/emulator.err.log" >&2
+    exit 1
+  fi
+else
+  bash scripts/qa/mobile-e2e/boot-emulator.sh
+fi
+T_BOOT="$(now_ms)"
 
 if [ ! -x "$ADB" ]; then
   echo "FAIL — adb not found at $ADB (set ANDROID_HOME)." >&2
@@ -107,14 +154,21 @@ if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ]; then
 else
   echo "[3/5] install skipped"
 fi
+T_INSTALL="$(now_ms)"
 
-# 4. Dev server, in the SAME heavy-tier group so the pair is one budget.
-if [ "$WITH_DEV" = "1" ]; then
-  echo "[4/5] dev server ($DEV_NAME) via serve.js --group $TIER_GROUP"
-  node scripts/serve.js start --cmd "$DEV_CMD" --url "$DEV_URL" --name "$DEV_NAME" --group "$TIER_GROUP"
-else
+# Join the concurrently-started dev server (its readiness is gated in step 5).
+if [ "$WITH_DEV" = "1" ] && [ "$OVERLAP" != "1" ]; then
+  start_dev
+elif [ "$WITH_DEV" != "1" ]; then
   echo "[4/5] dev server skipped (--no-dev)"
+elif [ -n "$DEV_PID" ]; then
+  # Already announced by start_dev; wait for its bounded readiness probe to end.
+  if ! wait "$DEV_PID"; then
+    echo "FAIL — dev server did not start (see .serve/$DEV_NAME.err.log)" >&2
+    exit 1
+  fi
 fi
+T_DEV="$(now_ms)"
 
 # 5. Bounded readiness of the whole tier.
 echo "[5/5] readiness"
@@ -135,4 +189,8 @@ if [ "$WITH_DEV" = "1" ]; then
 fi
 
 node scripts/serve.js list
+T_END="$(now_ms)"
+timings="{\"build_ms\":$((T_BUILD-T_START)),\"boot_ms\":$((T_BOOT-T_BUILD)),\"install_ms\":$((T_INSTALL-T_BOOT)),\"dev_ms\":$((T_DEV-T_INSTALL)),\"ready_ms\":$((T_END-T_DEV)),\"total_ms\":$((T_END-T_START))}"
+echo "device-up:timings $timings"
+printf '%s\n' "$timings" >>"$SERVE_DIR/device-up-timings.jsonl" 2>/dev/null || true
 echo "device-up: OK"

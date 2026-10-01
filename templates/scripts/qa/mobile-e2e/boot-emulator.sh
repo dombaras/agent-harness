@@ -39,7 +39,13 @@
 #   MOBILE_E2E_CORES       vCPU cores          (default: host/AVD-derived)
 #   MOBILE_E2E_MEMORY      RAM in MB           (default: envelope emulator_ram_mb)
 #   MOBILE_E2E_TIER_GROUP  heavy-tier group    (default: mobile)
+#   MOBILE_E2E_SNAPSHOT    quickboot snapshot  (default 1; `0` = cold boot)
+#   MOBILE_E2E_SNAPSHOT_NAME snapshot name      (default agent-e2e)
 #   ANDROID_HOME           Android SDK root    (default ~/android-sdk)
+#
+# Boot speed: a quickboot snapshot turns the ~40-60 s cold boot into a few
+# seconds. It is stateful, so a snapshot that fails the bounded boot gate is
+# retried once WITHOUT a snapshot (cold boot) before the tier is declared dead.
 #
 # Modes:
 #   boot-emulator.sh                 boot the tier
@@ -237,10 +243,14 @@ fi
 # 3. Start (or reuse) the emulator, detached, ready when its adb port answers.
 #    `--group` lets the emulator and the dev server share one machine-wide
 #    mobile-tier budget instead of fighting the single-heavy-tier lock.
+SNAPSHOT="${MOBILE_E2E_SNAPSHOT:-1}"
+SNAPSHOT_NAME="${MOBILE_E2E_SNAPSHOT_NAME:-agent-e2e}"
+
 start_emulator() {
-  local gpu="$1" gpu_env="$2" gpu_extra="$3"
+  local gpu="$1" gpu_env="$2" gpu_extra="$3" snap="$4" snaparg
+  if [ "$snap" = "on" ]; then snaparg="-snapshot $SNAPSHOT_NAME"; else snaparg="-no-snapshot"; fi
   node scripts/serve.js start \
-    --cmd "$gpu_env $EMULATOR -avd $AVD -no-window -no-audio -no-boot-anim -no-snapshot -gpu $gpu $gpu_extra -cores $CORES -memory $MEMORY" \
+    --cmd "$gpu_env $EMULATOR -avd $AVD -no-window -no-audio -no-boot-anim $snaparg -gpu $gpu $gpu_extra -cores $CORES -memory $MEMORY" \
     --name emulator --port 5554 --group "$TIER_GROUP" --timeout 180000
 }
 
@@ -269,31 +279,52 @@ log_emulator_failure() {
   fi
 }
 
-start_emulator "$GPU" "$GPU_ENV" "$GPU_EXTRA"
-if ! wait_boot; then
-  # A healthy emulator uses a GPU backend that actually boots. If it did not, and
-  # the user did not pin MOBILE_E2E_GPU, fall back ONCE to the software
-  # rasterizer: the 2026-09-30 F-296 case was the auto-selected WSL `host`+d3d12
-  # path segfaulting qemu, and the run only proceeded after a manual
-  # `MOBILE_E2E_GPU=swiftshader_indirect`. Bake that recovery in.
+restart_emulator() {
+  node scripts/serve.js stop --name emulator >/dev/null 2>&1 || true
+  node scripts/serve.js prune >/dev/null 2>&1 || true
+}
+
+# One boot attempt: start with the given flags and hold the bounded boot gate.
+try_boot() {
+  start_emulator "$1" "$2" "$3" "$4"
+  wait_boot
+}
+
+WANT_SNAP="on"
+[ "$SNAPSHOT" = "0" ] && WANT_SNAP="off"
+
+BOOTED=0
+if try_boot "$GPU" "$GPU_ENV" "$GPU_EXTRA" "$WANT_SNAP"; then
+  BOOTED=1
+else
+  log_emulator_failure
+  # A quickboot snapshot can go stale/corrupt (or the WSL d3d12 backend can
+  # segfault restoring it). Retry once cold before blaming the GPU.
+  if [ "$WANT_SNAP" = "on" ]; then
+    echo "  snapshot boot failed; retrying once WITHOUT a snapshot (cold boot)…" >&2
+    restart_emulator
+    if try_boot "$GPU" "$GPU_ENV" "$GPU_EXTRA" "off"; then BOOTED=1; fi
+  fi
+fi
+
+# A healthy emulator uses a GPU backend that actually boots. If it still has not,
+# and the user did not pin MOBILE_E2E_GPU, fall back ONCE to the software
+# rasterizer: the 2026-09-30 F-296 case was the auto-selected WSL `host`+d3d12
+# path segfaulting qemu, and the run only proceeded after a manual
+# `MOBILE_E2E_GPU=swiftshader_indirect`. Bake that recovery in.
+if [ "$BOOTED" != "1" ] && [ -z "${MOBILE_E2E_GPU:-}" ] && [ "$GPU" != "swiftshader_indirect" ]; then
+  echo "  auto-selected gpu=$GPU crashed; retrying once with the software rasterizer (gpu=swiftshader_indirect)…" >&2
+  restart_emulator
+  GPU="swiftshader_indirect"
+  GPU_ENV=""
+  GPU_EXTRA=""
+  if try_boot "$GPU" "$GPU_ENV" "$GPU_EXTRA" "off"; then BOOTED=1; fi
+fi
+
+if [ "$BOOTED" != "1" ]; then
   echo "FAIL — emulator did not finish booting (sys.boot_completed != 1)." >&2
   log_emulator_failure
-  if [ -z "${MOBILE_E2E_GPU:-}" ] && [ "$GPU" != "swiftshader_indirect" ]; then
-    echo "  auto-selected gpu=$GPU crashed; retrying once with the software rasterizer (gpu=swiftshader_indirect)…" >&2
-    node scripts/serve.js stop --name emulator >/dev/null 2>&1 || true
-    node scripts/serve.js prune >/dev/null 2>&1 || true
-    GPU="swiftshader_indirect"
-    GPU_ENV=""
-    GPU_EXTRA=""
-    start_emulator "$GPU" "$GPU_ENV" "$GPU_EXTRA"
-    if ! wait_boot; then
-      echo "FAIL — emulator still did not boot with swiftshader_indirect." >&2
-      log_emulator_failure
-      exit 1
-    fi
-  else
-    exit 1
-  fi
+  exit 1
 fi
 echo "boot ok"
 node scripts/serve.js list
