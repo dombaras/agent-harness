@@ -285,7 +285,12 @@ plugin are harness-owned under `templates/`, so fix them upstream and
 - **Stop the emulator at session end**, and a dev server as soon as its tier is
   done: `node scripts/serve.js stop --name <label>` (or `stop-all`). An idle
   emulator left up for hours held ~3 GB and was a direct contributor to the
-  2026-09-29 freeze.
+  2026-09-29 freeze. You do not have to remember: `serve.js` records the owning
+  session and **auto-closes** the serve — `reap` stops one whose owner's lease is
+  gone/stale (or an untagged one past `idle_reap_minutes` with no recent log
+  activity) and reconciles an untracked `agent-serve-*` unit from a killed
+  session. `reap` runs at every `start` and when the context-guard plugin sees
+  `session.deleted`, so an abandoned emulator/dev server is not kept alive.
 - `node scripts/serve.js list` is the machine view: capacity (free RAM / swap /
   load / live serves) plus each process's age and whether it is heavy. Treat an
   old process as an idle-reap candidate; `npm run test:capacity` fails when the

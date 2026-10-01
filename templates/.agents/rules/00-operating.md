@@ -127,6 +127,12 @@ mechanical guards read it.
   --name <label>` / `stop-all`. A dev server is stopped after its tier; an
   emulator is reused *within a session* and stopped at session end. `serve.js
   list` shows each process's age — treat an old one as an idle-reap candidate.
+  You do not have to remember: `serve.js` records each serve's owning session and
+  **auto-closes** it — `reap` stops a serve whose owner's lease is gone/stale (or
+  an untagged one past `idle_reap_minutes` with no recent log activity) and
+  reconciles an untracked `agent-serve-*` systemd unit left by a killed session.
+  `reap` runs at every `start` and when the context-guard plugin sees
+  `session.deleted`, so a dev server/emulator is not kept alive and orphaned.
 - **Cap the heavy process.** Heavy tiers (emulator, `next dev`, live E2E) are
   capped **by default**: `serve.js start` runs them as a systemd transient unit
   under `user.slice` with a `MemoryMax` from the envelope (`heavy_mem_max_mb`,
@@ -157,7 +163,11 @@ mechanical guards read it.
 - **Reap stale records.** `node scripts/serve.js prune [--worktrees]` removes
   `.serve/*.pid` records for processes that are gone, so a stopped emulator or
   dead dev server can't misreport a live heavy tier; `stop-all` at session end
-  actually frees the RAM.
+  actually frees the RAM. `serve.js reap` (run it when memory looks pinned, or
+  rely on the auto-run at `start` / `session.deleted`) closes an orphaned serve —
+  a `stop` that cannot kill the process now **keeps the record** instead of
+  deleting it and orphaning a live unit, so the process stays visible and
+  retryable rather than untracked.
 - **The tmpfs cache is RAM.** The RAM-backed cache (`npm run ramdisk`) competes
   with the emulator and agents; keep it small (`AGENT_TMPFS_PERCENT=25`) while
   running device tiers.

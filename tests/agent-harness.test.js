@@ -8548,6 +8548,82 @@ test("serve.js prune removes dead records and keeps live ones", () => {
   }
 });
 
+test("serve.js stop keeps the record when the process cannot be killed (no untracked orphan)", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, ".serve"), { recursive: true });
+  // pid 1 is never ours to kill: terminateTree refuses it, so the record must
+  // survive and the command must fail rather than orphan a live unit.
+  fs.writeFileSync(
+    path.join(target, ".serve", "stuck.pid"),
+    JSON.stringify({ pid: 1, name: "stuck", cmd: "npm run dev" })
+  );
+  const serve = path.join(h.TEMPLATES_DIR, "scripts", "serve.js");
+  const r = spawnSync(process.execPath, [serve, "stop", "--name", "stuck"], { cwd: target, encoding: "utf8" });
+  assert.notStrictEqual(r.status, 0, "a failed teardown exits non-zero");
+  assert.ok(exists(path.join(target, ".serve", "stuck.pid")), "the record is kept, not orphaned");
+  assert.match(r.stderr, /STILL running after teardown/);
+});
+
+test("serve.js reap stops an unowned idle serve and keeps an owner-live one", () => {
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, ".serve", "sessions"), { recursive: true });
+  const idle = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "ignore" });
+  const owned = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "ignore" });
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  fs.writeFileSync(
+    path.join(target, ".serve", "idle.pid"),
+    JSON.stringify({ pid: idle.pid, name: "idle", cmd: "npm run dev", startedAt: twoHoursAgo })
+  );
+  fs.writeFileSync(
+    path.join(target, ".serve", "owned.pid"),
+    JSON.stringify({
+      pid: owned.pid,
+      name: "owned",
+      sessionID: "ses_live",
+      cmd: "npm run dev",
+      startedAt: twoHoursAgo,
+    })
+  );
+  // A live lease (fresh heartbeat, pid alive) keeps `owned`.
+  fs.writeFileSync(
+    path.join(target, ".serve", "sessions", "ses_live.json"),
+    JSON.stringify({ sessionID: "ses_live", pid: owned.pid, startedAt: Date.now(), heartbeatAt: Date.now() })
+  );
+  const serve = path.join(h.TEMPLATES_DIR, "scripts", "serve.js");
+  try {
+    const r = spawnSync(process.execPath, [serve, "reap"], {
+      cwd: target,
+      encoding: "utf8",
+      env: Object.assign({}, process.env, { AGENT_SERVE_NO_SYSTEMD: "1" }),
+    });
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    assert.ok(!exists(path.join(target, ".serve", "idle.pid")), "unowned idle serve reaped");
+    assert.ok(exists(path.join(target, ".serve", "owned.pid")), "owner-live serve kept");
+    assert.match(r.stdout, /reaped idle/);
+    assert.match(r.stdout, /owned \(owner live\)/);
+  } finally {
+    for (const c of [idle, owned]) {
+      try {
+        process.kill(c.pid, "SIGKILL");
+      } catch (_) {
+        /* already gone */
+      }
+    }
+  }
+});
+
+test("serve.js auto-reaps: owner tagging + verified teardown + reap (F-30x orphan leak)", () => {
+  const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));
+  assert.match(serve, /function reap\(/, "serve.js exposes reap");
+  assert.match(serve, /case "reap":/, "the reap subcommand is wired");
+  assert.match(serve, /sessionID: ownerSessionID\(\)/, "serve records its owning session");
+  assert.match(serve, /STILL running after teardown/, "stop verifies teardown and keeps the record on failure");
+  assert.match(serve, /agent-serve-\*/, "reap reconciles untracked agent-serve units");
+  assert.match(serve, /case "stop":[\s\S]*stopSession/, "stop --session is wired");
+  const cg = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
+  assert.match(cg, /\[serve, "reap"\]/, "the session.deleted hook reaps on session end");
+});
+
 test("serve.js stop-all spans the main checkout + worktrees and clears an orphaned heavy lock (F-302 leak)", () => {
   const target = tmpdir();
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });

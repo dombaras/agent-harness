@@ -28,10 +28,11 @@
  * Usage:
  *   node scripts/serve.js start --cmd "<dev command>" [--url <health url>] [--port <n>] [--name <label>] [--group <tier>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
  *   node scripts/serve.js run   --cmd "<one-shot command>" [--name <label>] [--group <tier>] [--force] [--no-cap] [--mem-max 4G] [--cpu-max 250%]
- *   node scripts/serve.js stop  [--name <label>] [--port <n>]
+ *   node scripts/serve.js stop  [--name <label>] [--port <n>] [--session <ses_...>]
  *   node scripts/serve.js stop-all
  *   node scripts/serve.js list
  *   node scripts/serve.js prune [--worktrees]
+ *   node scripts/serve.js reap [--json] [--quiet]
  *
  * - start: runs <cmd> detached (own hidden console on win32); polls --url/--port
  *   until ready or --timeout. Exits 0 on ready; exits 1 (after printing the log
@@ -50,6 +51,12 @@
  * - prune: removes `.serve/*.pid` records whose process is gone (`--worktrees`
  *   also clears sibling agent worktrees), so a stale record cannot misreport a
  *   live heavy tier. Live servers are never touched.
+ * - reap: auto-close a serve "after use" — STOP one whose owning session lease is
+ *   gone/stale (or an untagged one older than `idle_reap_minutes` with no recent
+ *   log activity), and reconcile an untracked `agent-serve-*` unit left by a
+ *   killed session. A live owner's serve is never touched. Runs automatically at
+ *   `start` and when the context-guard plugin sees `session.deleted`, so a
+ *   dev server/emulator is not kept alive and orphaned.
  * - PID files + logs + the generated launcher live in <project>/.serve/
  *   (excluded clone-locally by the harness).
  * - A child's stdout is buffered while it runs; the log flushes on exit, so a
@@ -64,11 +71,16 @@ const https = require("https");
 const net = require("net");
 const { spawn, spawnSync } = require("child_process");
 const capacity = require("./qa/capacity-lib.js");
+const leaseLib = require("./qa/lease-lib.js");
 
 const SERVE_DIR = path.join(process.cwd(), ".serve");
 const READY_INTERVAL = 500;
 const HEARTBEAT_INTERVAL = 5000;
 const DEFAULT_TIMEOUT = 60000;
+/* The opencode session id env var handed to tools that invoke scripts (the
+ * backlog tools set it). serve.js records it as the serve's owner so a serve can
+ * be reaped when the session that started it is gone. */
+const SESSION_ENV = "HARNESS_SESSION_ID";
 
 function powershellExe() {
   const known = process.env.SystemRoot
@@ -89,10 +101,18 @@ function parseArgs(argv) {
       a === "--group" ||
       a === "--timeout" ||
       a === "--mem-max" ||
-      a === "--cpu-max"
+      a === "--cpu-max" ||
+      a === "--session"
     ) {
       flags[a] = argv[++i];
-    } else if (a === "--heavy" || a === "--force" || a === "--no-cap" || a === "--worktrees") {
+    } else if (
+      a === "--heavy" ||
+      a === "--force" ||
+      a === "--no-cap" ||
+      a === "--worktrees" ||
+      a === "--json" ||
+      a === "--quiet"
+    ) {
       flags[a] = true;
     } else {
       flags._.push(a);
@@ -164,6 +184,185 @@ function killTree(pid) {
       return false;
     }
   }
+}
+
+/* Bounded synchronous pause (ms) — used between SIGTERM and SIGKILL. */
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch (_) {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      /* fallback busy-wait */
+    }
+  }
+}
+
+/* Tear a process tree down and VERIFY it is gone: SIGTERM the group, wait, then
+ * SIGKILL, then confirm the pid no longer exists. Returns true only when the
+ * process is actually gone, so a caller never records a false teardown. Guards
+ * pid<=1 so it can never issue `kill(-1)` (which signals every process). */
+function terminateTree(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return true; // nothing to kill
+  // Never issue kill(-1) (which would signal every process): a pid <= 1 is not
+  // ours to teardown — report "not gone" so its record is retained, not orphaned.
+  if (n <= 1) return false;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(n), "/T", "/F"], { encoding: "utf8" });
+    return !isAlive(n);
+  }
+  try {
+    process.kill(-n, "SIGTERM");
+  } catch (_) {
+    try {
+      process.kill(n, "SIGTERM");
+    } catch (_) {
+      /* already gone */
+    }
+  }
+  for (let i = 0; i < 20 && isAlive(n); i++) sleepSync(100);
+  if (isAlive(n)) {
+    try {
+      process.kill(-n, "SIGKILL");
+    } catch (_) {
+      try {
+        process.kill(n, "SIGKILL");
+      } catch (_) {
+        /* already gone */
+      }
+    }
+    for (let i = 0; i < 10 && isAlive(n); i++) sleepSync(100);
+  }
+  return !isAlive(n);
+}
+
+/* The opencode session that owns a serve started from this checkout: the
+ * explicit `HARNESS_SESSION_ID` when the caller set it, else the nearest
+ * ancestor pid whose process wrote a `.serve/sessions/<id>.json` lease (the
+ * context-guard plugin records the opencode server pid). Linux-only; null when
+ * untagged (an older harness, a hand launch, or a non-Linux host). */
+function ppidOf(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = stat.lastIndexOf(")");
+    if (close === -1) return null;
+    const ppid = parseInt(stat.slice(close + 2).split(" ")[1], 10);
+    return Number.isFinite(ppid) ? ppid : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function ownerSessionID() {
+  const explicit = process.env[SESSION_ENV];
+  if (explicit) return String(explicit);
+  if (process.platform !== "linux") return null;
+  const byPid = new Map();
+  for (const root of allServeDirs()) {
+    for (const rec of safeReadLeases(root)) {
+      if (rec.pid && rec.sessionID) byPid.set(Number(rec.pid), rec.sessionID);
+    }
+  }
+  if (byPid.size === 0) return null;
+  let pid = process.pid;
+  for (let i = 0; i < 64 && pid && pid !== 1; i++) {
+    pid = ppidOf(pid);
+    if (pid && byPid.has(pid)) return byPid.get(pid);
+  }
+  return null;
+}
+
+/* All leases recorded directly under a `.serve/` dir's `sessions/` (best-effort).
+ * `serveDir` is the `.serve` directory itself (as returned by allServeDirs). */
+function safeReadLeases(serveDir) {
+  const sdir = path.join(serveDir, "sessions");
+  const out = [];
+  let names;
+  try {
+    names = fs.readdirSync(sdir);
+  } catch (_) {
+    return out;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      out.push(JSON.parse(fs.readFileSync(path.join(sdir, name), "utf8")));
+    } catch (_) {
+      /* unreadable lease */
+    }
+  }
+  return out;
+}
+
+/* Active `agent-serve-*` transient units, with the `.out.log` path parsed out of
+ * the unit's ExecStart so an untracked legacy orphan can be judged idle. */
+function activeServeUnits() {
+  if (!systemdUserAvailable()) return [];
+  const r = spawnSync(
+    "systemctl",
+    ["--user", "list-units", "agent-serve-*", "--all", "--no-legend", "--no-pager"],
+    { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] }
+  );
+  const units = [];
+  for (const raw of (r.stdout || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    const m = line.match(/^(agent-serve-\S+?\.service)\s+loaded\s+active\s+running\s+(.*)$/);
+    if (!m) continue;
+    const logM = m[2].match(/([^\s"]+\.out\.log)/);
+    units.push({ unit: m[1], outLog: logM ? logM[1] : null });
+  }
+  return units;
+}
+
+function unitStartedAt(unit) {
+  const m = String(unit).match(/-(\d{10,})\.service$/);
+  return m ? Number(m[1]) : null;
+}
+
+function unitGone(unit) {
+  if (!unit) return true;
+  try {
+    const r = spawnSync("systemctl", ["--user", "is-active", unit], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const state = (r.stdout || "").trim();
+    return state === "" || state === "inactive" || state === "failed" || state === "unknown";
+  } catch (_) {
+    return false;
+  }
+}
+
+/* Stop a unit and verify it is inactive (a stop that "succeeds" but leaves the
+ * unit active must NOT be treated as a teardown). */
+function terminateUnit(unit) {
+  if (!unit) return true;
+  spawnSync("systemctl", ["--user", "stop", unit], { encoding: "utf8", timeout: 15000 });
+  for (let i = 0; i < 20 && !unitGone(unit); i++) sleepSync(100);
+  return unitGone(unit);
+}
+
+/* Newest mtime among a record's log files (its activity signal). The record
+ * stores absolute out/err log paths; fall back to `<serveDir>/<name>.*.log`. */
+function lastActivityMs(info, dir) {
+  const paths = [info.outLog, info.errLog];
+  const name = info.name;
+  if (name) {
+    paths.push(logPath(name, "out", dir), logPath(name, "err", dir));
+  }
+  let newest = null;
+  for (const p of paths) {
+    if (!p) continue;
+    try {
+      const m = fs.statSync(p).mtimeMs;
+      if (newest == null || m > newest) newest = m;
+    } catch (_) {
+      /* no log yet */
+    }
+  }
+  return newest;
 }
 
 /* Whether the systemd *user* manager can host a transient unit (Linux only).
@@ -293,6 +492,16 @@ async function start(flags) {
   const errLog = logPath(name, "err");
 
   fs.mkdirSync(SERVE_DIR, { recursive: true });
+  // Auto-close orphaned/idle serves first: a serve left by a killed session
+  // otherwise pins RAM and blocks this very launch (an untracked emulator refuses
+  // a same-AVD boot). A live owner's serve is never touched (see `reap`).
+  const _exit = process.exitCode;
+  try {
+    reap({ "--quiet": true });
+  } catch (_) {
+    /* auto-reap is best-effort and must never break a launch */
+  }
+  process.exitCode = _exit;
   // Reap records whose process is gone before doing anything else: a stale
   // entry must never make a fresh start (or the capacity preflight) act on a
   // phantom server.
@@ -481,6 +690,9 @@ async function start(flags) {
         unit: unit || null,
         memMax: appliedMemMax,
         cpuMax: appliedCpuMax,
+        sessionID: ownerSessionID(),
+        outLog,
+        errLog,
         startedAt: new Date().toISOString(),
       },
       null,
@@ -546,7 +758,7 @@ function stop(flags, dir) {
     // No record: release this name's own lock (covers a lock left after a crash).
     capacity.releaseHeavyLock(name);
     console.log(`${name}: not running`);
-    return;
+    return true;
   }
   let info;
   try {
@@ -556,16 +768,22 @@ function stop(flags, dir) {
   }
   const pid = info.pid;
   const group = info.group || null;
-  // A capped launch lives in a transient systemd unit: stopping the unit tears
-  // down the whole cgroup (the MainPID alone would miss reparented children).
-  if (info.unit) {
-    if (stopUnit(info.unit)) console.log(`stopped ${name} (unit ${info.unit})`);
-    else console.log(`stopped ${name} (unit ${info.unit}) — systemctl reported failure; verify with list`);
-  } else if (pid && killTree(pid)) {
-    console.log(`stopped ${name} (pid ${pid})`);
-  } else {
-    console.log(`stopped ${name} (pid ${pid}) — kill reported failure; verify with list`);
+  // Teardown, then VERIFY. A capped launch lives in a transient systemd unit
+  // (the unit, not the MainPID, tears down the whole cgroup); an uncapped one is
+  // a detached process tree. A stop that does not actually remove the process
+  // MUST NOT delete the record — deleting it is exactly how a live unit became
+  // an untracked orphan (invisible to list/stop-all/prune).
+  const gone = info.unit ? terminateUnit(info.unit) : terminateTree(pid);
+  if (!gone) {
+    console.error(
+      `stop: ${name} (${info.unit ? `unit ${info.unit}` : `pid ${pid}`}) is STILL running after teardown — ` +
+        `keeping the record so it is not orphaned. Retry, or inspect: ` +
+        `${info.unit ? `systemctl --user status ${info.unit}` : `ps -p ${pid}`}`
+    );
+    process.exitCode = 1;
+    return false;
   }
+  console.log(info.unit ? `stopped ${name} (unit ${info.unit})` : `stopped ${name} (pid ${pid})`);
   try {
     fs.unlinkSync(p);
   } catch (_) {}
@@ -576,6 +794,27 @@ function stop(flags, dir) {
   // when the last member is gone, so a shared group (emulator + dev server)
   // releases exactly once.
   capacity.releaseHeavyLock(name, group);
+  return true;
+}
+
+/* Stop every recorded serve owned by a session (used when that session ends). */
+function stopSession(sessionID) {
+  let stopped = 0;
+  for (const dir of allServeDirs()) {
+    for (const name of listNames(dir)) {
+      let info = {};
+      try {
+        info = JSON.parse(fs.readFileSync(pidFile(name, dir), "utf8"));
+      } catch (_) {
+        continue;
+      }
+      if (info.sessionID && info.sessionID === sessionID) {
+        if (stop({ "--name": name }, dir)) stopped++;
+      }
+    }
+  }
+  console.log(`stop --session ${sessionID}: ${stopped} serve(s) stopped`);
+  return stopped;
 }
 
 function listNames(dir = SERVE_DIR) {
@@ -690,7 +929,10 @@ function removeDeadRecords(dir, onRemove) {
     } catch (_) {
       info = {};
     }
-    if (isAlive(info.pid)) {
+    // A record is dead only when BOTH its pid is gone AND (if capped) its unit is
+    // inactive. A failed stop or a MainPID that changed must never be pruned into
+    // an untracked orphan while the unit is still running.
+    if (isAlive(info.pid) || (info.unit && !unitGone(info.unit))) {
       kept++;
       continue;
     }
@@ -719,14 +961,139 @@ function prune(flags) {
   console.log(`prune: removed ${removed} stale record(s), kept ${kept} live`);
 }
 
+/* reap — the mechanical auto-close for long-lived serves.
+ *
+ * A serve is STOPPED when it is provably no longer managed:
+ *   - its owning session's lease is gone or stale (heartbeat older than the idle
+ *     window) — the session ended without stopping it; or
+ *   - it is untagged (no owner) AND older than `idle_reap_minutes` AND its log
+ *     shows no recent activity.
+ * A serve is KEPT when its owner is a live session, or its log was written
+ * within the idle window. This is what closes a dev server/emulator "after use"
+ * without killing a live session's long-running tier — the leak where a
+ * crashed/killed session left `agent-serve-*` units running for hours (an
+ * untracked unit blocks the next boot: "multiple emulators with the same AVD").
+ * It also reconciles a legacy untracked unit (a record lost by the old
+ * unverified-stop bug) when that unit is old and idle. */
+function reap(flags = {}) {
+  const envelope = capacity.readEnvelope(process.cwd());
+  const idleMs = (envelope.idleReapMinutes || 90) * 60000;
+  const now = Date.now();
+
+  const units = activeServeUnits();
+  // Scan records in every known serve dir PLUS the dir behind each active unit's
+  // log, so a worktree unit's record (and its owner lease) is seen even when reap
+  // runs from the main checkout.
+  const dirs = new Set(allServeDirs());
+  for (const u of units) if (u.outLog) dirs.add(path.dirname(u.outLog));
+
+  const leasesBySession = new Map();
+  for (const dir of dirs) {
+    for (const rec of safeReadLeases(dir)) {
+      if (rec.sessionID) leasesBySession.set(rec.sessionID, rec);
+    }
+  }
+  const ownerLive = (sessionID) => {
+    if (!sessionID) return false;
+    const rec = leasesBySession.get(sessionID);
+    if (!rec) return false;
+    try {
+      return leaseLib.leaseStatus(rec, { now, maxAgeMs: idleMs }).live;
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const reaped = [];
+  const kept = [];
+  const trackedUnits = new Set();
+  for (const dir of dirs) {
+    for (const name of listNames(dir)) {
+      let info = {};
+      try {
+        info = JSON.parse(fs.readFileSync(pidFile(name, dir), "utf8"));
+      } catch (_) {
+        continue;
+      }
+      if (info.unit) trackedUnits.add(info.unit);
+      const alive = isAlive(info.pid) || (info.unit ? !unitGone(info.unit) : false);
+      if (!alive) continue; // dead record — `prune` owns that
+      if (ownerLive(info.sessionID)) {
+        kept.push(`${name} (owner live)`);
+        continue;
+      }
+      const activity = lastActivityMs(info, dir);
+      if (activity != null && now - activity < idleMs) {
+        kept.push(`${name} (active ${Math.round((now - activity) / 1000)}s ago)`);
+        continue;
+      }
+      const started = info.startedAt ? Date.parse(info.startedAt) : null;
+      const ageMs = started ? now - started : null;
+      if (!info.sessionID && ageMs != null && ageMs <= idleMs) {
+        kept.push(`${name} (untagged, ${Math.round(ageMs / 60000)}m — under idle ${envelope.idleReapMinutes}m)`);
+        continue;
+      }
+      const why = info.sessionID ? "owner gone" : `idle ${ageMs == null ? "?" : Math.round(ageMs / 60000) + "m"}`;
+      if (stop({ "--name": name }, dir)) reaped.push(`${name} (${why})`);
+      else kept.push(`${name} (stop failed)`);
+    }
+  }
+
+  // Untracked legacy units: a `.pid` record lost to the old unverified stop.
+  for (const u of units) {
+    if (trackedUnits.has(u.unit)) continue;
+    const startedAt = unitStartedAt(u.unit);
+    const ageMs = startedAt ? now - startedAt : null;
+    let activity = null;
+    if (u.outLog) {
+      try {
+        activity = fs.statSync(u.outLog).mtimeMs;
+      } catch (_) {
+        /* no log */
+      }
+    }
+    if (activity != null && now - activity < idleMs) {
+      kept.push(`${u.unit} (untracked, active)`);
+      continue;
+    }
+    if (ageMs != null && ageMs <= idleMs) {
+      kept.push(`${u.unit} (untracked, ${Math.round(ageMs / 60000)}m)`);
+      continue;
+    }
+    if (terminateUnit(u.unit)) reaped.push(`${u.unit} (untracked orphan)`);
+    else kept.push(`${u.unit} (stop failed)`);
+  }
+
+  if (flags["--json"]) {
+    console.log(JSON.stringify({ reaped, kept }));
+  } else if (!flags["--quiet"] || reaped.length) {
+    for (const r of reaped) console.log(`reaped ${r}`);
+    if (!flags["--quiet"]) for (const k of kept) console.log(`kept   ${k}`);
+    console.log(`reap: ${reaped.length} reaped, ${kept.length} kept (idle ${envelope.idleReapMinutes}m)`);
+  }
+  return reaped.length;
+}
+
 function isAlive(pid) {
   if (!pid || pid === "?") return false;
   try {
     process.kill(pid, 0);
-    return true;
   } catch (_) {
     return false;
   }
+  // A zombie still answers kill(0) but is not running. Treat it as gone, or a
+  // confirmed teardown reads as "still running" and its record is never removed.
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const close = stat.lastIndexOf(")");
+      const state = close === -1 ? "" : stat.slice(close + 2).split(" ")[0];
+      if (state === "Z") return false;
+    } catch (_) {
+      /* /proc entry gone → not alive */
+    }
+  }
+  return true;
 }
 
 function list() {
@@ -935,7 +1302,8 @@ function main() {
       runCommand(flags);
       break;
     case "stop":
-      stop(flags);
+      if (flags["--session"]) stopSession(flags["--session"]);
+      else stop(flags);
       break;
     case "stop-all":
       stopAll();
@@ -946,9 +1314,12 @@ function main() {
     case "prune":
       prune(flags);
       break;
+    case "reap":
+      reap(flags);
+      break;
     default:
       console.error(
-        'usage: node scripts/serve.js <start|run|stop|stop-all|list|prune> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--group <tier>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--worktrees] [--mem-max 4G] [--cpu-max 250%]'
+        'usage: node scripts/serve.js <start|run|stop|stop-all|list|prune|reap> [--cmd "..."] [--url <url>] [--port <n>] [--name <label>] [--group <tier>] [--timeout <ms>] [--heavy] [--force] [--no-cap] [--worktrees] [--mem-max 4G] [--cpu-max 250%] [--session <ses_...>] [--json] [--quiet]'
       );
       process.exitCode = 1;
   }

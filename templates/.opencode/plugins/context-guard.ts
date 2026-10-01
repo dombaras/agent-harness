@@ -367,6 +367,21 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
             childParent.delete(id)
             sessionModel.delete(id)
             sessions.delete(id)
+            // Auto-close this session's long-lived serves (dev server/emulator):
+            // the harness must not leave them orphaned after the session ends.
+            // Detached + best-effort; `reap` never touches a live owner's serve.
+            try {
+              const serve = path.join(directory, "scripts", "serve.js")
+              if (fs.existsSync(serve)) {
+                spawn(process.execPath, [serve, "reap"], {
+                  cwd: directory,
+                  detached: true,
+                  stdio: "ignore",
+                }).unref()
+              }
+            } catch {
+              /* reaping is best-effort */
+            }
           }
           return
         }
