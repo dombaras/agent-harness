@@ -33,7 +33,14 @@
 #   devName          serve.js label             (default: app-dev)
 # Env overrides: MOBILE_E2E_APK / MOBILE_E2E_DEV_CMD / MOBILE_E2E_DEV_URL /
 #   MOBILE_E2E_DEV_NAME / MOBILE_E2E_SKIP_BUILD / MOBILE_E2E_SKIP_INSTALL /
-#   MOBILE_E2E_OVERLAP (default 1).
+#   MOBILE_E2E_OVERLAP (default 1) / MOBILE_E2E_DEV_MEM_MAX (dev-server cgroup
+#   cap, default 2560M).
+#
+# The dev server gets an EXPLICIT --mem-max: serve.js sums group member CAPS, so
+# without it the dev server would claim the whole heavy_mem_max_mb default and
+# the later emulator would be tightened to the tiny remainder (= its guest RAM,
+# pinning qemu against its cgroup cap). 2560M covers next dev's ~1.9 GB peak and
+# leaves the group budget for the emulator (see boot-emulator.sh --mem-max).
 #
 # Usage:
 #   scripts/qa/mobile-e2e/device-up.sh            # full bring-up
@@ -52,7 +59,7 @@ WITH_DEV=1
 for arg in "$@"; do
   case "$arg" in
     --no-dev) WITH_DEV=0 ;;
-    -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -66,6 +73,7 @@ APK="${MOBILE_E2E_APK:-$(cfg apk)}"
 DEV_CMD="${MOBILE_E2E_DEV_CMD:-$(cfg devCmd)}"
 DEV_URL="${MOBILE_E2E_DEV_URL:-$(cfg devUrl)}"
 DEV_NAME="${MOBILE_E2E_DEV_NAME:-$(cfg devName)}"
+DEV_MEM_MAX="${MOBILE_E2E_DEV_MEM_MAX:-2560}M"
 [ -z "$DEV_CMD" ] && DEV_CMD="npm run dev"
 [ -z "$DEV_URL" ] && DEV_URL="http://localhost:3000"
 [ -z "$DEV_NAME" ] && DEV_NAME="app-dev"
@@ -117,8 +125,8 @@ T_BUILD="$(now_ms)"
 #    4. The dev server is independent of the device, so when overlap is on it is
 #    started concurrently with the boot and joined after the install.
 start_dev() {
-  echo "[4/5] dev server ($DEV_NAME) via serve.js --group $TIER_GROUP"
-  node scripts/serve.js start --cmd "$DEV_CMD" --url "$DEV_URL" --name "$DEV_NAME" --group "$TIER_GROUP"
+  echo "[4/5] dev server ($DEV_NAME) via serve.js --group $TIER_GROUP (mem<=$DEV_MEM_MAX)"
+  node scripts/serve.js start --cmd "$DEV_CMD" --url "$DEV_URL" --name "$DEV_NAME" --group "$TIER_GROUP" --mem-max "$DEV_MEM_MAX"
 }
 
 echo "[2/5] adb server + emulator (boot-emulator.sh)"

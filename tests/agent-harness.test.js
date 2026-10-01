@@ -8339,6 +8339,15 @@ test("[drift-guard] the device tier boots the build before the emulator and fall
   assert.match(boot, /auto-selected gpu=.*crashed/, "boot-emulator.sh names the crashing backend");
   assert.match(boot, /-z "\$\{MOBILE_E2E_GPU:-\}"/, "the fallback defers to an explicitly pinned GPU");
   assert.match(boot, /swiftshader_indirect/, "the fallback uses the software rasterizer");
+  // The emulator's cgroup cap must be EXPLICIT (guest RAM + 2048 MB) so serve.js's
+  // group-budget split — which sums member CAPS — cannot tighten it down to the
+  // remainder (= guest RAM) and pin qemu against its cap (constant reclaim). The
+  // dev server needs the matching explicit cap to leave that headroom.
+  assert.match(boot, /MOBILE_E2E_MEM_MAX:-\$\(\(MEMORY \+ 2048\)\)/, "the emulator cgroup cap defaults to guest RAM + 2 GB");
+  assert.match(boot, /--mem-max "\$\{MEM_CAP\}M"/, "boot-emulator passes the explicit emulator cap");
+  const deviceUpMem = read(path.join(meDir, "device-up.sh"));
+  assert.match(deviceUpMem, /MOBILE_E2E_DEV_MEM_MAX:-2560/, "the dev-server cgroup cap defaults to 2560M");
+  assert.match(deviceUpMem, /--mem-max "\$DEV_MEM_MAX"/, "device-up passes the explicit dev-server cap");
 
   const det = read(path.join(meDir, "run-detached.sh"));
   assert.match(det, /--wait blocks this shell/, "run-detached.sh warns that --wait blocks the tool");
@@ -9071,6 +9080,7 @@ test("boot-emulator.sh --print-profile derives the profile from the host and AVD
   assert.strictEqual(derived.avdCores, 2, "the AVD config is read");
   assert.strictEqual(derived.cores, 2, "cores are capped by the AVD's 2-core config");
   assert.strictEqual(derived.memory, 2048, "RAM default comes from the capacity envelope");
+  assert.strictEqual(derived.memMax, 2048 + 2048, "the emulator cgroup cap defaults to guest RAM + 2 GB");
   assert.ok(["host", "swiftshader_indirect"].includes(derived.gpu), "GPU backend is auto-detected");
   assert.ok("gpuEnv" in derived, "the profile carries the resolved GL env (null off WSL)");
 
@@ -9083,6 +9093,7 @@ test("boot-emulator.sh --print-profile derives the profile from the host and AVD
   });
   assert.strictEqual(over.cores, 6);
   assert.strictEqual(over.memory, 3072);
+  assert.strictEqual(over.memMax, 3072 + 2048, "the cgroup cap tracks guest RAM");
   assert.strictEqual(over.gpu, "host");
 });
 

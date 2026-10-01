@@ -132,6 +132,21 @@ each member's per-process cap is generous (a 2048 MB AVD peaks ~4.4 GB RSS), so
 emulator + dev server each take 5 GB and fill the VM. An explicit `--mem-max` wins;
 a near-exhausted budget refuses (`--force` overrides).
 
+**Both members set an explicit `--mem-max`** (the group budget sums *caps*, not
+usage, so leaving them implicit lets the first-started member claim the full
+`heavy_mem_max_mb` and tightens the second to the tiny remainder — which pinned
+the emulator at exactly its guest RAM, ~95 k reclaim events):
+
+| Member | Cap | Override |
+| --- | --- | --- |
+| dev server (`next dev`) | `2560 MB` | `MOBILE_E2E_DEV_MEM_MAX` |
+| emulator (`qemu`) | `guest RAM + 2048 MB` | `MOBILE_E2E_MEM_MAX` |
+
+Keep `devCap + emuCap ≤ group_mem_max_mb` (2560 + 4096 = 6656 ≤ 7168). If you
+raise `emulator_ram_mb`, the emulator cap scales with it and you may need to raise
+`group_mem_max_mb` too; on a software renderer (`swiftshader_indirect`) set
+`MOBILE_E2E_MEM_MAX` higher, since QEMU's RSS there is well above guest RAM.
+
 ### Building the APK (always capped)
 
 `scripts/qa/mobile-e2e/build-apk.sh` builds the release APK: it runs `expo prebuild`
@@ -158,8 +173,9 @@ warning elsewhere.
   observed QEMU RSS at a 2048 MB guest is ~4.4 GB. `boot-emulator.sh` right-sizes
   cores to the host (a fixed 2 cores made QEMU the bottleneck on an 8-vCPU box),
   reads guest RAM from the envelope, and picks the GPU backend automatically.
-  Keep `heavy_mem_max_mb` ≥ `emulator_ram_mb` + ~2 GB, or the emulator is
-  OOM-killed inside its own cgroup. `serve.js` refuses a heavy launch that would
+  The emulator's own cgroup cap defaults to `emulator_ram_mb` + ~2 GB
+  (`MOBILE_E2E_MEM_MAX`), leaving room for QEMU's host-side overhead and page
+  cache instead of pinning it at guest RAM. `serve.js` refuses a heavy launch that would
   exceed the capacity envelope (`.agents/memory/orchestration.md`) — stop another
   tier first, or `--force` to override deliberately.
 - The SDK path and AVD name are per-project. On WSL2 the active AVD is

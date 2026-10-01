@@ -19,6 +19,13 @@
 #     room. A fixed 2 cores on an 8-vCPU box made qemu the bottleneck.
 #   * Guest RAM comes from the capacity envelope (`emulator_ram_mb`, the single
 #     owner of the number), not a second hardcoded literal.
+#   * The emulator's cgroup cap is set EXPLICITLY (`--mem-max` = guest RAM +
+#     2048 MB). serve.js sums group member CAPS, so without an explicit cap the
+#     EMULATOR (started after the dev server) would be tightened to the group
+#     remainder — which, with the dev server already holding the full default,
+#     equals guest RAM and pins qemu against its cap (constant reclaim). The
+#     +2048 MB is the documented `emulator_ram_mb + ~2 GB` headroom for qemu's
+#     host-side overhead and page cache.
 #   * The GPU backend is auto-detected: `host` only when a real GPU/renderer is
 #     present, else `swiftshader_indirect` (the safe WSL2 fallback). `-gpu host`
 #     on a box whose only renderer is llvmpipe is software GL anyway.
@@ -38,6 +45,7 @@
 #   MOBILE_E2E_GPU         gpu backend         (default: auto-detected)
 #   MOBILE_E2E_CORES       vCPU cores          (default: host/AVD-derived)
 #   MOBILE_E2E_MEMORY      RAM in MB           (default: envelope emulator_ram_mb)
+#   MOBILE_E2E_MEM_MAX     cgroup cap in MB     (default: MOBILE_E2E_MEMORY + 2048)
 #   MOBILE_E2E_TIER_GROUP  heavy-tier group    (default: mobile)
 #   MOBILE_E2E_SNAPSHOT    quickboot snapshot  (default 1; `0` = cold boot)
 #   MOBILE_E2E_SNAPSHOT_NAME snapshot name      (default agent-e2e)
@@ -150,6 +158,12 @@ MEMORY="${MOBILE_E2E_MEMORY:-$(resolve_memory)}"
 GPU="${MOBILE_E2E_GPU:-$(detect_gpu)}"
 case "$CORES" in ''|*[!0-9]*) CORES=2 ;; esac
 case "$MEMORY" in ''|*[!0-9]*) MEMORY=2048 ;; esac
+# Explicit cgroup cap so serve.js's group budget does not tighten the emulator
+# (started after the dev server) down to the group remainder = guest RAM. Guest
+# RAM + 2048 MB covers qemu's host-side overhead + page cache (docs: keep the
+# cap >= emulator_ram_mb + ~2 GB).
+MEM_CAP="${MOBILE_E2E_MEM_MAX:-$((MEMORY + 2048))}"
+case "$MEM_CAP" in ''|*[!0-9]*) MEM_CAP=$((MEMORY + 2048)) ;; esac
 
 # When the backend is a real GPU reached over WSL's d3d12 path, the emulator
 # inherits the same driver selection (serve.js runs the command through a shell
@@ -175,13 +189,13 @@ if [ "$GPU" != "host" ] && is_wsl_gpu && [ -z "${MOBILE_E2E_GPU:-}" ]; then
 fi
 
 if [ "$PRINT_PROFILE" = "2" ]; then
-  sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
 if [ "$PRINT_PROFILE" = "1" ]; then
-  node -e "process.stdout.write(JSON.stringify({avd:process.argv[1]||null,hostCpus:Number(process.argv[2]),avdCores:Number(process.argv[3]),cores:Number(process.argv[4]),memory:Number(process.argv[5]),gpu:process.argv[6],gpuEnv:process.argv[7]||null,gpuExtra:process.argv[8]||null,tierGroup:process.argv[9]},null,2)+'\n')" \
-    "$AVD" "$HOST_CPUS" "$AVD_CORES" "$CORES" "$MEMORY" "$GPU" "$GPU_ENV" "$GPU_EXTRA" "$TIER_GROUP"
+  node -e "process.stdout.write(JSON.stringify({avd:process.argv[1]||null,hostCpus:Number(process.argv[2]),avdCores:Number(process.argv[3]),cores:Number(process.argv[4]),memory:Number(process.argv[5]),memMax:Number(process.argv[6]),gpu:process.argv[7],gpuEnv:process.argv[8]||null,gpuExtra:process.argv[9]||null,tierGroup:process.argv[10]},null,2)+'\n')" \
+    "$AVD" "$HOST_CPUS" "$AVD_CORES" "$CORES" "$MEMORY" "$MEM_CAP" "$GPU" "$GPU_ENV" "$GPU_EXTRA" "$TIER_GROUP"
   exit 0
 fi
 
@@ -251,7 +265,7 @@ start_emulator() {
   if [ "$snap" = "on" ]; then snaparg="-snapshot $SNAPSHOT_NAME"; else snaparg="-no-snapshot"; fi
   node scripts/serve.js start \
     --cmd "$gpu_env $EMULATOR -avd $AVD -no-window -no-audio -no-boot-anim $snaparg -gpu $gpu $gpu_extra -cores $CORES -memory $MEMORY" \
-    --name emulator --port 5554 --group "$TIER_GROUP" --timeout 180000
+    --name emulator --port 5554 --group "$TIER_GROUP" --mem-max "${MEM_CAP}M" --timeout 180000
 }
 
 # 4. Bounded readiness gate — never sleep-and-pray, and never let a wedged adb
