@@ -374,6 +374,15 @@ function createSessionState() {
     // wait/poll advisory (B)
     waitPending: false,
     waitFlagged: false,
+    // structural tool blocks: the first pure inspection of each head / poll of
+    // each kind is blocked once per session (see inspectBlockText/pollBlockText).
+    blockedInspectHeads: new Set(),
+    blockedPollKinds: new Set(),
+    // session-start orientation injection: the one-call `orient --brief` block,
+    // injected into the cache-safe tail until the session's first material action
+    // (then cleared) so a resume/claim prologue re-derives nothing by hand.
+    orientPending: false,
+    orientText: null,
   };
 }
 
@@ -465,6 +474,7 @@ function noteToolCall(state, tool, args, stuck) {
     state.materialSeen = true;
     state.noStateTurns = 0;
     state.noStatePending = false;
+    state.orientPending = false; // real work began — drop the session-start orient block
     resetGateRuns(state); // a batched edit invalidates prior gate results
   }
   const exempt = isLoopExempt(tool, args);
@@ -950,6 +960,16 @@ function dumpCommand(command) {
 const INSPECT_TEXT =
   "TOOL GUARD — read-only shell inspection detected. Use the dedicated tools instead of shell `cat`/`ls`/`grep`/`find`/`sed`: `Read` (targeted with `offset`/`limit`), `Grep`, and `Glob`. They honour the project `.ignore` rules, return bounded output, and keep the transcript small. Reserve the shell for real commands and pipelines.";
 
+/* Structural escalation of INSPECT_TEXT. The 0.1.104 advisory did not move the
+ * measured habit (shell file-inspection stayed ~33% of bash two weeks later), so
+ * the FIRST pure inspection of each head in a primary session is BLOCKED once,
+ * with the dedicated-tool instruction. The caller may opt out for the machine
+ * with `AGENT_GUARD_TOOLBLOCK=0`; a downstream filter (`git log | grep`) is not a
+ * pure inspection and never blocks. */
+function inspectBlockText(head) {
+  return `TOOL BLOCK — \`${head}\` is a read-only shell inspection the dedicated tools already cover; this one is blocked. Retry with \`Read\` (targeted \`offset\`/\`limit\`), \`Grep\`, or \`Glob\` — they honour the project \`.ignore\`, bound the output, and keep the transcript small. Use the shell only for real commands and pipelines. (Disable this block with \`AGENT_GUARD_TOOLBLOCK=0\`.)`;
+}
+
 const READ_TEXTS = Object.freeze({
   reread:
     "TOOL GUARD — you already read this file in this session. Do not re-read it whole; it is already in context. Re-read only a specific changed region with `offset`/`limit`, or use `Grep` to locate the needed lines.",
@@ -996,6 +1016,18 @@ function notePollCall(state, command) {
   state.waitFlagged = true;
   state.waitPending = true;
   return { poll: true, kind, firstFlag: true };
+}
+
+/* Structural twin of notePollCall: block the FIRST poll of each kind in a
+ * primary session (once), naming the bounded waiter. Same opt-out as the
+ * inspection block. */
+function pollBlockText(kind) {
+  return `TOOL BLOCK — hand-rolled polling (\`${kind}\`) is blocked; it wastes wall-clock and re-bills context per poll. Use the bounded waiter: the \`wait\` tool (or \`npm run wait -- --job <record.json>\` / \`--ci [--commit <sha>]\` / \`--file <log> --grep <re>\` / \`--health <url>\` / \`--port <n>\`), or \`scripts/qa/mobile-e2e/run-detached.sh --wait\` for a device matrix. (Disable this block with \`AGENT_GUARD_TOOLBLOCK=0\`.)`;
+}
+
+/* Whether the structural tool blocks are enabled for this machine. */
+function toolBlockEnabled(env) {
+  return String((env || process.env).AGENT_GUARD_TOOLBLOCK || "") !== "0";
 }
 
 const READ_LARGE_BYTES = 20000;
@@ -1185,10 +1217,12 @@ module.exports = {
   INSPECT_TEXT,
   READ_TEXTS,
   DUMP_TEXT,
-  INSPECT_TEXT,
   WAIT_TEXT,
   EDIT_MISS_TEXT,
   GATE_RERUN_TEXT,
+  inspectBlockText,
+  pollBlockText,
+  toolBlockEnabled,
   pollCommand,
   notePollCall,
   noteInspect,

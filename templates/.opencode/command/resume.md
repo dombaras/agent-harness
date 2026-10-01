@@ -8,9 +8,12 @@ Resume the named work unit from its deterministic checkpoint.
    optionally `--feature <id>`. This returns, in a single invocation: the tree
    root + branch + HEAD + dirty count, the active feature, its checkpoint
    (phase + next action), the board In-progress + next-queued rows, owned files,
-   the live `serve.js` jobs + capacity verdict, the last device-run summary, and
-   the harness version. It replaces the hand-rolled `git rev-parse`/`branch`/
-   `status`, `serve.js list`, `test:capacity`, and memory-read prologue.
+   the live `serve.js` jobs + capacity verdict, the last device-run summary, the
+   harness version, **and a bounded digest of the session-start memory files**
+   (each file's section index + first table). It replaces the hand-rolled
+   `git rev-parse`/`branch`/`status`, `serve.js list`, `test:capacity`, and
+   memory-read prologue; use the digest and open a memory file only for a fact it
+   does not carry.
 2. **Determine the feature ID** (BACKLOG row ID or handoff slug). `orient`
    infers it from the board (single In-progress row) or the branch; if it is not
    clear, confirm the ID — never guess a file.

@@ -301,6 +301,35 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     }
   }
 
+  /* Session-start orientation injection. A resume/claim session otherwise spends
+   * its prologue re-deriving git/serve/capacity state and re-reading the
+   * session-start memory files (the 2026-10 LibraryOS recon measured a 24-call
+   * average prologue across 193 sessions and `serve.js list` 91×). Run the
+   * one-call `orient --brief` OFF the event loop (async — it spawns git/backlog)
+   * and stash its text on the session state; the transform injects it into the
+   * cache-safe tail until the first material action clears it. Best-effort:
+   * a missing script or a failed spawn injects nothing and never blocks. */
+  const collectOrient = async (sid: string, root: string) => {
+    try {
+      const script = path.join(root, "scripts", "orient.js")
+      if (!fs.existsSync(script)) return
+      const res = await toolLib.runScriptAsync(
+        { directory: root, sessionID: sid },
+        "scripts/orient.js",
+        ["--brief", "--root", root],
+        { label: "orient", timeout: 25000 }
+      )
+      const text = String(res.stdout || "").trim()
+      if (res.code !== 0 || !text) return
+      const state = stateFor(sid)
+      state.orientText = text
+      state.orientPending = true
+      logEvent({ kind: "orient", sessionID: sid, bytes: text.length })
+    } catch {
+      /* best-effort — orientation is an accelerator, never a gate */
+    }
+  }
+
   // Sweep leases left by crashed/closed sessions so they can never block the
   // concurrency gate. Runs once per plugin load (best-effort).
   try {
@@ -325,6 +354,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           } else if (type === "session.created" && props.info?.id) {
             writeLease(props.info.id)
             syncBoard()
+            void collectOrient(props.info.id, directory)
           }
           return
         }
@@ -631,6 +661,8 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       }
       if (isPrimary(input?.sessionID)) {
         const state = stateFor(input.sessionID)
+        let blockMessage: string | null = null
+        const toolBlocking = guard.toolBlockEnabled(process.env)
         if (capNotice) {
           logEvent({
             kind: "capacity",
@@ -657,6 +689,13 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
               if (rearm.fire) {
                 logEvent({ kind: "tool-choice", sessionID: input.sessionID, tool: inspect, rearm: true, count: rearm.count })
               }
+              // Structural escalation: block the first pure inspection of this
+              // head once, so the 0.1.104 advisory-only attempt cannot be ignored
+              // (measured: shell inspection stayed ~33% of bash two weeks later).
+              if (toolBlocking && !state.blockedInspectHeads.has(inspect)) {
+                state.blockedInspectHeads.add(inspect)
+                blockMessage = guard.inspectBlockText(inspect)
+              }
             }
             const dump = guard.dumpCommand(command)
             if (dump && !state.dumpFlagged) {
@@ -669,6 +708,10 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
             if (poll.firstFlag) {
               logEvent({ kind: "poll", sessionID: input.sessionID, mode: poll.kind })
             }
+            if (poll.poll && toolBlocking && !state.blockedPollKinds.has(poll.kind)) {
+              state.blockedPollKinds.add(poll.kind)
+              blockMessage = blockMessage || guard.pollBlockText(poll.kind)
+            }
             // Gate re-run advisory (F): same gate repeated with no edit between.
             const gate = guard.noteGateRun(state, command, loadThresholds().stuck.gate_rerun_turns)
             if (gate.fire) {
@@ -680,6 +723,14 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
           }
         } catch {
           /* never break the tool call */
+        }
+        // The structural tool blocks throw OUTSIDE the swallow-everything block
+        // above (like the branch-switch/capacity guards), so the blocked call is
+        // aborted and the agent retries with the dedicated tool / bounded waiter.
+        if (blockMessage) {
+          logEvent({ kind: "tool-block", sessionID: input.sessionID, message: blockMessage.slice(0, 120) })
+          await report(blockMessage)
+          throw new Error(blockMessage)
         }
       }
       try {
@@ -801,8 +852,13 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         if (!isPrimary(sid)) return
         const state = stateFor(sid)
         // The capacity notice (set by the heavy-launch guard) rides the same
-        // cache-safe tail message as the context-budget nudges.
-        const text = [guard.composeGuardText(state, loadThresholds()), state.resourceNotice]
+        // cache-safe tail message as the context-budget nudges; the session-start
+        // orientation block rides it too until the first material action.
+        const text = [
+          guard.composeGuardText(state, loadThresholds()),
+          state.orientPending ? state.orientText : null,
+          state.resourceNotice,
+        ]
           .filter(Boolean)
           .join("\n\n")
         if (!text) return

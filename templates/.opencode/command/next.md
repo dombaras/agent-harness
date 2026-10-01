@@ -12,10 +12,10 @@ Pull the next item off the Queue and start working on it — no confirmation nee
    Remember the returned `<id>` — you own it now.
 2. **Orient in one call:** run `node scripts/orient.js --feature <id>` (the
    `orient` tool) — it returns the tree root + branch + HEAD + dirty count, the
-   board rows, owned files, checkpoint, live serve jobs + capacity verdict, and
-   the last device-run summary in a single call. Then read the memory files it
-   points at: `.agents/memory/locations.md`, `.agents/memory/model-routing.md`,
-   `.agents/memory/product-principles.md`.
+   board rows, owned files, checkpoint, live serve jobs + capacity verdict, the
+   last device-run summary, **and a bounded digest of the session-start memory
+   files** (section index + first table each) in a single call. Use that digest;
+   open a memory file only for a fact it does not carry.
 3. Isolate from the MAIN tree: `node scripts/backlog.js worktree <id>` (creates a git
    worktree + branch and records it in the row's Handoff cell; the row is already
    In progress from step 1). Every feature works in its own worktree — `main` stays

@@ -110,6 +110,98 @@ function ownedFor(root, feature) {
   return m ? m[1].trim() : null;
 }
 
+/* The memory files the operating rules name as session-start reads. Their
+ * content is project-owned and open-ended, so orient does not attempt to
+ * summarize prose — it extracts the stable, machine-shaped facts (the `##`
+ * section index and the FIRST markdown table) and caps them, so a session can
+ * often answer its orientation question without opening the file at all. */
+const MEMORY_FILES = [
+  "environments.md",
+  "model-routing.md",
+  "orchestration.md",
+  "locations.md",
+  "product-principles.md",
+];
+const MAX_SECTIONS = 8;
+const MAX_TABLE_ROWS = 6;
+const MAX_CELL = 64;
+
+function splitRow(line) {
+  return String(line)
+    .replace(/^\s*\|/, "")
+    .replace(/\|\s*$/, "")
+    .split("|")
+    .map((c) => c.trim())
+    .map((c) => (c.length > MAX_CELL ? c.slice(0, MAX_CELL - 1) + "\u2026" : c));
+}
+
+function isTableSeparator(line) {
+  return /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes("-");
+}
+
+/* First markdown table in the source: { header, rows } or null. Pure. */
+function parseFirstTable(src) {
+  const lines = String(src).split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s*\|/.test(lines[i])) continue;
+    const header = splitRow(lines[i]);
+    const sep = lines[i + 1];
+    // A markdown table must have a separator row of dashes.
+    if (!sep || !/^\s*\|/.test(sep) || !isTableSeparator(sep)) continue;
+    const rows = [];
+    for (let j = i + 2; j < lines.length && /^\s*\|/.test(lines[j]); j++) {
+      const cells = splitRow(lines[j]);
+      // Skip a blank placeholder row.
+      if (cells.some((c) => c.length)) rows.push(cells);
+      if (rows.length >= MAX_TABLE_ROWS) break;
+    }
+    return { header, rows };
+  }
+  return null;
+}
+
+/* `## ` section titles, capped. Pure. */
+function parseSections(src) {
+  const out = [];
+  for (const line of String(src).split(/\r?\n/)) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m && m[1] && m[1] !== "Table of contents") out.push(m[1]);
+    if (out.length >= MAX_SECTIONS) break;
+  }
+  return out;
+}
+
+/* Digest every session-start memory file: { file, exists, bytes, sections, table }. */
+function memoryDigest(root) {
+  return MEMORY_FILES.map((file) => {
+    const abs = path.join(root, ".agents", "memory", file);
+    const src = safe(() => fs.readFileSync(abs, "utf8"), null);
+    if (src == null) return { file, exists: false };
+    return {
+      file,
+      exists: true,
+      bytes: Buffer.byteLength(src),
+      sections: parseSections(src),
+      table: parseFirstTable(src),
+    };
+  });
+}
+
+/* Render the digest as a bounded block for the human/brief output. */
+function renderMemoryDigest(memory) {
+  const lines = [];
+  for (const m of memory || []) {
+    if (!m.exists) continue;
+    if (m.sections && m.sections.length) lines.push(`  ${m.file}: ${m.sections.join(" · ")}`);
+    if (m.table) {
+      lines.push(`    ${m.table.header.join(" | ")}`);
+      for (const row of m.table.rows) lines.push(`    ${row.join(" | ")}`);
+    }
+  }
+  return lines;
+}
+
+
 /* The feature this session is working: explicit flag, else the board's single
  * In-progress row, else the branch/dir name when it names a row. */
 function inferFeature(explicit, branch, cwd, board) {
@@ -183,6 +275,7 @@ function collectOrient(opts = {}) {
     ownedFiles: owned,
     checkpoint: checkpointState,
     capacity: cap,
+    memory: memoryDigest(root),
     lastE2e: lastE2eRun(root),
     harnessVersion: harnessVersion(root),
   };
@@ -223,14 +316,46 @@ function printHuman(o) {
   lines.push(
     `last e2e: ${o.lastE2e ? `${o.lastE2e.failed || 0} failed / ${o.lastE2e.total != null ? o.lastE2e.total : "?"} (${o.lastE2e.at || "?"})` : "none recorded"}`
   );
+  const mem = renderMemoryDigest(o.memory);
+  if (mem.length) {
+    lines.push("memory digest (session-start reads — open a file only for detail):");
+    lines.push(...mem);
+  }
+  return lines.join("\n");
+}
+
+/* Compact single-block render for session-start injection: the actionable
+ * orientation facts only, bounded so it can ride a plugin nudge without
+ * dominating context. */
+function printBrief(o) {
+  const lines = [];
+  lines.push(
+    `SESSION ORIENT — ${o.repo.kind || "outside-git"} @ ${o.repo.branch || "?"} (HEAD ${o.repo.head || "?"}, ${o.repo.dirty == null ? "?" : o.repo.dirty} dirty)`
+  );
+  lines.push(`harness ${o.harnessVersion || "?"} · root ${o.root}`);
+  if (o.feature) lines.push(`feature ${o.feature}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`);
+  if (o.checkpoint) lines.push(`checkpoint ${o.checkpoint.phase || "?"} · next: ${o.checkpoint.nextAction || "?"}`);
+  if (o.board) {
+    const ip = o.board.inprogress.map((r) => r.id).join(", ") || "none";
+    lines.push(`board In progress [${ip}]${o.board.nextQueued.length ? ` · next ${o.board.nextQueued.map((r) => r.id).join(", ")}` : ""}`);
+  }
+  if (o.capacity) lines.push(`capacity ${o.capacity.ok ? "ok" : "EXCEEDED: " + o.capacity.reasons.join("; ")} · serves ${o.capacity.serves.join(", ") || "none"}`);
+  if (o.lastE2e) lines.push(`last e2e ${o.lastE2e.failed || 0} failed / ${o.lastE2e.total != null ? o.lastE2e.total : "?"}`);
+  const mem = renderMemoryDigest(o.memory);
+  if (mem.length) {
+    lines.push("memory digest (open a file only for detail):");
+    lines.push(...mem);
+  }
+  lines.push("Proceed from the checkpoint/next; do not re-derive git/serve/capacity state by hand.");
   return lines.join("\n");
 }
 
 function parseArgs(argv) {
-  const out = { feature: null, json: false, root: null, help: false };
+  const out = { feature: null, json: false, brief: false, root: null, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--json") out.json = true;
+    else if (a === "--brief") out.brief = true;
     else if (a === "--help" || a === "-h") out.help = true;
     else if (a === "--feature") out.feature = argv[++i];
     else if (a.startsWith("--feature=")) out.feature = a.slice("--feature=".length);
@@ -243,7 +368,7 @@ function parseArgs(argv) {
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log("Usage: node scripts/orient.js [--feature <id>] [--json] [--root <dir>]");
+    console.log("Usage: node scripts/orient.js [--feature <id>] [--json] [--brief] [--root <dir>]");
     return;
   }
   // Run board/backlog subprocesses relative to the resolved root.
@@ -259,6 +384,7 @@ function main() {
   };
   const o = collectOrient({ root, feature: args.feature, run: runCmd });
   if (args.json) console.log(JSON.stringify(o, null, 2));
+  else if (args.brief) console.log(printBrief(o));
   else console.log(printHuman(o));
 }
 
@@ -273,14 +399,20 @@ if (require.main === module) {
 
 module.exports = {
   SCHEMA,
+  MEMORY_FILES,
   collectOrient,
   inferFeature,
   checkoutKind,
   ownedFor,
+  parseFirstTable,
+  parseSections,
+  memoryDigest,
+  renderMemoryDigest,
   lastE2eRun,
   boardSnapshot,
   gitRunner,
   parseArgs,
   printHuman,
+  printBrief,
   fmt,
 };

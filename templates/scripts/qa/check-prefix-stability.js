@@ -16,7 +16,15 @@
  * timestamp with a clock time, an absolute user/home path, or a session id is
  * per-run content and fails.
  *
- * Usage: node scripts/qa/check-prefix-stability.js [--root <dir>]
+ * It also enforces a SIZE budget on the harness-owned prefix files (the
+ * rulebook + operating summary). The prefix is billed every turn, so unchecked
+ * growth silently raises the floor cost of every session; the budget is set a
+ * little above the current size and forces a deliberate check before it grows
+ * again. Project-owned memory files are unbounded (they legitimately vary).
+ * `AGENT_PREFIX_STRICT=0` disables the size check; `AGENT_PREFIX_MAX_BYTES`
+ * overrides the combined harness-owned ceiling.
+ *
+ * Usage: node scripts/qa/check-prefix-stability.js [--root <dir>] [--json]
  */
 
 const fs = require("fs");
@@ -24,6 +32,23 @@ const path = require("path");
 const argv = process.argv.slice(2);
 const rootFlag = argv.indexOf("--root");
 const root = path.resolve(rootFlag !== -1 && argv[rootFlag + 1] ? argv[rootFlag + 1] : path.resolve(__dirname, "..", ".."));
+const jsonOut = argv.includes("--json");
+const strict = process.env.AGENT_PREFIX_STRICT !== "0";
+
+/* Per-file size ceilings (bytes) for the harness-owned prefix files. Set just
+ * above the shipped size so a real growth must be a deliberate bump, not a
+ * quiet accumulation. Memory files are project-owned and deliberately absent. */
+const SIZE_BUDGET = {
+  "AGENTS.md": 10240,
+  ".agents/AGENTS.md": 48128,
+  ".agents/rules/00-operating.md": 30720,
+};
+/* Combined harness-owned ceiling; `AGENT_PREFIX_MAX_BYTES` overrides. */
+const DEFAULT_TOTAL_BUDGET = 89088; // ≈ 87 KB
+const totalBudget = (() => {
+  const n = Number(process.env.AGENT_PREFIX_MAX_BYTES);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TOTAL_BUDGET;
+})();
 
 /* The always-loaded prefix: root dispatcher -> rulebook -> rules summary, then
  * the memory files the operating rules name as session-start reads. BACKLOG.md
@@ -60,6 +85,8 @@ const PATTERNS = [
 const findings = [];
 const warnings = [];
 const checked = [];
+let budgetedTotal = 0;
+const sizes = [];
 
 for (const entry of PREFIX_FILES) {
   const rel = entry.rel;
@@ -68,6 +95,9 @@ for (const entry of PREFIX_FILES) {
     warnings.push(`missing prefix file: ${rel}`);
     continue;
   }
+  const bytes = fs.statSync(abs).size;
+  sizes.push({ rel, bytes, maxBytes: SIZE_BUDGET[rel] || null });
+  if (SIZE_BUDGET[rel]) budgetedTotal += bytes;
   const src = fs.readFileSync(abs, "utf8");
   checked.push(rel);
   src.split(/\r?\n/).forEach((line, i) => {
@@ -80,12 +110,47 @@ for (const entry of PREFIX_FILES) {
   });
 }
 
+const sizeFindings = [];
+if (strict) {
+  for (const s of sizes) {
+    if (s.maxBytes && s.bytes > s.maxBytes) {
+      sizeFindings.push(`${s.rel}: ${s.bytes} bytes exceeds the ${s.maxBytes}-byte budget (+${s.bytes - s.maxBytes})`);
+    }
+  }
+  if (budgetedTotal > totalBudget) {
+    sizeFindings.push(`harness-owned prefix total: ${budgetedTotal} bytes exceeds the ${totalBudget}-byte budget (+${budgetedTotal - totalBudget})`);
+  }
+}
+
+if (jsonOut) {
+  console.log(
+    JSON.stringify(
+      {
+        schema: "prefix-stability/1",
+        strict,
+        files: sizes,
+        budgetedTotal,
+        totalBudget,
+        volatile: findings,
+        size: sizeFindings,
+        warnings,
+      },
+      null,
+      2
+    )
+  );
+  process.exit(findings.length || sizeFindings.length ? 1 : 0);
+}
+
 console.log("cache-prefix stability \u2014 always-loaded files carry no per-run content");
-for (const rel of checked) {
-  const bytes = fs.statSync(path.join(root, rel)).size;
-  console.log(`  \u2713 ${rel} (${bytes} bytes)`);
+for (const s of sizes) {
+  const budget = s.maxBytes ? ` / ${s.maxBytes} budget` : "";
+  console.log(`  \u2713 ${s.rel} (${s.bytes}${budget} bytes)`);
 }
 for (const w of warnings) console.log(`  \u26a0 ${w}`);
+if (strict && budgetedTotal) {
+  console.log(`  harness-owned prefix total: ${budgetedTotal} / ${totalBudget} bytes`);
+}
 
 if (findings.length) {
   console.log("\nVolatile values found in the always-loaded prefix:");
@@ -96,4 +161,13 @@ if (findings.length) {
   );
   process.exit(1);
 }
-console.log(`\nRESULT: ${checked.length} prefix file(s) byte-stable, 0 volatile values.`);
+if (sizeFindings.length) {
+  console.log("\nPrefix size budget exceeded:");
+  for (const f of sizeFindings) console.log(`  \u2717 ${f}`);
+  console.log(
+    "\nThe always-loaded prefix is billed every turn. Trim it, or bump the budget in" +
+      "\ntemplates/scripts/qa/check-prefix-stability.js deliberately if the growth is intended."
+  );
+  process.exit(1);
+}
+console.log(`\nRESULT: ${checked.length} prefix file(s) byte-stable, 0 volatile values, within size budget.`);

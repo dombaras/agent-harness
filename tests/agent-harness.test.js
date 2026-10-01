@@ -4959,6 +4959,77 @@ test("context-guard injects at the conversation tail and never mutates the cache
   assert.strictEqual(childMessages.length, 1, "subagent sessions get no guard message");
 });
 
+test("context-guard injects the session-start orient brief until the first material action", async () => {
+  const { pathToFileURL } = require("node:url");
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
+  const mod = await import(pathToFileURL(pluginPath).href);
+  const plugin = await mod.ContextGuard({
+    directory: target,
+    client: { app: { log: async () => {} } },
+  });
+
+  const sid = "ses_orient_primary";
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: sid } } } });
+
+  // orient runs async (it spawns git/backlog) — poll for its guard event.
+  const eventsFile = path.join(target, ".agents", "guard-events.jsonl");
+  const deadline = Date.now() + 20000;
+  let logged = false;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(eventsFile) && fs.readFileSync(eventsFile, "utf8").includes('"kind":"orient"')) {
+      logged = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(logged, "the orient collection logged its guard event");
+
+  const messages = [{ info: { role: "user", sessionID: sid }, parts: [{ type: "text", text: "resume" }] }];
+  await plugin["experimental.chat.messages.transform"]({}, { messages });
+  assert.strictEqual(messages.length, 2, "the orient brief is injected into the tail");
+  assert.match(messages[1].parts[0].text, /SESSION ORIENT/, "the brief is labelled");
+  assert.match(messages[1].parts[0].text, /do not re-derive/, "the brief tells the agent not to hand-derive");
+
+  // A material action (a dispatch) clears the orient block.
+  await plugin["tool.execute.before"]({ tool: "task", sessionID: sid }, { args: {} });
+  const after = [{ info: { role: "user", sessionID: sid }, parts: [{ type: "text", text: "go" }] }];
+  await plugin["experimental.chat.messages.transform"]({}, { messages: after });
+  const injected = after.length > 1 ? after[after.length - 1].parts[0].text : "";
+  assert.doesNotMatch(injected, /SESSION ORIENT/, "orient is dropped once real work starts");
+});
+
+test("context-guard blocks the first pure inspection + poll once per head/kind (kill-switch honored)", async () => {
+  const { pathToFileURL } = require("node:url");
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
+  const mod = await import(pathToFileURL(pluginPath).href);
+  const plugin = await mod.ContextGuard({ directory: target, client: { app: { log: async () => {} } } });
+  const sid = "ses_toolblock";
+  await plugin.event({ event: { type: "session.created", properties: { info: { id: sid } } } });
+  const before = (command) =>
+    plugin["tool.execute.before"]({ tool: "bash", sessionID: sid }, { args: { command } });
+
+  await assert.rejects(before("cat src/a.ts"), /TOOL BLOCK/, "the first pure `cat` is blocked");
+  await before("cat src/a.ts"); // same head: no longer blocked
+  await assert.rejects(before("grep -rn foo lib/"), /TOOL BLOCK/, "a different head is blocked once");
+  await assert.rejects(before("sleep 5; tail -1 run.log"), /bounded waiter/, "hand-rolled polling is blocked");
+  await before("sleep 5; tail -1 run.log"); // same poll kind: allowed now
+  await before("git log | grep foo"); // downstream filter is not a pure inspection
+
+  // Kill switch: a fresh primary session is never tool-blocked.
+  process.env.AGENT_GUARD_TOOLBLOCK = "0";
+  try {
+    const relaxed = "ses_toolblock_relaxed";
+    await plugin.event({ event: { type: "session.created", properties: { info: { id: relaxed } } } });
+    await plugin["tool.execute.before"]({ tool: "bash", sessionID: relaxed }, { args: { command: "cat src/a.ts" } });
+  } finally {
+    delete process.env.AGENT_GUARD_TOOLBLOCK;
+  }
+});
+
 test("branch-switch plugin guard aborts a HEAD move only while another live session shares the checkout", async () => {
   const { pathToFileURL } = require("node:url");
   const leases = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"));
@@ -5189,7 +5260,7 @@ test("bash reroot lifts `cd <tree> &&` into workdir and defaults to the session 
   assert.strictEqual(b.args.workdir, wt);
 
   // An explicit workdir is never overwritten.
-  const c = { args: { command: "ls", workdir: "/elsewhere" } };
+  const c = { args: { command: "git status", workdir: "/elsewhere" } };
   await plugin["tool.execute.before"]({ tool: "bash", sessionID: "ses_r", callID: "c3" }, c);
   assert.strictEqual(c.args.workdir, "/elsewhere");
 });
@@ -5202,10 +5273,17 @@ test("the guard nudges shell tool-choice and re-reads once, on the cache-safe ta
   const sid = "ses_hygiene";
   await plugin.event({ event: { type: "session.created", properties: { info: { id: sid } } } });
 
-  await plugin["tool.execute.before"](
-    { tool: "bash", sessionID: sid, callID: "c1" },
-    { args: { command: "grep -rn foo lib/" } }
-  );
+  // This test covers the ADVISORY (the fallback when the structural block is
+  // off); the block itself is covered by the tool-block test.
+  process.env.AGENT_GUARD_TOOLBLOCK = "0";
+  try {
+    await plugin["tool.execute.before"](
+      { tool: "bash", sessionID: sid, callID: "c1" },
+      { args: { command: "grep -rn foo lib/" } }
+    );
+  } finally {
+    delete process.env.AGENT_GUARD_TOOLBLOCK;
+  }
   const out1 = { messages: [{ info: { role: "user", sessionID: sid }, parts: [] }] };
   await plugin["experimental.chat.messages.transform"]({}, out1);
   assert.match(out1.messages.at(-1).parts[0].text, /read-only shell inspection/);
@@ -5906,6 +5984,34 @@ test("test:prefix passes a clean deploy and fails a volatile value in an always-
   fs.writeFileSync(path.join(target, "AGENTS.md"), "# Demo\n\nAs of 2026-09-12 this is fine.\n", "utf8");
   const dateOk = gate();
   assert.strictEqual(dateOk.status, 0, dateOk.stdout + dateOk.stderr);
+});
+
+test("test:prefix enforces a size budget on the harness-owned prefix files", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const gate = (env) =>
+    spawnSync(process.execPath, ["scripts/qa/check-prefix-stability.js"], {
+      cwd: target,
+      encoding: "utf8",
+      env: { ...process.env, ...(env || {}) },
+    });
+
+  const clean = gate();
+  assert.strictEqual(clean.status, 0, clean.stdout + clean.stderr);
+  assert.match(clean.stdout, /within size budget/);
+
+  // Inflating a harness-owned prefix file past its budget fails the gate.
+  const agents = path.join(target, ".agents", "AGENTS.md");
+  fs.writeFileSync(agents, fs.readFileSync(agents, "utf8") + "\n" + "x".repeat(60 * 1024), "utf8");
+  const over = gate();
+  assert.strictEqual(over.status, 1, "an over-budget prefix file fails the gate");
+  assert.match(over.stdout, /size budget exceeded/i);
+  assert.match(over.stdout, /\.agents\/AGENTS\.md: \d+ bytes exceeds/);
+
+  // `AGENT_PREFIX_STRICT=0` disables the size check (volatility still applies).
+  const relaxed = gate({ AGENT_PREFIX_STRICT: "0" });
+  assert.strictEqual(relaxed.status, 0, relaxed.stdout + relaxed.stderr);
+  assert.match(relaxed.stdout, /byte-stable/);
 });
 
 test("checkpoint writes a deterministic bounded-state block and resume prints it alone", async () => {
@@ -7787,7 +7893,9 @@ test("[drift-guard] capacity guard is one envelope owned by every surface", () =
   const ship = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
   assert.match(ship, /"test:capacity"/, "ship runs the capacity gate when no hook is installed");
   const prePush = read(path.join(h.TEMPLATES_DIR, ".husky", "pre-push"));
-  assert.match(prePush, /test:capacity/, "the pre-push battery includes the capacity gate");
+  assert.match(prePush, /gates -- --phase=pre-push/, "the pre-push battery delegates to the gates runner");
+  const runGates = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "run-gates.js"));
+  assert.match(runGates, /test:capacity/, "the gates runner includes the capacity gate");
 });
 
 test("capacity: classifier covers the 2026-09-30 build/test gap and splits long-lived vs one-shot", () => {
@@ -8601,6 +8709,202 @@ test("orient: ownedFor reads the owned-files registry for the feature", () => {
   assert.strictEqual(orient.ownedFor(dir, "F-999"), null);
 });
 
+test("orient: parseFirstTable extracts the first markdown table and bounds rows", () => {
+  const src = [
+    "# T",
+    "prose without a table",
+    "| A | B |",
+    "|---|---|",
+    "| 1 | 2 |",
+    "| 3 | 4 |",
+    "",
+    "| later | table |",
+  ].join("\n");
+  const t = orient.parseFirstTable(src);
+  assert.deepStrictEqual(t.header, ["A", "B"]);
+  assert.deepStrictEqual(t.rows, [["1", "2"], ["3", "4"]]);
+  // A pipe line with no separator row is not a table.
+  assert.strictEqual(orient.parseFirstTable("| not | a | table |\nplain text\n"), null);
+});
+
+test("orient: parseSections lists `##` headings and skips a table of contents", () => {
+  assert.deepStrictEqual(orient.parseSections("# a\n## One\n### sub\n## Two\nTable of contents\n## Three"), [
+    "One",
+    "Two",
+    "Three",
+  ]);
+});
+
+test("orient: memoryDigest reads session-start memory files and degrades for missing ones", () => {
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".agents", "memory"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, ".agents", "memory", "environments.md"),
+    "# Env\n## Registry\n| Env | URL |\n|---|---|\n| dev | http://localhost:3000 |\n",
+    "utf8"
+  );
+  const digest = orient.memoryDigest(dir);
+  assert.strictEqual(digest.length, orient.MEMORY_FILES.length);
+  const env = digest.find((d) => d.file === "environments.md");
+  assert.strictEqual(env.exists, true);
+  assert.deepStrictEqual(env.sections, ["Registry"]);
+  assert.deepStrictEqual(env.table.rows, [["dev", "http://localhost:3000"]]);
+  const missing = digest.find((d) => d.file === "orchestration.md");
+  assert.strictEqual(missing.exists, false);
+  // The rendered digest is bounded to the files that exist.
+  assert.ok(orient.renderMemoryDigest(digest).length < 20);
+});
+
+test("orient: --brief emits a single bounded orientation block", () => {
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".agents", "memory"), { recursive: true });
+  const o = orient.collectOrient({ root: dir, git: () => null, run: () => null, readCheckpoint: () => null });
+  const brief = orient.printBrief(o);
+  assert.match(brief, /SESSION ORIENT/);
+  assert.match(brief, /do not re-derive/);
+  assert.ok(brief.length < 4000, "brief stays bounded");
+});
+
+test("run-gates: phase resolution, skip-unwired, stop-at-first-failure", () => {
+  const gatesMod = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "run-gates.js"));
+  const pre = gatesMod.resolveGates("pre-push", "origin/main");
+  assert.ok(pre.some((g) => g[0] === "test:dispatch"), "process gates present");
+  assert.ok(pre.some((g) => g[0] === "test:quick"), "quick gates present");
+  assert.deepStrictEqual(
+    pre.find((g) => g[0] === "test:qa-plan"),
+    ["test:qa-plan", "--base=origin/main"],
+    "the diff gate gets the base ref"
+  );
+  assert.strictEqual(gatesMod.resolveGates("nope", "origin/main"), null, "unknown phase");
+  const all = gatesMod.resolveGates("all", "origin/main");
+  assert.strictEqual(new Set(all.map((g) => g[0])).size, all.length, "`all` de-duplicates");
+
+  const scripts = { "test:dispatch": "x", "test:governance": "y", "test:quick": "z" };
+  const calls = [];
+  const out = gatesMod.runGates(
+    "/x",
+    [["test:dispatch"], ["test:missing"], ["test:governance"], ["test:quick"]],
+    {
+      scripts,
+      runner: (root, script) => {
+        calls.push(script);
+        return { code: script === "test:governance" ? 1 : 0, stdout: "", stderr: "" };
+      },
+    }
+  );
+  assert.deepStrictEqual(calls, ["test:dispatch", "test:governance"], "stops after the failure");
+  assert.strictEqual(out.results.find((r) => r.script === "test:missing").status, "skipped");
+  assert.strictEqual(out.results.find((r) => r.script === "test:quick").status, "pending");
+  assert.strictEqual(out.failed, true);
+
+  const calls2 = [];
+  gatesMod.runGates("/x", [["test:dispatch"], ["test:quick"]], {
+    scripts,
+    runner: (root, script) => {
+      calls2.push(script);
+      return { code: 1, stdout: "", stderr: "" };
+    },
+    cont: true,
+  });
+  assert.deepStrictEqual(calls2, ["test:dispatch", "test:quick"], "--continue runs the rest");
+});
+
+test("[drift-guard] gates is wired into npm scripts, the tool, and the pre-push hook", () => {
+  assert.strictEqual(h.HARNESS_SCRIPTS.gates, "node scripts/qa/run-gates.js", "gates wired into HARNESS_SCRIPTS");
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "gates.ts")), "gates tool wrapper deployed");
+  assert.match(read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "gates.ts")), /scripts\/qa\/run-gates\.js/);
+  const hook = read(path.join(h.TEMPLATES_DIR, ".husky", "pre-push"));
+  assert.match(hook, /gates -- --phase=pre-push/, "the hook delegates to the one gate list");
+});
+
+test("where: parses owners, matches globs, bounds results, and annotates hits", () => {
+  const where = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "where.js"));
+  const owners = where.parseOwners("# Owned\n- F-291: mobile/**, scripts/qa/**\n- F-9: lib/**\n- not a row\n");
+  assert.deepStrictEqual(owners, [
+    { id: "F-291", globs: ["mobile/**", "scripts/qa/**"] },
+    { id: "F-9", globs: ["lib/**"] },
+  ]);
+  assert.ok(where.globToRegExp("mobile/**").test("mobile/app/x.ts"));
+  assert.ok(where.globToRegExp("scripts/qa/**").test("scripts/qa/deep/x.js"));
+  assert.ok(where.globToRegExp("mobile").test("mobile/x.ts"), "a bare dir covers its subtree");
+  assert.ok(where.globToRegExp("lib/*.ts").test("lib/a.ts"));
+  assert.ok(!where.globToRegExp("lib/*.ts").test("lib/a/b.ts"), "* stays within one segment");
+  assert.deepStrictEqual(where.ownersForFile(owners, "mobile/app/x.ts"), ["F-291"]);
+  assert.deepStrictEqual(where.ownersForFile(owners, "lib/a.ts"), ["F-9"]);
+  assert.deepStrictEqual(where.ownersForFile(owners, "README.md"), []);
+
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".agents", "memory"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".agents", "memory", "owned-files.md"), "- F-291: mobile/**\n", "utf8");
+  const res = where.run({
+    root: dir,
+    term: "signToken",
+    search: () => [
+      { file: "mobile/auth.ts", line: 12, text: "signToken(x)" },
+      { file: "README.md", line: 3, text: "signToken" },
+    ],
+  });
+  assert.strictEqual(res.mode, "content");
+  assert.deepStrictEqual(res.hits[0].owners, ["F-291"]);
+  assert.deepStrictEqual(res.hits[1].owners, []);
+  const files = where.run({
+    root: dir,
+    term: "auth",
+    files: true,
+    search: () => [{ file: "mobile/auth.ts", line: 0, text: "" }],
+  });
+  assert.deepStrictEqual(files.files, ["mobile/auth.ts"]);
+  const owner = where.run({ root: dir, owner: "mobile/app/x.ts" });
+  assert.deepStrictEqual(owner.owners, ["F-291"]);
+});
+
+test("[drift-guard] where is wired into npm scripts and the tool", () => {
+  assert.strictEqual(h.HARNESS_SCRIPTS.where, "node scripts/qa/where.js", "where wired into HARNESS_SCRIPTS");
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "where.ts")), "where tool wrapper deployed");
+  assert.match(read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "where.ts")), /scripts\/qa\/where\.js/);
+});
+
+test("feature-scaffold: writes the gate-shaped doc skeletons once, never overwriting", () => {
+  const fsc = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "feature-scaffold.js"));
+  const low = fsc.skeletons("F-302", { slug: "f-302-cover-sync", risk: "low" });
+  assert.ok(low[".agents/features/f-302-cover-sync/intent.md"]);
+  assert.ok(low[".agents/features/f-302-cover-sync/plan.md"]);
+  assert.ok(low[".agents/qa-plans/F-302.md"]);
+  assert.ok(!low[".agents/features/f-302-cover-sync/scope.md"], "low risk has no scope.md");
+  const high = fsc.skeletons("F-9", { slug: "f-9-auth", risk: "high" });
+  assert.ok(high[".agents/features/f-9-auth/scope.md"], "high risk ships scope.md");
+
+  const intent = low[".agents/features/f-302-cover-sync/intent.md"];
+  for (const section of ["## Actor(s)", "## Need", "## Outcome", "## Acceptance criteria"]) {
+    assert.ok(intent.includes(section), `intent carries ${section} (test:product shape)`);
+  }
+  const plan = low[".agents/features/f-302-cover-sync/plan.md"];
+  assert.ok(plan.includes("## Value-first sequence") && plan.includes("## Product concepts applied"));
+  const qa = low[".agents/qa-plans/F-302.md"];
+  for (const section of ["## Coverage map", "## Test budget", "## Oracle & owner", "## Test-design self-check"]) {
+    assert.ok(qa.includes(section), `qa plan carries ${section}`);
+  }
+
+  const dir = tmpdir();
+  const first = fsc.scaffold(dir, { id: "F-302", slug: "f-302-cover-sync", risk: "low" });
+  assert.ok(first.written.length >= 4);
+  assert.match(first.dispatchOrder.join(" "), /product-manager/);
+  const second = fsc.scaffold(dir, { id: "F-302", slug: "f-302-cover-sync", risk: "low" });
+  assert.strictEqual(second.written.length, 0, "existing docs are never overwritten");
+  assert.ok(second.skipped.length >= 4);
+});
+
+test("[drift-guard] feature:scaffold is wired and the /feature command points at it", () => {
+  assert.strictEqual(
+    h.HARNESS_SCRIPTS["feature:scaffold"],
+    "node scripts/qa/feature-scaffold.js",
+    "feature:scaffold wired into HARNESS_SCRIPTS"
+  );
+  const cmd = read(path.join(h.TEMPLATES_DIR, ".opencode", "command", "feature.md"));
+  assert.match(cmd, /feature-scaffold\.js/, "the command runs the scaffold in one call");
+  assert.match(cmd, /execution_mode: direct/, "the command right-sizes trivial work");
+});
+
 test("[drift-guard] orient is wired into npm scripts, the tool, and the resume/next commands", () => {
   assert.strictEqual(h.HARNESS_SCRIPTS.orient, "node scripts/orient.js", "orient wired into HARNESS_SCRIPTS");
   assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "orient.ts")), "orient tool wrapper deployed");
@@ -8706,6 +9010,17 @@ test("context-guard: notePollCall arms the advisory once per session", () => {
   assert.strictEqual(s.waitPending, true);
   assert.strictEqual(cg.notePollCall(s, "sleep 5; tail -1 log").firstFlag, false, "fires once");
   assert.ok(cg.composeGuardText(s, cg.parseThresholds("")).includes(cg.WAIT_TEXT));
+});
+
+test("context-guard: structural tool-block texts + kill switch", () => {
+  const s = cg.createSessionState();
+  assert.deepStrictEqual([...s.blockedInspectHeads], [], "no heads blocked at session start");
+  assert.match(cg.inspectBlockText("cat"), /TOOL BLOCK/);
+  assert.match(cg.inspectBlockText("cat"), /cat/);
+  assert.match(cg.pollBlockText("sleep+log"), /bounded waiter/);
+  assert.strictEqual(cg.toolBlockEnabled({}), true, "enabled by default");
+  assert.strictEqual(cg.toolBlockEnabled({ AGENT_GUARD_TOOLBLOCK: "0" }), false, "kill switch");
+  assert.strictEqual(cg.toolBlockEnabled({ AGENT_GUARD_TOOLBLOCK: "1" }), true);
 });
 
 test("context-guard: inspect advisory re-arms after N inspections and on a different head", () => {

@@ -15,21 +15,9 @@ case "$(uname -s)" in
   *)                    NPM=npm ;;
 esac
 
-# 1. Process gates (harness-owned). `--if-present` so a project that has not
-#    wired a gate yet is not blocked by its absence.
-$NPM run --if-present test:dispatch
-$NPM run --if-present test:governance
-$NPM run --if-present test:concurrency
-$NPM run --if-present test:capacity
-$NPM run --if-present test:backlog
-$NPM run --if-present test:wiring
-$NPM run --if-present test:integrate
-$NPM run --if-present test:qa-plan -- --base=origin/main
-$NPM run --if-present test:product
-$NPM run --if-present test:docs
-$NPM run --if-present test:quality
-
-# 2. Project test gates (project-owned; edit for your stack).
-$NPM run --if-present lint:hooks
-$NPM run --if-present test:schema
-$NPM run --if-present test:quick
+# One owner for the gate list: `scripts/qa/run-gates.js`. It runs the harness
+# process gates then the project stack gates, stops at the first failure, and
+# skips a gate the project has not wired (`--if-present` semantics). `--phase`
+# here must stay the pre-push battery; edit the list in run-gates.js, not here,
+# so the hook and the `gates` tool can never drift.
+$NPM run --if-present gates -- --phase=pre-push

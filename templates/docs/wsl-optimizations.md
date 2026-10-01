@@ -250,3 +250,28 @@ No-op outside WSL (no `/dev/dxg`). Env: `AGENT_WSL_GPU_DRIVER` (default
 `AGENT_WSL_GPU_GLXINFO`, `AGENT_WSL_GPU_FORCE`. If `apply` loads `vgem` but the
 renderer is still software, the Windows GPU driver lacks WSL support — update
 it to the vendor's WSL driver and `wsl --shutdown`.
+
+## 5. Always-loaded prefix: size budget, orient digest, opt-in LSP
+
+The always-loaded leading context (root `AGENTS.md` + `.agents/AGENTS.md` +
+`.agents/rules/00-operating.md` + the session-start memory files) is the prompt
+prefix every turn is billed against. Three mechanisms keep it honest:
+
+- **Size budget** — `test:prefix` (`scripts/qa/check-prefix-stability.js`) fails
+  when a harness-owned prefix file, or their combined size, exceeds the budget
+  shipped in the gate. The gate prints each file against its budget; raising it
+  must be a deliberate edit. `AGENT_PREFIX_STRICT=0` disables the size check;
+  `AGENT_PREFIX_MAX_BYTES` overrides the combined ceiling.
+- **orient digest** — instead of re-reading five memory files at session start,
+  `scripts/orient.js` returns a bounded digest per file (its `##` section index
+  plus its first markdown table). The `context-guard` plugin injects
+  `orient --brief` into the cache-safe conversation tail at session start
+  (cleared on the first material action), so a resume/claim prologue re-derives
+  nothing by hand.
+- **Opt-in LSP** — opencode LSP is **disabled by default** (opencode's own
+  guidance: language servers can be memory-heavy and drift out of sync, and the
+  project already runs `tsc`/eslint directly). A project that wants edit-time
+  diagnostics may set `"lsp": true` in its own `opencode.json`; the harness merge
+  preserves the project key. On a memory-tight WSL2 box, weigh it against the
+  capacity envelope (§3) — an LSP server per session adds RSS across parallel
+  sessions.

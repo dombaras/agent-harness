@@ -18,9 +18,9 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 
 | Item | Value |
 |---|---|
-| Version | `0.1.104` |
+| Version | `0.1.120` |
 | Since the `0.1.65` snapshot | `0.1.66` skipped (no release); `0.1.67` session leases + worktree bootstrap + nested board merge + node-resolution fix; `0.1.68` integrate-early guard + worktree/main sync + merge-backlog row loss (item 7); `0.1.69` lease liveness (birth token + heartbeat) + `worktree --open`; `0.1.70` advisory session-lease report (clean tree never fails) + remote-integration DoD (push branch + PR; merge train lands; CI deploys); `0.1.71` cache-safe context-guard tail injection + reasoning-effort cap on mechanical personas; `0.1.72` branch-switch guard (block `git checkout`/`switch` while another live session shares a checkout); `0.1.73` mid-session worktree tool rooting (session pointer); `0.1.74` deploy hardening + board/lifecycle convergence (branch guard, package.json/gitattributes no-clobber, deploy lock, shared tool-lib, worktree-prune, dependency cycles, lease convergence); `0.1.75` `test:integrate` compares against `origin/main`, not the branch's own remote (post-rebase force-push); `0.1.76` `worktree-prune <branch...>` explicit escape hatch for squash-merged branches; `0.1.77` `ship` command + finalize-by-shipping rule (H-10); `0.1.78` `test:qa-plan` exempts harness-shipped top-level scripts; `0.1.79` `ship` applies the landing label via the REST API; `0.1.80` `test:docs` accepts squash-merged commits that ship their own changelog delta; `0.1.81` `ship` completes the whole loop — watches the merge + post-merge CI/UAT deploy by default (`--watch-only` resume, `--no-watch` opt-out); `0.1.82` release-cycle workflow templates + no-bypass gates + fail-closed deploy + `doctor`; `0.1.83` `ship` runs the process gates only when no pre-push hook; `0.1.84` post-landing board convergence + forbid the `--no-watch` escape + mid-session worktree pointer; `0.1.85` context-pressure nudges + stuck detectors + auto-resume runner (`agent-harness run`); `0.1.86` auto-commit the handoff checkpoint + reconcile a dirty board; `0.1.87` one-call `finalize` + fresh-context `/finish` + guard finalization carve-out (the deploy tail cannot be starved by the context budget); `0.1.88` direct-land cycle — `ship` fast-forward pushes `HEAD:main` (bounded retry) and waits for green CI, `deploy-uat` runs after CI success; PR/landing-label/merge-train/watch and the `check-push-refs` guard removed; `0.1.89` reconciled local-only board rows are committed + pushed; `0.1.90` CI watch from the main worktree + never prune a live session's worktree; `0.1.91` guard-nudge attribution + live request-token band; `0.1.92` single-authority board transaction (every canonical mutation reconciles + publishes; converge under the board lock; redundant-dirt clear; session-start `backlog sync`; doctor staleness warn) |
-| Lint / tests | green (`npm run lint`, `npm test` — 271 pass) |
+| Lint / tests | green (`npm run lint`, `npm test` — 367 pass) |
 | LibraryOS | `0.1.88` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
 | Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) |
@@ -28,6 +28,68 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 ---
 
 ## What shipped
+
+### `0.1.120` — adoption: orient injection + memory digest, structural tool blocks, `gates`/`where`/`feature`, prefix size budget
+
+Basis: a fresh recon of the LibraryOS WSL sessions **2026-09-17 → 10-01** (297
+sessions, 116 primary, $14.79; `npm run report:recon`) plus the live
+`guard-events.jsonl`. The headline finding: the `0.1.104` steering was **advisory
+and did not move the habit** — shell file-inspection stayed **33.0 %** of bash
+(`grep` 1081, `ls` 463, `sed` 195, `cat` 117), whole-file reads **74.2 %**, and
+the tools built to fix it were near-unused (`orient` 4 calls, `wait` 6) while
+`serve.js list` ran **91×**, orientation git combos ~110, and the session-start
+memory files were read ~219×. Prologue: **avg 24 calls, max 79; 193 sessions with
+10+** before first real work. Gates: ~700 individual invocations. `build` (the
+orchestrator) alone: $10.02 / 31.5 M input tokens. This release attacks the
+**adoption gap** structurally rather than adding more advisory nudges (scope
+A+B+E of the recon; MCP/C deferred).
+
+- **`orient` memory digest + `--brief`** (`scripts/orient.js`): the one-call
+  orientation now returns, per session-start memory file, its `##` section index
+  and first markdown table (bounded), so a session answers its orientation
+  question without reading five files whole. `--brief` renders the compact
+  session-start block. Rules (`AGENTS.md`, `.agents/AGENTS.md` §5,
+  `00-operating.md`, `/next`, `/resume`) now say "use the digest; open a file
+  only for a fact it does not carry".
+- **orient auto-injection** (`context-guard` plugin): on `session.created` a
+  primary session runs `orient --brief` off the event loop and injects it into
+  the cache-safe conversation **tail** until the first material action, so a
+  resume/claim prologue re-derives git/serve/capacity/memory state by hand no
+  more. Logged `kind:"orient"`.
+- **Structural tool blocks** (`context-guard-core.js` + plugin): the first pure
+  shell inspection of each head (`cat`/`ls`/`grep`/`find`/`sed`), and the first
+  hand-rolled poll of each kind (`sleep N; grep log`, `gh run watch`), are now
+  **blocked once per session** with the dedicated-tool / bounded-waiter
+  instruction — the advisory measured at 45 events/14 d against 2,025 inspections
+  was not enough. `AGENT_GUARD_TOOLBLOCK=0` opts a machine out; downstream
+  filters (`git log | grep`) and `sed -i` are never blocked. Logged
+  `kind:"tool-block"`.
+- **`gates`** (`scripts/qa/run-gates.js`, `gates` tool): run the battery in one
+  call — phases `pre-push` (process + quick) / `process` / `quick` / `all`,
+  stop-at-first-failure, skip-unwired, compact PASS/FAIL summary. The pre-push
+  hook now delegates to `gates --phase=pre-push`, so the hook and the tool share
+  one gate list (no drift).
+- **`where`** (`scripts/qa/where.js`, `where` tool): bounded index-first
+  (`git grep`) symbol lookup annotated with the backlog row(s) that own each hit
+  file, plus `--files` and `--owner <glob>` — use it instead of shell `grep`.
+- **`feature:scaffold`** (`scripts/qa/feature-scaffold.js`, `/feature` command):
+  write the per-feature doc-tree skeletons (intent/scope/plan/tests) + QA-plan
+  stub in one call (write-if-missing; no content), so the author personas fill a
+  `test:product`-shaped structure instead of four blank pages.
+- **Prefix size budget** (`scripts/qa/check-prefix-stability.js`): `test:prefix`
+  now also fails when a harness-owned prefix file, or their combined size,
+  exceeds the shipped budget — the always-loaded prefix is billed every turn, so
+  regrowth is now caught (`AGENT_PREFIX_STRICT=0` / `AGENT_PREFIX_MAX_BYTES`).
+- **Opt-in LSP**: documented (not enabled by default — opencode LSP is off by
+  default and adds RSS across parallel sessions; a project sets `"lsp": true`
+  itself). See `docs/wsl-optimizations.md` §5.
+- Tests: +12 (orient digest/brief, plugin orient longevity, structural tool
+  blocks + kill switch, gates phase/skip/stop, `where` globs/annotations,
+  feature-scaffold skeleton/write-once, prefix size budget) — **367 pass**, lint
+  green.
+- Baseline for the change: `npm run report:recon -- --since=14d --export
+  .agents/recon-baseline-0.1.120.json`; re-run in 1–2 weeks to judge whether
+  `inspectShare`, `orient`/`wait` adoption, and the prologue depth move.
 
 ### `0.1.104` — tool-habit steering: dedicated tools, bash reroot, read/dump hygiene + `report:recon`
 
