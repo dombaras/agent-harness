@@ -363,6 +363,33 @@ plugin are harness-owned under `templates/`, so fix them upstream and
   old process as an idle-reap candidate; `npm run test:capacity` fails when the
   envelope is already exceeded.
 
+## Diagnosing a failed step (UI hierarchy dump)
+
+When a Maestro step fails (`Element not found`, `assertVisible …`), the fix starts
+from the hierarchy the app actually rendered — which testIDs, text, and bounds
+were on screen. Read it with the sanctioned probe, **not** a hand-rolled
+`adb … uiautomator dump` / `python3` over `~/.maestro` (those trip the capacity
+and tool guards, and were the F-311 dead end):
+
+```bash
+# Live: dump the current on-device hierarchy (lightweight; safe while the tier is up)
+node scripts/qa/mobile-e2e/ui-dump.js --live
+node scripts/qa/mobile-e2e/ui-dump.js --live --filter 'confirm-add|search-result'   # narrow the tree
+
+# Offline: read Maestro's saved failure hierarchy (newest run by default)
+node scripts/qa/mobile-e2e/ui-dump.js --latest
+node scripts/qa/mobile-e2e/ui-dump.js --latest --flow scan-add --step step-063
+node scripts/qa/mobile-e2e/ui-dump.js --file ~/.maestro/tests/<run>/<flow>/screen-hierarchy/<step>.json
+
+# Never `ls ~/.maestro` by hand — list the artifacts (hierarchy + screenshots):
+node scripts/qa/mobile-e2e/ui-dump.js --list-artifacts --flow scan-add
+```
+
+`--json` emits the normalized tree for programmatic diffing. The probe launches
+nothing heavy and is never gated by the capacity guard; it normalizes both a live
+UIAutomator XML dump and Maestro's `screen-hierarchy/*.json` to the same shape
+(`id | text | desc | class | bounds`).
+
 ## Anti-pattern that hangs the agent
 
 ```bash

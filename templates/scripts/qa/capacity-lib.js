@@ -30,6 +30,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const classifier = require("./command-classifier");
 
 /* Documented defaults. The project overrides them in `orchestration.md` (the
  * same machine-read file the context guard uses) — a missing row falls back
@@ -85,48 +86,12 @@ const ENVELOPE_KEYS = {
   max_cpu_pressure_avg10: "maxCpuPressureAvg10",
 };
 
-/* Heavy-process classifier. Deliberately narrow: it must fire on the things
- * that actually caused the freeze (emulator, Metro/Next dev, a big tier) and
- * stay quiet on trivial `node srv.js` helpers, so the preflight/refusal never
- * blocks ordinary work. Label is used in messages. */
-const HEAVY_PATTERNS = [
-  [/\bemulator\b|-avd\b|qemu-system/i, "emulator"],
-  [/maestro\b/i, "maestro"],
-  [/next\s+dev\b|next\s+start\b/i, "next dev"],
-  [/expo\s+start\b|react-native\s+start\b|\bmetro\b/i, "metro"],
-  [/\bvite\b[^\n]*\b(dev|serve|preview)\b/i, "vite"],
-  [/\bwebpack\b|\bturbopack\b/i, "bundler"],
-  [/npm\s+run\s+(dev|develop|start:dev)\b/i, "dev server"],
-  [/npm\s+run\s+(test:quick|test:api|test:verify|test:e2e|test:mobile|test:data|test:integration)\b/i, "heavy test tier"],
-  [/\bdocker\s+(build|run|compose)\b/i, "docker"],
-  // The Android APK build is the 2026-09-30 freeze: a Gradle daemon + Kotlin
-  // daemon + R8/D8 job that ran INLINE (not via serve.js), so it had no cgroup
-  // cap and no envelope preflight. Match the wrapper script name — the top-level
-  // bash command is `bash scripts/qa/mobile-e2e/build-dev-apk.sh`, which never
-  // contains `gradlew` — as well as the gradle task/wrapper itself.
-  [/build-dev-apk\.sh|build-apk\.sh|prewarm\.sh|\bassemble(Release|Debug)\b|expo\s+(prebuild|export)|react-native\s+(build|run-android)/i, "apk build"],
-  [/\b(gradlew|gradle|xcodebuild)\b/i, "native build"],
-  [/prisma\s+(migrate|generate)|\btsc\b[^\n]*--build|turbo\s+(run|build)|nx\s+(run|build)/i, "build"],
-];
-
-/* Heavy labels that are LONG-LIVED tiers: they hold RAM for their whole
- * lifetime and must not run two at once (emulator + `next dev` + a third dev
- * server). Everything else heavy (a build, a test tier, `maestro`) is a
- * ONE-SHOT command: it spikes RAM but releases it, so it is legitimate to run
- * while a dev server is up (the live-tier test pattern) and must NOT be counted
- * as an extra concurrent tier. The distinction is what keeps the guard from
- * blocking `test:api` next to a running dev server, while still refusing a
- * second emulator. */
-const LONG_LIVED_HEAVY = new Set([
-  "emulator",
-  "next dev",
-  "metro",
-  "vite",
-  "bundler",
-  "dev server",
-  "docker",
-]);
-
+/* Heavy-process classification lives in `command-classifier.js`: it tokenizes
+ * the shell and matches the PROGRAM / subcommand / script basename, so a
+ * read-only reference to a device serial (`emulator-5554`) or an artifact path
+ * (`~/.maestro/…`) is never heavy. The envelope's consumers (serve.js, the
+ * context-guard plugin, doctor) read these thin wrappers so there is one owner
+ * of the command taxonomy. */
 function procPath(envKey, fallback) {
   return process.env[envKey] || fallback;
 }
@@ -143,22 +108,24 @@ function isAlive(pid) {
 }
 
 function classifyHeavy(cmd) {
-  const s = String(cmd == null ? "" : cmd);
-  if (!s) return null;
-  for (const [re, label] of HEAVY_PATTERNS) if (re.test(s)) return label;
-  return null;
+  return classifier.classifyHeavy(cmd);
 }
 
 function isHeavyCommand(cmd) {
-  return classifyHeavy(cmd) !== null;
+  return classifier.isHeavyCommand(cmd);
 }
 
 /* True when a command is a long-lived heavy tier (holds RAM for its lifetime),
  * as opposed to a one-shot heavy command (build/test/maestro). Callers use this
  * to decide whether adding the command would introduce a concurrent tier. */
 function isLongLivedHeavy(cmd) {
-  const label = classifyHeavy(cmd);
-  return label !== null && LONG_LIVED_HEAVY.has(label);
+  return classifier.isLongLivedHeavy(cmd);
+}
+
+/* The full analysis (`{ label, longLived, evidence }` or null) for callers that
+ * want the WHY in a message/log. */
+function analyzeHeavy(cmd) {
+  return classifier.analyzeCommand(cmd);
 }
 
 /* Parse a MemoryMax-style value (`5120M`, `4G`, `1024`) to whole MB; null when
@@ -470,19 +437,31 @@ function evaluate(s, opts) {
       `only ${s.mem.available} MB RAM available (envelope min ${e.minAvailableMemMb} MB)`
     );
   }
-  // Members of the pending group join the existing heavy tier instead of adding
-  // one, so emulator + dev server = one budgeted `mobile` tier.
+  // A single live heavy GROUP is ONE tier, whether or not the incoming command
+  // declares that group. The device tier legitimately runs two heavy members
+  // (emulator + its dev server, both `--group mobile`), so counting them as two
+  // would refuse every other heavy command — including a one-shot build/test
+  // that the live-tier test pattern explicitly allows (F-311: the context-guard
+  // plugin does not pass `pendingGroup`, so a one-shot `maestro`/`run-maestro.js`
+  // was refused while the device tier was up). Only a *different* group, an
+  // ungrouped live tier, or a second pending long-lived tier adds a tier.
   const heavyGroups = new Set(heavy.map((x) => x.group).filter(Boolean));
-  const joinsRunningGroup =
-    !!pendingGroup && heavy.length > 0 && heavyGroups.size === 1 && heavyGroups.has(pendingGroup);
-  // A process joining an already-live group shares that ONE tier (emulator +
-  // dev server + a one-shot build = one budgeted `mobile` tier), so it does not
-  // add to the count even when several group members are already live (F-296).
-  const heavyTiers = joinsRunningGroup ? 1 : heavy.length + pendingHeavy;
+  const allGrouped = heavy.length > 0 && heavy.every((x) => !!x.group);
+  const oneLiveGroup = allGrouped && heavyGroups.size === 1;
+  const joinsRunningGroup = !!pendingGroup && oneLiveGroup && heavyGroups.has(pendingGroup);
+  const liveTiers = oneLiveGroup ? 1 : heavy.length;
+  // A member joining the already-live group shares its ONE budgeted tier, so it
+  // adds 0 (emulator + dev server + a one-shot = one tier). Any other pending
+  // heavy adds 1.
+  const heavyTiers = liveTiers + (joinsRunningGroup ? 0 : pendingHeavy);
   if (heavyTiers > e.maxHeavyTiers) {
+    const group = [...heavyGroups][0];
+    const liveDesc = oneLiveGroup
+      ? `group ${group} (${heavy.map((h) => h.name).join(", ")})`
+      : heavy.map((h) => h.name).join(", ");
     reasons.push(
       `${heavyTiers} heavy tier(s) would run at once ` +
-        `(${[...heavy.map((h) => h.name), pendingHeavy ? "this launch" : null].filter(Boolean).join(", ")}); ` +
+        `(${[liveDesc, !joinsRunningGroup && pendingHeavy ? "this launch" : null].filter(Boolean).join(", ")}); ` +
         `envelope allows ${e.maxHeavyTiers}`
     );
   }
@@ -576,7 +555,8 @@ function heavyBlockText(label, ev, s) {
   lines.push(`  running: ${running.length ? running.join(", ") : "none"}`);
   lines.push(
     `  stop one first (node scripts/serve.js stop --name <name> | stop-all), ` +
-      `or re-run with --force to override`
+      `or re-run with --force to override (AGENT_CAPACITY_DISABLE=1 must be set ` +
+      `when opencode starts — it cannot be prefixed per command)`
   );
   return lines.join("\n");
 }
@@ -862,6 +842,7 @@ module.exports = {
   classifyHeavy,
   isHeavyCommand,
   isLongLivedHeavy,
+  analyzeHeavy,
   parseMemMb,
   groupBudget,
   parseEnvelope,

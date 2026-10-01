@@ -63,6 +63,11 @@ bounded `sys.boot_completed`.
    exit code.
 4. **Reuse the emulator across runs**, but stop a dev server you started when its
    tier is done (`node scripts/serve.js stop`). Never kill an emulator you didn't start.
+5. **Diagnose a failed step with the sanctioned probe**, never a hand-rolled
+   `adb uiautomator`/`python` dump (those trip the capacity/tool guards):
+   `node scripts/qa/mobile-e2e/ui-dump.js --live --filter '<id|text>'` for the
+   current screen, or `--latest --flow <flow> --step <step>` / `--list-artifacts`
+   to read Maestro's saved `screen-hierarchy` + screenshots.
 
 **Anti-pattern (hangs the tool forever):** `setsid bash -c 'emulator … > log 2>&1' &`.
 The redirect lands on the *inner* command, so the detached wrapper keeps the tool's

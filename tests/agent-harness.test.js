@@ -7978,6 +7978,120 @@ test("capacity: heavy classifier fires on freeze-class commands, not on trivial 
   assert.strictEqual(capacity.classifyHeavy("git status"), null);
 });
 
+test("capacity: the classifier matches the program, never an argument/path (F-311)", () => {
+  const classifier = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "command-classifier.js"));
+  // Read-only device diagnostics are NOT a heavy tier: the adb SERIAL contains
+  // "emulator" and Maestro's ARTIFACT DIR is `.maestro`, but neither is a launch.
+  assert.strictEqual(capacity.classifyHeavy("adb -s emulator-5554 shell uiautomator dump /sdcard/ui.xml"), null);
+  assert.strictEqual(capacity.classifyHeavy("adb exec-out screencap -p > /tmp/x.png"), null);
+  assert.strictEqual(capacity.classifyHeavy("ls -la ~/.maestro/tests/2026-10-01_213520/"), null);
+  assert.strictEqual(capacity.classifyHeavy('grep -n "\\.maestro" /tmp/run.log'), null);
+  assert.strictEqual(capacity.classifyHeavy("find $HOME/.maestro/tests -type d"), null);
+  // A heredoc body is not shell: a python probe reading a `.maestro` path is trivial.
+  assert.strictEqual(
+    capacity.classifyHeavy('python3 - <<EOF\nimport json\np="/home/x/.maestro/tests/a.json"\nEOF'),
+    null
+  );
+  // Inline `node -e` code is opaque, not a heavy program.
+  assert.strictEqual(capacity.classifyHeavy('node -e \'require("fs").readFileSync("/x/.maestro/a.json")\''), null);
+  // Words in a message/argument are not programs.
+  assert.strictEqual(capacity.classifyHeavy('git commit -m "fix emulator and maestro flows"'), null);
+  assert.strictEqual(capacity.classifyHeavy('echo "npm run dev"'), null);
+  // The sanctioned probe and ordinary reads are trivial.
+  assert.strictEqual(capacity.classifyHeavy("node scripts/qa/mobile-e2e/ui-dump.js --latest"), null);
+  assert.strictEqual(capacity.classifyHeavy("node scripts/serve.js list"), null);
+
+  // The real programs still classify, including through a wrapper / `--cmd` payload.
+  assert.strictEqual(capacity.classifyHeavy("node scripts/serve.js start --cmd 'npm run dev' --group mobile"), "dev server");
+  assert.strictEqual(capacity.classifyHeavy("node scripts/serve.js run --cmd 'bash scripts/qa/mobile-e2e/build-apk.sh'"), "apk build");
+  assert.strictEqual(capacity.classifyHeavy('sh -c "npm run dev"'), "dev server");
+  assert.strictEqual(capacity.classifyHeavy("sudo -u ronen npm run dev"), "dev server");
+  assert.strictEqual(capacity.classifyHeavy("bash scripts/qa/mobile-e2e/boot-emulator.sh"), "emulator");
+  assert.strictEqual(capacity.isLongLivedHeavy("bash scripts/qa/mobile-e2e/boot-emulator.sh"), true);
+
+  // The lexer survives quotes/redirections and exposes WHY a command matched.
+  assert.deepStrictEqual(
+    classifier
+      .analyzeAll("cd mobile/android && ./gradlew assembleRelease 2>&1 | tail -5")
+      .map((f) => f.label),
+    ["apk build"]
+  );
+  assert.strictEqual(classifier.analyzeCommand("npm run dev").evidence, "npm script dev");
+});
+
+test("capacity: a single live heavy group is one tier, so a one-shot is not refused (F-311)", () => {
+  const e = capacity.DEFAULT_ENVELOPE;
+  const deviceTier = {
+    envelope: e,
+    mem: { available: 6000, total: 10000, swapTotal: 0, swapUsedPct: 0 },
+    load: { load1: 1, cpus: 8 },
+    psi: null,
+    tmpfs: [],
+    wsl: true,
+    serves: [
+      { name: "emulator", alive: true, heavy: true, group: "mobile", ageMs: 1000 },
+      { name: "app-dev", alive: true, heavy: true, group: "mobile", ageMs: 1000 },
+    ],
+  };
+  // A one-shot `maestro`/`run-maestro.js` (pendingHeavy 0) run by the plugin —
+  // which never passes pendingGroup — must be allowed alongside the device tier.
+  assert.strictEqual(capacity.evaluate(deviceTier, { pendingHeavy: 0 }).ok, true, "one-shot joins the live tier");
+  // A second long-lived tier is still refused (the two live members count as ONE).
+  const second = capacity.evaluate(deviceTier, { pendingHeavy: 1, pendingLive: 1 });
+  assert.strictEqual(second.ok, false, "a second long-lived tier is refused");
+  assert.match(second.reasons.join(" "), /2 heavy tier\(s\)/);
+  assert.match(second.reasons.join(" "), /group mobile/);
+  // A same-group sibling (serve.js start --group mobile) still joins for free.
+  assert.strictEqual(capacity.evaluate(deviceTier, { pendingHeavy: 1, pendingLive: 1, pendingGroup: "mobile" }).ok, true);
+  // An ungrouped live tier is not collapsed.
+  assert.strictEqual(
+    capacity.evaluate(Object.assign({}, deviceTier, { serves: [{ name: "solo", alive: true, heavy: true, ageMs: 1 }] }), { pendingHeavy: 0 }).ok,
+    true
+  );
+  assert.strictEqual(
+    capacity.evaluate(Object.assign({}, deviceTier, { serves: [{ name: "solo", alive: true, heavy: true, ageMs: 1 }] }), { pendingHeavy: 1 }).ok,
+    false
+  );
+});
+
+test("mobile E2E ui-dump normalizes Maestro JSON and UIAutomator XML", () => {
+  const ui = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "ui-dump.js"));
+  const dir = tmpdir();
+  const json = path.join(dir, "step-063.json");
+  fs.writeFileSync(
+    json,
+    JSON.stringify({
+      "resource-id": "root",
+      text: "",
+      bounds: "[0,0][1080,1920]",
+      class: "FrameLayout",
+      children: [
+        { "resource-id": "search-result-42", text: "book", "content-desc": "", bounds: "[0,1][1,2]", class: "TextView", children: [] },
+      ],
+    })
+  );
+  const tree = ui.normalizeMaestro(JSON.parse(fs.readFileSync(json, "utf8")));
+  assert.strictEqual(tree.children[0].id, "search-result-42");
+  assert.strictEqual(tree.children[0].text, "book");
+
+  const xml = path.join(dir, "ui.xml");
+  fs.writeFileSync(
+    xml,
+    '<?xml version="1.0"?><hierarchy rotation="0"><node index="0" text="hi" resource-id="login-submit" class="android.widget.Button" bounds="[0,0][1,1]"><node index="1" text="" resource-id="" class="android.widget.EditText" bounds="[2,2][3,3]"/></node></hierarchy>'
+  );
+  const parsed = ui.parseUiAutomatorXml(fs.readFileSync(xml, "utf8"));
+  assert.strictEqual(parsed.children[0].id, "login-submit");
+  assert.strictEqual(parsed.children[0].text, "hi");
+  assert.strictEqual(parsed.children[0].children[0].cls, "android.widget.EditText");
+
+  // `--file` prints the tree and exits 0 (no device, no heavy classification).
+  const r = spawnSync(process.execPath, [path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "ui-dump.js"), "--file", json], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /search-result-42/);
+});
+
 test("capacity: evaluate fails on a pending heavy over an existing tier, warns on soft signals", () => {
   const envelope = Object.assign({}, capacity.DEFAULT_ENVELOPE);
   const base = {
@@ -8124,6 +8238,25 @@ test("[drift-guard] capacity guard is one envelope owned by every surface", () =
   assert.match(prePush, /gates -- --phase=pre-push/, "the pre-push battery delegates to the gates runner");
   const runGates = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "run-gates.js"));
   assert.match(runGates, /test:capacity/, "the gates runner includes the capacity gate");
+
+  // The classifier is a real shell analyzer, not a regex over the raw string,
+  // and it is one owner shared by every surface.
+  const cap = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "capacity-lib.js"));
+  assert.match(cap, /command-classifier/, "capacity-lib delegates to the command classifier");
+  const cls = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "command-classifier.js"));
+  assert.match(cls, /function tokenize/, "the classifier tokenizes the shell");
+  assert.match(cls, /pendingHeredocs|pending/, "the tokenizer tracks heredoc bodies");
+  assert.match(cls, /analyzeCommand/, "the classifier exposes the WHY (evidence)");
+
+  // The lightweight UI-dump probe ships and is wired into lint + docs.
+  const ui = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "ui-dump.js"));
+  assert.match(ui, /parseUiAutomatorXml/, "ui-dump parses a live UIAutomator dump");
+  assert.match(ui, /normalizeMaestro/, "ui-dump parses a Maestro hierarchy artifact");
+  assert.match(ui, /--list-artifacts/, "ui-dump lists artifacts so agents never ls ~/.maestro");
+  const pkgForUi = JSON.parse(read(path.join(__dirname, "..", "package.json")));
+  assert.match(pkgForUi.scripts.lint, /ui-dump\.js/, "ui-dump.js is syntax-checked by lint");
+  assert.match(pkgForUi.scripts.lint, /command-classifier\.js/, "command-classifier.js is syntax-checked by lint");
+  assert.match(read(path.join(h.TEMPLATES_DIR, "docs", "mobile-testing.md")), /ui-dump\.js/, "mobile-testing.md documents the probe");
 });
 
 test("capacity: classifier covers the 2026-09-30 build/test gap and splits long-lived vs one-shot", () => {
@@ -8782,11 +8915,12 @@ test(
   () => {
     const target = tmpdir();
     const serve = path.join(h.TEMPLATES_DIR, "scripts", "serve.js");
-    // "next dev" classifies as heavy; the trailing comment keeps the command
-    // trivial so the launch is quick, while the cap path is fully exercised.
+    // `sleep 20` is trivial but quick; `--heavy` marks it as a heavy tier so the
+    // default-cap path is fully exercised (a trailing `# next dev` comment is
+    // NOT classified — the classifier ignores comments and heredoc bodies).
     const r = spawnSync(
       process.execPath,
-      [serve, "start", "--cmd", "sleep 20 # next dev", "--name", "capdemo"],
+      [serve, "start", "--cmd", "sleep 20", "--name", "capdemo", "--heavy"],
       {
         cwd: target,
         encoding: "utf8",

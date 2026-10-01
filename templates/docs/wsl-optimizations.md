@@ -148,7 +148,8 @@ The envelope is project-owned and machine-readable in
 
 | Surface | Role |
 | --- | --- |
-| `scripts/qa/capacity-lib.js` | samples `/proc` + PSI + `.serve/`, parses the envelope, owns the machine-wide heavy lock, classifies heavy commands (long-lived vs one-shot), detects whether the real workload cgroup is capped |
+| `scripts/qa/capacity-lib.js` | samples `/proc` + PSI + `.serve/`, parses the envelope, owns the machine-wide heavy lock, and delegates command classification to `command-classifier.js` (long-lived vs one-shot), detects whether the real workload cgroup is capped |
+| `scripts/qa/command-classifier.js` | tokenizes the shell and classifies by **program / subcommand / script basename** (peeling `VAR=x` + `env`/`sudo`/`timeout`/`systemd-run` wrappers, resolving interpreters + `npm run`/`npx`, recursing into `--cmd`/`sh -c` payloads). A path or device serial in an argument is never a program, and heredoc bodies are ignored |
 | `scripts/serve.js start` | **refuses** a heavy launch that would exceed the envelope or a held heavy lock (naming what is up); `--force` overrides; caps a heavy tier **by default** (transient `user.slice` unit, `heavy_mem_max_mb`); tightens a `--group` member to the group's remaining `group_mem_max_mb`; `--mem-max`/`--cpu-max` override; `--no-cap` opts out; `list` shows capacity + ages + caps |
 | `scripts/serve.js run` | runs a heavy **one-shot** (build/test tier) in a transient systemd scope with `MemoryMax` (default `heavy_mem_max_mb`, `--mem-max` overrides), streaming output and returning its exit code; leaves no `.serve/` record; the APK build wrapper uses it |
 | `scripts/serve.js prune` | removes `.serve/*.pid` records whose process is gone (all agent worktrees with `--worktrees`) so a stopped heavy tier is never misreported as live |
@@ -177,6 +178,17 @@ ran uncapped while the emulator and `next dev` were up, and the three filled the
 10 GB VM. The APK wrapper (`scripts/qa/mobile-e2e/build-apk.sh`) now runs the
 build through `serve.js run` and right-sizes Gradle (no daemon, one worker, one
 ABI, 1 GB heap).
+
+Classification is on the **program**, never on free text: a read-only command
+that merely mentions a device serial (`adb -s emulator-5554 shell uiautomator
+dump`), a Maestro artifact path (`~/.maestro/tests/…`), or "npm run dev" inside a
+quoted argument/commit message is **not** heavy and is never gated (F-311 — the
+old substring classifier blocked exactly those probes). A live heavy tier that is
+**one `--group`** (the device tier's emulator + dev server) counts as ONE tier,
+whether or not the caller declares the group, so a heavy one-shot legitimately
+runs alongside it (gated only by the free-RAM floor); only a second, unrelated
+long-lived tier is refused. `--force` overrides per command; `AGENT_CAPACITY_DISABLE=1`
+must be set when opencode starts.
 
 The machine-wide heavy lock (`~/.agent-harness/heavy.lock`, TTL + dead-pid
 detection) is what lets many agents coexist while guaranteeing **one
