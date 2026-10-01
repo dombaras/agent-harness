@@ -23,7 +23,7 @@ no `BACKLOG.md`); this doc is the shipped-work record and decision log.
 | Lint / tests | green (`npm run lint`, `npm test` — 367 pass) |
 | LibraryOS | `0.1.88` deployed (`.harness.json`); `model-routing.md` is gitignored/local-only and updated in place |
 | FamilyBudget | not deployed in WSL — Windows-checkout fallback per `AGENTS.md` |
-| Open work | [`docs/open-work.md`](open-work.md) — 4 field items moved from LibraryOS (H-1..H-4) + deferred measurement (H-5/H-6) + CI distribution (H-9) |
+| Open work | [`docs/open-work.md`](open-work.md) — canonical list (incl. H-23 measurement, H-25 explore, H-31 skills, H-32 MCP); deferred C/D detail in [`docs/mcp-skills-backlog.md`](mcp-skills-backlog.md) |
 
 ---
 
@@ -42,7 +42,8 @@ memory files were read ~219×. Prologue: **avg 24 calls, max 79; 193 sessions wi
 10+** before first real work. Gates: ~700 individual invocations. `build` (the
 orchestrator) alone: $10.02 / 31.5 M input tokens. This release attacks the
 **adoption gap** structurally rather than adding more advisory nudges (scope
-A+B+E of the recon; MCP/C deferred).
+A+B+E of the recon; **C (skills) and D (MCP) deferred — captured for a clean
+context in [`docs/mcp-skills-backlog.md`](mcp-skills-backlog.md)**).
 
 - **`orient` memory digest + `--brief`** (`scripts/orient.js`): the one-call
   orientation now returns, per session-start memory file, its `##` section index
