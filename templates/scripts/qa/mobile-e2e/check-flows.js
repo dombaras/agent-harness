@@ -133,6 +133,7 @@ function parseMatrix(content) {
         setup: null,
         oracle: null,
         firstLogin: null,
+        batchSetup: null,
         line: lineNo,
       };
       journeys.push(current);
@@ -156,6 +157,7 @@ function parseMatrix(content) {
       else if (key === 'setup') current.setup = rawValue.trim();
       else if (key === 'oracle') current.oracle = rawValue.trim();
       else if (key === 'firstLogin') current.firstLogin = rawValue.trim();
+      else if (key === 'batchSetup') current.batchSetup = rawValue.trim();
       else violations.push(`matrix.yaml:${lineNo}: unknown journey key "${key}"`);
       return;
     }
@@ -197,6 +199,17 @@ function parseMatrix(content) {
     }
     if (journey.firstLogin === '') {
       violations.push(`matrix.yaml:${journey.line}: journey "${journey.id}" declares an empty "firstLogin"`);
+    }
+    // `batchSetup:` is optional; when declared it must be the literal boolean
+    // `true`/`false`. It opts a setup-bearing journey into the setup-batching
+    // group (the runner runs its setup before a shared warm invocation).
+    if (journey.batchSetup != null && journey.batchSetup !== '' && !/^(true|false)$/.test(journey.batchSetup)) {
+      violations.push(
+        `matrix.yaml:${journey.line}: journey "${journey.id}" has a non-boolean "batchSetup" ("${journey.batchSetup}")`
+      );
+    }
+    if (journey.batchSetup === '') {
+      violations.push(`matrix.yaml:${journey.line}: journey "${journey.id}" declares an empty "batchSetup"`);
     }
   });
 

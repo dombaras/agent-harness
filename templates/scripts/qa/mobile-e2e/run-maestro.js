@@ -36,6 +36,15 @@
  *     existing dev data) for fast re-verification runs.
  *   * `--failed` re-runs only the journeys that failed in the previous run
  *     (read from `.serve/mobile-e2e-last-run.json`, written after every run).
+ *   * A journey may opt into setup batching with `batchSetup: true` in
+ *     `matrix.yaml`: its additive `setup:` runs before a shared warm invocation
+ *     instead of forcing a standalone one. Refused for a clearing setup, an
+ *     oracle, a firstLogin, or an `endsAs` change.
+ *   * The run report carries per-journey `durationMs` (from Maestro's summary in
+ *     a batch, else the invocation wall clock) plus the invocation count and
+ *     total wall time, so the slowest journeys are visible without parsing the
+ *     Maestro logs. Batched failures match on the extension-free flow key, so a
+ *     `[Failed] manager-approvals` summary is not mistaken for a pass.
  *
  * Usage:
  *   node scripts/qa/mobile-e2e/run-maestro.js --help
@@ -322,7 +331,15 @@ function parseJourneySteps(matrixPath) {
     if (trimmed === 'journeys:') return;
     const idMatch = trimmed.match(/^-\s+id:\s*(.+)$/);
     if (idMatch) {
-      current = { id: idMatch[1].trim(), actor: null, endsAs: null, setup: null, oracle: null, firstLogin: false };
+      current = {
+        id: idMatch[1].trim(),
+        actor: null,
+        endsAs: null,
+        setup: null,
+        oracle: null,
+        firstLogin: false,
+        batchSetup: false,
+      };
       return;
     }
     const kvMatch = trimmed.match(/^([A-Za-z]+):\s*(.*)$/);
@@ -341,6 +358,8 @@ function parseJourneySteps(matrixPath) {
       current.oracle = rawValue.trim();
     } else if (key === 'firstLogin') {
       current.firstLogin = rawValue.trim() === 'true';
+    } else if (key === 'batchSetup') {
+      current.batchSetup = rawValue.trim() === 'true';
     }
   });
   return map;
@@ -499,10 +518,22 @@ function extractFailureReason(output, flowName) {
 }
 
 /**
+ * Normalise a flow reference to the key both the manifest and Maestro's summary
+ * agree on: the basename with any `.yaml`/`.yml` extension stripped. Maestro's
+ * per-flow summary prints `manager-approvals` (no extension) while the runner
+ * tracks `manager-approvals.yaml`; matching on the raw string silently treated
+ * every batched failure as a pass (manager-approvals + offline-sync-recovery
+ * were lost in the 2026-10-01 full matrix).
+ */
+function flowKey(name) {
+  return String(name).replace(/\.ya?ml$/i, '');
+}
+
+/**
  * Parse every `[Failed] <flow> (<duration>) (<reason>)` summary line out of a
- * (possibly multi-flow) `maestro test` output. Returns a Map of flow name ->
- * reason. Flows absent from the map ran clean. This is what lets a batched
- * invocation still report per-journey results.
+ * (possibly multi-flow) `maestro test` output. Returns a Map of normalised flow
+ * key -> reason. Flows absent from the map ran clean. This is what lets a
+ * batched invocation still report per-journey results.
  */
 function parseFailedFlows(output) {
   const failed = new Map();
@@ -512,9 +543,38 @@ function parseFailedFlows(output) {
     .map((line) => line.trim())
     .forEach((line) => {
       const match = line.match(pattern);
-      if (match) failed.set(match[1], match[2].trim());
+      if (match) failed.set(flowKey(match[1]), match[2].trim());
     });
   return failed;
+}
+
+/**
+ * Parse Maestro's per-flow duration from `[Passed|Failed] <flow> (<dur>)` summary
+ * lines (e.g. `1m 23s`, `59s`) into milliseconds, keyed by the normalised flow
+ * key. Absent for single-flow invocations, whose duration the caller measures
+ * directly from the invocation wall clock.
+ */
+function parseFlowDurations(output) {
+  const durations = new Map();
+  const pattern = /^\[(?:Passed|Failed)\]\s+(\S+)\s+\(([^)]*)\)/;
+  stripAnsi(output)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .forEach((line) => {
+      const match = line.match(pattern);
+      if (match) durations.set(flowKey(match[1]), parseMaestroDuration(match[2]));
+    });
+  return durations;
+}
+
+/** Parse a Maestro duration token (`1m 23s`, `59s`, `2m`, `500ms`) to ms. */
+function parseMaestroDuration(token) {
+  const text = String(token).trim();
+  const ms = text.match(/^(\d+)ms$/);
+  if (ms) return Number(ms[1]);
+  const m = text.match(/^(?:(\d+)m)?\s*(?:(\d+)s)?$/);
+  if (!m || (!m[1] && !m[2])) return null;
+  return (Number(m[1] || 0) * 60 + Number(m[2] || 0)) * 1000;
 }
 
 /**
@@ -546,6 +606,36 @@ function suggestFix(reason) {
   return 'inspect the shared error; it is the common root cause for these flows.';
 }
 
+/**
+ * A declared setup that wipes the app's data dir (`pm clear`/`clearState`) also
+ * wipes the signed-in session, so the flow must re-establish it. The planner
+ * otherwise only switches on an actor change / firstLogin — `scan-add` clears
+ * the app in its setup yet was planned as a warm reuse, limping through the
+ * login fallback with a 25 s wasted probe (2026-10-01 full matrix).
+ */
+function setupClearsAppState(setup) {
+  return /(^|[^A-Za-z])pm\s+clear\b/i.test(String(setup || '')) || /clearState/i.test(String(setup || ''));
+}
+
+/**
+ * A journey whose declared setup is additive and explicitly opted into batching
+ * (`batchSetup: true`) may share a warm invocation with other opt-in journeys of
+ * the same actor: the runner runs every setup immediately before the batch. It
+ * is deliberately off by default — the project asserts its setups are
+ * order-independent and non-clearing in `matrix.yaml`.
+ */
+function isSetupGroupable(journey) {
+  return Boolean(
+    journey &&
+      journey.batchSetup &&
+      journey.setup &&
+      !journey.oracle &&
+      !journey.firstLogin &&
+      !setupClearsAppState(journey.setup) &&
+      (!journey.endsAs || journey.endsAs === (journey.actor || DEFAULT_ACTOR))
+  );
+}
+
 /** Build the ordered per-flow records the planner consumes. */
 function buildFlowRecords(flowFiles, stepsByFlow) {
   return flowFiles.map((file) => {
@@ -561,6 +651,8 @@ function buildFlowRecords(flowFiles, stepsByFlow) {
       hasSetup: Boolean(journey.setup),
       hasOracle: Boolean(journey.oracle),
       firstLogin: Boolean(journey.firstLogin),
+      clearsAppState: setupClearsAppState(journey.setup),
+      batchSetup: isSetupGroupable(journey),
     };
   });
 }
@@ -604,7 +696,13 @@ function orderForSessionReuse(flowFiles, stepsByFlow) {
       return;
     }
     const actor = journey.actor || DEFAULT_ACTOR;
-    const standalone = Boolean(journey.setup || journey.oracle || (journey.endsAs && journey.endsAs !== actor));
+    // A setup-bearing journey is standalone unless it explicitly opted into
+    // setup batching (`batchSetup: true`) and qualifies as order-independent.
+    const standalone = Boolean(
+      (journey.setup && !isSetupGroupable(journey)) ||
+        journey.oracle ||
+        (journey.endsAs && journey.endsAs !== actor)
+    );
     if (!groups.has(actor)) groups.set(actor, { standalone: [], batchable: [] });
     groups.get(actor)[standalone ? 'standalone' : 'batchable'].push(file);
   });
@@ -641,8 +739,15 @@ function planInvocations(records, reuseSession) {
   records.forEach((record) => {
     const actorChanged = record.actor !== currentActor;
     // A flow that leaves a different actor signed in (`endsAs`) changes the
-    // device session, so it must run alone and the next flow must switch.
-    const standalone = record.hasSetup || record.hasOracle || record.firstLogin || record.endsAs !== record.actor;
+    // device session, so it must run alone and the next flow must switch. A
+    // setup-bearing flow is standalone unless it opted into setup batching
+    // (`batchSetup: true`); a setup that clears app data always stands alone.
+    const standalone =
+      record.hasOracle ||
+      record.firstLogin ||
+      record.endsAs !== record.actor ||
+      record.clearsAppState ||
+      (record.hasSetup && !record.batchSetup);
     if (reuseSession && !actorChanged && !standalone) {
       if (!batch) batch = [];
       batch.push(record);
@@ -651,7 +756,7 @@ function planInvocations(records, reuseSession) {
       invocations.push({
         records: [record],
         actor: record.actor,
-        switchUser: !reuseSession || actorChanged || record.firstLogin,
+        switchUser: !reuseSession || actorChanged || record.firstLogin || record.clearsAppState,
       });
     }
     currentActor = record.endsAs || record.actor;
@@ -958,15 +1063,18 @@ function main() {
   const signatureFlows = new Map();
   let anyFailed = false;
   let stopped = false;
+  let totalInvocationMs = 0;
 
   for (let index = 0; index < invocations.length && !stopped; index += 1) {
     const invocation = invocations[index];
     const names = invocation.records.map((record) => record.name);
     const label = names.join(', ');
 
-    // The manifest's declared steps are scoped to a single journey; a batch is
-    // always setup-free, so setup/oracle only apply to single-flow invocations.
-    const scoped = invocation.records.length === 1 ? resolveDeclaredSteps([invocation.records[0].file], stepsByFlow) : { setups: [], oracles: [] };
+    // Declared setup steps run immediately before the invocation. A batch is
+    // normally setup-free (resolving to none); an explicit `batchSetup: true`
+    // batch runs every member's setup here, in manifest order, before the one
+    // shared `maestro test`. Oracles stay scoped to a passing single flow.
+    const scoped = resolveDeclaredSteps(invocation.records.map((record) => record.file), stepsByFlow);
     runDeclaredSteps(scoped.setups, 'setup');
 
     console.log(`\nRunning ${invocation.records.length > 1 ? 'flows' : 'flow'} (${index + 1}/${invocations.length}): ${label} [actor=${invocation.actor}${invocation.switchUser ? ', switch' : ', reuse'}]`);
@@ -980,12 +1088,16 @@ function main() {
         total: records.length,
       });
     }
+    const invocationStart = Date.now();
     const { status, output } = runMaestroFlows(
       invocation.records.map((record) => record.file),
       options,
       { switchUser: invocation.switchUser, actor: invocation.actor },
     );
+    const invocationMs = Date.now() - invocationStart;
+    totalInvocationMs += invocationMs;
     const failedFlows = parseFailedFlows(output);
+    const flowDurations = parseFlowDurations(output);
 
     // Oracles run only for a passing single-flow invocation.
     if (invocation.records.length === 1 && status === 0) {
@@ -995,10 +1107,20 @@ function main() {
     // A flow passes when Maestro did not name it as failed; when the invocation
     // failed but produced no `[Failed]` summary (crash/parse error), fall back to
     // the single-flow reason extractor so the failure is still attributed.
+    // Matching is on the normalised flow key (extension-free) so a batched
+    // failure is attributed to its journey instead of silently passing.
     const failedRecords = invocation.records.filter((record) => {
-      const pass = failedFlows.size > 0 ? !failedFlows.has(record.name) : status === 0;
-      const reason = pass ? null : failedFlows.get(record.name) || extractFailureReason(output, record.name);
-      results.push({ name: record.name, actor: record.actor, status: pass ? 'pass' : 'fail', reason });
+      const key = flowKey(record.name);
+      const pass = failedFlows.size > 0 ? !failedFlows.has(key) : status === 0;
+      const reason = pass ? null : failedFlows.get(key) || extractFailureReason(output, record.name);
+      // Maestro's summary carries per-flow durations in a batch; a single-flow
+      // invocation has no summary line, so its wall clock is the duration.
+      const durationMs = flowDurations.has(key)
+        ? flowDurations.get(key)
+        : invocation.records.length === 1
+          ? invocationMs
+          : null;
+      results.push({ name: record.name, actor: record.actor, status: pass ? 'pass' : 'fail', reason, durationMs });
       jobEvents.appendEvent(eventsPath, {
         type: 'flow_result',
         at: new Date().toISOString(),
@@ -1006,6 +1128,7 @@ function main() {
         actor: record.actor,
         status: pass ? 'pass' : 'fail',
         reason,
+        durationMs,
       });
       return !pass;
     });
@@ -1041,12 +1164,23 @@ function main() {
   }
 
   const finishedAt = new Date().toISOString();
+  const flowsWithDurations = results.filter((result) => typeof result.durationMs === 'number');
+  const slowest = [...flowsWithDurations]
+    .sort((a, b) => b.durationMs - a.durationMs)
+    .slice(0, 5)
+    .map((result) => `${result.name}=${Math.round(result.durationMs / 1000)}s`);
   writeReport(REPORT_FILE, {
     startedAt,
     finishedAt,
     mode: options.reuseSession ? 'reuse-session' : 'per-flow',
+    invocationCount: invocations.length,
+    matrixDurationMs: Date.parse(finishedAt) - Date.parse(startedAt),
+    invocationDurationMs: totalInvocationMs,
     flows: results,
   });
+  if (slowest.length > 0) {
+    console.log(`\nSlowest journeys: ${slowest.join(', ')}`);
+  }
 
   jobEvents.appendEvent(eventsPath, {
     type: 'matrix_done',
@@ -1076,7 +1210,12 @@ module.exports = {
   normaliseFailureReason,
   extractFailureReason,
   suggestFix,
+  flowKey,
   parseFailedFlows,
+  parseFlowDurations,
+  parseMaestroDuration,
+  setupClearsAppState,
+  isSetupGroupable,
   parseJourneySteps,
   buildFlowRecords,
   orderFirstLoginFirst,

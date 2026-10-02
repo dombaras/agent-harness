@@ -279,12 +279,18 @@ carries a performance layer; coverage and assertions are unchanged:
    ```
 
    It writes `<jobdir>/<id>.events.jsonl` (one JSON line per scenario: start,
-   pass/fail, fail-fast, done) plus `<jobdir>/<id>.json` (pid + log + events
-   paths). The `job-notify` opencode plugin tails the stream and turns it into a
-   **push**: a TUI toast per scenario (live progress with no LLM turn), and a
-   message injected back into the session (`session.promptAsync`) on the **first
-   failure** and at **completion** — so the agent resumes on real results instead
-   of polling. The report lands at `.serve/mobile-e2e-last-run.json`.
+   pass/fail, fail-fast, done, with `durationMs`) plus `<jobdir>/<id>.json`
+   (pid + log + events paths). The `job-notify` opencode plugin tails the stream
+   and turns it into a **push**: a TUI toast per scenario (live progress with no
+   LLM turn), and a message injected back into the session (`session.promptAsync`)
+   on the **first failure** and at **completion** — so the agent resumes on real
+   results instead of polling. The report lands at `.serve/mobile-e2e-last-run.json`
+   and now carries the **invocation count, matrix/invocation wall time, and each
+   journey's `durationMs`** (parsed from Maestro's per-flow summary in a batch,
+   or the invocation wall clock for a single flow), plus a `Slowest journeys:`
+   line — the timing map H-34 asked for. A batched failure is matched by its
+   extension-free flow key, so it can never be silently reported as a pass (the
+   2026-10-01 run lost 2 of its 3 failures that way).
 
    **To block for the run's exit code, prefer the async `wait` TOOL, not a
    `--wait` shell call.** The general `wait` tool (`scripts/wait-for.js`, e.g.
@@ -346,6 +352,17 @@ carries a performance layer; coverage and assertions are unchanged:
 7. The Maestro driver APKs are **not reinstalled** per invocation
    (`--no-reinstall-driver`); pass `--reinstall-driver` only if the driver is
    suspect.
+8. **Setup batching (opt-in).** A journey that declares an additive `setup:` may
+   add `batchSetup: true` in `matrix.yaml` so the runner runs its setup before a
+   shared warm invocation instead of forcing a standalone one. It is refused
+   (and the journey stays standalone) if its setup clears app data (`pm clear`/
+   `clearState`), declares an `oracle:`, is `firstLogin:`, or changes actor
+   (`endsAs`). Off by default: only opt in after a device run confirms the
+   setups are order-independent.
+9. **Scroll visibility.** `scrollUntilVisible` defaults to 100 % visibility,
+   which flakes on a bottom-edge element (the `book-detail`
+   `book-remove-arm` false negative: the node *was* on screen). The flows set
+   `visibilityPercentage: 50` so a partially-scrolled target is accepted.
 
 Project-specific defaults (app id, default actor) live in
 `scripts/qa/mobile-e2e/local.json` — project-owned, not overwritten by the

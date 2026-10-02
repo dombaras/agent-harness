@@ -9073,6 +9073,56 @@ test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpe
   );
   assert.strictEqual(runner.parseFailedFlows("[Failed] a (1s) (boom)\n[Passed] b").get("a"), "boom");
 
+  // Batch summaries print the flow name WITHOUT the extension, while records
+  // are keyed WITH it. Matching must normalise both sides or every batched
+  // failure silently passes — the 2026-10-01 full-matrix bug that lost 2 of
+  // its 3 failures (manager-approvals, offline-sync-recovery).
+  assert.strictEqual(runner.flowKey("manager-approvals.yaml"), "manager-approvals");
+  const batchOut = [
+    "[Passed] borrow-request (59s)",
+    "[Failed] manager-approvals (35s) (No visible element found: id: community-approve-.*)",
+    "[Passed] notifications (30s)",
+  ].join("\n");
+  const failedBatch = runner.parseFailedFlows(batchOut);
+  assert.strictEqual(
+    failedBatch.get("manager-approvals"),
+    "No visible element found: id: community-approve-.*",
+    "a batched failure is attributed by its extension-free key"
+  );
+  assert.strictEqual(failedBatch.has("borrow-request"), false, "a batched pass is not in the failed map");
+  assert.deepStrictEqual(
+    [...runner.parseFlowDurations(batchOut).entries()].sort(),
+    [
+      ["borrow-request", 59000],
+      ["manager-approvals", 35000],
+      ["notifications", 30000],
+    ],
+    "per-flow durations are parsed from the summary"
+  );
+  assert.strictEqual(runner.parseMaestroDuration("1m 23s"), 83000);
+  assert.strictEqual(runner.parseMaestroDuration("500ms"), 500);
+
+  // A setup that clears app data (scan-add `pm clear`) forces a session switch
+  // instead of limping through the login fallback on a warm-reuse plan.
+  assert.strictEqual(runner.setupClearsAppState("adb shell pm clear com.x"), true);
+  assert.strictEqual(runner.setupClearsAppState("npx tsx seed.ts"), false);
+  const clearRec = { ...rec("scan-add", "0502000001", true), clearsAppState: true };
+  assert.strictEqual(runner.planInvocations([clearRec], true)[0].switchUser, true, "a pm-clear setup re-establishes the session");
+
+  // `batchSetup: true` opts an additive-setup journey into the same-actor warm
+  // batch; a clearing/oracle setup never qualifies.
+  assert.strictEqual(runner.isSetupGroupable({ batchSetup: true, setup: "npx tsx seed.ts", actor: "A" }), true);
+  assert.strictEqual(runner.isSetupGroupable({ batchSetup: true, setup: "adb shell pm clear x", actor: "A" }), false);
+  assert.strictEqual(runner.isSetupGroupable({ batchSetup: true, setup: "seed", oracle: "check", actor: "A" }), false);
+  const groupable = { ...rec("seed-a", "A", true), batchSetup: true };
+  const groupPlan = runner.planInvocations([rec("warm1", "A"), rec("warm2", "A"), groupable], true);
+  assert.strictEqual(groupPlan.length, 2, "the first flow establishes the session, then the rest batch");
+  assert.deepStrictEqual(
+    groupPlan[1].records.map((r) => r.name),
+    ["warm2", "seed-a"],
+    "a batchSetup journey joins the warm batch"
+  );
+
   // The config turns off animations (the dominant per-command cost).
   assert.match(read(path.join(dir, "config.yaml")), /disableAnimations:\s*true/);
 
@@ -9093,6 +9143,15 @@ test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpe
   assert.ok(
     validator.parseMatrix(okMatrix.replace("firstLogin: true", "firstLogin: maybe")).violations.some((v) => /firstLogin/.test(v)),
     "a non-boolean firstLogin must fail"
+  );
+  assert.deepStrictEqual(
+    validator.parseMatrix(okMatrix.replace("firstLogin: true", "batchSetup: true")).violations,
+    [],
+    "batchSetup: true is an accepted journey key"
+  );
+  assert.ok(
+    validator.parseMatrix(okMatrix.replace("firstLogin: true", "batchSetup: maybe")).violations.some((v) => /batchSetup/.test(v)),
+    "a non-boolean batchSetup must fail"
   );
   const badMatrix = [
     "journeys:",
