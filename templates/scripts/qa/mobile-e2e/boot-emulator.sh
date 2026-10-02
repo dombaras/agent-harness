@@ -57,7 +57,9 @@
 #     Applied post-boot with `wm size`/`wm density` — a latency lever, not a
 #     layout change: scale size and density together (720x1600 @ 280 keeps the
 #     same dp geometry as 1080x2400 @ 420) so selectors are unaffected while the
-#     emulator moves ~2.3x fewer pixels per command. Both unset = the AVD's own.
+#     emulator moves ~2.3x fewer pixels per command. Env wins; otherwise the
+#     project-owned `local.json` `resolution`/`density` keys supply them. Both
+#     unset = the AVD's own.
 #   ANDROID_HOME           Android SDK root    (default ~/android-sdk)
 #
 # Boot speed: a quickboot snapshot turns the ~40-60 s cold boot into a few
@@ -176,9 +178,14 @@ case "$MEM_CAP" in ''|*[!0-9]*) MEM_CAP=$((MEMORY + 2048)) ;; esac
 
 # Optional display override (`wm size`/`wm density` after boot). Validated so a
 # typo cannot smuggle an arbitrary token into an adb shell command; an invalid
-# value is ignored with a warning rather than aborting the boot.
+# value is ignored with a warning rather than aborting the boot. Env wins; else
+# the project-owned `local.json` `resolution`/`density` keys are the defaults.
 RESOLUTION="${MOBILE_E2E_RESOLUTION:-}"
 DENSITY="${MOBILE_E2E_DENSITY:-}"
+if [ -f "$LOCAL_CONFIG" ]; then
+  [ -z "$RESOLUTION" ] && RESOLUTION="$(node -e "try{process.stdout.write(String(require('$LOCAL_CONFIG').resolution||''))}catch(e){}" 2>/dev/null || true)"
+  [ -z "$DENSITY" ] && DENSITY="$(node -e "try{process.stdout.write(String(require('$LOCAL_CONFIG').density||''))}catch(e){}" 2>/dev/null || true)"
+fi
 if [ -n "$RESOLUTION" ] && ! [[ "$RESOLUTION" =~ ^[0-9]+x[0-9]+$ ]]; then
   echo "! ignoring invalid MOBILE_E2E_RESOLUTION='$RESOLUTION' (want WxH)" >&2
   RESOLUTION=""

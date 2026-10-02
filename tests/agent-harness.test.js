@@ -9418,6 +9418,30 @@ test("mobile E2E timing analyzer surfaces dead optional waits", () => {
   assert.strictEqual(merged.spanCount, 6);
 });
 
+test("mobile E2E timing analyzer reports leaf time and per-tap phases", () => {
+  const t = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "analyze-timings.js"));
+  const log = [
+    '07:48:07.311 [ INFO] maestro.cli.runner.X: Run _shared/session.yaml RUNNING',
+    '07:48:07.311 [ INFO] maestro.cli.runner.X: Tap on "x" RUNNING',
+    "07:48:07.500 [ INFO] maestro.Maestro.tap-abc: Tap aimed via settled hierarchy",
+    "07:48:07.600 [ INFO] maestro.Maestro.hierarchyBasedTap-def: Tapping at (1, 2) using hierarchy based logic for wait",
+    "07:48:09.100 [ INFO] maestro.Maestro.hierarchyBasedTap-def: Something has changed in the UI judging by view hierarchy. Proceed.",
+    '07:48:09.100 [ INFO] maestro.cli.runner.X: Tap on "x" COMPLETED',
+    '07:48:11.100 [ INFO] maestro.cli.runner.X: Run _shared/session.yaml COMPLETED',
+  ].join("\n");
+  const spans = t.parseLog(log);
+  const s = t.summarise(spans, t.parsePhases(log));
+  assert.strictEqual(t.classify("Run _shared/session.yaml"), "runFlow");
+  assert.strictEqual(s.byKind.runFlow.count, 1);
+  // accounted = runFlow 3.789s + tapOn 1.789s = 5.578s; leaf drops the container.
+  assert.strictEqual(Math.round(s.leafMs), 1789, "leaf excludes the runFlow container");
+  assert.strictEqual(Math.round(s.tapPhases.aim[0] * 1000), 189, "aim = command start -> tap aimed");
+  assert.strictEqual(Math.round(s.tapPhases.settle[0] * 1000), 1500, "settle = tap -> UI changed");
+  const merged = t.mergeSummaries([s, s]);
+  assert.strictEqual(Math.round(merged.leafMs), Math.round(s.leafMs) * 2);
+  assert.strictEqual(merged.tapPhases.settle.length, 2, "tap phases merge across invocations");
+});
+
 test("run-maestro --failed reports resolve across the main checkout + worktrees (F-302)", () => {
   const runner = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
 

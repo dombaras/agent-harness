@@ -12,9 +12,11 @@
  * and 7.4 min of that was a single `dashboard-profile-button` wait repeated 30x.
  *
  * This module parses the per-invocation `maestro.log` files under
- * `~/.maestro/tests/<run>/` and reduces them to the two numbers that drive
- * optimization: per-command-kind latency, and *dead waits* (an `(Optional)`
- * command that ends WARNED, i.e. burned its whole timeout).
+ * `~/.maestro/tests/<run>/` and reduces them to the numbers that drive
+ * optimization: per-command-kind latency, *leaf* command time (the sum minus
+ * the `runFlow` containers, which otherwise double-count their children), the
+ * per-tap phases (pre-tap hierarchy aim vs post-tap settle), and *dead waits*
+ * (an `(Optional)` command that ends WARNED, i.e. burned its whole timeout).
  *
  * Pure and dependency-free so the tests can require it. The CLI is read-only:
  *
@@ -78,8 +80,53 @@ function parseLog(text) {
   return spans;
 }
 
-/** Reduce spans to per-kind latency + dead-wait totals. */
-function summarise(spans) {
+/**
+ * Maestro's internal tap markers are plain `logger: message` lines (they do NOT
+ * end in RUNNING/COMPLETED, so `LINE_RE` ignores them). Capture the three that
+ * split a tap into its pre-tap hierarchy aim and its post-tap settle.
+ */
+const GENERIC_RE =
+  /^(\d\d):(\d\d):(\d\d)\.(\d+)\s+\[[^\]]*\]\s+.*?:\s+(.*?)\s*$/;
+
+/**
+ * Pair the internal tap markers with the enclosing `Tap on …` command span to
+ * derive the two phases that dominate a tap's cost:
+ *   aim    = command RUNNING  -> "Tap aimed via settled hierarchy"
+ *   settle = "Tapping at …"   -> "Something has changed in the UI … Proceed."
+ * Returns arrays of seconds. Pure; every phase is clamped at >= 0.
+ */
+function parsePhases(text) {
+  const aim = [];
+  const settle = [];
+  let start = null;
+  let aimed = null;
+  let dispatched = null;
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const m = GENERIC_RE.exec(line);
+    if (!m) continue;
+    const at = toSeconds(m[1], m[2], m[3], m[4]);
+    const msg = m[5];
+    if (/^Tap on\b/.test(msg) && /\sRUNNING$/.test(msg)) {
+      start = at;
+      aimed = null;
+      dispatched = null;
+    } else if (msg.includes("Tap aimed via settled hierarchy")) {
+      aimed = at;
+    } else if (msg.includes("Tapping at")) {
+      dispatched = at;
+    } else if (msg.includes("Something has changed in the UI")) {
+      if (start !== null && aimed !== null) aim.push(Math.max(0, aimed - start));
+      if (dispatched !== null) settle.push(Math.max(0, at - dispatched));
+      start = null;
+      aimed = null;
+      dispatched = null;
+    }
+  }
+  return { aim, settle };
+}
+
+/** Reduce spans to per-kind latency + dead-wait totals + leaf time + tap phases. */
+function summarise(spans, phases) {
   const byKind = {};
   const deadWaits = [];
   let deadWaitMs = 0;
@@ -97,7 +144,23 @@ function summarise(spans) {
     }
   }
   deadWaits.sort((a, b) => b.durationSec - a.durationSec);
-  return { byKind, deadWaits, deadWaitMs, totalMs, spanCount: spans.length };
+  // `runFlow` is the only container command: the parsed spans nest, so a
+  // `runFlow` span already includes its children. Subtract the containers to get
+  // the non-overlapping leaf time (which the per-kind table otherwise inflates).
+  const runFlowMs = byKind.runFlow ? byKind.runFlow.totalMs : 0;
+  const leafMs = Math.max(0, totalMs - runFlowMs);
+  const tapPhases = phases && Array.isArray(phases.aim)
+    ? { aim: phases.aim.slice(), settle: (phases.settle || []).slice() }
+    : { aim: [], settle: [] };
+  return {
+    byKind,
+    deadWaits,
+    deadWaitMs,
+    totalMs,
+    leafMs,
+    spanCount: spans.length,
+    tapPhases,
+  };
 }
 
 /** Read one `<dir>/maestro.log` and summarise it (empty result when absent). */
@@ -108,7 +171,7 @@ function analyseDir(dir) {
   } catch (_) {
     text = "";
   }
-  return summarise(parseLog(text));
+  return summarise(parseLog(text), parsePhases(text));
 }
 
 /** Every immediate subdirectory of `base` whose name starts with `prefix`. */
@@ -131,7 +194,10 @@ function mergeSummaries(summaries) {
   const deadWaits = [];
   let deadWaitMs = 0;
   let totalMs = 0;
+  let leafMs = 0;
   let spanCount = 0;
+  const tapAim = [];
+  const tapSettle = [];
   for (const s of Array.isArray(summaries) ? summaries : []) {
     for (const [kind, v] of Object.entries(s.byKind || {})) {
       if (!byKind[kind]) byKind[kind] = { count: 0, totalMs: 0 };
@@ -141,14 +207,39 @@ function mergeSummaries(summaries) {
     deadWaits.push(...(s.deadWaits || []));
     deadWaitMs += s.deadWaitMs || 0;
     totalMs += s.totalMs || 0;
+    leafMs += s.leafMs || 0;
     spanCount += s.spanCount || 0;
+    if (s.tapPhases) {
+      tapAim.push(...(s.tapPhases.aim || []));
+      tapSettle.push(...(s.tapPhases.settle || []));
+    }
   }
   deadWaits.sort((a, b) => b.durationSec - a.durationSec);
-  return { byKind, deadWaits, deadWaitMs, totalMs, spanCount, runs: summaries.length };
+  return {
+    byKind,
+    deadWaits,
+    deadWaitMs,
+    totalMs,
+    leafMs,
+    spanCount,
+    runs: summaries.length,
+    tapPhases: { aim: tapAim, settle: tapSettle },
+  };
 }
 
 function fmtSec(ms) {
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function mean(list) {
+  const a = Array.isArray(list) ? list : [];
+  return a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+}
+
+function p90(list) {
+  const a = (Array.isArray(list) ? list : []).slice().sort((x, y) => x - y);
+  if (!a.length) return 0;
+  return a[Math.min(a.length - 1, Math.floor(a.length * 0.9))];
 }
 
 function main() {
@@ -174,7 +265,15 @@ function main() {
   }
   console.log(`Maestro timing — ${targets.length} invocation(s)`);
   console.log(`  accounted command time: ${(summary.totalMs / 60000).toFixed(1)} min (${summary.spanCount} commands)`);
+  console.log(`  leaf command time: ${(summary.leafMs / 60000).toFixed(1)} min (accounted minus runFlow containers)`);
   console.log(`  dead waits (optional timeouts that expired): ${(summary.deadWaitMs / 60000).toFixed(1)} min`);
+  const tp = summary.tapPhases || { aim: [], settle: [] };
+  if (tp.aim.length || tp.settle.length) {
+    console.log(
+      `  tap phases: aim avg=${fmtSec(mean(tp.aim) * 1000)} p90=${fmtSec(p90(tp.aim) * 1000)} (n=${tp.aim.length})` +
+        ` · settle avg=${fmtSec(mean(tp.settle) * 1000)} p90=${fmtSec(p90(tp.settle) * 1000)} (n=${tp.settle.length})`
+    );
+  }
   console.log("  by kind:");
   for (const [kind, v] of Object.entries(summary.byKind).sort((a, b) => b[1].totalMs - a[1].totalMs)) {
     console.log(`    ${kind.padEnd(13)} n=${String(v.count).padStart(4)}  ${(v.totalMs / 60000).toFixed(2).padStart(6)} min  avg=${fmtSec(v.totalMs / Math.max(v.count, 1))}`);
@@ -192,6 +291,7 @@ if (require.main === module) main();
 module.exports = {
   classify,
   parseLog,
+  parsePhases,
   summarise,
   analyseDir,
   listRunDirs,
