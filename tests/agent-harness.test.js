@@ -8378,6 +8378,7 @@ test("[drift-guard] device-up supports a cached production backend build (devBui
   assert.match(up, /MOBILE_E2E_DEV_BUILD_CMD/, "with an env override");
   assert.match(up, /backend-build-cache\.js/, "consults the input-fingerprint cache");
   assert.match(up, /MOBILE_E2E_DEV_BUILD_FORCE/, "with a force bypass");
+  assert.match(up, /devBuildOutput/, "documents the build-artifact existence check");
   assert.match(up, /serve\.js run --name backend-build/, "runs the build as a capped one-shot");
   assert.match(up, /T_BACKEND/, "is instrumented in device-up:timings");
 
@@ -8439,6 +8440,23 @@ test("backend-build-cache CLI check/record cycle skips an unchanged build", asyn
   assert.strictEqual(run("check", "--cmd", "npm run build").status, 1, "a source change is a miss");
   assert.strictEqual(run("record", "--cmd", "npm run build").status, 0, "re-record after the change");
   assert.strictEqual(run("check", "--cmd", "npm run build:alt").status, 1, "a command change is a miss");
+
+  // devBuildOutput: a hit must also find the build artifact present.
+  fs.writeFileSync(
+    path.join(meDir, "local.json"),
+    JSON.stringify(
+      { devBuildCmd: "npm run build", devBuildCache: ["app/**", "package.json"], devBuildOutput: ".next/BUILD_ID" },
+      null,
+      2
+    )
+  );
+  assert.strictEqual(run("record", "--cmd", "npm run build").status, 0);
+  r = run("check", "--cmd", "npm run build");
+  assert.strictEqual(r.status, 1, "a deleted build output is a miss");
+  assert.match(r.stdout, /output .* is absent/);
+  fs.mkdirSync(path.join(target, ".next"), { recursive: true });
+  fs.writeFileSync(path.join(target, ".next", "BUILD_ID"), "abc123\n");
+  assert.strictEqual(run("check", "--cmd", "npm run build").status, 0, "a present build output restores the hit");
 
   fs.writeFileSync(path.join(meDir, "local.json"), JSON.stringify({ devBuildCmd: "npm run build" }, null, 2));
   assert.strictEqual(run("key", "--cmd", "npm run build").status, 3, "no globs declared means no caching");

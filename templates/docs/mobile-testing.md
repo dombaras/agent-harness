@@ -165,7 +165,8 @@ per project in `local.json`:
 {
   "devCmd": "npm run start",
   "devBuildCmd": "npm run build",
-  "devBuildCache": ["app/**", "lib/**", "next.config.*", "package.json"]
+  "devBuildCache": ["app/**", "lib/**", "next.config.*", "package.json"],
+  "devBuildOutput": ".next/BUILD_ID"
 }
 ```
 
@@ -174,7 +175,9 @@ When `devBuildCmd` is set, `device-up.sh` runs it as a **capped one-shot**
 two heavy one-shots never overlap; a failed build aborts the bring-up. The
 `devBuildCache` globs are resolved through `git ls-files` (so `node_modules`/
 `.next` never enter the hash) and `backend-build-cache.js` skips the build when
-nothing under them changed. Force a rebuild with `MOBILE_E2E_DEV_BUILD_FORCE=1`;
+nothing under them changed **and** `devBuildOutput` (when declared) still exists
+— a deleted build is a miss, never a skip that leaves `next start` with nothing.
+Force a rebuild with `MOBILE_E2E_DEV_BUILD_FORCE=1`;
 override the command with `MOBILE_E2E_DEV_BUILD_CMD`. With no `devBuildCmd` the
 behavior is unchanged (`npm run dev`, no build).
 

@@ -20,6 +20,9 @@
  *   devBuildCmd    the backend build command (e.g. `npm run build`)
  *   devBuildCache  globs whose content invalidates the cache
  *                  (e.g. ["app/**", "lib/**", "next.config.*", "package.json"])
+ *   devBuildOutput optional artifact a hit must also find present
+ *                  (e.g. ".next/BUILD_ID") — so a deleted build output is a
+ *                  miss, never a skip that leaves `next start` with nothing
  *
  * CLI:
  *   backend-build-cache.js key    --cmd "<cmd>"   print the fingerprint (exit 3
@@ -56,6 +59,13 @@ function configuredGlobs(cfg) {
   const g = c.devBuildCache;
   if (!Array.isArray(g)) return [];
   return g.map((x) => String(x).trim()).filter(Boolean);
+}
+
+/* Optional build artifact a cache hit must find present. Empty means the
+ * fingerprint alone decides. */
+function configuredOutput(cfg) {
+  const c = cfg || projectConfig();
+  return typeof c.devBuildOutput === "string" ? c.devBuildOutput.trim() : "";
 }
 
 /* Resolve globs to a sorted list of repo-relative files. Returns null when git
@@ -126,9 +136,15 @@ function cmdCheck(args) {
     return 1;
   }
   const st = readState();
-  if (st && st.fingerprint === f && st.cmd === args.cmd) {
+  const output = configuredOutput();
+  const outputPresent = !output || fs.existsSync(path.join(ROOT, output));
+  if (st && st.fingerprint === f && st.cmd === args.cmd && outputPresent) {
     console.log("backend-build-cache: HIT — inputs unchanged");
     return 0;
+  }
+  if (st && st.fingerprint === f && st.cmd === args.cmd && !outputPresent) {
+    console.log(`backend-build-cache: MISS — recorded build output "${output}" is absent`);
+    return 1;
   }
   console.log("backend-build-cache: MISS — inputs changed or first run");
   return 1;
@@ -146,14 +162,19 @@ function cmdRecord(args) {
 }
 
 function cmdStatus() {
-  const globs = configuredGlobs();
-  const f = fingerprint({ cmd: projectConfig().devBuildCmd || "", globs });
+  const cfg = projectConfig();
+  const globs = configuredGlobs(cfg);
+  const output = configuredOutput(cfg);
+  const f = fingerprint({ cmd: cfg.devBuildCmd || "", globs });
   const st = readState();
+  const outputPresent = !output || fs.existsSync(path.join(ROOT, output));
   console.log(JSON.stringify({
     globs,
+    output: output || null,
+    outputPresent,
     current: f,
     recorded: st ? { fingerprint: st.fingerprint, cmd: st.cmd, at: st.at } : null,
-    hit: !!(f && st && st.fingerprint === f),
+    hit: !!(f && st && st.fingerprint === f && outputPresent),
   }, null, 2));
   return 0;
 }
@@ -179,4 +200,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { fingerprint, watchedFiles, configuredGlobs, sha256, stateFile };
+module.exports = { fingerprint, watchedFiles, configuredGlobs, configuredOutput, sha256, stateFile };

@@ -37,6 +37,8 @@
 #                    devBuildCmd: "npm run build".
 #   devBuildCache    globs whose content invalidates devBuildCmd (required for
 #                    caching; e.g. ["app/**","lib/**","next.config.*"]).
+#   devBuildOutput   optional artifact a cache hit must also find present
+#                    (e.g. ".next/BUILD_ID") — a deleted build is a miss.
 # Env overrides: MOBILE_E2E_APK / MOBILE_E2E_DEV_CMD / MOBILE_E2E_DEV_URL /
 #   MOBILE_E2E_DEV_NAME / MOBILE_E2E_SKIP_BUILD / MOBILE_E2E_SKIP_INSTALL /
 #   MOBILE_E2E_OVERLAP (default 1) / MOBILE_E2E_DEV_MEM_MAX (dev-server cgroup
