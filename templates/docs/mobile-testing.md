@@ -84,6 +84,13 @@ auto-detected (`host` only when a real renderer answers, else
 software GL anyway). Override any of them with `MOBILE_E2E_CORES`,
 `MOBILE_E2E_MEMORY`, `MOBILE_E2E_GPU`.
 
+The **display** is a separate latency lever: `MOBILE_E2E_RESOLUTION=WxH` and
+`MOBILE_E2E_DENSITY=dpi` are applied after boot with `wm size`/`wm density`
+(validated, never interpolated raw into an adb shell). Scale size and density
+together — e.g. `720x1600` @ `280` keeps the same dp geometry as the AVD's
+`1080x2400` @ `420`, so selectors are unchanged while the emulator moves ~2.3×
+fewer pixels per command.
+
 ### GPU acceleration on WSL2 (the biggest wall-clock lever)
 
 On a software renderer the emulator is CPU-bound — ~2.5 s/command, ~3.6 s/tap
@@ -288,9 +295,20 @@ carries a performance layer; coverage and assertions are unchanged:
    and now carries the **invocation count, matrix/invocation wall time, and each
    journey's `durationMs`** (parsed from Maestro's per-flow summary in a batch,
    or the invocation wall clock for a single flow), plus a `Slowest journeys:`
-   line — the timing map H-34 asked for. A batched failure is matched by its
-   extension-free flow key, so it can never be silently reported as a pass (the
-   2026-10-01 run lost 2 of its 3 failures that way).
+    line — the timing map H-34 asked for. A batched failure is matched by its
+    extension-free flow key, so it can never be silently reported as a pass (the
+    2026-10-01 run lost 2 of its 3 failures that way).
+
+    **`analyze-timings.js`** is the per-command ruler for the optimization loop.
+    It parses each invocation's `~/.maestro/tests/<run>/maestro.log` and reports
+    per-kind latency plus **dead waits** — an `(Optional)` command that ends
+    WARNED, i.e. burned its whole timeout doing nothing (the 2026-10-02 matrix
+    lost 7.4 min to a single re-expiring `dashboard-profile-button` wait):
+
+    ```bash
+    node scripts/qa/mobile-e2e/analyze-timings.js --prefix 2026-10-02_
+    node scripts/qa/mobile-e2e/analyze-timings.js --dir ~/.maestro/tests/2026-10-02_080659 --json
+    ```
 
    **To block for the run's exit code, prefer the async `wait` TOOL, not a
    `--wait` shell call.** The general `wait` tool (`scripts/wait-for.js`, e.g.

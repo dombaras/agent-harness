@@ -52,6 +52,12 @@
 #     Quickboot forces ANDROID_EMU_FORCE_QUICKBOOT_FILE_BACKED=1 (the emulator
 #     disables file-backed snapshots by default; this AVD needs them to save/load
 #     at all). A snapshot without `ram.bin` is discarded as a failed save.
+#   MOBILE_E2E_RESOLUTION  logical display size  (WxH; default device 1080x2400)
+#   MOBILE_E2E_DENSITY     logical display dpi   (default device 420)
+#     Applied post-boot with `wm size`/`wm density` — a latency lever, not a
+#     layout change: scale size and density together (720x1600 @ 280 keeps the
+#     same dp geometry as 1080x2400 @ 420) so selectors are unaffected while the
+#     emulator moves ~2.3x fewer pixels per command. Both unset = the AVD's own.
 #   ANDROID_HOME           Android SDK root    (default ~/android-sdk)
 #
 # Boot speed: a quickboot snapshot turns the ~40-60 s cold boot into a few
@@ -168,6 +174,20 @@ case "$MEMORY" in ''|*[!0-9]*) MEMORY=2048 ;; esac
 MEM_CAP="${MOBILE_E2E_MEM_MAX:-$((MEMORY + 2048))}"
 case "$MEM_CAP" in ''|*[!0-9]*) MEM_CAP=$((MEMORY + 2048)) ;; esac
 
+# Optional display override (`wm size`/`wm density` after boot). Validated so a
+# typo cannot smuggle an arbitrary token into an adb shell command; an invalid
+# value is ignored with a warning rather than aborting the boot.
+RESOLUTION="${MOBILE_E2E_RESOLUTION:-}"
+DENSITY="${MOBILE_E2E_DENSITY:-}"
+if [ -n "$RESOLUTION" ] && ! [[ "$RESOLUTION" =~ ^[0-9]+x[0-9]+$ ]]; then
+  echo "! ignoring invalid MOBILE_E2E_RESOLUTION='$RESOLUTION' (want WxH)" >&2
+  RESOLUTION=""
+fi
+if [ -n "$DENSITY" ] && ! [[ "$DENSITY" =~ ^[0-9]+$ ]]; then
+  echo "! ignoring invalid MOBILE_E2E_DENSITY='$DENSITY' (want an integer)" >&2
+  DENSITY=""
+fi
+
 # When the backend is a real GPU reached over WSL's d3d12 path, the emulator
 # inherits the same driver selection (serve.js runs the command through a shell
 # and forwards the caller's env) — otherwise `-gpu host` would still use llvmpipe.
@@ -197,8 +217,8 @@ if [ "$PRINT_PROFILE" = "2" ]; then
 fi
 
 if [ "$PRINT_PROFILE" = "1" ]; then
-  node -e "process.stdout.write(JSON.stringify({avd:process.argv[1]||null,hostCpus:Number(process.argv[2]),avdCores:Number(process.argv[3]),cores:Number(process.argv[4]),memory:Number(process.argv[5]),memMax:Number(process.argv[6]),gpu:process.argv[7],gpuEnv:process.argv[8]||null,gpuExtra:process.argv[9]||null,tierGroup:process.argv[10]},null,2)+'\n')" \
-    "$AVD" "$HOST_CPUS" "$AVD_CORES" "$CORES" "$MEMORY" "$MEM_CAP" "$GPU" "$GPU_ENV" "$GPU_EXTRA" "$TIER_GROUP"
+  node -e "process.stdout.write(JSON.stringify({avd:process.argv[1]||null,hostCpus:Number(process.argv[2]),avdCores:Number(process.argv[3]),cores:Number(process.argv[4]),memory:Number(process.argv[5]),memMax:Number(process.argv[6]),gpu:process.argv[7],gpuEnv:process.argv[8]||null,gpuExtra:process.argv[9]||null,tierGroup:process.argv[10],resolution:process.argv[11]||null,density:Number(process.argv[12])||null},null,2)+'\n')" \
+    "$AVD" "$HOST_CPUS" "$AVD_CORES" "$CORES" "$MEMORY" "$MEM_CAP" "$GPU" "$GPU_ENV" "$GPU_EXTRA" "$TIER_GROUP" "$RESOLUTION" "$DENSITY"
   exit 0
 fi
 
@@ -220,6 +240,7 @@ fi
 cd "$ROOT"
 
 echo "device profile: avd=$AVD cores=$CORES/$HOST_CPUS memory=${MEMORY}MB gpu=$GPU${GPU_ENV:+ ($GPU_ENV)} (avd declares ${AVD_CORES} cores)"
+[ -n "$RESOLUTION" ] && echo "display override: size=$RESOLUTION${DENSITY:+ density=$DENSITY}"
 if [ "$CORES" -gt "$AVD_CORES" ]; then
   echo "  ! cores ($CORES) exceed the AVD's hw.cpu.ncore ($AVD_CORES); the guest may cap them." >&2
 fi
@@ -322,10 +343,29 @@ restart_emulator() {
   node scripts/serve.js prune >/dev/null 2>&1 || true
 }
 
-# One boot attempt: start with the given flags and hold the bounded boot gate.
+# Optional post-boot display override. `wm size`/`wm density` change the Android
+# logical display (SurfaceFlinger) without touching the AVD; applied after every
+# boot so a quickboot restore cannot silently revert it. Scale size and density
+# together to keep dp geometry (and therefore selectors) identical.
+apply_display() {
+  [ -z "$RESOLUTION" ] && [ -z "$DENSITY" ] && return 0
+  if [ -n "$RESOLUTION" ]; then
+    timeout 20 "$ADB" shell wm size "$RESOLUTION" >/dev/null 2>&1 \
+      || echo "  ! wm size $RESOLUTION failed (display unchanged)" >&2
+  fi
+  if [ -n "$DENSITY" ]; then
+    timeout 20 "$ADB" shell wm density "$DENSITY" >/dev/null 2>&1 \
+      || echo "  ! wm density $DENSITY failed (display unchanged)" >&2
+  fi
+  echo "display applied: size=${RESOLUTION:-device} density=${DENSITY:-device}"
+}
+
+# One boot attempt: start with the given flags, hold the bounded boot gate, then
+# apply the optional display override.
 try_boot() {
   start_emulator "$1" "$2" "$3" "$4"
-  wait_boot
+  if ! wait_boot; then return 1; fi
+  apply_display
 }
 
 WANT_SNAP="on"

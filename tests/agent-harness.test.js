@@ -8999,7 +8999,7 @@ test("[drift-guard] serve caps heavy tiers by default and wsl-tune installs the 
 
 test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpers) and is documented", () => {
   const dir = path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e");
-  for (const f of ["run-maestro.js", "check-flows.js", "config.yaml", "boot-emulator.sh", "run-detached.sh"]) {
+  for (const f of ["run-maestro.js", "check-flows.js", "config.yaml", "boot-emulator.sh", "run-detached.sh", "analyze-timings.js"]) {
     assert.ok(exists(path.join(dir, f)), `${f} must ship in templates/scripts/qa/mobile-e2e`);
   }
 
@@ -9186,6 +9186,11 @@ test("[drift-guard] device tier is right-sized, group-budgeted, and notifyable",
   assert.match(boot, /detect_gpu|swiftshader_indirect/, "boot-emulator.sh auto-detects the GPU backend");
   assert.match(boot, /nproc/, "boot-emulator.sh derives cores from the host");
   assert.match(boot, /--group/, "boot-emulator.sh joins a tier group");
+  // The display override is a latency lever for the device matrix: it must be
+  // validated (never an arbitrary token into an adb shell) and applied post-boot.
+  assert.match(boot, /MOBILE_E2E_RESOLUTION/, "boot-emulator.sh accepts a display size override");
+  assert.match(boot, /wm size/, "boot-emulator.sh applies the display size via wm size");
+  assert.match(boot, /=\~ \^\[0-9\]\+x\[0-9\]\+\$/, "the resolution override is validated");
   // WSL GPU: the probe forces d3d12 and the launch carries the matching env, so
   // `-gpu host` cannot silently fall back to llvmpipe (F-296).
   assert.match(boot, /GALLIUM_DRIVER=d3d12/, "boot-emulator.sh selects the d3d12 driver on WSL");
@@ -9248,6 +9253,32 @@ test("mobile E2E job-events reduce the progress stream for the notifier", () => 
   const f = path.join(dir, "ev.jsonl");
   fs.writeFileSync(f, `${JSON.stringify(seq[0])}\n{partial`);
   assert.strictEqual(j.readEvents(f).length, 1);
+});
+
+test("mobile E2E timing analyzer surfaces dead optional waits", () => {
+  const t = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "analyze-timings.js"));
+  const log = [
+    "07:48:07.311 [ INFO] maestro.cli.runner.MaestroCommandRunner.runCommands$lambda$0: Tap on \"התחברות\" RUNNING",
+    "07:48:09.500 [ INFO] maestro.cli.runner.MaestroCommandRunner.runCommands$lambda$2: Tap on \"התחברות\" COMPLETED",
+    "07:48:09.500 [ INFO] maestro.cli.runner.MaestroCommandRunner.runCommands$lambda$0: Assert that (Optional) id: dashboard-profile-button is visible RUNNING",
+    "07:48:33.075 [ INFO] maestro.cli.runner.MaestroCommandRunner.runCommands$lambda$6: Assert that (Optional) id: dashboard-profile-button is visible WARNED",
+    "07:48:33.075 [ INFO] maestro.cli.runner.MaestroCommandRunner.runCommands$lambda$0: Assert that id: book-remove-arm is visible RUNNING",
+    "07:48:34.000 [ INFO] maestro.cli.runner.MaestroCommandRunner.runCommands$lambda$2: Assert that id: book-remove-arm is visible FAILED",
+  ].join("\n");
+  const spans = t.parseLog(log);
+  assert.strictEqual(spans.length, 3, "each command is one span");
+  assert.strictEqual(t.classify("Tap on \"x\""), "tapOn");
+  assert.strictEqual(t.classify("Assert that (Optional) id: x is visible"), "assert");
+  const s = t.summarise(spans);
+  assert.strictEqual(s.byKind.tapOn.count, 1);
+  assert.strictEqual(Math.round(s.byKind.tapOn.totalMs), 2189);
+  // Only the WARNED optional wait is dead time; a real FAILED assertion is not.
+  assert.strictEqual(s.deadWaits.length, 1);
+  assert.match(s.deadWaits[0].command, /dashboard-profile-button/);
+  assert.strictEqual(Math.round(s.deadWaitMs), 23575);
+  const merged = t.mergeSummaries([s, s]);
+  assert.strictEqual(merged.deadWaitMs, s.deadWaitMs * 2, "summaries merge across invocations");
+  assert.strictEqual(merged.spanCount, 6);
 });
 
 test("run-maestro --failed reports resolve across the main checkout + worktrees (F-302)", () => {
