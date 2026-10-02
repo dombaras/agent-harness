@@ -9114,6 +9114,10 @@ test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpe
   assert.strictEqual(runner.isSetupGroupable({ batchSetup: true, setup: "npx tsx seed.ts", actor: "A" }), true);
   assert.strictEqual(runner.isSetupGroupable({ batchSetup: true, setup: "adb shell pm clear x", actor: "A" }), false);
   assert.strictEqual(runner.isSetupGroupable({ batchSetup: true, setup: "seed", oracle: "check", actor: "A" }), false);
+  const plainSetup = rec("seed-b", "A", true);
+  const plainPlan = runner.planInvocations([rec("warm1", "A"), rec("warm2", "A"), plainSetup], true);
+  assert.strictEqual(plainPlan[2].records.length, 1, "a non-opted-in setup flow runs alone");
+  assert.strictEqual(plainPlan[2].switchUser, false, "a non-clearing setup flow reuses the session");
   const groupable = { ...rec("seed-a", "A", true), batchSetup: true };
   const groupPlan = runner.planInvocations([rec("warm1", "A"), rec("warm2", "A"), groupable], true);
   assert.strictEqual(groupPlan.length, 2, "the first flow establishes the session, then the rest batch");

@@ -756,7 +756,7 @@ function planInvocations(records, reuseSession) {
       invocations.push({
         records: [record],
         actor: record.actor,
-        switchUser: !reuseSession || actorChanged || record.firstLogin || record.clearsAppState,
+        switchUser: Boolean(!reuseSession || actorChanged || record.firstLogin || record.clearsAppState),
       });
     }
     currentActor = record.endsAs || record.actor;
