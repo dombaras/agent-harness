@@ -31,16 +31,25 @@
 #   devCmd           dev-server command         (default: npm run dev)
 #   devUrl           dev-server health URL      (default: http://localhost:3000)
 #   devName          serve.js label             (default: app-dev)
+#   devBuildCmd      backend build (optional); when set, run ONCE before the
+#                    server and cache it (backend-build-cache.js). For a
+#                    production backend set devCmd: "npm run start",
+#                    devBuildCmd: "npm run build".
+#   devBuildCache    globs whose content invalidates devBuildCmd (required for
+#                    caching; e.g. ["app/**","lib/**","next.config.*"]).
 # Env overrides: MOBILE_E2E_APK / MOBILE_E2E_DEV_CMD / MOBILE_E2E_DEV_URL /
 #   MOBILE_E2E_DEV_NAME / MOBILE_E2E_SKIP_BUILD / MOBILE_E2E_SKIP_INSTALL /
 #   MOBILE_E2E_OVERLAP (default 1) / MOBILE_E2E_DEV_MEM_MAX (dev-server cgroup
-#   cap, default 2560M).
+#   cap, default 2560M) / MOBILE_E2E_DEV_BUILD_CMD / MOBILE_E2E_DEV_BUILD_FORCE.
 #
 # The dev server gets an EXPLICIT --mem-max: serve.js sums group member CAPS, so
 # without it the dev server would claim the whole heavy_mem_max_mb default and
 # the later emulator would be tightened to the tiny remainder (= its guest RAM,
 # pinning qemu against its cgroup cap). 2560M covers next dev's ~1.9 GB peak and
 # leaves the group budget for the emulator (see boot-emulator.sh --mem-max).
+# A production backend (`next start`) is far leaner and steadier across the long
+# matrix run; `devBuildCmd` opts in and is run as a capped one-shot, sequenced
+# with the APK build so two heavy one-shots never overlap.
 #
 # Usage:
 #   scripts/qa/mobile-e2e/device-up.sh            # full bring-up
@@ -74,6 +83,8 @@ DEV_CMD="${MOBILE_E2E_DEV_CMD:-$(cfg devCmd)}"
 DEV_URL="${MOBILE_E2E_DEV_URL:-$(cfg devUrl)}"
 DEV_NAME="${MOBILE_E2E_DEV_NAME:-$(cfg devName)}"
 DEV_MEM_MAX="${MOBILE_E2E_DEV_MEM_MAX:-2560}M"
+DEV_BUILD_CMD="${MOBILE_E2E_DEV_BUILD_CMD:-$(cfg devBuildCmd)}"
+BUILD_CACHE_JS="$ROOT/scripts/qa/mobile-e2e/backend-build-cache.js"
 [ -z "$DEV_CMD" ] && DEV_CMD="npm run dev"
 [ -z "$DEV_URL" ] && DEV_URL="http://localhost:3000"
 [ -z "$DEV_NAME" ] && DEV_NAME="app-dev"
@@ -120,6 +131,28 @@ else
   echo "[1/5] build skipped"
 fi
 T_BUILD="$(now_ms)"
+T_BACKEND="$T_BUILD"
+
+# 1b. Optional production backend build. It must finish before the server starts,
+#     and it is itself a heavy one-shot, so it runs here — after the APK build,
+#     before the emulator — keeping heavy one-shots from overlapping (F-296).
+#     Cached by input fingerprint: an unchanged tree skips it entirely. A failed
+#     build aborts (never a stale server); a success is recorded for next time.
+if [ "$WITH_DEV" = "1" ] && [ -n "$DEV_BUILD_CMD" ]; then
+  echo "[1b/5] backend build: $DEV_BUILD_CMD"
+  if [ "${MOBILE_E2E_DEV_BUILD_FORCE:-0}" != "1" ] && [ -f "$BUILD_CACHE_JS" ] && node "$BUILD_CACHE_JS" check --cmd "$DEV_BUILD_CMD"; then
+    echo "  (build inputs unchanged — cached)"
+  else
+    node scripts/serve.js run --name backend-build --group "$TIER_GROUP" --cmd "$DEV_BUILD_CMD" || {
+      echo "FAIL — backend build failed ('$DEV_BUILD_CMD'): fix it before the device tier can come up." >&2
+      exit 1
+    }
+    [ -f "$BUILD_CACHE_JS" ] && node "$BUILD_CACHE_JS" record --cmd "$DEV_BUILD_CMD" || true
+  fi
+  T_BACKEND="$(now_ms)"
+elif [ "$WITH_DEV" = "1" ]; then
+  echo "[1b/5] no backend build declared (dev server only)"
+fi
 
 # 2. adb server + emulator + bounded boot gate (the primitive owns readiness).
 #    4. The dev server is independent of the device, so when overlap is on it is
@@ -198,7 +231,7 @@ fi
 
 node scripts/serve.js list
 T_END="$(now_ms)"
-timings="{\"build_ms\":$((T_BUILD-T_START)),\"boot_ms\":$((T_BOOT-T_BUILD)),\"install_ms\":$((T_INSTALL-T_BOOT)),\"dev_ms\":$((T_DEV-T_INSTALL)),\"ready_ms\":$((T_END-T_DEV)),\"total_ms\":$((T_END-T_START))}"
+timings="{\"build_ms\":$((T_BUILD-T_START)),\"backend_ms\":$((T_BACKEND-T_BUILD)),\"boot_ms\":$((T_BOOT-T_BACKEND)),\"install_ms\":$((T_INSTALL-T_BOOT)),\"dev_ms\":$((T_DEV-T_INSTALL)),\"ready_ms\":$((T_END-T_DEV)),\"total_ms\":$((T_END-T_START))}"
 echo "device-up:timings $timings"
 printf '%s\n' "$timings" >>"$SERVE_DIR/device-up-timings.jsonl" 2>/dev/null || true
 echo "device-up: OK"

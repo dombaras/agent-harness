@@ -154,6 +154,30 @@ raise `emulator_ram_mb`, the emulator cap scales with it and you may need to rai
 `group_mem_max_mb` too; on a software renderer (`swiftshader_indirect`) set
 `MOBILE_E2E_MEM_MAX` higher, since QEMU's RSS there is well above guest RAM.
 
+#### Optional: run the backend as a production server
+
+`next dev` compiles on demand and swings up to ~1.9 GB, competing with the
+emulator for the shared group budget. A production backend (`next build` once,
+then `next start`) is far leaner and steadier across the long matrix run. Opt in
+per project in `local.json`:
+
+```json
+{
+  "devCmd": "npm run start",
+  "devBuildCmd": "npm run build",
+  "devBuildCache": ["app/**", "lib/**", "next.config.*", "package.json"]
+}
+```
+
+When `devBuildCmd` is set, `device-up.sh` runs it as a **capped one-shot**
+(`serve.js run`, group `mobile`) after the APK build and before the emulator, so
+two heavy one-shots never overlap; a failed build aborts the bring-up. The
+`devBuildCache` globs are resolved through `git ls-files` (so `node_modules`/
+`.next` never enter the hash) and `backend-build-cache.js` skips the build when
+nothing under them changed. Force a rebuild with `MOBILE_E2E_DEV_BUILD_FORCE=1`;
+override the command with `MOBILE_E2E_DEV_BUILD_CMD`. With no `devBuildCmd` the
+behavior is unchanged (`npm run dev`, no build).
+
 ### Building the APK (always capped)
 
 `scripts/qa/mobile-e2e/build-apk.sh` builds the release APK: it runs `expo prebuild`
@@ -382,12 +406,13 @@ carries a performance layer; coverage and assertions are unchanged:
    `book-remove-arm` false negative: the node *was* on screen). The flows set
    `visibilityPercentage: 50` so a partially-scrolled target is accepted.
 
-Project-specific defaults (app id, default actor) live in
-`scripts/qa/mobile-e2e/local.json` — project-owned, not overwritten by the
-harness. The mechanism (`run-maestro.js`, `check-flows.js`, `config.yaml`,
-`boot-emulator.sh`, `run-detached.sh`, `job-events.js`) plus the `job-notify`
-plugin are harness-owned under `templates/`, so fix them upstream and
-`agent-harness update` the projects.
+Project-specific defaults (app id, default actor/AVD, the dev-server and
+optional backend-build commands) live in `scripts/qa/mobile-e2e/local.json` —
+project-owned, not overwritten by the harness. The mechanism (`run-maestro.js`,
+`check-flows.js`, `config.yaml`, `boot-emulator.sh`, `device-up.sh`,
+`backend-build-cache.js`, `run-detached.sh`, `job-events.js`) plus the
+`job-notify` plugin are harness-owned under `templates/`, so fix them upstream
+and `agent-harness update` the projects.
 
 ## Reuse vs. stop
 

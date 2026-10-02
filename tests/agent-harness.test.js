@@ -8372,6 +8372,78 @@ test("apk-cache hashTree is deterministic and content-sensitive", () => {
   assert.strictEqual(cache.fullKey(), cache.fullKey());
 });
 
+test("[drift-guard] device-up supports a cached production backend build (devBuildCmd)", () => {
+  const up = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "device-up.sh"));
+  assert.match(up, /devBuildCmd/, "reads a project-declared backend build");
+  assert.match(up, /MOBILE_E2E_DEV_BUILD_CMD/, "with an env override");
+  assert.match(up, /backend-build-cache\.js/, "consults the input-fingerprint cache");
+  assert.match(up, /MOBILE_E2E_DEV_BUILD_FORCE/, "with a force bypass");
+  assert.match(up, /serve\.js run --name backend-build/, "runs the build as a capped one-shot");
+  assert.match(up, /T_BACKEND/, "is instrumented in device-up:timings");
+
+  const pkg = JSON.parse(read(path.join(__dirname, "..", "package.json")));
+  assert.match(pkg.scripts.lint, /backend-build-cache\.js/, "lint syntax-checks the helper");
+});
+
+test("backend-build-cache fingerprints declared inputs (content-addressed, glob-aware)", () => {
+  const cache = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "backend-build-cache.js"));
+  const dir = tmpdir();
+  git(dir, ["init", "-q"]);
+  fs.mkdirSync(path.join(dir, "app"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "app", "a.ts"), "export const a = 1;\n");
+  fs.writeFileSync(path.join(dir, "next.config.js"), "module.exports = {};\n");
+  const globs = ["app/**", "next.config.*"];
+  const base = cache.fingerprint({ root: dir, globs, cmd: "npm run build" });
+  assert.match(base, /^[0-9a-f]{64}$/);
+  assert.strictEqual(cache.fingerprint({ root: dir, globs, cmd: "npm run build" }), base, "the same inputs hash the same");
+  assert.notStrictEqual(
+    cache.fingerprint({ root: dir, globs, cmd: "npm run build:alt" }),
+    base,
+    "the command is part of the key"
+  );
+  fs.writeFileSync(path.join(dir, "app", "a.ts"), "export const a = 2;\n");
+  assert.notStrictEqual(cache.fingerprint({ root: dir, globs, cmd: "npm run build" }), base, "a content change invalidates");
+  fs.writeFileSync(path.join(dir, "app", "b.ts"), "export const b = 1;\n");
+  assert.notStrictEqual(
+    cache.fingerprint({ root: dir, globs, cmd: "npm run build" }),
+    cache.fingerprint({ root: dir, globs: ["app/**"], cmd: "npm run build" }),
+    "a new untracked file under a glob counts, and the glob set is part of the key"
+  );
+  assert.strictEqual(cache.fingerprint({ root: dir, globs: [], cmd: "npm run build" }), null, "no globs means no caching");
+});
+
+test("backend-build-cache CLI check/record cycle skips an unchanged build", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const meDir = path.join(target, "scripts", "qa", "mobile-e2e");
+  fs.mkdirSync(path.join(target, "app"), { recursive: true });
+  fs.writeFileSync(path.join(target, "app", "page.tsx"), "export default 1;\n");
+  fs.writeFileSync(
+    path.join(meDir, "local.json"),
+    JSON.stringify({ devBuildCmd: "npm run build", devBuildCache: ["app/**", "package.json"] }, null, 2)
+  );
+  const script = path.join(meDir, "backend-build-cache.js");
+  const run = (...args) => spawnSync(process.execPath, [script, ...args], { cwd: target, encoding: "utf8" });
+
+  let r = run("check", "--cmd", "npm run build");
+  assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stdout, /MISS/, "the first run is a miss");
+  assert.strictEqual(run("record", "--cmd", "npm run build").status, 0, "a successful build is recorded");
+  assert.ok(exists(path.join(target, ".serve", "mobile-e2e-dev-build.json")), "the state file is written");
+  r = run("check", "--cmd", "npm run build");
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /HIT/, "an unchanged tree is a hit");
+
+  fs.writeFileSync(path.join(target, "app", "page.tsx"), "export default 2;\n");
+  assert.strictEqual(run("check", "--cmd", "npm run build").status, 1, "a source change is a miss");
+  assert.strictEqual(run("record", "--cmd", "npm run build").status, 0, "re-record after the change");
+  assert.strictEqual(run("check", "--cmd", "npm run build:alt").status, 1, "a command change is a miss");
+
+  fs.writeFileSync(path.join(meDir, "local.json"), JSON.stringify({ devBuildCmd: "npm run build" }, null, 2));
+  assert.strictEqual(run("key", "--cmd", "npm run build").status, 3, "no globs declared means no caching");
+});
+
 test("capacity: a tier group is budgeted as one combined cap, not per process", () => {
   const e = Object.assign({}, capacity.DEFAULT_ENVELOPE);
   assert.ok(e.groupMemMaxMb >= e.heavyMemMaxMb, "the group budget covers a full member plus headroom");
