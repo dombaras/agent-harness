@@ -9255,6 +9255,53 @@ test("mobile E2E job-events reduce the progress stream for the notifier", () => 
   assert.strictEqual(j.readEvents(f).length, 1);
 });
 
+test("mobile E2E job-events surface liveness, stall and abort", () => {
+  const j = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "job-events.js"));
+  assert.match(
+    j.progressLine({ type: "invocation_heartbeat", index: 12, total: 15, elapsedMs: 492000, msSinceOutput: 1000 }),
+    /invocation \(12\/15\) alive: 8m 12s elapsed/
+  );
+  assert.match(
+    j.progressLine({ type: "invocation_stalled", index: 12, total: 15, msSinceOutput: 150000, flows: ["a.yaml"] }),
+    /STALLED — no output for 2m 30s/
+  );
+  assert.match(
+    j.progressLine({ type: "matrix_aborted", by: "run-detached --stop", reason: "operator stop" }),
+    /ABORTED by run-detached --stop — operator stop/
+  );
+
+  const stalled = j.summarize([
+    { type: "matrix_start", total: 3 },
+    { type: "flow_result", name: "a", status: "pass" },
+    { type: "invocation_stalled", index: 2, total: 3, msSinceOutput: 200000, flows: ["b.yaml"] },
+  ]);
+  assert.strictEqual(stalled.stalled, true);
+  assert.strictEqual(stalled.aborted, false);
+  assert.match(j.notificationText(stalled, { eventsPath: "/e.jsonl" }), /possible hang/);
+
+  const aborted = j.summarize([
+    { type: "matrix_start", total: 3 },
+    { type: "flow_result", name: "a", status: "pass" },
+    { type: "matrix_aborted", reason: "operator stop" },
+  ]);
+  assert.strictEqual(aborted.aborted, true);
+  assert.strictEqual(aborted.done, false, "an abort is not a matrix_done");
+  assert.match(j.notificationText(aborted, { eventsPath: "/e.jsonl" }), /ABORTED — operator stop/);
+  assert.doesNotMatch(j.notificationText(aborted, { eventsPath: "/e.jsonl" }), /Continue F-291/);
+});
+
+test("[drift-guard] run-maestro streams Maestro output; run-detached can list/stop a job", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
+  assert.doesNotMatch(src, /spawnSync\('maestro'/, "the runner must not buffer Maestro output with spawnSync");
+  assert.match(src, /spawn\('maestro'/, "the runner streams Maestro output with spawn");
+  assert.match(src, /invocation_heartbeat/, "the runner emits a liveness heartbeat");
+  assert.match(src, /invocation_stalled/, "the runner flags a stalled invocation");
+  const det = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-detached.sh"));
+  assert.match(det, /--list/, "run-detached supports --list");
+  assert.match(det, /--stop/, "run-detached supports --stop");
+  assert.match(det, /matrix_aborted/, "run-detached writes matrix_aborted on stop");
+});
+
 test("mobile E2E timing analyzer surfaces dead optional waits", () => {
   const t = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "analyze-timings.js"));
   const log = [
@@ -9752,6 +9799,56 @@ test("wait-for: waitEvents returns 0 when matrix_done is present", () => {
   );
   const code = waitFor.waitEvents(ev, { timeoutMs: 5000, pollMs: 1, quiet: true });
   assert.strictEqual(code, 0);
+});
+
+test("wait-for: waitEvents stops on an operator abort and on --max-stall", () => {
+  const dir = tmpdir();
+  const ab = path.join(dir, "ab.jsonl");
+  fs.writeFileSync(
+    ab,
+    [
+      JSON.stringify({ type: "matrix_start", total: 3 }),
+      JSON.stringify({ type: "matrix_aborted", at: new Date().toISOString(), reason: "operator stop" }),
+    ].join("\n") + "\n",
+    "utf8"
+  );
+  assert.strictEqual(waitFor.waitEvents(ab, { timeoutMs: 5000, pollMs: 1, quiet: true }), 1);
+
+  // A live-looking job whose last event is older than --max-stall is stopped.
+  const stale = path.join(dir, "stale.jsonl");
+  const old = new Date(Date.now() - 60_000).toISOString();
+  fs.writeFileSync(
+    stale,
+    [
+      JSON.stringify({ type: "matrix_start", total: 3, at: old }),
+      JSON.stringify({ type: "flow_start", name: "a", index: 1, total: 3, at: old }),
+    ].join("\n") + "\n",
+    "utf8"
+  );
+  assert.strictEqual(
+    waitFor.waitEvents(stale, { timeoutMs: 5000, pollMs: 1, quiet: true, maxStallMs: 1000 }),
+    1
+  );
+});
+
+test("run-detached.sh --stop writes matrix_aborted and --list renders the job", () => {
+  const { spawnSync } = require("node:child_process");
+  const dir = tmpdir();
+  const ev = path.join(dir, "job.events.jsonl");
+  fs.writeFileSync(ev, JSON.stringify({ type: "matrix_start", total: 3 }) + "\n", "utf8");
+  const rec = path.join(dir, "job.json");
+  // pid 999999 does not exist, so the stop is a no-op kill but still records the abort.
+  fs.writeFileSync(rec, JSON.stringify({ id: "job", pid: 999999, log: path.join(dir, "job.log"), events: ev }), "utf8");
+  const script = path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-detached.sh");
+  const r = spawnSync("bash", [script, "--stop", rec], { encoding: "utf8" });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(fs.readFileSync(ev, "utf8"), /matrix_aborted/, "the abort event is appended");
+  const list = spawnSync("bash", [script, "--list"], {
+    encoding: "utf8",
+    env: { ...process.env, MOBILE_E2E_JOB_DIR: dir },
+  });
+  assert.strictEqual(list.status, 0, list.stderr);
+  assert.match(list.stdout, /job/, "the list shows the job id");
 });
 
 test("[drift-guard] wait-for is wired into npm scripts and the wait tool", () => {

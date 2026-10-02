@@ -57,6 +57,17 @@ function readEvents(file) {
   return out;
 }
 
+/** Compact duration for a progress line (`0s`, `45s`, `2m 5s`). */
+function fmtDur(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return "?";
+  if (n < 1000) return "0s";
+  const s = Math.round(n / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return s % 60 ? `${m}m ${s % 60}s` : `${m}m`;
+}
+
 /** One-line, ASCII progress text for a single event, or null if not notable. */
 function progressLine(event) {
   if (!event || typeof event !== "object") return null;
@@ -73,6 +84,12 @@ function progressLine(event) {
       return `FAIL-FAST: ${event.count} flow(s) share a reason — ${event.signature || ""}`;
     case "matrix_done":
       return `matrix done: ${event.passed} passed / ${event.failed} failed (${event.total} total)`;
+    case "invocation_heartbeat":
+      return `  … invocation (${event.index}/${event.total}) alive: ${fmtDur(event.elapsedMs)} elapsed, last output ${fmtDur(event.msSinceOutput)} ago`;
+    case "invocation_stalled":
+      return `invocation (${event.index}/${event.total}) STALLED — no output for ${fmtDur(event.msSinceOutput)} (possible hang): ${(event.flows || []).join(", ")}`;
+    case "matrix_aborted":
+      return `matrix ABORTED${event.by ? ` by ${event.by}` : ""}${event.reason ? ` — ${event.reason}` : ""}`;
     default:
       return null;
   }
@@ -85,6 +102,8 @@ function summarize(events) {
   const start = list.find((e) => e.type === "matrix_start");
   const done = [...list].reverse().find((e) => e.type === "matrix_done");
   const failFast = list.find((e) => e.type === "fail_fast");
+  const aborted = [...list].reverse().find((e) => e.type === "matrix_aborted");
+  const stalled = [...list].reverse().find((e) => e.type === "invocation_stalled");
   const passes = results.filter((e) => e.status === "pass").map((e) => e.name);
   const failures = results
     .filter((e) => e.status !== "pass")
@@ -97,6 +116,9 @@ function summarize(events) {
     passes,
     failures,
     failFast: failFast ? { count: failFast.count, signature: failFast.signature || "" } : null,
+    aborted: !!aborted,
+    abortedReason: aborted ? aborted.reason || "" : null,
+    stalled: !!stalled,
     done: !!done,
     reportPath: done && done.report ? done.report : null,
   };
@@ -105,10 +127,15 @@ function summarize(events) {
 /** The notification body injected into the session on completion / first failure. */
 function notificationText(summary, opts) {
   const s = summary || {};
-  const head = s.done
-    ? `Mobile E2E finished: ${s.passed} passed / ${s.failed} failed (of ${s.total}).`
-    : `Mobile E2E progress: ${s.passed} passed / ${s.failed} failed so far (of ${s.total}).`;
+  const head = s.aborted
+    ? `Mobile E2E ABORTED${s.abortedReason ? ` — ${s.abortedReason}` : ""}: ${s.passed} passed / ${s.failed} failed so far (of ${s.total}).`
+    : s.done
+      ? `Mobile E2E finished: ${s.passed} passed / ${s.failed} failed (of ${s.total}).`
+      : `Mobile E2E progress: ${s.passed} passed / ${s.failed} failed so far (of ${s.total}).`;
   const lines = [head];
+  if (s.stalled && !s.aborted && !s.done) {
+    lines.push("A stalled invocation is flagged in the events (possible hang) — stop it with: run-detached.sh --stop <job-id>.");
+  }
   if (s.failFast) {
     lines.push(`Fail-fast stop: ${s.failFast.count} flow(s) share a reason — ${s.failFast.signature}`);
   }
@@ -120,9 +147,11 @@ function notificationText(summary, opts) {
   const report = (opts && opts.reportPath) || s.reportPath;
   if (report) lines.push(`Report: ${report}`);
   if (opts && opts.eventsPath) lines.push(`Events: ${opts.eventsPath}`);
-  lines.push(
-    "Continue F-291: classify each failure (harness-side vs mobile/**) from the report + per-flow artifacts before editing."
-  );
+  if (!s.aborted) {
+    lines.push(
+      "Continue F-291: classify each failure (harness-side vs mobile/**) from the report + per-flow artifacts before editing."
+    );
+  }
   return lines.join("\n");
 }
 
@@ -149,4 +178,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { appendEvent, readEvents, progressLine, summarize, notificationText };
+module.exports = { appendEvent, readEvents, progressLine, summarize, notificationText, fmtDur };

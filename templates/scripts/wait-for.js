@@ -66,8 +66,12 @@ function pidAlive(pid) {
  * before `matrix_done` returns 1. */
 function waitEvents(eventsFile, opts) {
   const { timeoutMs, pollMs, record, quiet } = opts;
+  const stallWarnMs = Number(opts.stallWarnMs) || 0;
+  const maxStallMs = Number(opts.maxStallMs) || 0;
   const deadline = Date.now() + timeoutMs;
   let lastCount = 0;
+  let lastEventAt = Date.now();
+  let stallWarned = false;
   for (;;) {
     const events = jobEvents.readEvents(eventsFile);
     if (events.length > lastCount) {
@@ -76,8 +80,17 @@ function waitEvents(eventsFile, opts) {
         if (line) log(line, quiet);
       }
       lastCount = events.length;
+      const last = events[events.length - 1];
+      lastEventAt = last && last.at && !Number.isNaN(Date.parse(last.at)) ? Date.parse(last.at) : Date.now();
+      stallWarned = false;
     }
     const summary = jobEvents.summarize(events);
+    // An operator stop writes `matrix_aborted` (run-detached.sh --stop): terminal.
+    if (summary.aborted) {
+      process.stdout.write(jobEvents.notificationText(summary, { eventsPath: eventsFile }) + "\n");
+      log("job was aborted by an operator", quiet);
+      return 1;
+    }
     if (summary.done) {
       process.stdout.write(jobEvents.notificationText(summary, { eventsPath: eventsFile }) + "\n");
       return summary.failed === 0 ? 0 : 0; // done is terminal; failures are in the text
@@ -87,6 +100,29 @@ function waitEvents(eventsFile, opts) {
         jobEvents.notificationText(summary, { eventsPath: eventsFile }) + "\nRunner exited without matrix_done.\n"
       );
       return 1;
+    }
+    // Liveness is event-driven: the runner emits a heartbeat while an invocation
+    // runs, so a quiet stream means the run really is stalled (or the machine is
+    // starved) — no longer a guess. `--max-stall` stops the wait on that; the
+    // warning alone is always printed past the warn threshold.
+    const stallMs = Date.now() - lastEventAt;
+    if (maxStallMs > 0 && stallMs >= maxStallMs) {
+      process.stdout.write(jobEvents.notificationText(summary, { eventsPath: eventsFile }) + "\n");
+      log(
+        `stalled: no job event for ${Math.round(stallMs / 1000)}s (--max-stall ${Math.round(
+          maxStallMs / 1000
+        )}s) — stopping the wait; the run may still be alive (check the log)`,
+        quiet
+      );
+      return 1;
+    }
+    if (!stallWarned && stallWarnMs > 0 && stallMs >= stallWarnMs) {
+      stallWarned = true;
+      log(
+        `no job event for ${Math.round(stallMs / 1000)}s — the run may be stalled. ` +
+          `Stop it deterministically: scripts/qa/mobile-e2e/run-detached.sh --stop <job-id>`,
+        quiet
+      );
     }
     if (Date.now() >= deadline) {
       process.stdout.write(jobEvents.notificationText(summary, { eventsPath: eventsFile }) + "\n");
@@ -171,6 +207,8 @@ function parseArgs(argv) {
     else if (a === "--grep") out.grep = argv[++i];
     else if (a === "--timeout") out.timeout = argv[++i];
     else if (a === "--poll") out.poll = argv[++i];
+    else if (a === "--max-stall") out.maxStall = argv[++i];
+    else if (a === "--stall-warn") out.stallWarn = argv[++i];
     else if (a === "--root") out.root = argv[++i];
     else if (a === "--quiet") out.quiet = true;
     else if (a === "--help" || a === "-h") out.help = true;
@@ -188,8 +226,10 @@ function usage() {
       "  node scripts/wait-for.js --health <url>               # HTTP ready\n" +
       "  node scripts/wait-for.js --port <n>                   # TCP port ready\n" +
       "  node scripts/wait-for.js --file <log> --grep <re>     # a log line appears\n\n" +
-      "Options: [--timeout <sec>] [--poll <sec>] [--root <dir>] [--quiet]\n" +
-      "Exit 0 when the condition is met, 1 on timeout."
+      "Options: [--timeout <sec>] [--poll <sec>] [--max-stall <sec>] [--stall-warn <sec>] [--root <dir>] [--quiet]\n" +
+      "  --max-stall <sec>  stop the wait when the job emits no event for <sec> (0 = off)\n" +
+      "  --stall-warn <sec> print a stall warning after <sec> of no events (default 120)\n" +
+      "Exit 0 when the condition is met, 1 on timeout / abort / stall."
   );
 }
 
@@ -199,7 +239,13 @@ async function main() {
   const root = path.resolve(args.root || process.cwd());
   const timeoutMs = (Number(args.timeout) || DEFAULT_TIMEOUT_S) * 1000;
   const pollMs = (Number(args.poll) || DEFAULT_POLL_S) * 1000;
-  const opts = { timeoutMs, pollMs, quiet: args.quiet };
+  const opts = {
+    timeoutMs,
+    pollMs,
+    quiet: args.quiet,
+    maxStallMs: (Number(args.maxStall) || 0) * 1000,
+    stallWarnMs: (Number(args.stallWarn) || 120) * 1000,
+  };
 
   const modes = [args.job, args.events, args.ci, args.health, args.port, args.file].filter(Boolean);
   if (modes.length !== 1) {

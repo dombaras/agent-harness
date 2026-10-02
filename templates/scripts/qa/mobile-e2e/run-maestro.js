@@ -67,7 +67,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('node:child_process');
+const { spawnSync, spawn } = require('node:child_process');
 const jobEvents = require('./job-events.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -77,6 +77,16 @@ const MATRIX_FILE = path.join(FLOWS_DIR, 'matrix.yaml');
 const CONFIG_FILE = path.join(__dirname, 'config.yaml');
 const LOCAL_CONFIG_FILE = path.join(__dirname, 'local.json');
 const REPORT_FILE = path.join(REPO_ROOT, '.serve', 'mobile-e2e-last-run.json');
+
+/**
+ * Liveness cadence for a running invocation. While `maestro test` runs, the
+ * runner appends an `invocation_heartbeat` to the job-events stream every
+ * HEARTBEAT_MS, and a one-shot `invocation_stalled` once the child has produced
+ * NO output for STALL_MS — so a long-but-healthy batch no longer looks identical
+ * to a hang, and a real hang is named automatically. Both env-tunable.
+ */
+const HEARTBEAT_MS = Math.max(1000, Number(process.env.MOBILE_E2E_HEARTBEAT_MS) || 15000);
+const STALL_MS = Math.max(0, Number(process.env.MOBILE_E2E_STALL_MS) || 120000);
 
 /**
  * Optional project-owned defaults (`local.json` in this directory, written by
@@ -765,8 +775,20 @@ function planInvocations(records, reuseSession) {
   return invocations;
 }
 
-/** Run one or more flow files via a single `maestro test` invocation. */
-function runMaestroFlows(files, options, session) {
+/**
+ * Run one or more flow files via a single `maestro test` invocation, streaming
+ * the child's output LIVE as it arrives.
+ *
+ * This used to be `spawnSync(...)`, which buffers the child's entire stdout
+ * until it exits: a batched invocation (up to a dozen journeys in one JVM) then
+ * wrote nothing to the log or the job-events stream for its whole duration, so a
+ * healthy multi-minute batch was indistinguishable from a hang (the 2026-10-02
+ * "frozen matrix" — the log sat at the batch header for 10+ minutes while a
+ * 12-flow invocation ran). Streaming each chunk through (while still capturing
+ * the whole text for failure parsing) fixes the observability gap; `onChunk`
+ * lets the caller reset its stall watchdog.
+ */
+function runMaestroFlows(files, options, session, onChunk) {
   const args = ['test'];
   if (options.config && fs.existsSync(options.config)) {
     args.push('--config', options.config);
@@ -776,11 +798,43 @@ function runMaestroFlows(files, options, session) {
   args.push('-e', `MOBILE_E2E_SWITCH=${session.switchUser ? '1' : '0'}`);
   args.push('-e', `MOBILE_E2E_PHONE=${session.actor}`);
   args.push(...files);
-  const result = spawnSync('maestro', args, { encoding: 'utf8', shell: false });
-  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  return { status: result.status === null ? 1 : result.status, output };
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const stdout = [];
+    const stderr = [];
+    const relay = (buf, sink, stream) => {
+      const text = buf.toString();
+      sink.push(text);
+      stream.write(text);
+      if (typeof onChunk === 'function') onChunk(text);
+    };
+    let child;
+    try {
+      child = spawn('maestro', args, { shell: false });
+    } catch (err) {
+      const text = `\nmaestro failed to start: ${err && err.message ? err.message : err}\n`;
+      stderr.push(text);
+      process.stderr.write(text);
+      return done({ status: 1, output: `${stdout.join('')}\n${stderr.join('')}` });
+    }
+    child.stdout.on('data', (buf) => relay(buf, stdout, process.stdout));
+    child.stderr.on('data', (buf) => relay(buf, stderr, process.stderr));
+    child.on('error', (err) => {
+      const text = `\nmaestro failed to start: ${err && err.message ? err.message : err}\n`;
+      stderr.push(text);
+      process.stderr.write(text);
+      done({ status: 1, output: `${stdout.join('')}\n${stderr.join('')}` });
+    });
+    child.on('close', (code) => {
+      done({ status: code === null ? 1 : code, output: `${stdout.join('')}\n${stderr.join('')}` });
+    });
+  });
 }
 
 function reportFailFast(signature, flowNames, skipped) {
@@ -957,7 +1011,7 @@ function writeReport(reportPath, report) {
   }
 }
 
-function main() {
+async function main() {
   const options = parseArgs(process.argv.slice(2));
 
   if (options.help) {
@@ -1089,11 +1143,59 @@ function main() {
       });
     }
     const invocationStart = Date.now();
-    const { status, output } = runMaestroFlows(
-      invocation.records.map((record) => record.file),
-      options,
-      { switchUser: invocation.switchUser, actor: invocation.actor },
-    );
+    // Liveness while the invocation runs: a heartbeat event every HEARTBEAT_MS
+    // (so a long batch is visibly ALIVE, not frozen) and a one-shot
+    // `invocation_stalled` when the child has produced no output for STALL_MS
+    // (so a real hang is named instead of guessed at).
+    let lastOutputAt = invocationStart;
+    let stallAnnounced = false;
+    const heartbeat = setInterval(() => {
+      const now = Date.now();
+      const msSinceOutput = now - lastOutputAt;
+      jobEvents.appendEvent(eventsPath, {
+        type: 'invocation_heartbeat',
+        at: new Date().toISOString(),
+        index: index + 1,
+        total: invocations.length,
+        flows: names,
+        actor: invocation.actor,
+        elapsedMs: now - invocationStart,
+        msSinceOutput,
+      });
+      if (STALL_MS > 0 && msSinceOutput >= STALL_MS && !stallAnnounced) {
+        stallAnnounced = true;
+        jobEvents.appendEvent(eventsPath, {
+          type: 'invocation_stalled',
+          at: new Date().toISOString(),
+          index: index + 1,
+          total: invocations.length,
+          flows: names,
+          actor: invocation.actor,
+          elapsedMs: now - invocationStart,
+          msSinceOutput,
+        });
+        console.error(
+          `\nWARNING — invocation ${index + 1}/${invocations.length} produced no output for ` +
+            `${Math.round(msSinceOutput / 1000)}s (possible hang): ${label}`,
+        );
+      }
+      if (msSinceOutput < STALL_MS) stallAnnounced = false;
+    }, HEARTBEAT_MS);
+
+    let invocationResult;
+    try {
+      invocationResult = await runMaestroFlows(
+        invocation.records.map((record) => record.file),
+        options,
+        { switchUser: invocation.switchUser, actor: invocation.actor },
+        () => {
+          lastOutputAt = Date.now();
+        },
+      );
+    } finally {
+      clearInterval(heartbeat);
+    }
+    const { status, output } = invocationResult;
     const invocationMs = Date.now() - invocationStart;
     totalInvocationMs += invocationMs;
     const failedFlows = parseFailedFlows(output);
@@ -1196,10 +1298,16 @@ function main() {
   process.exit(0);
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`FAIL — ${err && err.stack ? err.stack : err}`);
+    process.exit(1);
+  });
+}
 
 module.exports = {
   parseArgs,
+  runMaestroFlows,
   resolveFlowFiles,
   resolveFailedReport,
   readFailedFlowNames,

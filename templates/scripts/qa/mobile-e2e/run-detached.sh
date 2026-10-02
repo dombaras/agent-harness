@@ -22,7 +22,15 @@
 # Usage:
 #   scripts/qa/mobile-e2e/run-detached.sh --flows all --reuse-session
 #   scripts/qa/mobile-e2e/run-detached.sh --flows all --wait            # block + stream
+#   scripts/qa/mobile-e2e/run-detached.sh --list                        # live/recent jobs
+#   scripts/qa/mobile-e2e/run-detached.sh --stop <job-id|record.json>   # kill + matrix_aborted
 #   MOBILE_E2E_LOG=/tmp/opencode/run6.log scripts/qa/mobile-e2e/run-detached.sh --flows all
+#
+# `--list` and `--stop` are the deterministic "what is running / stop it" verbs:
+# --list prints each job's pid, running/dead state, age and seconds since its
+# last event; --stop kills the job's process group (the setsid run + its Maestro
+# JVM), force-stops the app, and appends a `matrix_aborted` event so every
+# `wait-for --job` returns immediately instead of being guessed at.
 #
 # Env:
 #   MOBILE_E2E_LOG          log path (default <jobdir>/<id>.log)
@@ -37,18 +45,106 @@ cd "$ROOT"
 
 JOB_DIR="${MOBILE_E2E_JOB_DIR:-/tmp/opencode/mobile-e2e-jobs}"
 JOB_ID="${MOBILE_E2E_JOB:-mobile-e2e-$(date +%Y%m%d-%H%M%S)}"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Harness-side verbs: `--wait` (block + stream), `--list` (show jobs),
+# `--stop <id>` (kill a run deterministically + write `matrix_aborted`).
+WAIT=0; LIST=0; STOP=""; HELP=0; ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --wait) WAIT=1; shift;;
+    --list) LIST=1; shift;;
+    --stop)
+      STOP="${2:-}"
+      if [ -z "$STOP" ]; then echo "run-detached: --stop needs a job id or record path" >&2; exit 2; fi
+      shift 2;;
+    -h|--help) HELP=1; shift;;
+    *) ARGS+=("$1"); shift;;
+  esac
+done
+
+if [ "$HELP" = "1" ]; then
+  cat <<'EOF'
+run-detached.sh — launch/observe/stop a detached mobile-E2E matrix run.
+  run-detached.sh --flows all --reuse-session     # launch (returns immediately)
+  run-detached.sh --flows all --wait              # launch + block, streaming progress
+  run-detached.sh --list                          # live/recent jobs (pid, state, last event)
+  run-detached.sh --stop <job-id|record.json>     # kill a run + write matrix_aborted
+EOF
+  exit 0
+fi
+
+if [ "$LIST" = "1" ]; then
+  node - "$JOB_DIR" <<'NODE'
+const fs = require("fs"), path = require("path");
+const dir = process.argv[2];
+let files = [];
+try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")); } catch {}
+const rows = files
+  .map((f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")); } catch { return null; } })
+  .filter((r) => r && (r.id || r.events))
+  .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")));
+if (!rows.length) { console.log("no jobs in " + dir); process.exit(0); }
+const alive = (p) => { try { process.kill(Number(p), 0); return true; } catch (e) { return e && e.code === "EPERM"; } };
+console.log("job".padEnd(30) + "pid".padEnd(9) + "state".padEnd(9) + "age".padEnd(9) + "last-event");
+for (const r of rows) {
+  let evAge = "-";
+  try { evAge = Math.round((Date.now() - fs.statSync(r.events).mtimeMs) / 1000) + "s"; } catch {}
+  const age = r.startedAt ? Math.round((Date.now() - Date.parse(r.startedAt)) / 1000) + "s" : "-";
+  console.log(
+    String(r.id || "?").padEnd(30) + String(r.pid || "-").padEnd(9) +
+    (alive(r.pid) ? "running" : "dead").padEnd(9) + age.padEnd(9) + evAge
+  );
+}
+NODE
+  exit 0
+fi
+
+if [ -n "$STOP" ]; then
+  RECORD="$STOP"
+  case "$STOP" in */* | *.json) ;; *) RECORD="$JOB_DIR/$STOP.json";; esac
+  if [ ! -f "$RECORD" ]; then echo "run-detached: no such job record: $RECORD" >&2; exit 2; fi
+  node - "$RECORD" "$SELF_DIR" <<'NODE'
+const fs = require("fs"), path = require("path");
+const { spawnSync } = require("child_process");
+const rec = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const selfDir = process.argv[3];
+const pid = Number(rec.pid);
+const alive = (p) => { try { process.kill(Number(p), 0); return true; } catch (e) { return e && e.code === "EPERM"; } };
+let signalled = false;
+if (pid && alive(pid)) {
+  try { process.kill(-pid, "SIGTERM"); signalled = true; } catch {}
+  if (!signalled) { try { process.kill(pid, "SIGTERM"); signalled = true; } catch {} }
+  const until = Date.now() + 3000;
+  while (Date.now() < until && alive(pid)) {
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200); } catch {}
+  }
+  if (alive(pid)) {
+    try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} }
+  }
+}
+let appId = process.env.MOBILE_E2E_APP_ID || "com.example.app";
+try { appId = JSON.parse(fs.readFileSync(path.join(selfDir, "local.json"), "utf8")).appId || appId; } catch {}
+try { spawnSync("adb", ["shell", "am", "force-stop", appId], { timeout: 5000, stdio: "ignore" }); } catch {}
+if (rec.events) {
+  try {
+    fs.appendFileSync(rec.events, JSON.stringify({
+      type: "matrix_aborted", at: new Date().toISOString(),
+      by: "run-detached --stop", reason: "operator stop",
+    }) + "\n");
+  } catch {}
+}
+console.log("stop: pid " + (pid || "?") + (signalled ? " signalled" : " (already exited)") +
+  " · matrix_aborted written" + (rec.events ? " -> " + rec.events : ""));
+NODE
+  exit 0
+fi
+
 mkdir -p "$JOB_DIR"
 EVENTS="$JOB_DIR/$JOB_ID.events.jsonl"
 RECORD="$JOB_DIR/$JOB_ID.json"
 LOG="${MOBILE_E2E_LOG:-$JOB_DIR/$JOB_ID.log}"
 : >"$EVENTS"
-
-# Pull `--wait` out of the args (it is harness-side, not a run-maestro option).
-WAIT=0
-ARGS=()
-for arg in "$@"; do
-  if [ "$arg" = "--wait" ]; then WAIT=1; else ARGS+=("$arg"); fi
-done
 
 # `setsid` gives the run its own session; the inner redirection is on the actual
 # command, so the wrapper's own fds stay closed and the tool returns at once.

@@ -23,6 +23,7 @@ type Watch = {
   record: string | null
   lastLine: number
   failureNotified: boolean
+  stalledNotified: boolean
   doneNotified: boolean
   startedAt: number
   timer: ReturnType<typeof setInterval>
@@ -93,6 +94,7 @@ export const JobNotify: Plugin = async ({ client }) => {
       record,
       lastLine: 0,
       failureNotified: false,
+      stalledNotified: false,
       doneNotified: false,
       startedAt: Date.now(),
       timer: null as any,
@@ -129,8 +131,15 @@ export const JobNotify: Plugin = async ({ client }) => {
           const line = jobEvents.progressLine(event)
           if (!line) continue
           const failed = event.type === "flow_result" && event.status !== "pass"
-          await toast(line, failed ? "warning" : event.type === "matrix_done" ? "info" : "info")
-          await report(line, failed ? "warn" : "info")
+          const stalled = event.type === "invocation_stalled"
+          // A heartbeat proves liveness to the log/wait stream; toasting every
+          // one would be noise, so report it without a toast.
+          if (event.type === "invocation_heartbeat") {
+            await report(line, "info")
+            continue
+          }
+          await toast(line, failed || stalled ? "warning" : "info")
+          await report(line, failed || stalled ? "warn" : "info")
         }
         const firstFailure = fresh.find(
           (e: any) => e.type === "flow_result" && e.status !== "pass"
@@ -141,6 +150,26 @@ export const JobNotify: Plugin = async ({ client }) => {
             w.sessionID,
             jobEvents.notificationText(jobEvents.summarize(events), { eventsPath: w.events })
           )
+        }
+        const stalled = fresh.find((e: any) => e.type === "invocation_stalled")
+        if (stalled && !w.stalledNotified) {
+          w.stalledNotified = true
+          await wake(
+            w.sessionID,
+            `Mobile E2E invocation ${stalled.index}/${stalled.total} has produced no output for ` +
+              `${Math.round((stalled.msSinceOutput || 0) / 1000)}s — possible hang.\n` +
+              `Stop it deterministically: scripts/qa/mobile-e2e/run-detached.sh --stop <job-id>\n` +
+              `Events: ${w.events}`
+          )
+        }
+        const aborted = fresh.find((e: any) => e.type === "matrix_aborted")
+        if (aborted) {
+          await wake(
+            w.sessionID,
+            jobEvents.notificationText(jobEvents.summarize(events), { eventsPath: w.events })
+          )
+          stopWatch(key, "matrix aborted")
+          return
         }
         const done = fresh.find((e: any) => e.type === "matrix_done")
         if (done) {
