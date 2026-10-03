@@ -1,0 +1,89 @@
+// Board service schema (ADR 0001). One shared service, many projects.
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Project {
+  key       String   @id
+  name      String   @default("")
+  active    String[] @default([]) // the free-form "Active / next" picks
+  createdAt DateTime @default(now())
+  epics     Epic[]
+  items     BacklogItem[]
+  events    AuditEvent[]
+}
+
+model Epic {
+  id         String  @id @default(uuid())
+  project    String
+  key        String
+  label      String
+  goal       String  @default("")
+  projectRef Project @relation(fields: [project], references: [key], onDelete: Cascade)
+
+  @@unique([project, key])
+}
+
+model BacklogItem {
+  id        String   @id @default(uuid())
+  project   String
+  itemId    String // F-321 / T-12
+  status    String // open | queued | inprogress | frozen | archive
+  priority  String   @default("?") // ? | P1..P4
+  epic      String   @default("?")
+  task      String
+  evidence  String   @default("")
+  handoff   String   @default("")
+  worktree  String   @default("")
+  why       String   @default("")
+  reopen    String   @default("")
+  closed    String   @default("")
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projectRef Project          @relation(fields: [project], references: [key], onDelete: Cascade)
+  deps       ItemDependency[] @relation("dependent")
+  dependents ItemDependency[] @relation("dependency")
+  owned      OwnedFile[]
+
+  @@unique([project, itemId])
+  @@index([project, status])
+}
+
+model ItemDependency {
+  id         String      @id @default(uuid())
+  itemId     String
+  dependsOn  String
+  item       BacklogItem @relation("dependent", fields: [itemId], references: [id], onDelete: Cascade)
+  dependency BacklogItem @relation("dependency", fields: [dependsOn], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, dependsOn])
+}
+
+model OwnedFile {
+  id     String      @id @default(uuid())
+  itemId String
+  glob   String
+  item   BacklogItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, glob])
+}
+
+model AuditEvent {
+  id         String   @id @default(uuid())
+  project    String
+  actor      String   @default("")
+  action     String
+  itemId     String   @default("")
+  payload    Json?
+  ts         DateTime @default(now())
+  projectRef Project  @relation(fields: [project], references: [key], onDelete: Cascade)
+
+  @@index([project, ts])
+}

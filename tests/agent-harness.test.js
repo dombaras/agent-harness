@@ -1048,7 +1048,7 @@ function scaffoldBacklogCliTarget() {
 function copyBoardLib(target) {
   const dir = path.join(target, "scripts", "qa");
   fs.mkdirSync(dir, { recursive: true });
-  for (const name of ["board-lib.js", "lease-lib.js", "board-sync.js", "merge-backlog.js"]) {
+  for (const name of ["board-lib.js", "lease-lib.js", "board-sync.js", "merge-backlog.js", "board-client.js"]) {
     fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "qa", name), path.join(dir, name));
   }
 }
@@ -1149,6 +1149,130 @@ test("backlog CLI unqueue returns a Queued row to Open (priority-sorted, cells p
   const refused = runBacklogCli(t, ["unqueue", "F-002"]);
   assert.strictEqual(refused.status, 1, refused.out);
   assert.match(refused.out, /only Queued rows can be returned to Open/);
+});
+
+/* --- ADR 0001 Phase 2: the CLI can drive the external board service ---------
+ * The CLI's HTTP client is SYNCHRONOUS (execFileSync), which blocks the parent
+ * event loop — so the mock service must run in its OWN process or it could never
+ * answer the request. The mock writes its port to stdout once listening. */
+const MOCK_BOARD_SERVICE_SRC = `
+const http = require("http");
+const state = { epics: [], items: [], seq: 0 };
+const board = () => {
+  const by = (s) => state.items.filter((i) => i.status === s);
+  const shape = (i) => ({ id: i.id, priority: i.priority, epic: i.epic, task: i.task, evidence: i.evidence, dependsOn: "" });
+  return {
+    epics: state.epics, active: [],
+    inprogress: by("inprogress").map((i) => ({ id: i.id, epic: i.epic, task: i.task, handoff: i.handoff })),
+    queued: by("queued").map(shape), open: by("open").map(shape),
+    frozen: by("frozen").map((i) => ({ id: i.id, epic: i.epic, task: i.task, condition: i.condition })),
+    archive: by("archive").map((i) => ({ id: i.id, epic: i.epic, task: i.task, closed: i.closed })),
+  };
+};
+const send = (res, status, body) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); };
+const server = http.createServer((req, res) => {
+  let raw = "";
+  req.on("data", (c) => (raw += c));
+  req.on("end", () => {
+    const auth = req.headers.authorization || "";
+    if (!auth) return send(res, 401, { error: "Unauthorized" });
+    if (auth !== "Bearer test-token") return send(res, 403, { error: "Forbidden" });
+    const body = raw ? JSON.parse(raw) : {};
+    const path = new URL(req.url, "http://x").pathname;
+    const find = (id) => state.items.find((i) => i.id === id);
+    if (req.method === "GET" && path === "/api/board") return send(res, 200, board());
+    if (req.method === "GET" && path === "/api/next") {
+      const q = state.items.filter((i) => i.status === "queued");
+      return send(res, 200, q.length ? { id: q[0].id, priority: q[0].priority, epic: q[0].epic, task: q[0].task } : { empty: true });
+    }
+    if (req.method === "POST" && path === "/api/items") {
+      state.seq += 1;
+      const id = "F-" + String(state.seq).padStart(3, "0");
+      const priority = body.priority || "P3";
+      state.items.push({ id, status: "open", priority, epic: body.epic || "?", task: body.task, evidence: body.evidence || "?" });
+      return send(res, 200, { ok: true, result: { id, priority, epic: body.epic || "?", task: body.task, evidence: body.evidence || "?" }, board: board() });
+    }
+    const m = /^\\/api\\/items\\/([^/]+)\\/([^/]+)$/.exec(path);
+    if (req.method === "POST" && m) {
+      const item = find(decodeURIComponent(m[1]));
+      if (!item) return send(res, 404, { error: "no row " + m[1] });
+      const action = m[2];
+      if (action === "queue") item.status = "queued";
+      else if (action === "unqueue") item.status = "open";
+      else if (action === "take") { item.status = "inprogress"; item.handoff = body.handoff || "?"; }
+      else if (action === "archive") { item.status = "archive"; item.closed = body.closed || "shipped"; }
+      else if (action === "freeze") { item.status = "frozen"; item.condition = ((body.why || "") + " " + (body.reopen || "")).trim(); }
+      else if (action === "reopen") { item.status = "open"; item.priority = body.priority || "P2"; }
+      return send(res, 200, { ok: true, result: { id: item.id }, board: board() });
+    }
+    return send(res, 404, { error: "not found" });
+  });
+});
+server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address().port) + "\\n"));
+`;
+
+function startMockBoardService() {
+  const child = spawn(process.execPath, ["-e", MOCK_BOARD_SERVICE_SRC], { stdio: ["ignore", "pipe", "inherit"] });
+  return new Promise((resolve, reject) => {
+    let out = "";
+    child.stdout.on("data", (d) => {
+      out += d;
+      const nl = out.indexOf("\n");
+      if (nl !== -1) resolve({ child, port: parseInt(out.slice(0, nl), 10) });
+    });
+    child.on("error", reject);
+  });
+}
+
+function runBacklogCliEnv(target, args, env) {
+  const res = spawnSync(process.execPath, ["scripts/backlog.js", ...args], {
+    cwd: target,
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
+  return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
+}
+
+test("backlog CLI drives the external board service when BACKLOG_BACKEND=service (ADR 0001)", async () => {
+  const t = scaffoldBacklogCliTarget();
+  copyBoardLib(t);
+  const { child, port } = await startMockBoardService();
+  const env = {
+    BACKLOG_BACKEND: "service",
+    BACKLOG_API_URL: `http://127.0.0.1:${port}`,
+    BACKLOG_API_TOKEN: "test-token",
+    BACKLOG_PROJECT: "TESTPROJ",
+  };
+  try {
+    assert.match(runBacklogCliEnv(t, ["add", "service task", "--p", "P2"], env).out, /added F-001 \[P2\] service task/);
+    assert.match(runBacklogCliEnv(t, ["queue", "F-001"], env).out, /queued F-001 \(service task\)/);
+    assert.match(runBacklogCliEnv(t, ["next"], env).out, /next: F-001 \[P2\] service task/);
+    const json = runBacklogCliEnv(t, ["list", "--all", "--json"], env);
+    assert.strictEqual(json.status, 0, json.out);
+    const parsed = JSON.parse(json.out);
+    assert.equal(parsed.queued.length, 1);
+    assert.match(runBacklogCliEnv(t, ["archive", "F-001", "--closed", "done"], env).out, /archived F-001 \(done\)/);
+    const after = JSON.parse(runBacklogCliEnv(t, ["list", "--all", "--json"], env).out);
+    assert.equal(after.archive.length, 1);
+
+    // The legacy file path must NOT be touched when the service backend is on.
+    assert.doesNotMatch(read(path.join(t, "BACKLOG.md")), /service task/);
+
+    // Wrong token is rejected with the service's error, non-zero exit.
+    const bad = runBacklogCliEnv(t, ["list"], { ...env, BACKLOG_API_TOKEN: "nope" });
+    assert.strictEqual(bad.status, 1, bad.out);
+    assert.match(bad.out, /Forbidden/);
+  } finally {
+    child.kill("SIGKILL");
+  }
+});
+
+test("backlog CLI auto-uses the file backend when no service is configured", () => {
+  const t = scaffoldBacklogCliTarget();
+  copyBoardLib(t);
+  const env = { BACKLOG_BACKEND: "", BACKLOG_API_URL: "", BACKLOG_API_TOKEN: "" };
+  assert.match(runBacklogCliEnv(t, ["add", "file task", "--p", "P2"], env).out, /added F-001 \[P2\] file task/);
+  assert.match(read(path.join(t, "BACKLOG.md")), /file task/, "the file board was written");
 });
 
 test("backlog list is bounded by default and --limit controls the cap", () => {

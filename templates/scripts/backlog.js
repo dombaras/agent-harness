@@ -65,6 +65,7 @@ const { spawnSync } = require("child_process");
 const { splitCells, isSep, formatRow, findCycle } = require("./qa/board-lib.js");
 const leases = require("./qa/lease-lib.js");
 const boardSync = require("./qa/board-sync.js");
+const boardClient = require("./qa/board-client.js");
 
 const PRIORITIES = { P1: 0, P2: 1, P3: 2, P4: 3 };
 
@@ -1541,6 +1542,115 @@ function usage() {
   );
 }
 
+/* Render the service `BacklogBoard` with the same layout as `cmdList`, so a
+ * session's `list` output is identical whichever backend it uses. */
+function renderServiceList(board, argv) {
+  const full = !!argv.full;
+  const TASK_W = full ? Infinity : 120;
+  const SUB_W = full ? Infinity : 90;
+  let limit = LIST_DEFAULT_LIMIT;
+  if (argv.limit != null) {
+    const n = Number.parseInt(argv.limit, 10);
+    limit = Number.isFinite(n) && n >= 0 ? n : LIST_DEFAULT_LIMIT;
+  }
+
+  for (const line of board.active || []) console.log(`- ${stripEmphasis(line)}`);
+  if ((board.active || []).length) console.log("");
+
+  const groups = [["inprogress", "In progress"], ["queued", "Queued"], ["open", "Open"]];
+  if (argv.all) groups.push(["frozen", "Frozen"], ["archive", "Archive"]);
+
+  for (const [key, label] of groups) {
+    const rows = board[key] || [];
+    console.log(`${label} (${rows.length})`);
+    const shown = limit > 0 && rows.length > limit ? rows.slice(0, limit) : rows;
+    for (const r of shown) {
+      if (key === "open" || key === "queued") {
+        console.log(`  ${r.id}  [${r.priority}]  [${r.epic}]  ${truncate(r.task || "", TASK_W)}`);
+        if (r.evidence && r.evidence !== "?") console.log(`             evidence: ${truncate(r.evidence, SUB_W)}`);
+      } else if (key === "inprogress") {
+        console.log(`  ${r.id}  [${r.epic}]  ${truncate(r.task || "", TASK_W)}`);
+        if (r.handoff && r.handoff !== "?") console.log(`             handoff: ${truncate(r.handoff, SUB_W)}`);
+      } else if (key === "frozen") {
+        console.log(`  ${r.id}  [${r.epic}]  ${truncate(r.task || "", TASK_W)}`);
+        if (r.condition) console.log(`             reopen: ${truncate(r.condition, SUB_W)}`);
+      } else {
+        console.log(`  ${r.id}  [${r.epic}]  ${truncate(r.task || "", TASK_W)}`);
+        if (r.closed) console.log(`             closed: ${truncate(r.closed, SUB_W)}`);
+      }
+    }
+    if (shown.length < rows.length) console.log(`  … +${rows.length - shown.length} row(s) omitted (--limit ${limit}, 0 = all)`);
+    console.log("");
+  }
+}
+
+/* The service-backed command path (ADR 0001 Phase 2). Mirrors every read/write
+ * the file backend supports; `worktree` does its local git work here and records
+ * the row through the service. Returns true when it handled the command. */
+function runService(root, cmd, argv) {
+  const out = (result, extra) => {
+    const formatted = formatResult(cmd, { ...result, ...(extra || {}) });
+    if (formatted) console.log(formatted);
+    return true;
+  };
+
+  if (cmd === "list") {
+    const board = boardClient.getBoard(root);
+    if (argv.json) console.log(JSON.stringify(board, null, 2));
+    else renderServiceList(board, argv);
+    return true;
+  }
+  if (cmd === "next" && !argv.take) return out(boardClient.next(root));
+  if (cmd === "next" && argv.take) return out(boardClient.nextTake(root, argv.handoff));
+  if (cmd === "add") return out(boardClient.add(root, argv));
+  if (cmd === "take") return out(boardClient.take(root, argv._[0], argv.handoff));
+  if (cmd === "queue") return out(boardClient.queue(root, argv._[0]));
+  if (cmd === "unqueue") return out(boardClient.unqueue(root, argv._[0]));
+  if (cmd === "archive") return out(boardClient.archive(root, argv._[0], argv.closed));
+  if (cmd === "freeze") return out(boardClient.freeze(root, argv._[0], argv.why, argv.reopen));
+  if (cmd === "reopen") return out(boardClient.reopen(root, argv._[0], argv.reason, argv.p));
+  if (cmd === "priority") return out(boardClient.priority(root, argv._[0], argv.p));
+  if (cmd === "epic") return out(boardClient.setEpic(root, argv._[0], argv.to));
+  if (cmd === "depends") return out(boardClient.depends(root, argv._[0], argv.on));
+  if (cmd === "owns") {
+    const r = boardClient.owns(root, argv._[0], argv.files);
+    return out(r, { files: r.files });
+  }
+  if (cmd === "epic-add") return out(boardClient.epicAdd(root, argv._[0], argv.label, argv.goal));
+
+  if (cmd === "worktree") {
+    const id = argv._[0];
+    if (!id) throw new Error("worktree: missing <id>.");
+    const slug = id.toLowerCase();
+    const branch = argv.branch || slug;
+    const dir = argv.dir ? path.resolve(argv.dir) : path.resolve(root, "..", ".worktrees", path.basename(root), slug);
+    const rootAbs = path.resolve(root);
+    if (dir === rootAbs || dir.startsWith(rootAbs + path.sep)) {
+      throw new Error(`worktree: refusing a worktree inside the repository (${dir}).`);
+    }
+    const handoff = argv.handoff !== undefined ? validateHandoff(id, argv.handoff) : `.agents/handoffs/${id}.md`;
+    const rel = path.relative(root, dir) || dir;
+
+    // Record the In-progress row + isolation target through the service first.
+    boardClient.worktreeRecord(root, id, rel, branch, handoff);
+    // Then create the checkout locally (git-side effect stays on this machine).
+    const base = currentUpstream(root) || "HEAD";
+    const res = spawnSync("git", ["-C", root, "worktree", "add", "--no-track", "-b", branch, dir, base], { encoding: "utf8" });
+    if (res.status !== 0) throw new Error(`worktree: git worktree add failed: ${(res.stderr || res.stdout || "").trim()}`);
+    runWorktreeSetup(root, dir);
+    const sessionID = ancestorSessionId(root);
+    writeSessionWorktree(root, sessionID, dir);
+    const plan = { id, branch, dir: rel, dirAbs: dir, handoff, base };
+    out(plan);
+    if (argv.open) openWorktreeSession(dir, argv["open-cmd"]);
+    return true;
+  }
+
+  usage();
+  process.exitCode = 1;
+  return true;
+}
+
 function main() {
   const raw = process.argv.slice(2);
   const cmd = raw[0];
@@ -1555,6 +1665,19 @@ function main() {
     console.error("backlog: BACKLOG.md not found (repo root).");
     process.exitCode = 1;
     return;
+  }
+
+  // Service backend (ADR 0001): the board lives in the external service, so
+  // every read/write goes over HTTP. Git-side effects (worktree add/remove) stay
+  // local. `BACKLOG_BACKEND=file` forces the legacy path.
+  if (boardClient.enabled(root) && cmd !== "worktree-prune" && cmd !== "sync") {
+    try {
+      return runService(root, cmd, args);
+    } catch (e) {
+      console.error(`backlog: ${e.message}`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   // Read-only commands never lock or write. They show the working board
