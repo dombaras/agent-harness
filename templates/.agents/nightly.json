@@ -1,0 +1,17 @@
+{
+  "schema": "nightly/1",
+  "worktree": null,
+  "seedCmd": null,
+  "waitForQuietMin": 30,
+  "stalePendingNights": 3,
+  "keepDays": 30,
+  "fileBacklog": true,
+  "notify": "",
+  "phases": [
+    { "name": "static-unit", "kind": "gate", "script": "test:quick", "heavy": false, "timeoutMin": 20 },
+    { "name": "api", "kind": "gate", "script": "test:api", "heavy": false, "timeoutMin": 30 },
+    { "name": "routes", "kind": "gate", "script": "test:routes", "heavy": false, "timeoutMin": 20 },
+    { "name": "web-e2e", "kind": "gate", "script": "test:e2e", "heavy": true, "timeoutMin": 30 },
+    { "name": "device-e2e", "kind": "device-e2e", "heavy": true, "timeoutMin": 90 }
+  ]
+}

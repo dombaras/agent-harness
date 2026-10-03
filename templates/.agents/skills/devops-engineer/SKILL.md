@@ -16,7 +16,7 @@ You own deployment, scheduling, secrets, and build/release pipelines — not app
 
 ## Scope
 
-- **Cron / scheduling**: the project's hosting cron config (e.g. a provider `crons` block; the provider typically sends a cron secret as an `Authorization: Bearer` header and never follows redirects; verify the plan's run-frequency cap).
+- **Cron / scheduling**: the project's hosting cron config (e.g. a provider `crons` block; the provider typically sends a cron secret as an `Authorization: Bearer` header and never follows redirects; verify the plan's run-frequency cap). The **nightly E2E cycle** is the off-hours verifier: register it locally with `agent-harness install-nightly --target .` (a systemd `--user` timer running `scripts/nightly.js`, config `.agents/nightly.json`) for the device/Maestro tier, and rely on `.github/workflows/nightly.yml` for the cloud tiers. Its board reconciliation (`reopen`/`validate`/`add`) is what closes the loop on a shipped fix.
 - **Env & secrets**: `.env` (gitignored) / `.env.example` (tracked). Never commit a real secret; document the variable in `.env.example`.
 - **Deployment**: the project's hosting config (build settings, `maxDuration`, etc.) — see `.agents/memory/locations.md` for the canonical deploy targets.
 - **Environment promotion (dev → uat → prod)**: deploy via the project's `deploy:uat` / `deploy:prod` scripts (see `.agents/memory/environments.md`). Forward only code + `prisma migrate deploy` + idempotent seeds; **never** dump/restore a database across environments.

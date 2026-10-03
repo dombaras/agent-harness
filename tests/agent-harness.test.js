@@ -10091,3 +10091,144 @@ test("[drift-guard] plugin wires the new advisories + isolation recovery", () =>
   assert.match(plugin, /via: "isolate"/, "main-checkout recovery reroots into the owned worktree");
   assert.match(plugin, /inferBoardFeature/, "refusal names the feature to isolate");
 });
+
+// ---------------------------------------------------------------- nightly E2E
+
+test("backlog reopen returns an archived nightly row to Open, preserving its flow marker", () => {
+  const t = scaffoldBacklogCliTarget();
+  assert.strictEqual(
+    runBacklogCli(t, ["add", "[nightly:flow=foo] foo e2e failed", "--p", "P2", "--evidence", "nightly 2026-10-04"]).status,
+    0
+  );
+  assert.strictEqual(runBacklogCli(t, ["archive", "F-001", "--closed", "shipped"]).status, 0);
+  let b = read(path.join(t, "BACKLOG.md"));
+  assert.match(b.split("## Archive")[1], /\[nightly:flow=foo\]/, "marker preserved through archive");
+
+  const out = runBacklogCli(t, ["reopen", "F-001", "--reason", "nightly 2026-10-05: still failing", "--p", "P1"]);
+  assert.strictEqual(out.status, 0, out.out);
+  assert.match(out.out, /reopened F-001 -> Open \[P1\]/);
+  b = read(path.join(t, "BACKLOG.md"));
+  const open = b.split("## Open")[1].split("## Queued")[0];
+  assert.match(open, /\| F-001 \| P1 \| \? \| \[nightly:flow=foo\] foo e2e failed \| nightly 2026-10-05: still failing \| \? \|/);
+  assert.doesNotMatch(b.split("## Archive")[1], /F-001/, "the row left Archive");
+  assert.match(runBacklogCli(t, ["reopen", "F-001"]).out, /F-001: already Open/);
+
+  // Validation archives the reopened row and marks it validated...
+  assert.match(runBacklogCli(t, ["archive", "F-001", "--closed", "nightly-validated 2026-10-05"]).out, /archived F-001/);
+  b = read(path.join(t, "BACKLOG.md"));
+  assert.match(b.split("## Archive")[1], /nightly-validated 2026-10-05/);
+  // ...and re-validating an already-archived row repairs its note (idempotent path).
+  assert.match(runBacklogCli(t, ["archive", "F-001", "--closed", "nightly-validated 2026-10-06"]).out, /F-001: already archived/);
+  b = read(path.join(t, "BACKLOG.md"));
+  assert.match(b.split("## Archive")[1], /nightly-validated 2026-10-06/);
+
+  fs.mkdirSync(path.join(t, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "check-backlog.js"),
+    path.join(t, "scripts", "qa", "check-backlog.js")
+  );
+  copyBoardLib(t);
+  const gate = runBacklogGate(t);
+  assert.strictEqual(gate.status, 0, gate.out);
+});
+
+const nightly = require(path.join(h.TEMPLATES_DIR, "scripts", "nightly.js"));
+
+test("nightly core: resolvePhases skips unwired gates and the absent device tier", () => {
+  const { phases, skipped } = nightly.resolvePhases(
+    { phases: [
+      { name: "quick", kind: "gate", script: "test:quick" },
+      { name: "missing", kind: "gate", script: "test:nope" },
+      { name: "device-e2e", kind: "device-e2e" },
+    ] },
+    { "test:quick": "tsc" },
+    false
+  );
+  assert.deepStrictEqual(phases.map((p) => p.name), ["quick"]);
+  assert.deepStrictEqual(skipped.map((s) => s.name).sort(), ["device-e2e", "missing"]);
+});
+
+test("nightly core: decideReconcile validates, reopens, adds, and annotates at journey level", () => {
+  const now = "2026-10-05T02:00:00Z";
+  const d = nightly.decideReconcile({
+    failures: [
+      { flow: "regressed", phase: "device-e2e", signature: "a1" },
+      { flow: "brand-new", phase: "device-e2e", signature: "b2" },
+      { flow: "tracked", phase: "device-e2e", signature: "c3" },
+    ],
+    exercised: ["regressed", "brand-new", "tracked", "fixed"],
+    rows: [
+      { id: "F-001", section: "archive", task: "[nightly:flow=regressed] regressed e2e failed", closed: "shipped" },
+      { id: "F-002", section: "archive", task: "[nightly:flow=fixed] fixed e2e failed", closed: "awaiting nightly validation" },
+      { id: "F-003", section: "open", task: "[nightly:flow=tracked] tracked e2e failed", closed: "" },
+    ],
+    state: { flows: {} },
+    now,
+  });
+  const by = (k) => d.actions.filter((a) => a.kind === k).map((a) => a.id || a.flow).sort();
+  assert.deepStrictEqual(by("validate"), ["F-002"]);
+  assert.deepStrictEqual(by("reopen"), ["F-001"]);
+  assert.deepStrictEqual(by("add"), ["brand-new"]);
+  assert.deepStrictEqual(by("annotate"), ["F-003"]);
+  const reopen = d.actions.find((a) => a.kind === "reopen");
+  assert.strictEqual(reopen.priority, "P2", "first reopen is P2");
+});
+
+test("nightly core: repeat reopen escalates to P1 and unexercised rows are flagged stale", () => {
+  const d = nightly.decideReconcile({
+    failures: [{ flow: "flaky", phase: "device-e2e", signature: "x" }],
+    exercised: ["flaky"],
+    rows: [
+      { id: "F-001", section: "archive", task: "[nightly:flow=flaky] flaky e2e failed", closed: "awaiting nightly validation" },
+      { id: "F-002", section: "archive", task: "[nightly:flow=quiet] quiet e2e failed", closed: "shipped" },
+    ],
+    state: {
+      flows: {
+        flaky: { reopenCount: 1, firstSeen: "2026-09-30T02:00:00Z", lastSeen: "2026-10-03T02:00:00Z" },
+        quiet: { reopenCount: 0, firstSeen: "2026-09-28T02:00:00Z", lastSeen: "2026-09-28T02:00:00Z" },
+      },
+    },
+    now: "2026-10-05T02:00:00Z",
+    stalePendingDays: 3,
+  });
+  assert.strictEqual(d.actions.find((a) => a.kind === "reopen").priority, "P1", "second reopen escalates");
+  const pending = d.actions.find((a) => a.kind === "pending");
+  assert.strictEqual(pending.id, "F-002");
+  assert.strictEqual(pending.stale, true);
+});
+
+test("nightly core: signatures are stable and bounded", () => {
+  const a = nightly.normalizeSignature("Error at /home/x/app.ts:42 — timeout after 1500ms");
+  const b = nightly.normalizeSignature("Error at /home/y/app.ts:99 — timeout after 2000ms");
+  assert.strictEqual(a, b, "paths and numbers are elided so the same failure normalizes");
+  assert.strictEqual(nightly.shortHash(a), nightly.shortHash(b));
+  assert.ok(nightly.normalizeSignature("x".repeat(500)).length <= 160);
+});
+
+test("[drift-guard] the nightly cycle ships orchestrator, config, timer setup, and cloud workflow", () => {
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, "scripts", "nightly.js")), "orchestrator present");
+  const setup = read(path.join(h.TEMPLATES_DIR, "scripts", "setup-nightly.sh"));
+  assert.match(setup, /OnCalendar=/, "writes an OnCalendar timer");
+  assert.match(setup, /Persistent=true/, "missed cycles run on next boot");
+  assert.match(setup, /enable-linger/, "user unit fires without a login session");
+  assert.match(setup, /uninstall/, "reversible");
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".agents", "nightly.json")), "project config template");
+  const wf = read(path.join(h.TEMPLATES_DIR, ".github", "workflows", "nightly.yml"));
+  assert.match(wf, /schedule:/, "cloud half is scheduled");
+  const rules = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  assert.match(rules, /nightly:flow=/, "rules document the journey marker");
+  assert.match(rules, /NIGHTLY, not part of the day loop/, "device tier moved to nightly");
+  const doc = read(path.join(h.TEMPLATES_DIR, "docs", "nightly-testing.md"));
+  assert.match(doc, /bug lifecycle/i, "runbook documents the loop");
+});
+
+test("mergePackageJson wires the nightly scripts (add-only)", () => {
+  const t = tmpdir();
+  fs.writeFileSync(path.join(t, "package.json"), JSON.stringify({ name: "p", scripts: { dev: "next dev" } }), "utf8");
+  const { text, changed } = h.mergePackageJson(t);
+  assert.strictEqual(changed, true);
+  const pkg = JSON.parse(text);
+  assert.match(pkg.scripts.nightly, /scripts\/nightly\.js/);
+  assert.match(pkg.scripts["report:nightly"], /nightly\.js report/);
+  assert.strictEqual(pkg.scripts.dev, "next dev", "existing scripts are preserved");
+});

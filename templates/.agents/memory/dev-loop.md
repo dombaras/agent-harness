@@ -44,6 +44,15 @@ never overwrites your edits. Fill every `—`/`(fill in)` cell.
 - Device tier config: `scripts/qa/mobile-e2e/local.json`
 - Tear down: `bash scripts/qa/mobile-e2e/device-down.sh`
 
+## Nightly E2E (off-hours full battery)
+
+- Orchestrator: `npm run nightly -- run` (config: `.agents/nightly.json`).
+- Install/status: `agent-harness install-nightly --target .` / `bash scripts/setup-nightly.sh status`
+- Read the last cycle: `npm run report:nightly` (or `node scripts/nightly.js report`).
+- Default phases: `—` (see `.agents/nightly.json`; the device/Maestro tier runs
+  here, never in the day loop — the day loop covers device paths via the
+  `audited: device tier deferred to nightly` plan entry).
+
 ## Debug / logs
 
 - Log endpoints / files: `—` (fill in)

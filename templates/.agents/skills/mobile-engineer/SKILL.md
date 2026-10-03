@@ -49,6 +49,13 @@ node scripts/qa/mobile-e2e/boot-emulator.sh          # --print-profile to previe
 It starts the adb server + emulator detached via `serve.js`, then gates on a
 bounded `sys.boot_completed`.
 
+0. **The device/Maestro tier is nightly by default — do NOT boot it in the day
+   loop unless the user explicitly asks.** The day loop lands device-affecting
+   changes on the cheap gates and addresses the device surface in the QA plan as
+   `audited: device tier deferred to nightly [nightly:flow=<journey>]`;
+   `scripts/nightly.js` runs the matrix off-hours and reopens the row if the fix
+   is incomplete (see `docs/nightly-testing.md`). Boot the tier in-session only
+   on an explicit request (or when the user asks to verify a specific journey).
 1. **Gate on readiness, never `sleep`-and-pray:** `adb wait-for-device`, then
    `adb shell getprop sys.boot_completed` must print `1` before installing/running.
 2. **The dev server is the same tier group** (`device-up.sh` starts it):

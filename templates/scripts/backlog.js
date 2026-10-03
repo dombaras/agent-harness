@@ -1029,6 +1029,38 @@ function cmdFreeze(state, argv) {
   return { id, epic, task, cond };
 }
 
+/* reopen <id> [--reason x] [--p P1..P4] — Archive/Frozen -> Open, preserving the
+ * row's ID and Task cell. This is the convergence half of the nightly E2E loop:
+ * a nightly run reopens a shipped fix whose journey still fails, so the same row
+ * (and its `[nightly:flow=<journey>]` Task marker) is worked again the next day
+ * instead of a duplicate being filed. The default priority is P2 (an unresolved
+ * regression outranks routine open work); the existing member-report provenance
+ * markers are carried into the Open row's Evidence cell so they are not lost. */
+function cmdReopen(state, argv) {
+  const id = argv._[0];
+  if (!id) throw new Error("reopen: missing <id>.");
+  const priority = (argv.p || "P2").toUpperCase();
+  if (!(priority in PRIORITIES)) throw new Error(`reopen: priority must be P1..P4 (got "${priority}").`);
+  const found = findRow(state.lines, id);
+  if (!found) throw new Error(`reopen: no row ${id} in BACKLOG.md.`);
+  if (found.key === "open") return { id, note: "already Open" };
+  if (found.key === "queued" || found.key === "inprogress") {
+    const where = found.key === "inprogress" ? "In progress" : "Queued";
+    throw new Error(`reopen: ${id} is ${where} — only Archive/Frozen rows are reopened.`);
+  }
+
+  const task = taskOf(found.cells, found.key) || id;
+  const epic = epicOf(found.cells, found.key);
+  const reason = appendReportMarkers(argv.reason || "reopened", reportMarkersInCells(found.cells));
+
+  const srcRows = getRows(state.lines, found.key).map((r) => r.cells).filter((c) => c[0].trim() !== id);
+  state.lines = setRows(state.lines, found.key, srcRows);
+
+  const openRows = getRows(state.lines, "open").map((r) => r.cells);
+  state.lines = setRows(state.lines, "open", insertOpen(openRows, [id, priority, epic, task, reason, "?"]));
+  return { id, priority, epic, task, reason };
+}
+
 function cmdPriority(state, argv) {
   const id = argv._[0];
   if (!id) throw new Error("priority: missing <id>.");
@@ -1400,6 +1432,7 @@ function formatResult(cmd, out) {
     return out.cleanup && out.cleanup.length ? `${base} — ${out.cleanup.join("; ")}` : base;
   }
   if (cmd === "freeze") return out.note ? `${out.id}: ${out.note}` : `froze ${out.id} (${out.cond})`;
+  if (cmd === "reopen") return out.note ? `${out.id}: ${out.note}` : `reopened ${out.id} -> Open [${out.priority}] (${out.reason})`;
   if (cmd === "priority") return `set ${out.id} -> ${out.priority}`;
   if (cmd === "depends") return `set ${out.id} -> depends on ${out.dependsOn}`;
   if (cmd === "owns") return `recorded ${out.id} owns: ${out.files}`;
@@ -1419,6 +1452,7 @@ function parseArgs(argv) {
     else if (a === "--handoff") args.handoff = argv[++i];
     else if (a === "--closed") args.closed = argv[++i];
     else if (a === "--why") args.why = argv[++i];
+    else if (a === "--reason") args.reason = argv[++i];
     else if (a === "--reopen") args.reopen = argv[++i];
     else if (a === "--id") args.id = argv[++i];
     else if (a === "--branch") args.branch = argv[++i];
@@ -1456,6 +1490,7 @@ function usage() {
       "  node scripts/backlog.js next [--take] [--handoff path]\n" +
       "  node scripts/backlog.js archive <id> [--closed note]\n" +
       "  node scripts/backlog.js freeze <id> [--why x] [--reopen x]\n" +
+      "  node scripts/backlog.js reopen <id> [--reason x] [--p P1..P4]\n" +
       "  node scripts/backlog.js priority <id> --p P1..P4\n" +
       "  node scripts/backlog.js depends <id> --on <ids|?>\n" +
       "  node scripts/backlog.js owns <id> --files \"glob, glob\"\n" +
@@ -1552,6 +1587,7 @@ function main() {
       else if (cmd === "next") out = cmdNext(state, args);
       else if (cmd === "archive") out = cmdArchive(state, args);
       else if (cmd === "freeze") out = cmdFreeze(state, args);
+      else if (cmd === "reopen") out = cmdReopen(state, args);
       else if (cmd === "priority") out = cmdPriority(state, args);
       else if (cmd === "depends") out = cmdDepends(state, args);
       else if (cmd === "owns") out = cmdOwns(state, args);
@@ -1629,6 +1665,7 @@ module.exports = {
   cmdNext,
   cmdArchive,
   cmdFreeze,
+  cmdReopen,
   cmdPriority,
   cmdDepends,
   cmdOwns,

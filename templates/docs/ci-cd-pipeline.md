@@ -39,6 +39,10 @@ contention: the second `git push HEAD:main` is rejected non-fast-forward, and
   secret is a red failure, not a silent skip.
 - **`uat-health.yml`** — scheduled probe of `$UAT_ALIAS`; set repository variable
   `UAT_ALIAS`.
+- **`nightly.yml`** — scheduled off-hours E2E (unit/API/routes/browser). The
+  heavy device/Maestro tier runs locally via `agent-harness install-nightly`
+  (see `docs/nightly-testing.md`); nightly is also where the board is reconciled
+  (`reopen` a fix that is still failing, validate one that now passes).
 
 ## One-time setup (human-gated)
 

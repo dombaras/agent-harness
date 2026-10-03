@@ -92,6 +92,29 @@ function lastE2eRun(root) {
   );
 }
 
+/* The last nightly E2E cycle verdict, from `.agents/qa-runs/nightly/latest.json`
+ * (written by scripts/nightly.js). This is the morning signal: a red nightly has
+ * already reconciled the board (validated fixes / reopened rows / new rows). */
+function latestNightly(root) {
+  return safe(
+    () => {
+      const p = path.join(root, ".agents", "qa-runs", "nightly", "latest.json");
+      const doc = JSON.parse(fs.readFileSync(p, "utf8"));
+      const failures = Array.isArray(doc.failures) ? doc.failures : [];
+      const reconcile = Array.isArray(doc.reconcile) ? doc.reconcile : [];
+      return {
+        verdict: doc.verdict || null,
+        at: doc.finishedAt || doc.startedAt || doc.stamp || null,
+        failed: failures.length,
+        reopened: reconcile.filter((a) => a.kind === "reopen").length,
+        added: reconcile.filter((a) => a.kind === "add").length,
+        path: p,
+      };
+    },
+    null
+  );
+}
+
 /* Read the board JSON via the canonical CLI so orient never re-implements the
  * board parser. Returns { inprogress, queued, open, active } or null. */
 function boardSnapshot(root, run) {
@@ -278,6 +301,7 @@ function collectOrient(opts = {}) {
     capacity: cap,
     memory: memoryDigest(root),
     lastE2e: lastE2eRun(root),
+    nightly: latestNightly(root),
     harnessVersion: harnessVersion(root),
   };
 }
@@ -317,6 +341,14 @@ function printHuman(o) {
   lines.push(
     `last e2e: ${o.lastE2e ? `${o.lastE2e.failed || 0} failed / ${o.lastE2e.total != null ? o.lastE2e.total : "?"} (${o.lastE2e.at || "?"})` : "none recorded"}`
   );
+  if (o.nightly) {
+    const n = o.nightly;
+    lines.push(
+      `nightly:  ${(n.verdict || "?").toUpperCase()} (${n.at || "?"}) — ${n.failed} failing, ${n.reopened} reopened, ${n.added} new (${n.path})`
+    );
+  } else {
+    lines.push("nightly:  none recorded (run `node scripts/nightly.js run`)");
+  }
   const mem = renderMemoryDigest(o.memory);
   if (mem.length) {
     lines.push("memory digest (session-start reads — open a file only for detail):");
@@ -342,6 +374,7 @@ function printBrief(o) {
   }
   if (o.capacity) lines.push(`capacity ${o.capacity.ok ? "ok" : "EXCEEDED: " + o.capacity.reasons.join("; ")} · serves ${o.capacity.serves.join(", ") || "none"}`);
   if (o.lastE2e) lines.push(`last e2e ${o.lastE2e.failed || 0} failed / ${o.lastE2e.total != null ? o.lastE2e.total : "?"}`);
+  if (o.nightly) lines.push(`nightly ${(o.nightly.verdict || "?").toUpperCase()} — ${o.nightly.failed} failing, ${o.nightly.reopened} reopened, ${o.nightly.added} new`);
   const mem = renderMemoryDigest(o.memory);
   if (mem.length) {
     lines.push("memory digest (open a file only for detail):");
@@ -410,6 +443,7 @@ module.exports = {
   memoryDigest,
   renderMemoryDigest,
   lastE2eRun,
+  latestNightly,
   boardSnapshot,
   gitRunner,
   parseArgs,

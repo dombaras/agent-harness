@@ -109,6 +109,10 @@ function relKey(rel) {
  * Note: the check matches the directory DIRECTLY under `.agents` (not any
  * segment), so `.agents/skills/features/SKILL.md` stays harness-owned. */
 function isProjectScaffold(rel) {
+  const key = relKey(rel);
+  // `.agents/nightly.json` is the project-owned nightly-cycle config (phases,
+  // quiesce window, seed command): seeded once, never overwritten.
+  if (key === ".agents/nightly.json") return true;
   const parts = rel.split(path.sep);
   const idx = parts.indexOf(".agents");
   if (idx === -1) return false;
@@ -353,6 +357,8 @@ const HARNESS_SCRIPTS = {
   report: "node scripts/agent-report.js",
   "report:cost": "node scripts/agent-report.js --cost --since=14d",
   "report:recon": "node scripts/qa/session-recon.js --since=14d",
+  nightly: "node scripts/nightly.js",
+  "report:nightly": "node scripts/nightly.js report",
   checkpoint: "node scripts/checkpoint.js",
   orient: "node scripts/orient.js",
   wait: "node scripts/wait-for.js",
@@ -1386,6 +1392,9 @@ function printUsage() {
       `  agent-harness install-global [--dry-run] [--force] [--dir <dir>]\n` +
       `                     # link contrib/global-plugins/* into ~/.config/opencode/plugins/\n` +
       `                     # (machine-level, version-independent harness checks; restart opencode)\n` +
+      `  agent-harness install-nightly [--target <dir>] [--time HH:MM] [--force] [--dry-run]\n` +
+      `                     # install the off-hours E2E cycle as a systemd --user timer\n` +
+      `                     # (scripts/setup-nightly.sh; Persistent=true, linger enabled)\n` +
       `  agent-harness explain <gate>            # what a gate enforces + how to satisfy/waive it\n` +
       `  agent-harness run [--target <dir>] [--feature <id>] [--prompt <text>]\n` +
       `                     [--max-phases <n>] [--opencode <path>] [--dry-run]\n` +
@@ -1604,6 +1613,49 @@ function doctor(target) {
       ? "docs/gates.md present (`agent-harness explain <gate>`)"
       : "missing — re-run `agent-harness update`"
   );
+
+  // Nightly E2E cycle: the orchestrator + config, whether a systemd --user
+  // timer is installed, and the last verdict (advisory — the day loop still
+  // ships on cheap gates; nightly is the full-E2E authority).
+  {
+    const hasScript = fs.existsSync(path.join(target, "scripts", "nightly.js"));
+    add(
+      hasScript ? "ok" : "warn",
+      "nightly runner",
+      hasScript ? "scripts/nightly.js present (`npm run nightly`)" : "missing — re-run `agent-harness update`"
+    );
+    const cfg = fs.existsSync(path.join(target, ".agents", "nightly.json"));
+    add(cfg ? "ok" : "warn", "nightly config", cfg ? ".agents/nightly.json present" : "missing — run `agent-harness update`");
+    const unitDir = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "systemd", "user");
+    let timer = null;
+    try {
+      timer = fs.readdirSync(unitDir).find((f) => /^agent-nightly-.*\.timer$/.test(f)) || null;
+    } catch (_) {
+      timer = null;
+    }
+    add(
+      timer ? "ok" : "warn",
+      "nightly timer",
+      timer ? `${timer} installed` : "not installed — run `agent-harness install-nightly --target .`"
+    );
+    const latestPath = path.join(target, ".agents", "qa-runs", "nightly", "latest.json");
+    if (fs.existsSync(latestPath)) {
+      try {
+        const doc = JSON.parse(fs.readFileSync(latestPath, "utf8"));
+        const failed = Array.isArray(doc.failures) ? doc.failures.length : 0;
+        const reopened = Array.isArray(doc.reconcile) ? doc.reconcile.filter((a) => a.kind === "reopen").length : 0;
+        add(
+          doc.verdict === "pass" ? "ok" : "warn",
+          "last nightly",
+          `${doc.verdict || "?"} @ ${doc.stamp || "?"} — ${failed} failing, ${reopened} reopened`
+        );
+      } catch (_) {
+        add("warn", "last nightly", "report unreadable");
+      }
+    } else {
+      add("warn", "last nightly", "no run recorded — `npm run nightly -- run`");
+    }
+  }
 
   // Machine capacity (advisory only): free RAM/swap/load, live `.serve/`
   // processes, the RAM-backed tmpfs, and Windows-side `.wslconfig` advice. This
@@ -2082,11 +2134,13 @@ function parseArgs(argv) {
     "--prompt",
     "--max-phases",
     "--opencode",
+    "--dir",
+    "--time",
   ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (valueFlags.has(a)) flags[a] = argv[++i];
-    else if (a === "--dry-run" || a === "--yes" || a === "-y") flags[a] = true;
+    else if (a === "--dry-run" || a === "--yes" || a === "-y" || a === "--force") flags[a] = true;
     else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch" || a === "--accept-harness")
       flags[a] = true;
   }
@@ -2192,6 +2246,29 @@ function installGlobal(flags) {
   if (counts.skipped > 0) process.exitCode = 1;
 }
 
+/* install-nightly — install the off-hours E2E cycle as a systemd --user timer by
+ * delegating to the deployed project's `scripts/setup-nightly.sh` (the script
+ * owns the unit contents + linger handling, so it stays correct per project and
+ * is reused when run by hand). */
+function installNightly(target, flags) {
+  const script = path.join(target, "scripts", "setup-nightly.sh");
+  if (!fs.existsSync(script)) {
+    console.error(`install-nightly: ${script} not found — run \`agent-harness update --target ${target}\` first.`);
+    process.exitCode = 1;
+    return;
+  }
+  const args = [script, "install"];
+  if (flags["--time"]) args.push("--time", flags["--time"]);
+  if (flags["--force"]) args.push("--force");
+  if (flags["--dry-run"]) args.push("--dry-run");
+  const r = spawnSync("bash", args, {
+    cwd: target,
+    stdio: "inherit",
+    env: { ...process.env, AGENT_NIGHTLY_ROOT: target },
+  });
+  if (r.status !== 0) process.exitCode = r.status == null ? 1 : r.status;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const cmd = args[0];
@@ -2246,6 +2323,9 @@ function main() {
       break;
     case "install-global":
       installGlobal(flags);
+      break;
+    case "install-nightly":
+      installNightly(target, flags);
       break;
     case "run":
       runCommand(target, flags);
