@@ -192,6 +192,7 @@ file is deleted. `BACKLOG_BACKEND=file|service` keeps cutover reversible.
 | | | **done** — `board-client.js` + service backend wired into every CLI verb; 2 harness tests (mock service) green |
 | **3. Consumers + CI** | orient/nightly/finalize/context-guard; `test:backlog`, `test:concurrency`; CI job | `test:quick`/`test:backlog`/`test:concurrency` green local + CI |
 | **4. Dashboard** | proxy route + SSE | superadmin queue/start/add/archive live; zero `chore(board)` commits |
+| | | **done (LibraryOS)** — `lib/board-service.ts` bridge + route/stream delegation; file stays default until cutover |
 | **5. Retire file model** | delete file tooling/driver/lock; migrate both projects; refresh worktrees | board drives every surface; no `BACKLOG.md` remains |
 
 Each phase is a normal harness release (bump `package.json`, `npm run lint` +
