@@ -43,6 +43,67 @@ jobs:
       - name: Test
         run: npm test --if-present
 
+  # External board service (ADR 0001). Runs the harness board service against a
+  # throwaway Postgres and executes the board gates in service mode, so process
+  # gates no longer depend on the gitignored BACKLOG.md. Enabled by repository
+  # variable CI_BOARD_SERVICE=true once the service is deployed for the project.
+  board-service:
+    name: Board service gates
+    if: ${{ vars.CI_BOARD_SERVICE == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agent_board
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      BOARD_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/agent_board?schema=public
+      BACKLOG_BACKEND: service
+      BACKLOG_API_URL: http://127.0.0.1:3021
+      BACKLOG_API_TOKEN: ci-board-token
+      BACKLOG_PROJECT: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      # The board service ships in the harness package. A project consumes it by
+      # installing the harness (npm) and running services/board from there; CI
+      # checks out the harness repo itself when present, else skips.
+      - name: Locate the board service
+        id: svc
+        run: |
+          if [ -d services/board ]; then echo "dir=services/board" >> "$GITHUB_OUTPUT"; else echo "dir=" >> "$GITHUB_OUTPUT"; fi
+      - name: Board service (build + boot)
+        if: steps.svc.outputs.dir != ''
+        working-directory: ${{ steps.svc.outputs.dir }}
+        run: |
+          npm ci
+          DATABASE_URL="$BOARD_DATABASE_URL" BOARD_TOKENS="ci-board-token:ci" npx prisma db push --accept-data-loss
+          DATABASE_URL="$BOARD_DATABASE_URL" BOARD_TOKENS="ci-board-token:ci" npx next build
+          DATABASE_URL="$BOARD_DATABASE_URL" BOARD_TOKENS="ci-board-token:ci" npx next start -p 3021 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:3021/api/health >/dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:3021/api/health
+      - name: Board gates (service mode)
+        if: steps.svc.outputs.dir != ''
+        run: |
+          node scripts/qa/check-backlog.js
+          node scripts/qa/check-concurrency.js
+      - name: Not enabled
+        if: steps.svc.outputs.dir == ''
+        run: echo "no services/board in this checkout — board-service job is a no-op"
+
   # DB-backed/API tiers. Off by default so a project can validate the service
   # container once before it becomes required: set repository variable
   # CI_RUNTIME=true to enable. Adapt the service/database to the project stack.

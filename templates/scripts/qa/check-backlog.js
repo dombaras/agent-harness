@@ -37,33 +37,26 @@ const check = (ok, msg) => {
   if (!ok) failures.push(msg);
 };
 
-console.log("backlog gate \u2014 canonical single-file BACKLOG.md");
+/* ADR 0001: when the board service is the backend, the gate validates the
+ * SERVICE's board (the service enforces every invariant on write), not the
+ * legacy file. We map the service JSON into the same `lines`-based `buckets`
+ * shape the checks below already consume, so one implementation covers both. */
+const boardClient = (() => {
+  try {
+    return require("./board-client.js");
+  } catch {
+    return null;
+  }
+})();
+const serviceActive = boardClient && boardClient.enabled(root);
+const useService = serviceActive && !process.argv.includes("--file");
 
-// ---- 1. Only ONE canonical backlog file ------------------------------------
-const canonical = path.join(root, "BACKLOG.md");
-if (!fs.existsSync(canonical)) {
-  console.error("FATAL: missing BACKLOG.md at repo root (the canonical task list)");
-  process.exit(2);
-}
-check(true, "canonical BACKLOG.md present at repo root");
-
-// No stray/secondary boards: the root file is the ONLY canonical board. A
-// leftover board (e.g. `mobile/BACKLOG.md` from an old nested harness install)
-// silently diverges from the root one while this gate stayed green. Commit the
-// canonical board and delete any non-root `BACKLOG.md`.
-if (insideGitRepo()) {
-  const strays = gitLsFiles("*BACKLOG.md").filter((f) => f !== "BACKLOG.md");
-  check(
-    strays.length === 0,
-    `no stray BACKLOG.md boards (found: ${strays.join(", ") || "none"})`
-  );
+if (useService) {
+  console.log("backlog gate \u2014 board service integrity (BACKLOG_BACKEND=service)");
 } else {
-  check(true, "not a git repo \u2014 skipping stray BACKLOG.md check");
+  console.log("backlog gate \u2014 canonical single-file BACKLOG.md");
 }
 
-// ---- 7. BACKLOG.md must be git-tracked (committed), not untracked ----------
-// The board syncs across sessions only through git; an untracked BACKLOG.md
-// never reaches the shared board. Skipped outside a git repo.
 function insideGitRepo() {
   try {
     const r = execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
@@ -101,17 +94,72 @@ function gitLsFiles(pattern) {
     return [];
   }
 }
-if (insideGitRepo()) {
-  check(
-    gitTracked("BACKLOG.md"),
-    "BACKLOG.md is git-tracked (run `git add BACKLOG.md` then commit — an untracked board never syncs)"
-  );
-} else {
-  check(true, "not a git repo \u2014 skipping BACKLOG.md tracking check");
+
+/* Render the service `BacklogBoard` JSON as markdown table lines, so the shared
+ * row checks below run against it unchanged. */
+function serviceBoardToLines(board) {
+  const cell = (v) => String(v == null ? "" : v).replace(/\|/g, "/").replace(/\s+/g, " ").trim();
+  const row = (cells) => "| " + cells.map(cell).join(" | ") + " |";
+  const out = [];
+  out.push("## Epics", "", "| Key | Label | Goal |", "|---|---|---|");
+  for (const e of board.epics || []) out.push(row([e.key, e.label, e.goal]));
+  out.push("", "## In progress", "", "| ID | Epic | Task | Handoff |", "|---|---|---|---|");
+  for (const r of board.inprogress || []) out.push(row([r.id, r.epic, r.task, r.handoff]));
+  for (const [key, label] of [["queued", "Queued"], ["open", "Open"]]) {
+    out.push("", `## ${label}`, "", "| ID | P | Epic | Task | Evidence | Depends on |", "|---|---|---|---|---|---|");
+    for (const r of board[key] || []) out.push(row([r.id, r.priority, r.epic, r.task, r.evidence, r.dependsOn]));
+  }
+  out.push("", "## Frozen", "", "| ID | Epic | Task | Why frozen / reopen when |", "|---|---|---|---|");
+  for (const r of board.frozen || []) out.push(row([r.id, r.epic, r.task, r.condition]));
+  out.push("", "## Archive (shipped · done)", "", "| ID | Epic | Task | Closed |", "|---|---|---|---|");
+  for (const r of board.archive || []) out.push(row([r.id, r.epic, r.task, r.closed]));
+  return out;
 }
 
-const src = fs.readFileSync(canonical, "utf8");
-const lines = src.split(/\r?\n/);
+let lines;
+if (useService) {
+  let snapshot;
+  try {
+    snapshot = boardClient.getBoard(root);
+  } catch (e) {
+    console.error(`FATAL: board service unreachable — ${e.message}`);
+    process.exit(2);
+  }
+  // The service enforces uniqueness/priority/evidence/cycles on write; the gate
+  // still re-verifies structure so a corrupt row can never slip through.
+  check(true, "board service reachable (BACKLOG_BACKEND=service)");
+  const strays = insideGitRepo() ? gitLsFiles("*BACKLOG.md").filter((f) => f !== "BACKLOG.md") : [];
+  check(strays.length === 0, `no stray BACKLOG.md boards (found: ${strays.join(", ") || "none"})`);
+  lines = serviceBoardToLines(snapshot);
+} else {
+  // ---- 1. Only ONE canonical backlog file ----------------------------------
+  const canonical = path.join(root, "BACKLOG.md");
+  if (!fs.existsSync(canonical)) {
+    console.error("FATAL: missing BACKLOG.md at repo root (the canonical task list)");
+    process.exit(2);
+  }
+  check(true, "canonical BACKLOG.md present at repo root");
+
+  // No stray/secondary boards: the root file is the ONLY canonical board.
+  if (insideGitRepo()) {
+    const strays = gitLsFiles("*BACKLOG.md").filter((f) => f !== "BACKLOG.md");
+    check(strays.length === 0, `no stray BACKLOG.md boards (found: ${strays.join(", ") || "none"})`);
+  } else {
+    check(true, "not a git repo \u2014 skipping stray BACKLOG.md check");
+  }
+
+  // ---- 7. BACKLOG.md must be git-tracked (committed), not untracked --------
+  if (insideGitRepo()) {
+    check(
+      gitTracked("BACKLOG.md"),
+      "BACKLOG.md is git-tracked (run `git add BACKLOG.md` then commit — an untracked board never syncs)"
+    );
+  } else {
+    check(true, "not a git repo \u2014 skipping BACKLOG.md tracking check");
+  }
+
+  lines = fs.readFileSync(canonical, "utf8").split(/\r?\n/);
+}
 
 // ---- table parsing ----------------------------------------------------------
 // Split a markdown table row on unescaped `|` — shared with backlog.js and the

@@ -40,7 +40,14 @@ export async function board(project: string): Promise<BacklogBoard> {
   return {
     epics: epics.map((e) => ({ key: e.key, label: e.label, goal: e.goal })),
     active: projectRow.active ?? [],
-    inprogress: byStatus("inprogress").map((i) => ({ id: i.itemId, epic: i.epic, task: i.task, handoff: i.handoff })),
+    // `owned` is additive (the UI ignores it); the concurrency gate reads it.
+    inprogress: byStatus("inprogress").map((i) => ({
+      id: i.itemId,
+      epic: i.epic,
+      task: i.task,
+      handoff: i.handoff,
+      owned: i.owned.map((o) => o.glob),
+    })),
     queued: byStatus("queued")
       .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority))
       .map((i) => ({ id: i.itemId, priority: i.priority, epic: i.epic, task: i.task, evidence: i.evidence, dependsOn: depsOf(i) })),

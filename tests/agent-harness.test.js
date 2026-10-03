@@ -1275,6 +1275,69 @@ test("backlog CLI auto-uses the file backend when no service is configured", () 
   assert.match(read(path.join(t, "BACKLOG.md")), /file task/, "the file board was written");
 });
 
+/* A fixed-board mock service (separate process) for the gate tests. */
+const MOCK_GATE_SERVICE_SRC = `
+const http = require("http");
+const board = {
+  epics: [{ key: "tooling", label: "Tooling", goal: "dev tooling" }],
+  active: [],
+  inprogress: [{ id: "F-002", epic: "tooling", task: "working", handoff: ".agents/handoffs/F-002.md", owned: ["scripts/x.js"] }],
+  queued: [],
+  open: [{ id: "F-001", priority: "P2", epic: "tooling", task: "thing", evidence: "?", dependsOn: "" }],
+  frozen: [],
+  archive: [],
+};
+const server = http.createServer((req, res) => {
+  const auth = req.headers.authorization || "";
+  if (!auth) { res.writeHead(401); return res.end(JSON.stringify({ error: "Unauthorized" })); }
+  if (auth !== "Bearer gate-token") { res.writeHead(403); return res.end(JSON.stringify({ error: "Forbidden" })); }
+  const path = new URL(req.url, "http://x").pathname;
+  res.writeHead(200, { "Content-Type": "application/json" });
+  if (path === "/api/board") return res.end(JSON.stringify(board));
+  return res.end(JSON.stringify({}));
+});
+server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address().port) + "\\n"));
+`;
+
+test("board gates run in service mode against the board service (ADR 0001)", async () => {
+  const t = scaffoldBacklogCliTarget();
+  copyBoardLib(t);
+  // The gates live in scripts/qa — copy the two harness-owned gate scripts.
+  for (const name of ["check-backlog.js", "check-concurrency.js"]) {
+    fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "qa", name), path.join(t, "scripts", "qa", name));
+  }
+
+  const child = spawn(process.execPath, ["-e", MOCK_GATE_SERVICE_SRC], { stdio: ["ignore", "pipe", "inherit"] });
+  const port = await new Promise((resolve, reject) => {
+    let out = "";
+    child.stdout.on("data", (d) => {
+      out += d;
+      const nl = out.indexOf("\n");
+      if (nl !== -1) resolve(parseInt(out.slice(0, nl), 10));
+    });
+    child.on("error", reject);
+  });
+
+  const env = {
+    ...process.env,
+    BACKLOG_BACKEND: "service",
+    BACKLOG_API_URL: `http://127.0.0.1:${port}/`,
+    BACKLOG_API_TOKEN: "gate-token",
+    BACKLOG_PROJECT: "ci",
+  };
+  try {
+    const backlog = spawnSync(process.execPath, ["scripts/qa/check-backlog.js"], { cwd: t, encoding: "utf8", env });
+    assert.strictEqual(backlog.status, 0, backlog.stdout + backlog.stderr);
+    assert.match(backlog.stdout, /board service integrity/);
+    assert.match(backlog.stdout, /backlog green/);
+
+    const conc = spawnSync(process.execPath, ["scripts/qa/check-concurrency.js"], { cwd: t, encoding: "utf8", env });
+    assert.strictEqual(conc.status, 0, conc.stdout + conc.stderr);
+  } finally {
+    child.kill("SIGKILL");
+  }
+});
+
 test("backlog list is bounded by default and --limit controls the cap", () => {
   const t = scaffoldBacklogCliTarget();
   const p = path.join(t, "BACKLOG.md");

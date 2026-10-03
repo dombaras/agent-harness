@@ -92,9 +92,19 @@ function handoffOutcome(feature) {
   return m ? m[1].trim().toLowerCase() : null;
 }
 
-/* Whether the row is already archived on the board. Reuses the run-loop parser
- * (same module the auto-resume runner trusts). */
+/* Whether the row is already archived on the board. When the board service is
+ * the backend (ADR 0001) the board lives in the service, so ask it; otherwise
+ * reuse the run-loop parser (same module the auto-resume runner trusts). */
 function isArchived(feature) {
+  try {
+    const client = require(path.join(root, "scripts", "qa", "board-client.js"));
+    if (client.enabled(root)) {
+      const board = client.getBoard(root);
+      return (board.archive || []).some((r) => r.id === feature);
+    }
+  } catch {
+    /* fall back to the file parser below */
+  }
   try {
     const loop = require(path.join(root, "scripts", "qa", "run-loop.js"));
     return loop.isArchived(readIf(path.join(root, "BACKLOG.md")), feature);

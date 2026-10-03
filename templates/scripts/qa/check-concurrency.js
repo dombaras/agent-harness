@@ -93,8 +93,27 @@ function allLeases() {
 /* Split a markdown table row on unescaped `|` — shared with backlog.js and the
  * other board gates via board-lib.js (one home for the row parser). */
 
+/* ADR 0001: when the board service is the backend, the in-progress rows and the
+ * owned-files registry come from the service, not BACKLOG.md / owned-files.md. */
+const boardClient = (() => {
+  try {
+    return require("./board-client.js");
+  } catch {
+    return null;
+  }
+})();
+const useService = boardClient && boardClient.enabled(root) && !process.argv.includes("--file");
+
 /* The active-session IDs: first cell of every table row under `## In progress`. */
 function inProgressIds() {
+  if (useService) {
+    try {
+      return (boardClient.getBoard(root).inprogress || []).map((r) => r.id).filter(Boolean);
+    } catch (e) {
+      console.log(`  \u26a0 board service unreachable (${e.message}) \u2014 treating as no in-progress rows`);
+      return [];
+    }
+  }
   const p = path.join(root, "BACKLOG.md");
   if (!fs.existsSync(p)) return [];
   const lines = fs.readFileSync(p, "utf8").split(/\r?\n/);
@@ -121,6 +140,17 @@ function inProgressIds() {
 /* `.agents/memory/owned-files.md` -> Map<ID, glob[]> (upper-cased IDs). */
 function ownedFilesMap() {
   const map = new Map();
+  if (useService) {
+    try {
+      for (const r of boardClient.getBoard(root).inprogress || []) {
+        if (r.owned && r.owned.length) map.set(String(r.id).toUpperCase(), r.owned.slice());
+      }
+      return map;
+    } catch (e) {
+      console.log(`  \u26a0 board service unreachable (${e.message}) \u2014 no ownership data`);
+      return map;
+    }
+  }
   const p = path.join(root, ".agents", "memory", "owned-files.md");
   if (!fs.existsSync(p)) return map;
   const src = fs.readFileSync(p, "utf8");
