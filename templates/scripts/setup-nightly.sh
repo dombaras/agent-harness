@@ -37,7 +37,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
   a="${args[$i]}"
   case "$a" in
     --dry-run) DRY_RUN=1 ;;
-    --time) WANT_TIME="${args[$((i + 1))]:-}" ;;
+    --time) WANT_TIME="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
     --time=*) WANT_TIME="${a#--time=}" ;;
     --force) FORCE=1 ;;
     install | uninstall | status | run-now) ACTION="$a" ;;
