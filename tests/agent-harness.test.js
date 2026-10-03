@@ -1275,6 +1275,34 @@ test("backlog CLI auto-uses the file backend when no service is configured", () 
   assert.match(read(path.join(t, "BACKLOG.md")), /file task/, "the file board was written");
 });
 
+test("backlog CLI resolves a service root from .harness.json when no BACKLOG.md exists [ADR 0001]", async () => {
+  const t = scaffoldBacklogCliTarget();
+  copyBoardLib(t);
+  // No board file — only `.harness.json` (and the board block) identify the root.
+  fs.rmSync(path.join(t, "BACKLOG.md"));
+  fs.writeFileSync(
+    path.join(t, ".harness.json"),
+    JSON.stringify({ projectName: "TESTPROJ", board: { project: "TESTPROJ" } }, null, 2)
+  );
+
+  const { child, port } = await startMockBoardService();
+  const env = {
+    ...process.env,
+    BACKLOG_BACKEND: "service",
+    BACKLOG_API_URL: `http://127.0.0.1:${port}`,
+    BACKLOG_API_TOKEN: "test-token",
+  };
+  try {
+    // Root resolution succeeds without BACKLOG.md, and the service answers.
+    assert.match(runBacklogCliEnv(t, ["add", "no-file task", "--p", "P2"], env).out, /added F-0\d\d \[P2\] no-file task/);
+    const json = runBacklogCliEnv(t, ["list", "--json"], env);
+    assert.strictEqual(json.status, 0, json.out);
+    assert.ok(JSON.parse(json.out).open.length >= 1, "the service board is readable with no repo BACKLOG.md");
+  } finally {
+    child.kill("SIGKILL");
+  }
+});
+
 /* A fixed-board mock service (separate process) for the gate tests. */
 const MOCK_GATE_SERVICE_SRC = `
 const http = require("http");

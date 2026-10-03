@@ -194,6 +194,7 @@ file is deleted. `BACKLOG_BACKEND=file|service` keeps cutover reversible.
 | **4. Dashboard** | proxy route + SSE | superadmin queue/start/add/archive live; zero `chore(board)` commits |
 | | | **done (LibraryOS)** — `lib/board-service.ts` bridge + route/stream delegation; file stays default until cutover |
 | **5. Retire file model** | delete file tooling/driver/lock; migrate both projects; refresh worktrees | board drives every surface; no `BACKLOG.md` remains |
+| | | **done (LibraryOS)** — runtime (`board-service.sh` + systemd unit), `.harness.json` board config + machine token store, merge driver retired, `BACKLOG.md` deleted; FamilyBudget descoped as stale |
 
 Each phase is a normal harness release (bump `package.json`, `npm run lint` +
 `npm test`, deploy to LibraryOS + FamilyBudget, refresh worktrees).

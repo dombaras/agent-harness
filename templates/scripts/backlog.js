@@ -98,15 +98,32 @@ function canonKey(heading) {
   return null;
 }
 
-/* Walk up from `startDir` to the directory containing BACKLOG.md. */
+/* Walk up from `startDir` to the project root. ADR 0001: the board no longer
+ * lives in a BACKLOG.md, so when the service is configured the root is the
+ * nearest directory with a `.harness.json` (or, failing that, the git
+ * toplevel); the legacy file board still anchors on BACKLOG.md. */
 function findRoot(startDir) {
   let dir = path.resolve(startDir || process.cwd());
   for (;;) {
     if (fs.existsSync(path.join(dir, "BACKLOG.md"))) return dir;
     const parent = path.dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) break;
     dir = parent;
   }
+  // No BACKLOG.md anywhere up the tree — resolve a service-backed root.
+  dir = path.resolve(startDir || process.cwd());
+  for (;;) {
+    if (fs.existsSync(path.join(dir, ".harness.json"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const top = require("child_process").spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: path.resolve(startDir || process.cwd()),
+    encoding: "utf8",
+  });
+  if (top.status === 0 && (top.stdout || "").trim()) return (top.stdout || "").trim();
+  return null;
 }
 
 function readBacklog(root) {

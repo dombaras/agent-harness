@@ -161,7 +161,8 @@ function rowById(board, id) {
 
 function take(root, id, handoff) {
   const json = httpSync(root, "POST", `/api/items/${encodeURIComponent(id)}/take`, { handoff });
-  return json.result;
+  const { row } = rowById(json.board, id);
+  return { ...json.result, handoff: row ? row.handoff : handoff };
 }
 function queue(root, id) {
   const json = httpSync(root, "POST", `/api/items/${encodeURIComponent(id)}/queue`, {});

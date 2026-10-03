@@ -41,9 +41,11 @@ orchestrator in its place). **Waive:** an explicit `audited:`/waiver line per pa
 
 ## `test:backlog` — canonical-single-backlog gate
 `node scripts/qa/check-backlog.js`
-`BACKLOG.md` is the only source of truth; `.agents/features/INDEX.md` and
-`.agents/memory/todo.md` are pointers, never duplicate lists. **Satisfy:** edit the
-board via `backlog_*` / `node scripts/backlog.js`, never a second list.
+The shared board service is the only source of truth (ADR 0001); when the service
+backend is active the gate validates its board, otherwise it validates the legacy
+`BACKLOG.md`. `.agents/features/INDEX.md` and `.agents/memory/todo.md` are
+pointers, never duplicate lists. **Satisfy:** edit the board via `backlog_*` /
+`node scripts/backlog.js`, never a second list.
 
 ## `test:product` — product/UX-first gate
 `node scripts/qa/check-product.js`
@@ -109,6 +111,6 @@ prefix file (root dispatcher, rulebook, operating rules, session-start memory).
 - `node scripts/qa/session-recon.js` — tool-habit / context-hygiene recon (`npm run report:recon`).
 - `node scripts/wait-for.js` — bounded blocking wait (`--job`/`--ci`/`--health`/`--port`/`--file --grep`); `npm run wait`.
 - `node scripts/checkpoint.js` — deterministic checkpoint (`write`/`resume`).
-- `node scripts/backlog.js` — board read/write (single write path).
+- `node scripts/backlog.js` — board read/write (single write path; service backend per ADR 0001).
 - `node scripts/serve.js` — detached long-lived process launcher + capacity/lock gate.
 - `node scripts/ship.js` / `finalize.js` — integrate, gate, land on `main`, confirm CI.
