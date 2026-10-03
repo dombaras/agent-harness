@@ -32,7 +32,16 @@ in-file; no code change needed.
 
 | Key | Label | Goal |
 |-----|-------|------|
-| | | |
+| metrics | Metrics & observability | Community/platform/mobile health telemetry, trends, friction visibility |
+| audits-reviews | Audits & reviews | Security/legal/data audits and editorial-review coverage |
+| user-flows | User flows | Borrow/lend/handoff/return/extension/join journeys and their friction |
+| auth-security | Auth & security | Sessions, 2FA, access control, secret hardening |
+| mobile | Mobile app | Native build/release, iOS polish, mobile-only fixes |
+| data-model | Data & catalog model | Schema, taxonomy, hardcoded-data cleanup |
+| testing | Testing & QA | E2E suites, QA gates, test migration |
+| backlog-tooling | Backlog & dev tooling | The board itself and development tooling |
+| reports | Member reports | Member-submitted bug/improvement reports with evidence |
+| devops | DevOps & platform ops | Runtime/toolchain upgrades, deploy pipeline, CI gates |
 
 ## Active / next
 
