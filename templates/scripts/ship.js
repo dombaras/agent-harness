@@ -541,10 +541,46 @@ function main() {
     process.exitCode = code;
     return;
   }
-  console.log(
-    "\n[ship] landed + CI green. Clean up the feature worktree when the session ends:\n" +
-      "       node scripts/backlog.js worktree-prune"
+  console.log("\n[ship] landed + CI green.");
+  pruneShippedWorktree(mainRoot, branch, root);
+}
+
+/* Remove the just-shipped feature's worktree now that its branch is landed and
+ * CI is green, so a session can clean up after itself instead of leaving the
+ * checkout behind for a later `worktree-prune` (the 0.1.90 regression: the live
+ * session's own pointer made the cleanup command keep the finished worktree
+ * until the session closed). `backlog worktree-prune` owns every safety rule
+ * (clean checkout, landed/merged branch, never a worktree a DIFFERENT live
+ * session owns, never a session's own `--open` root), so ship merely asks it to
+ * prune this branch from the MAIN checkout. `--self` authorizes THIS session to
+ * release its own pointer; that is safe here because ship passes it only after
+ * the CI watch is over, so there is no mid-watch checkout to blind (F-252). A
+ * no-op with the manual fallback when the worktree cannot be removed safely.
+ * Runs from `mainRoot` so it survives this process's cwd being the worktree:
+ * removing the cwd would break any later relative-path work. `--dir` pins the
+ * prune to THIS checkout, so a `--self` run never converges a sibling session's
+ * worktree. */
+function pruneShippedWorktree(mainRoot, branch, worktreeDir) {
+  const backlog = path.join(mainRoot, "scripts", "backlog.js");
+  if (!fs.existsSync(backlog)) {
+    console.log("\n[ship] feature worktree left in place (scripts/backlog.js not found in main).");
+    return;
+  }
+  const res = spawnSync(
+    process.execPath,
+    [backlog, "worktree-prune", branch, "--self", "--dir", worktreeDir, "--no-fetch"],
+    { cwd: mainRoot, encoding: "utf8" }
   );
+  if (/pruned /.test(res.stdout || "")) {
+    console.log("\n[ship] pruned the feature worktree (branch landed + CI green).");
+  } else {
+    console.log(
+      "\n[ship] feature worktree left in place. Clean up when this session ends:\n" +
+        "       node scripts/backlog.js worktree-prune"
+    );
+  }
+  const text = `${res.stdout || ""}${res.stderr || ""}`.trim();
+  for (const line of text.split(/\r?\n/).filter(Boolean)) console.log(`  ${line}`);
 }
 
 main();

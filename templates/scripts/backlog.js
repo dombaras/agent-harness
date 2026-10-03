@@ -854,6 +854,15 @@ function parentPid(pid) {
 function ancestorSessionId(root) {
   const env = process.env.HARNESS_SESSION_ID;
   if (env) return env;
+  return leaseAncestorIn(root);
+}
+
+/* A live lease under `root` whose pid is this process or an ancestor — i.e. this
+ * process is running INSIDE that session's tree. Unlike `ancestorSessionId` this
+ * ignores HARNESS_SESSION_ID (which names a session, not a directory), so it can
+ * answer "is this specific checkout a session's root?" — the `--open` guard in
+ * `cmdWorktreePrune`. */
+function leaseAncestorIn(root) {
   let live;
   try {
     live = leases.liveLeases(root);
@@ -893,7 +902,10 @@ function clearSessionWorktree(root, sessionID, onlyDir) {
  * watch — every `gh` spawn fails on the dead cwd, so a green run looks like a
  * 20-minute timeout and the session is left believing CI is unconfirmed (F-252).
  * A pointer whose lease is stale/dead is ignored, so abandoned worktrees still
- * converge. */
+ * converge. `worktree-prune --self` lifts this guard for the caller's OWN
+ * finished worktree only (see `cmdWorktreePrune`); a foreign session pruning
+ * concurrently has no such authorization and still sees the owner's pointer
+ * (F-252). */
 function liveSessionWorktreeDirs(root) {
   const dirs = new Set();
   let live;
@@ -1367,20 +1379,46 @@ function cmdWorktreePrune(state, argv) {
       : []
   );
   const matched = new Set();
+  // `--self` is the authorization token `ship` passes after CI is green, so the
+  // session that just finished may prune its OWN worktree. It resolves the
+  // caller by process ancestry (a bash invocation carries no HARNESS_SESSION_ID)
+  // against the MAIN tree's live leases, then lifts the guard ONLY for a
+  // checkout the caller's pointer actually names (`isSelf` below). A plain
+  // `worktree-prune` (a foreign/concurrent caller, e.g. the F-252 prune) passes
+  // no token; and because several sessions can share one opencode pid, the
+  // exact-pointer match means a same-pid sibling can never be mistaken for the
+  // caller. `--dir <path>` narrows a `--self` run to the single just-shipped
+  // checkout, so it can never converge (and thus never remove) another
+  // session's worktree.
+  const onlyDir = argv.dir ? path.resolve(argv.dir) : null;
+  const selfSession = argv.self ? process.env.HARNESS_SESSION_ID || ancestorSessionId(main) : "";
+  const selfPointer = selfSession ? readSessionWorktree(main, selfSession) : "";
+  const isSelf = (p) => !!(selfPointer && path.resolve(selfPointer) === path.resolve(p));
   const inUse = liveSessionWorktreeDirs(main);
 
   let pruned = 0;
   for (const e of entries) {
     const label = path.basename(e.path);
     if (path.resolve(e.path) === path.resolve(main)) continue; // never the main tree
+    if (onlyDir && path.resolve(e.path) !== onlyDir) continue; // a --self run stays narrow
     if (!e.branch) {
       notes.push(`kept ${label} (detached HEAD)`);
       continue;
     }
     if (explicit.has(e.branch)) matched.add(e.branch);
+    // Never remove a checkout this very session is rooted IN. A `--open`
+    // session's opencode process lives in the worktree (its lease is under the
+    // worktree's own `.serve/sessions/`), so removing it would yank the running
+    // session's cwd. A mid-session owner launched in main leaves no lease here,
+    // so its finished worktree is still removable.
+    if (leaseAncestorIn(e.path)) {
+      notes.push(`kept ${label} (this session is rooted in it — prune after the session closes)`);
+      continue;
+    }
     // A worktree a live session still owns is off-limits even when merged and
-    // clean: that session may be mid-`ship`, watching CI from it (F-252).
-    if (inUse.has(path.resolve(e.path))) {
+    // clean: that session may be mid-`ship`, watching CI from it (F-252). The
+    // owner's own `--self` request releases exactly its own checkout.
+    if (inUse.has(path.resolve(e.path)) && !isSelf(e.path)) {
       notes.push(`kept ${label} (in use by a live session)`);
       continue;
     }
@@ -1402,7 +1440,7 @@ function cmdWorktreePrune(state, argv) {
       continue;
     }
     gitCmd(root, ["branch", "-d", e.branch]);
-    clearSessionWorktree(main, process.env.HARNESS_SESSION_ID, e.path);
+    clearSessionWorktree(main, isSelf(e.path) ? selfSession : process.env.HARNESS_SESSION_ID, e.path);
     notes.push(`pruned ${label} (${e.branch})`);
     pruned += 1;
   }
@@ -1465,6 +1503,7 @@ function parseArgs(argv) {
     else if (a === "--on") args.on = argv[++i];
     else if (a === "--files") args.files = argv[++i];
     else if (a === "--take") args.take = true;
+    else if (a === "--self") args.self = true;
     else if (a === "--open") args.open = true;
     else if (a === "--open-cmd") args["open-cmd"] = argv[++i];
     else if (a === "--no-fetch") args["no-fetch"] = true;
@@ -1496,7 +1535,7 @@ function usage() {
       "  node scripts/backlog.js owns <id> --files \"glob, glob\"\n" +
       "  node scripts/backlog.js sync [--root <dir>] [--no-fetch]\n" +
       "  node scripts/backlog.js worktree <id> [--branch b] [--dir d] [--handoff path] [--no-fetch] [--open]\n" +
-      "  node scripts/backlog.js worktree-prune [<branch>...] [--no-fetch]\n" +
+      "  node scripts/backlog.js worktree-prune [<branch>...] [--self] [--dir d] [--no-fetch]\n" +
       "  node scripts/backlog.js epic-add <key> --label <x> [--goal <y>]\n" +
       "  node scripts/backlog.js epic <id> --to <key>\n"
   );
