@@ -125,14 +125,22 @@ write_unit() {
     echo "[Unit]"
     echo "Description=agent-harness shared board service (ADR 0001)"
     echo "After=default.target"
+    # Auto-start across WSL restarts: the board DB is a Docker container, so wait
+    # for the engine and retry the boot until Postgres is actually accepting
+    # connections (Docker + the container come up asynchronously after boot).
+    echo "Wants=docker.service"
+    echo "After=docker.service"
     echo
     echo "[Service]"
     echo "WorkingDirectory=$dir"
     [ -f "$SERVICE_ENV_FILE" ] && echo "EnvironmentFile=$SERVICE_ENV_FILE"
-    echo "ExecStart=$dir/node_modules/.bin/next start -p $DEFAULT_PORT"
     echo "Environment=NODE_ENV=production"
-    echo "Restart=on-failure"
-    echo "RestartSec=2"
+    # Best-effort gate: wait (bounded, ~60s) for the DB port before the app
+    # boots. Uses bash (the `/dev/tcp` redirect is a bash feature).
+    echo "ExecStartPre=-/bin/bash -c 'for i in \$(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && exit 0; sleep 2; done; exit 0'"
+    echo "ExecStart=$dir/node_modules/.bin/next start -p $DEFAULT_PORT"
+    echo "Restart=always"
+    echo "RestartSec=3"
     echo
     echo "[Install]"
     echo "WantedBy=default.target"
@@ -146,6 +154,11 @@ install_bashrc_hook() {
   {
     printf '%s\n' "$BASHRC_MARKER"
     printf '[ -f "%s" ] && . "%s"\n' "$ENV_FILE" "$ENV_FILE"
+    # Safety net: if systemd did not bring the service up (e.g. no linger, or a
+    # cold WSL boot racing Docker), nudge it once per shell — bounded and silent.
+    printf 'if command -v systemctl >/dev/null 2>&1 && ! systemctl --user is-active --quiet %s 2>/dev/null; then\n' "$UNIT_NAME"
+    printf '  systemctl --user start %s >/dev/null 2>&1 || true\n' "$UNIT_NAME"
+    printf 'fi\n'
     printf '%s\n' "$BASHRC_END"
   } >>"$BASHRC"
 }

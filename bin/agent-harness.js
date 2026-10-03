@@ -1086,6 +1086,14 @@ async function deploy(target, opts) {
     }
 
     if (isCreateIfMissing(rel)) {
+      // ADR 0001: a service-backed project (its `.harness.json` carries a
+      // `board` block) has its board in the service, so a legacy BACKLOG.md is
+      // neither scaffolded nor recreated — and a stale one is left untouched.
+      if (isBacklogFile(rel) && existing.board) {
+        if (fs.existsSync(targetAbs)) actions.push({ rel: key, kind: "preserve" });
+        else actions.push({ rel: key, kind: "skipped (service board)" });
+        continue;
+      }
       if (fs.existsSync(targetAbs)) {
         actions.push({ rel: key, kind: "preserve" });
       } else {

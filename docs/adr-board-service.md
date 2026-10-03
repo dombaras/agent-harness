@@ -61,8 +61,11 @@ Replace `BACKLOG.md` with a **standalone, shared, project-scoped board service**
 
 - **Location:** `services/board/` in the harness repo. It is **not** copied into
   projects by `init`/`update` (it is a singleton, not a template).
-- **Runtime:** WSL `systemd --user` unit (same pattern as `setup-tmpfs.sh` /
-  `install-nightly`); in CI a service container + a Postgres service.
+- **Runtime:** WSL `systemd --user` unit (`agent-board.service`, enabled +
+  lingering, `Wants`/`After=docker.service`, bounded `ExecStartPre` DB wait,
+  `Restart=always`) so it **auto-starts across WSL restarts**; a `~/.bashrc`
+  safety net starts it if systemd did not. In CI a service container + a
+  Postgres service.
 - **Reuse:** Next.js route handlers, Prisma, Postgres, and the existing SSE
   pattern. The dashboard is unchanged because the service returns the exact
   `BacklogBoard` shape it consumes today.

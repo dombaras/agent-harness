@@ -1712,6 +1712,25 @@ test("features scaffold + persona parity deploy", async () => {
   assert.strictEqual(read(indexPath), "| F-001 | custom row | P3 | x | backlog |\n", "project INDEX preserved");
 });
 
+test("deploy does not scaffold BACKLOG.md for a service-backed project [ADR 0001]", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  // A project whose `.harness.json` already declares the board service.
+  fs.writeFileSync(
+    path.join(target, ".harness.json"),
+    JSON.stringify({ projectName: "Demo", version: "0.0.0", board: { url: "http://127.0.0.1:3021", project: "Demo" } }, null, 2) + "\n"
+  );
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.ok(!exists(path.join(target, "BACKLOG.md")), "no legacy BACKLOG.md is scaffolded for a service-backed project");
+
+  // A fresh (non-service) project still gets the legacy scaffold for the file
+  // fallback — the guard is scoped to the `board` block only.
+  const plain = tmpdir();
+  await h.deploy(plain, { name: "Plain", yes: true, isUpdate: false });
+  assert.ok(exists(path.join(plain, "BACKLOG.md")), "a non-service project still gets the file-board scaffold");
+});
+
 test("docs persona scaffold + parity deploy", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
