@@ -424,7 +424,6 @@ const HARNESS_IGNORE_MARKER = "# agent-harness (managed below)";
 const HARNESS_IGNORE_ENTRIES = [
   ".harness-backup/",
   ".harness.lock/",
-  ".backlog.lock",
   ".serve/",
   ".agents/guard-events.jsonl",
 ];
@@ -531,8 +530,6 @@ function mergeGitattributes(target, driverName) {
   while (kept.length && kept[0].trim() === "") kept.shift();
   const managed = [
     GITATTRIBUTES_MARKER,
-    `BACKLOG.md merge=${driverName}`,
-    `**/BACKLOG.md merge=${driverName}`,
     "*.sh text eol=lf",
     "*.ps1 text eol=crlf",
     GITATTRIBUTES_END,
@@ -542,44 +539,16 @@ function mergeGitattributes(target, driverName) {
   return out.join("\n");
 }
 
-/* The root that owns `scripts/qa/merge-backlog.js` for the driver registration.
- *
- * Git config is per-clone and SHARED by every linked worktree, and the driver
- * stores an absolute path. Registering it while the target is a linked worktree
- * (e.g. `<repo>/../.worktrees/<repo>/<id>`) would poison the shared config with
- * a path that dangles once the feature worktree is removed (`backlog archive`,
- * `git worktree remove`). So when the target IS a worktree root, register
- * against the MAIN worktree instead. A nested harness project (`<repo>/mobile`)
- * is NOT a worktree root — its `--show-toplevel` is the repo root, not itself —
- * so it keeps its own script and the two drivers never clobber each other. */
-function resolveDriverRoot(target) {
-  const abs = path.resolve(target);
-  const top = runGit(abs, ["rev-parse", "--show-toplevel"]);
-  if (!top.ok) return abs;
-  if (path.resolve(top.out) !== abs) return abs; // nested project inside a worktree
-  const list = runGit(abs, ["worktree", "list", "--porcelain"]);
-  if (list.ok) {
-    const first = (list.out || "").split(/\r?\n/).find((l) => l.startsWith("worktree "));
-    if (first) {
-      const main = path.resolve(first.slice("worktree ".length).trim());
-      if (main !== abs) return main;
-    }
-  }
-  return abs;
-}
-
-/* Register the row-aware merge driver in the target's LOCAL git config (never
- * committed — merge drivers are per-clone). Git runs it as
- * `node <abs>/scripts/qa/merge-backlog.js %O %A %B`. The driver script is
- * committed; only the config pointer is local. The driver name is per-project,
- * so nested projects in one repo each keep their own registration. */
-function registerBacklogMergeDriver(target, driverName) {
+/* ADR 0001 retired the BACKLOG.md row-aware merge driver: the board lives in
+ * the external service, so there is no in-repo file to merge. Remove the
+ * per-clone registration a previous harness version may have written, so a
+ * stale absolute pointer (once a worktree it referenced is gone) cannot linger.
+ * Best-effort: a fresh clone simply has nothing to remove. */
+function unregisterBacklogMergeDriver(target, projectName) {
   if (!isGitRepo(target)) return;
-  const root = resolveDriverRoot(target);
-  const driverScript = path.join(root, "scripts", "qa", "merge-backlog.js").split(path.sep).join("/");
-  const driver = `node "${driverScript}" %O %A %B`;
-  runGit(target, ["config", `merge.${driverName}.name`, "BACKLOG.md row merge"]);
-  runGit(target, ["config", `merge.${driverName}.driver`, driver]);
+  const driverName = backlogDriverName(projectName);
+  runGit(target, ["config", "--unset", `merge.${driverName}.name`]);
+  runGit(target, ["config", "--unset", `merge.${driverName}.driver`]);
 }
 
 // ---------------------------------------------------------------- git helpers
@@ -1050,7 +1019,8 @@ async function deploy(target, opts) {
     }
   }
 
-  // Merge harness-managed .gitattributes (BACKLOG.md row-aware merge driver).
+  // Merge harness-managed .gitattributes (line-ending pins). ADR 0001 removed
+  // the BACKLOG.md row-aware merge driver — the board lives in the service.
   {
     const text = mergeGitattributes(target, driverName);
     const key = ".gitattributes";
@@ -1086,12 +1056,11 @@ async function deploy(target, opts) {
     }
   }
 
-  // Register the row-aware BACKLOG.md merge driver in the target's local git
-  // config (the script is committed; the driver pointer is per-clone). Also
-  // record harness local-only artifact ignores in the clone-local exclude file
-  // — never in the project's committed `.gitignore`.
+  // ADR 0001: the BACKLOG.md merge driver is retired (the board is in the
+  // service). Remove any stale per-clone registration so a leftover pointer
+  // cannot dangle, and refresh the clone-local exclude file.
   if (!dryRun) {
-    registerBacklogMergeDriver(target, driverName);
+    unregisterBacklogMergeDriver(target, projectName);
     mergeGitInfoExclude(target);
   }
 
@@ -2345,7 +2314,6 @@ module.exports = {
   isMemoryFile,
   isOpencodeJson,
   isWindowsMount,
-  resolveDriverRoot,
   currentBranch,
   defaultBranch,
   detectIndent,

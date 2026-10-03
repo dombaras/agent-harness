@@ -1602,7 +1602,7 @@ test("deploy records local-only ignores in .git/info/exclude, never in .gitignor
   git(target, ["init", "-q"]);
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
   const exclude = read(path.join(target, ".git", "info", "exclude"));
-  assert.match(exclude, /\.backlog\.lock/, "transient .backlog.lock is clone-locally excluded");
+  assert.match(exclude, /\.serve\//, "transient .serve/ is clone-locally excluded");
   assert.ok(!exists(path.join(target, ".gitignore")), "deploy never creates/rewrites the project .gitignore");
 
   // outside a git repo there is nothing to exclude for — and still no .gitignore
@@ -1956,6 +1956,15 @@ test("package.json merge does not downgrade a project-customized harness gate", 
 
 function git(target, args) {
   return execFileSync("git", args, { cwd: target, encoding: "utf8" }).trim();
+}
+
+/* Read a git config value, or null when unset (git exits 1 -> execFileSync throws). */
+function gitConfigGet(target, key) {
+  try {
+    return git(target, ["config", "--get", key]);
+  } catch {
+    return null;
+  }
 }
 
 test("update auto-commits only harness files and a no-op update makes no commit", async () => {
@@ -3918,7 +3927,7 @@ test("merge-backlog conflict preserves every non-conflicting row in the written 
   }
 });
 
-test("deploy merges .gitattributes + registers the row-aware merge driver", async () => {
+test("deploy merges .gitattributes (line-ending pins only; no BACKLOG.md driver) [ADR 0001]", async () => {
   const target = tmpdir();
   git(target, ["init", "-q"]);
   git(target, ["config", "user.email", "t@t.t"]);
@@ -3931,69 +3940,40 @@ test("deploy merges .gitattributes + registers the row-aware merge driver", asyn
   const ga = read(path.join(target, ".gitattributes"));
   assert.ok(ga.includes("* text=auto"), "project .gitattributes entry preserved");
   assert.match(ga, /# agent-harness \(managed below\)/);
-  assert.ok(ga.includes("BACKLOG.md merge=backlog-demo"), "merge attribute merged with a per-project driver name");
-  assert.ok(ga.includes("**/BACKLOG.md merge=backlog-demo"), "nested boards also route through the merge driver");
+  assert.ok(!ga.includes("BACKLOG.md"), "the retired BACKLOG.md merge attribute is not written");
+  assert.ok(!ga.includes("merge=backlog"), "no row-aware merge driver attribute");
   assert.ok(ga.includes("*.sh text eol=lf"), "POSIX scripts pinned to LF across the Windows/WSL boundary");
   assert.ok(ga.includes("*.ps1 text eol=crlf"), "PowerShell scripts pinned to CRLF for Windows");
 
-  const driver = git(target, ["config", "--get", "merge.backlog-demo.driver"]);
-  assert.ok(driver && driver.includes("merge-backlog.js"), "merge driver registered in local git config: " + driver);
+  assert.strictEqual(gitConfigGet(target, "merge.backlog-demo.driver"), null, "no merge driver is registered once the board lives in the service");
 
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
   const ga2 = read(path.join(target, ".gitattributes"));
   assert.strictEqual((ga2.match(/# agent-harness \(managed below\)/g) || []).length, 1, "marker not duplicated");
 });
 
-test("nested harness projects get distinct merge-driver names that don't clobber each other", async () => {
+test("deploy retires a stale BACKLOG.md merge-driver registration [ADR 0001]", async () => {
   const target = tmpdir();
   git(target, ["init", "-q"]);
   git(target, ["config", "user.email", "t@t.t"]);
   git(target, ["config", "user.name", "t"]);
   git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
 
-  const nested = path.join(target, "mobile");
-  fs.mkdirSync(nested);
+  // Simulate a prior harness version that registered the per-clone driver and
+  // wrote the merge attribute into a committed .gitattributes.
+  git(target, ["config", "merge.backlog-demo.name", "BACKLOG.md row merge"]);
+  git(target, ["config", "merge.backlog-demo.driver", "node merge-backlog.js %O %A %B"]);
+  fs.writeFileSync(
+    path.join(target, ".gitattributes"),
+    "# agent-harness (managed below)\nBACKLOG.md merge=backlog-demo\n*.sh text eol=lf\n# agent-harness (managed end)\n",
+    "utf8"
+  );
 
-  await h.deploy(target, { name: "RootApp", yes: true, isUpdate: false });
-  await h.deploy(nested, { name: "MobileApp", yes: true, isUpdate: false });
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
 
-  const rootGa = read(path.join(target, ".gitattributes"));
-  const nestedGa = read(path.join(nested, ".gitattributes"));
-  assert.ok(rootGa.includes("BACKLOG.md merge=backlog-rootapp"), "root driver name is project-scoped");
-  assert.ok(nestedGa.includes("BACKLOG.md merge=backlog-mobileapp"), "nested driver name is project-scoped");
-
-  // both driver registrations survive side-by-side in the one shared git config
-  const rootDriver = git(target, ["config", "--get", "merge.backlog-rootapp.driver"]);
-  const nestedDriver = git(target, ["config", "--get", "merge.backlog-mobileapp.driver"]);
-  assert.ok(rootDriver && rootDriver.includes("merge-backlog.js"), "root driver registered");
-  assert.ok(nestedDriver && nestedDriver.includes("merge-backlog.js"), "nested driver registered");
-  assert.notStrictEqual(rootDriver, nestedDriver, "each project's driver points at its own script");
-});
-
-test("merge driver for a linked worktree target registers against the MAIN worktree", async () => {
-  const target = tmpdir();
-  git(target, ["init", "-q"]);
-  git(target, ["config", "user.email", "t@t.t"]);
-  git(target, ["config", "user.name", "t"]);
-  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
-
-  // deploy the main checkout first, then a linked feature worktree
-  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
-  const wt = path.join(target, "..", path.basename(target) + "-wt");
-  git(target, ["worktree", "add", "-q", wt, "-b", "feat-x"]);
-  await h.deploy(wt, { name: "Demo", yes: true, isUpdate: true });
-
-  const driver = git(target, ["config", "--get", "merge.backlog-demo.driver"]);
-  const mainScript = path.join(target, "scripts", "qa", "merge-backlog.js").split(path.sep).join("/");
-  const wtScript = path.join(wt, "scripts", "qa", "merge-backlog.js").split(path.sep).join("/");
-  assert.ok(driver.includes(mainScript), `driver points at the main worktree's script: ${driver}`);
-  assert.ok(!driver.includes(wtScript), "driver must not point into the feature worktree");
-  assert.strictEqual(h.resolveDriverRoot(wt), path.resolve(target), "worktree target resolves to the main worktree");
-  assert.strictEqual(h.resolveDriverRoot(target), path.resolve(target), "main target stays itself");
-
-  // the registered path survives worktree removal (no dangling driver)
-  git(target, ["worktree", "remove", "--force", wt]);
-  assert.ok(exists(path.join(target, "scripts", "qa", "merge-backlog.js")), "driver script survives worktree removal");
+  assert.strictEqual(gitConfigGet(target, "merge.backlog-demo.driver"), null, "the stale driver registration is removed");
+  const ga = read(path.join(target, ".gitattributes"));
+  assert.ok(!ga.includes("BACKLOG.md"), "the stale merge attribute is dropped on the next deploy");
 });
 
 test("isWindowsMount flags WSL Windows-drive mounts only on POSIX hosts", () => {
@@ -6551,7 +6531,8 @@ test("gitattributes merge uses begin/end markers and preserves a project tail", 
   );
   const out = h.mergeGitattributes(t, "backlog-demo");
   assert.doesNotMatch(out, /merge=old-driver/, "old managed block removed");
-  assert.match(out, /BACKLOG\.md merge=backlog-demo/);
+  assert.doesNotMatch(out, /BACKLOG\.md/, "no BACKLOG.md attribute is written (ADR 0001)");
+  assert.match(out, /\*\.sh text eol=lf/, "line-ending pins remain");
   assert.match(out, /# project entries \(must survive\)/, "project entry after the managed block survives");
   assert.match(out, /\*\.log -diff/);
 

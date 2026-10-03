@@ -10,10 +10,10 @@
  *   - service : all board reads/writes go to the HTTP service
  *   - file    : the legacy BACKLOG.md path (unchanged)
  *
- * Config (resolved once):
- *   BACKLOG_API_URL    e.g. http://127.0.0.1:3021
- *   BACKLOG_API_TOKEN  per-project bearer token
- *   BACKLOG_PROJECT    project key (defaults to the .harness.json projectName)
+ * Config is resolved from the project's `.harness.json` `board` block first
+ * (per project, survives harness updates), then the environment:
+ *   .harness.json -> { "board": { "url", "token", "project" } }
+ *   BACKLOG_API_URL / BACKLOG_API_TOKEN / BACKLOG_PROJECT (env override)
  *
  * The functions mirror `backlog.js` command results so `formatResult` prints the
  * same text for either backend.
@@ -21,10 +21,44 @@
 const fs = require("fs");
 const path = require("path");
 
-function config() {
-  const url = (process.env.BACKLOG_API_URL || "").replace(/\/+$/, "");
-  const token = process.env.BACKLOG_API_TOKEN || "";
-  const project = process.env.BACKLOG_PROJECT || "";
+/* Read the per-project board config block from `.harness.json`, if present.
+ * The `token` there is honored but discouraged (it is a committed secret); the
+ * machine-level token store below is the recommended home. */
+function projectBoardConfig(root) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(root, ".harness.json"), "utf8"));
+    const b = cfg && cfg.board;
+    if (b && typeof b === "object") {
+      return {
+        url: typeof b.url === "string" ? b.url : "",
+        token: typeof b.token === "string" ? b.token : "",
+        project: typeof b.project === "string" ? b.project : "",
+      };
+    }
+  } catch {
+    /* no .harness.json / no board block */
+  }
+  return { url: "", token: "", project: "" };
+}
+
+/* Machine-level token store: `~/.config/agent-harness/tokens.json` maps a
+ * project key to its service token (never committed). */
+function tokenStore(project) {
+  const base = process.env.XDG_CONFIG_HOME || path.join(require("os").homedir(), ".config");
+  try {
+    const store = JSON.parse(fs.readFileSync(path.join(base, "agent-harness", "tokens.json"), "utf8"));
+    if (project && typeof store[project] === "string") return store[project];
+  } catch {
+    /* no store */
+  }
+  return "";
+}
+
+function config(root) {
+  const file = root ? projectBoardConfig(root) : { url: "", token: "", project: "" };
+  const project = process.env.BACKLOG_PROJECT || file.project || "";
+  const url = (process.env.BACKLOG_API_URL || file.url || "").replace(/\/+$/, "");
+  const token = process.env.BACKLOG_API_TOKEN || file.token || tokenStore(project) || "";
   return { url, token, project };
 }
 
@@ -33,12 +67,12 @@ function enabled(root) {
   if (process.env.BACKLOG_BACKEND === "file") return false;
   if (process.env.BACKLOG_BACKEND === "service") return true;
   // Auto: use the service only when it is configured (URL + token present).
-  const c = config();
+  const c = config(root);
   return Boolean(c.url && c.token);
 }
 
 function projectKey(root) {
-  const c = config();
+  const c = config(root);
   if (c.project) return c.project;
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(root, ".harness.json"), "utf8"));
@@ -55,7 +89,7 @@ function projectKey(root) {
  * keeps the call sites unchanged and avoids rewriting every command async.
  */
 function httpSync(root, method, endpoint, body) {
-  const c = config();
+  const c = config(root);
   if (!c.url) throw new Error("board service not configured: set BACKLOG_API_URL");
   if (!c.token) throw new Error("board service token missing: set BACKLOG_API_TOKEN");
 
