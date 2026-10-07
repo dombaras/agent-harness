@@ -66,4 +66,4 @@ jobs:
           printf 'DATABASE_URL="%s"\nBOARD_TOKENS="%s"\n' "$DATABASE_URL" "$BOARD_TOKENS" > .env.test
           npm test
       - name: Board gates in service mode
-        run: node services/board/scripts/ci-gates.sh
+        run: bash services/board/scripts/ci-gates.sh
