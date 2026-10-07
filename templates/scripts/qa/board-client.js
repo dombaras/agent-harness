@@ -71,12 +71,20 @@ function config(root) {
  * board block) must never redirect that write to the shared board — the F-333
  * leak, where file-backend QA tests passing `--root <tmp>` added fixture rows to
  * the live service because the ambient config re-enabled it.
+ *
+ * Auto mode requires the root's OWN `.harness.json` `board.url` — i.e. the
+ * project itself declares a board. Ambient environment alone (the
+ * `board-service.sh` shell hook exports `BACKLOG_API_URL`/`TOKEN`/`PROJECT`
+ * globally) must NOT auto-select the service, or any file-backend run under a
+ * board-configured shell (e.g. `npm test` in the harness) writes its local
+ * fixtures into the live shared board — the F-339 fixture-row leak. An
+ * env-only setup opts in explicitly with `BACKLOG_BACKEND=service`.
  */
 function enabled(root, opts) {
   if (opts && opts.forceFile) return false;
   if (process.env.BACKLOG_BACKEND === "file") return false;
   if (process.env.BACKLOG_BACKEND === "service") return true;
-  // Auto: use the service only when it is configured (URL + token present).
+  if (!projectBoardConfig(root).url) return false;
   const c = config(root);
   return Boolean(c.url && c.token);
 }

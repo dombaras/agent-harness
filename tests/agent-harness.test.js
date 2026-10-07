@@ -6,6 +6,18 @@ const os = require("os");
 const path = require("path");
 const { execFileSync, spawn, spawnSync } = require("child_process");
 
+/* Hermetic board backend (F-339). The `board-service.sh install` shell hook
+ * sources `~/.config/agent-harness/board.env`, which exports BACKLOG_API_URL /
+ * BACKLOG_API_TOKEN / BACKLOG_PROJECT into EVERY shell. Tests spawn the real
+ * `scripts/backlog.js` to exercise the file backend, and inherited env would
+ * auto-select the live service — dumping fixture rows into the shared board.
+ * Sanitize once here; service-specific tests opt back in explicitly via
+ * `runBacklogCliEnv`. */
+process.env.BACKLOG_BACKEND = "file";
+delete process.env.BACKLOG_API_URL;
+delete process.env.BACKLOG_API_TOKEN;
+delete process.env.BACKLOG_PROJECT;
+
 const h = require("../bin/agent-harness.js");
 
 function tmpdir() {
@@ -1301,6 +1313,44 @@ test("backlog CLI --root forces the file backend over a configured service (F-33
   } finally {
     child.kill("SIGKILL");
   }
+});
+
+test("backlog CLI auto NEVER selects the service from ambient env alone (F-339 fixture-row leak)", async () => {
+  const t = scaffoldBacklogCliTarget();
+  copyBoardLib(t);
+  const { child, port } = await startMockBoardService();
+  // The exact `board-service.sh` shell-hook shape: URL/token/project exported,
+  // NO BACKLOG_BACKEND, and a target with a local BACKLOG.md but no board block
+  // of its own. Auto mode must keep this run on the file backend — otherwise
+  // every `npm test` under a board-configured shell scribbles fixture rows into
+  // the live shared board (F-339: F-339..F-453 in LibraryOS).
+  const env = {
+    BACKLOG_BACKEND: "",
+    BACKLOG_API_URL: `http://127.0.0.1:${port}`,
+    BACKLOG_API_TOKEN: "test-token",
+    BACKLOG_PROJECT: "TESTPROJ",
+  };
+  try {
+    const res = runBacklogCliEnv(t, ["add", "leak probe", "--p", "P2"], env);
+    assert.strictEqual(res.status, 0, res.out);
+    assert.match(res.out, /added F-001 \[P2\] leak probe/);
+    assert.match(read(path.join(t, "BACKLOG.md")), /leak probe/, "the local file board was written");
+
+    // Ask the mock service directly (explicit service backend): it must be empty.
+    const svc = JSON.parse(runBacklogCliEnv(t, ["list", "--all", "--json"], { ...env, BACKLOG_BACKEND: "service" }).out);
+    assert.equal(svc.open.length, 0, "ambient env alone must not leak a row to the live service");
+  } finally {
+    child.kill("SIGKILL");
+  }
+});
+
+test("[drift-guard] the harness test suite is hermetic against the board shell hook (F-339)", () => {
+  const src = read(path.join(__dirname, "agent-harness.test.js"));
+  assert.match(src, /process\.env\.BACKLOG_BACKEND = "file"/, "the suite forces the file backend");
+  assert.match(src, /delete process\.env\.BACKLOG_API_TOKEN/, "the suite drops the shell-hook token");
+  assert.match(src, /delete process\.env\.BACKLOG_PROJECT/, "the suite drops the shell-hook project");
+  const client = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-client.js"));
+  assert.match(client, /projectBoardConfig\(root\)\.url/, "auto mode requires the project's own board block");
 });
 
 test("backlog CLI resolves a service root from .harness.json when no BACKLOG.md exists [ADR 0001]", async () => {
@@ -9863,13 +9913,34 @@ test("mobile E2E job-events surface liveness, stall and abort", () => {
 test("[drift-guard] run-maestro streams Maestro output; run-detached can list/stop a job", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
   assert.doesNotMatch(src, /spawnSync\('maestro'/, "the runner must not buffer Maestro output with spawnSync");
-  assert.match(src, /spawn\('maestro'/, "the runner streams Maestro output with spawn");
+  assert.match(src, /spawn\(resolveMaestro\(\) \|\| 'maestro'/, "the runner streams Maestro output with spawn, using the resolved binary");
   assert.match(src, /invocation_heartbeat/, "the runner emits a liveness heartbeat");
   assert.match(src, /invocation_stalled/, "the runner flags a stalled invocation");
   const det = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-detached.sh"));
   assert.match(det, /--list/, "run-detached supports --list");
   assert.match(det, /--stop/, "run-detached supports --stop");
   assert.match(det, /matrix_aborted/, "run-detached writes matrix_aborted on stop");
+});
+
+test("[drift-guard] run-maestro resolves Maestro from ~/.maestro/bin, not PATH alone (F-331)", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
+  assert.doesNotMatch(src, /maestroOnPath/, "the PATH-only check was replaced by resolveMaestro");
+  assert.match(src, /function resolveMaestro\(\)/, "run-maestro defines resolveMaestro");
+  assert.match(src, /['"]\.maestro['"],\s*['"]bin['"]/, "resolveMaestro looks in ~/.maestro/bin (a headless PATH omits it)");
+  assert.match(src, /MOBILE_E2E_MAESTRO/, "resolveMaestro honours an explicit override");
+  const runner = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
+  assert.strictEqual(typeof runner.resolveMaestro, "function", "resolveMaestro is exported for the device tier");
+  const fake = path.join(tmpdir(), "maestro");
+  fs.writeFileSync(fake, "");
+  const prior = process.env.MOBILE_E2E_MAESTRO;
+  process.env.MOBILE_E2E_MAESTRO = fake;
+  try {
+    assert.strictEqual(runner.resolveMaestro(), fake, "an explicit MOBILE_E2E_MAESTRO wins");
+  } finally {
+    if (prior === undefined) delete process.env.MOBILE_E2E_MAESTRO;
+    else process.env.MOBILE_E2E_MAESTRO = prior;
+    fs.unlinkSync(fake);
+  }
 });
 
 test("mobile E2E timing analyzer surfaces dead optional waits", () => {

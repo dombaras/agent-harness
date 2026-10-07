@@ -67,6 +67,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawnSync, spawn } = require('node:child_process');
 const jobEvents = require('./job-events.js');
 
@@ -433,10 +434,23 @@ function runDeclaredSteps(steps, phase) {
   });
 }
 
-function maestroOnPath() {
+/**
+ * Resolve the Maestro CLI: an explicit `MOBILE_E2E_MAESTRO` override, then the
+ * conventional per-user install (`~/.maestro/bin`), then PATH. A headless
+ * invocation (the nightly systemd timer, CI) has a minimal PATH that excludes
+ * `~/.maestro/bin`, so PATH alone is not enough — mirroring `resolveAdb()`
+ * below, which resolves the SDK from a fixed location for the same reason.
+ * Returns the runnable path, or null when Maestro is genuinely absent.
+ */
+function resolveMaestro() {
+  const override = process.env.MOBILE_E2E_MAESTRO;
+  if (override && fs.existsSync(override)) return override;
+  const exe = process.platform === 'win32' ? 'maestro.bat' : 'maestro';
+  const installed = path.join(os.homedir(), '.maestro', 'bin', exe);
+  if (fs.existsSync(installed)) return installed;
   const probe = process.platform === 'win32' ? 'where' : 'which';
   const result = spawnSync(probe, ['maestro'], { stdio: 'ignore', shell: false });
-  return result.status === 0;
+  return result.status === 0 ? 'maestro' : null;
 }
 
 /** Resolve the project's adb: `ANDROID_HOME`/`ANDROID_SDK_ROOT`, else PATH. */
@@ -816,7 +830,7 @@ function runMaestroFlows(files, options, session, onChunk) {
     };
     let child;
     try {
-      child = spawn('maestro', args, { shell: false });
+      child = spawn(resolveMaestro() || 'maestro', args, { shell: false });
     } catch (err) {
       const text = `\nmaestro failed to start: ${err && err.message ? err.message : err}\n`;
       stderr.push(text);
@@ -1072,10 +1086,10 @@ async function main() {
   printSequence(options);
   printDeclaredSteps(resolveDeclaredSteps(flowFiles, stepsByFlow));
 
-  if (!maestroOnPath()) {
-    console.error('FAIL — Maestro CLI is not on PATH.');
+  if (!resolveMaestro()) {
+    console.error('FAIL — Maestro CLI is not on PATH and not at ~/.maestro/bin/maestro.');
     console.error('  Install it with:  curl -Ls "https://get.maestro.mobile.dev" | bash');
-    console.error('  (requires JDK 17+). Then re-run this command.');
+    console.error('  (requires JDK 17+), or point MOBILE_E2E_MAESTRO at the binary. Then re-run this command.');
     process.exit(1);
   }
 
@@ -1307,6 +1321,7 @@ if (require.main === module) {
 
 module.exports = {
   parseArgs,
+  resolveMaestro,
   runMaestroFlows,
   resolveFlowFiles,
   resolveFailedReport,
