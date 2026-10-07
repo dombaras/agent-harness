@@ -75,6 +75,32 @@ function cmpVer(a: string, b: string): number {
   return 0
 }
 
+/* A real Node interpreter to run the harness CLI. opencode is a Bun-compiled
+ * standalone binary, so within a plugin `process.execPath` is the opencode
+ * executable, NOT Node — spawning it with the CLI path just re-launches opencode
+ * (prints its help, exits 1), which made every main-checkout refresh "fail" and
+ * block the session. Mirrors `templates/scripts/qa/tool-lib.js` `nodeBin()`: an
+ * OPENCODE_NODE override, then Bun's PATH resolver (skipping WSL /mnt entries so
+ * a native node beats the interop Windows node.exe), then a bare "node". */
+function nodeBin(): string {
+  const override = process.env.OPENCODE_NODE
+  if (override) return override
+  const bun = (globalThis as any).Bun
+  if (bun && typeof bun.which === "function") {
+    const pathEnv = String(process.env.PATH || "")
+    const native =
+      process.platform === "linux"
+        ? pathEnv
+            .split(":")
+            .filter((p) => p && !p.startsWith("/mnt/"))
+            .join(":")
+        : pathEnv
+    const found = bun.which("node", native ? { PATH: native } : {}) || bun.which("node")
+    if (found) return found
+  }
+  return "node"
+}
+
 export const HarnessFreshness: Plugin = async ({ directory, client }) => {
   const notices = new Map<string, string>()
   const checked = new Set<string>()
@@ -210,7 +236,7 @@ export const HarnessFreshness: Plugin = async ({ directory, client }) => {
     writeStatus(tree, { ...base, status: "updating" })
     await report(`updating main checkout ${tree}: ${have} -> ${latest}`)
     try {
-      const child = spawn(process.execPath, [CLI, "update", "--target", tree], {
+      const child = spawn(nodeBin(), [CLI, "update", "--target", tree], {
         cwd: tree,
         stdio: ["ignore", "pipe", "pipe"],
       })

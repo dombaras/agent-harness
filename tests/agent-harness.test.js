@@ -6815,6 +6815,20 @@ test("[drift-guard] install-global is wired into the CLI and the package ships c
   assert.match(bin, /install-global \[--dry-run\]/, "install-global is documented in usage");
 });
 
+test("[drift-guard] harness-freshness spawns a real Node, never process.execPath", () => {
+  const src = read(path.join(h.GLOBAL_PLUGINS_SRC, "harness-freshness.ts"));
+  // opencode is a Bun-compiled binary, so `process.execPath` is opencode itself;
+  // spawning it with the CLI path re-runs opencode and the refresh always fails.
+  assert.doesNotMatch(
+    src,
+    /spawn\(\s*process\.execPath/,
+    "must not spawn process.execPath (the opencode binary under Bun)"
+  );
+  assert.match(src, /function nodeBin\(/, "resolves a real Node interpreter");
+  assert.match(src, /OPENCODE_NODE/, "honors the OPENCODE_NODE override");
+  assert.match(src, /spawn\(nodeBin\(\), \[CLI, "update", "--target", tree\]/, "runs the update with nodeBin()");
+});
+
 // ---------------------------------------------------------------- tool-lib + lease-lib
 
 test("tool-lib is the single source for node resolution and the mid-session worktree reroot", () => {
