@@ -1275,6 +1275,34 @@ test("backlog CLI auto-uses the file backend when no service is configured", () 
   assert.match(read(path.join(t, "BACKLOG.md")), /file task/, "the file board was written");
 });
 
+test("backlog CLI --root forces the file backend over a configured service (F-333 class fix)", async () => {
+  const t = scaffoldBacklogCliTarget();
+  copyBoardLib(t);
+  const { child, port } = await startMockBoardService();
+  // Ambient config would select the service; an explicit --root must override it.
+  const env = {
+    BACKLOG_BACKEND: "service",
+    BACKLOG_API_URL: `http://127.0.0.1:${port}`,
+    BACKLOG_API_TOKEN: "test-token",
+    BACKLOG_PROJECT: "TESTPROJ",
+  };
+  try {
+    const root = tmpdir();
+    fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(root, "BACKLOG.md"));
+
+    const res = runBacklogCliEnv(t, ["add", "root task", "--p", "P2", "--root", root], env);
+    assert.strictEqual(res.status, 0, res.out);
+    assert.match(res.out, /added F-001 \[P2\] root task/);
+    assert.match(read(path.join(root, "BACKLOG.md")), /root task/, "the --root file board was written");
+
+    // The service backend must not have been touched: no row leaked to it.
+    const svc = JSON.parse(runBacklogCliEnv(t, ["list", "--all", "--json"], env).out);
+    assert.equal(svc.open.length, 0, "no row leaked to the service board");
+  } finally {
+    child.kill("SIGKILL");
+  }
+});
+
 test("backlog CLI resolves a service root from .harness.json when no BACKLOG.md exists [ADR 0001]", async () => {
   const t = scaffoldBacklogCliTarget();
   copyBoardLib(t);

@@ -62,8 +62,18 @@ function config(root) {
   return { url, token, project };
 }
 
-/** True when the CLI should use the service backend. */
-function enabled(root) {
+/**
+ * True when the CLI should use the service backend.
+ *
+ * `opts.forceFile` pins the legacy file backend unconditionally. An explicit
+ * `--root <dir>` names a local checkout, so an ambient service config
+ * (`BACKLOG_BACKEND=service`, `BACKLOG_API_URL`/`TOKEN`, or a `.harness.json`
+ * board block) must never redirect that write to the shared board — the F-333
+ * leak, where file-backend QA tests passing `--root <tmp>` added fixture rows to
+ * the live service because the ambient config re-enabled it.
+ */
+function enabled(root, opts) {
+  if (opts && opts.forceFile) return false;
   if (process.env.BACKLOG_BACKEND === "file") return false;
   if (process.env.BACKLOG_BACKEND === "service") return true;
   // Auto: use the service only when it is configured (URL + token present).

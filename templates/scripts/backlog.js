@@ -1677,7 +1677,8 @@ function main() {
   }
   const args = parseArgs(raw.slice(1));
 
-  const root = args.root ? path.resolve(args.root) : findRoot(process.cwd());
+  const explicitRoot = Boolean(args.root);
+  const root = explicitRoot ? path.resolve(args.root) : findRoot(process.cwd());
   if (!root) {
     console.error("backlog: BACKLOG.md not found (repo root).");
     process.exitCode = 1;
@@ -1686,8 +1687,10 @@ function main() {
 
   // Service backend (ADR 0001): the board lives in the external service, so
   // every read/write goes over HTTP. Git-side effects (worktree add/remove) stay
-  // local. `BACKLOG_BACKEND=file` forces the legacy path.
-  if (boardClient.enabled(root) && cmd !== "worktree-prune" && cmd !== "sync") {
+  // local. `BACKLOG_BACKEND=file` forces the legacy path. An explicit `--root`
+  // names a local checkout, so it too forces the file backend and can never be
+  // redirected to the shared service by ambient config (F-333/F-338).
+  if (boardClient.enabled(root, { forceFile: explicitRoot }) && cmd !== "worktree-prune" && cmd !== "sync") {
     try {
       return runService(root, cmd, args);
     } catch (e) {
