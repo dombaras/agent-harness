@@ -1366,6 +1366,23 @@ test("board gates run in service mode against the board service (ADR 0001)", asy
   }
 });
 
+/* H-37 remainder: the board service ships in this repo, so the harness CI owns
+ * the "boot the service + run the shipped gates in service mode" job. Guard it
+ * against silent removal. */
+test("[drift-guard] the harness CI ships the board-service job + its smoke script (H-37)", () => {
+  const root = path.resolve(h.TEMPLATES_DIR, "..");
+  const wf = read(path.join(root, ".github", "workflows", "ci.yml"));
+  assert.match(wf, /^  board-service:/m, "the harness CI defines the board-service job");
+  assert.match(wf, /vars\.CI_BOARD_SERVICE == 'true'/, "the job is enabled by CI_BOARD_SERVICE");
+  assert.match(wf, /services\/board\/scripts\/ci-gates\.sh/, "the job runs the smoke script");
+
+  const script = read(path.join(root, "services", "board", "scripts", "ci-gates.sh"));
+  assert.match(script, /check-backlog\.js/, "the smoke script runs the backlog gate");
+  assert.match(script, /check-concurrency\.js/, "the smoke script runs the concurrency gate");
+  assert.match(script, /ci-board\.md/, "the smoke script seeds a fixture board");
+  assert.ok(exists(path.join(root, "services", "board", "scripts", "ci-board.md")), "the CI fixture board ships");
+});
+
 test("backlog list is bounded by default and --limit controls the cap", () => {
   const t = scaffoldBacklogCliTarget();
   const p = path.join(t, "BACKLOG.md");

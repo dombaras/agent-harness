@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [18, 20, 22]
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,3 +18,49 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm run lint
       - run: npm test
+
+  # ADR 0001: the board service (services/board) lives in this repo, so its CI
+  # can prove the service + shipped board gates end to end — boot it against a
+  # throwaway Postgres, seed a fixture board, and run the gates in service mode.
+  # This is the "Service-configured CI job" from H-37; enable/disable it with the
+  # repository variable CI_BOARD_SERVICE=true.
+  board-service:
+    name: Board service gates
+    if: ${{ vars.CI_BOARD_SERVICE == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agent_board
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/agent_board?schema=public
+      BOARD_TOKENS: ci-board-token:ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/board/package-lock.json
+      - name: Install board service
+        working-directory: services/board
+        run: npm ci
+      - name: Service unit + integration tests
+        working-directory: services/board
+        run: |
+          npx prisma generate
+          npx prisma db push
+          npm test
+      - name: Board gates in service mode
+        run: node services/board/scripts/ci-gates.sh
