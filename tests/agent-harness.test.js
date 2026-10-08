@@ -7917,6 +7917,12 @@ test("[drift-guard] board-sync replay is a guarded reset --hard with a hermetic 
   assert.match(bsSrc, /const REPO_SCOPING_GIT_VARS = \[/, "repo-scoping GIT_* vars are enumerated");
   assert.match(bsSrc, /function hermeticGitEnv\(\)/, "a hermetic git env is built");
   assert.match(bsSrc, /env: hermeticGitEnv\(\)/, "gitCmd runs with the hermetic env");
+  // F-332/F-340: replay is a NO-OP when HEAD already descends from upstream and
+  // its board already equals the reconciled board. Without the short-circuit,
+  // reset+recommit mints a fresh churn commit (identical tree, new committer
+  // timestamp) on every mutation/sync.
+  assert.match(bsSrc, /const upstreamSha = gitOut\(root, \["rev-parse", upstream\]\)/, "replay computes the upstream sha for the idempotency check");
+  assert.match(bsSrc, /return \{ ok: true, changed: false \}/, "replay short-circuits when the board is already replayed");
 });
 
 test("ship reconciles a dirty main board and fast-forwards after landing", () => {
@@ -8053,6 +8059,15 @@ test("board-sync rebases an unpublished local harness commit onto upstream and s
   assert.match(log, /chore\(harness\): deploy/, "the local commit is replayed, not dropped");
   assert.match(log, /feat: landing/, "the upstream landing is preserved");
   assert.doesNotMatch(log, /rebase in progress/i, "no rebase is left in progress");
+
+  // Idempotency (F-332/F-340): once HEAD descends from upstream with the board
+  // already reconciled, a second converge must be a true no-op — no churn commit
+  // with a fresh committer timestamp.
+  const headBefore = execFileSync("git", ["-C", target, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const again = bs.convergeCanonical(target, "origin/main");
+  assert.strictEqual(again.ok, true, JSON.stringify(again.notes));
+  const headAfter = execFileSync("git", ["-C", target, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  assert.strictEqual(headAfter, headBefore, "a second converge is a no-op (no churn commit)");
 });
 
 test("[drift-guard] ship runs the process gates itself; CI is the post-land gate", () => {
@@ -9103,6 +9118,11 @@ test("capacity: the capped APK build wrapper is deployed and routes Gradle throu
   assert.match(buildSh, /--mem-max/, "the APK build is capped");
   assert.match(buildSh, /PreactNativeArchitectures=\$\{ABIS\}/, "one ABI, not all four");
   assert.match(buildSh, /--no-daemon .*--max-workers=1/, "Gradle is right-sized");
+  // F-331: the nightly timer's stripped systemd env has no ANDROID_HOME, so the
+  // wrapper resolves the conventional SDK itself (mirroring device-up.sh) and
+  // exports it for Gradle — no project-side env shim needed.
+  assert.match(buildSh, /ANDROID_HOME:-\$\{ANDROID_SDK_ROOT:-\$HOME\/android-sdk\}/, "build-apk resolves the Android SDK like device-up");
+  assert.match(buildSh, /export ANDROID_HOME="\$SDK"/, "build-apk exports ANDROID_HOME for Gradle");
   // F-296: a cold release D8 needs ~4-6 GB; 1 GB OOM'd and a 3 GB cap killed the
   // emulator. The managed block is REFRESHED (not append-once) so a prebuild or a
   // hand-edit cannot silently leave a stale heap.

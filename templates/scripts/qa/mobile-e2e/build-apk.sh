@@ -31,6 +31,13 @@
 # accelerator: any miss or doubt falls through to a real build, and the overlay
 # never touches resources.arsc.
 #
+# Android SDK: resolved from the conventional locations and exported for Gradle
+# (`ANDROID_HOME` / `ANDROID_SDK_ROOT`, then `~/android-sdk`), mirroring
+# `device-up.sh`. A headless run (the nightly systemd timer, CI) has a stripped
+# env with no `ANDROID_HOME`, so the Gradle Android plugin aborts
+# "SDK location not found" before it configures — this wrapper is self-contained,
+# so no project needs an env shim.
+#
 # Project config: `scripts/qa/mobile-e2e/local.json` (`appId`, `avd`); the paths
 # below follow the conventional Expo/React-Native layout. Tunables (env):
 #   MOBILE_E2E_APK           output APK path (default: conventional Gradle path)
@@ -71,9 +78,19 @@ done
 command -v node >/dev/null 2>&1 || { echo "FAIL: node is not on PATH" >&2; exit 1; }
 [ -d "$MOBILE_DIR" ] || { echo "FAIL: no mobile/ project at $MOBILE_DIR" >&2; exit 1; }
 
+# Resolve the Android SDK and export it for Gradle. A headless invocation (the
+# nightly systemd timer, CI) runs with a stripped env that has no ANDROID_HOME,
+# so the Gradle Android plugin aborts "SDK location not found" before it even
+# configures. Mirror device-up.sh's default so this wrapper is self-contained —
+# no project-side shim is needed (F-331).
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/android-sdk}}"
+export ANDROID_HOME="$SDK"
+export ANDROID_SDK_ROOT="$SDK"
+
 echo "Mobile E2E release APK build (capped: mem≤${MEM_MAX}, cpu≤${CPU_MAX}, abi=${ABIS})"
 echo "  repo:    ${ROOT}"
 echo "  api url: ${API_URL}"
+echo "  sdk:     ${SDK}"
 echo ""
 
 # The bundle key bakes the API URL, so the cache and the build must agree on it.

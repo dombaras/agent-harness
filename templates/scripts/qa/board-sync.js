@@ -211,7 +211,11 @@ function aheadOnlyHarness(root, upstream) {
  * stale, turning every landed upstream non-board commit into a permanent staged
  * reverse-diff that corrupted the canonical checkout. Genuine uncommitted
  * non-board changes fail the replay closed (never silently discarded). Returns
- * `{ ok, changed, blockedBy }`. */
+ * `{ ok, changed, blockedBy }`. Idempotent: when HEAD already descends from
+ * `upstream` and its board already equals the reconciled board, the local board
+ * commits are already replayed, so the reset+recommit is skipped (otherwise it
+ * would mint a fresh SHA — same tree, new committer timestamp — on every call,
+ * churning a new board commit per mutation). */
 function replayBoardOnly(root, upstream) {
   const ours = readWorkingBoard(root);
   const mb = gitCmd(root, ["merge-base", upstream, "HEAD"]);
@@ -229,6 +233,17 @@ function replayBoardOnly(root, upstream) {
     .map((e) => e.path)
     .filter((p) => p !== "BACKLOG.md");
   if (blockedBy.length) return { ok: false, conflicts: [], blockedBy };
+
+  // Idempotency short-circuit: if HEAD already descends from `upstream` and its
+  // board already equals the reconciled board, the local board-only commits are
+  // already replayed. Reset+recommit would only mint a fresh SHA (identical tree,
+  // new committer timestamp) on every call, so `backlog.js sync`/every mutation
+  // would churn a new board commit. Nothing to do — leave HEAD untouched.
+  const upstreamSha = gitOut(root, ["rev-parse", upstream]);
+  const mergeBase = gitOut(root, ["merge-base", upstream, "HEAD"]);
+  if (upstreamSha && mergeBase === upstreamSha && gitShow(root, "HEAD:BACKLOG.md") === rec.board) {
+    return { ok: true, changed: false };
+  }
 
   const reset = gitCmd(root, ["reset", "--hard", upstream]);
   if (reset.status !== 0) return { ok: false, conflicts: [], blockedBy: [] };
