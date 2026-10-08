@@ -408,6 +408,12 @@ carries a performance layer; coverage and assertions are unchanged:
    which flakes on a bottom-edge element (the `book-detail`
    `book-remove-arm` false negative: the node *was* on screen). The flows set
    `visibilityPercentage: 50` so a partially-scrolled target is accepted.
+   When a target's position varies with content height (the same
+   `book-remove-arm` is sometimes already on-screen and sometimes below the
+   fold), guard the scroll with `runFlow: when: notVisible:` so the swipe runs
+   only when the target is genuinely off-screen — a no-op swipe on an
+   already-visible bottom-edge row can graze the tab bar and flake the step
+   (F-313).
 
 Project-specific defaults (app id, default actor/AVD, the dev-server and
 optional backend-build commands) live in `scripts/qa/mobile-e2e/local.json` —
