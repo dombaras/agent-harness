@@ -25,6 +25,7 @@
 # the same version, and a running dev server are all REUSED (never restarted).
 #
 # Project config (never hardcoded here) — `scripts/qa/mobile-e2e/local.json`:
+#   platform         android|ios               (default android; env MOBILE_E2E_PLATFORM wins)
 #   avd              AVD name                    (boot-emulator.sh reads it)
 #   appId            Android package id          (install / version check)
 #   apk              path to the APK            (default: conventional Gradle path)
@@ -93,6 +94,12 @@ BUILD_CACHE_JS="$ROOT/scripts/qa/mobile-e2e/backend-build-cache.js"
 # Conventional Expo/RN release output when local.json declares no `apk`.
 [ -z "$APK" ] && APK="$ROOT/mobile/android/app/build/outputs/apk/release/app-release.apk"
 
+# Platform selection: env MOBILE_E2E_PLATFORM > local.json `platform` > android.
+# android = the full APK/adb/emulator tier; ios = `ios-simulator-up.sh` + the dev
+# server only (no Gradle, no adb, no APK install — those are Android-only).
+PLATFORM="${MOBILE_E2E_PLATFORM:-$(cfg platform)}"
+case "$PLATFORM" in ios|iOS|IOS) PLATFORM=ios ;; *) PLATFORM=android ;; esac
+
 mkdir -p "$SERVE_DIR"
 now_ms() { date +%s%3N; }
 T_START="$(now_ms)"
@@ -101,7 +108,7 @@ T_BOOT="$T_START"
 T_INSTALL="$T_START"
 T_DEV="$T_START"
 
-echo "device-up: app=${APP_ID:-?} apk=${APK:-<auto>} dev=${DEV_URL} group=${TIER_GROUP}"
+echo "device-up: platform=$PLATFORM app=${APP_ID:-?} apk=${APK:-<auto>} dev=${DEV_URL} group=${TIER_GROUP}"
 
 # 1. Build the APK FIRST, as a capped one-shot, BEFORE the emulator exists. The
 #    build is a heavy one-shot (Gradle daemon + Kotlin daemon + R8/D8) and the
@@ -115,7 +122,7 @@ echo "device-up: app=${APP_ID:-?} apk=${APK:-<auto>} dev=${DEV_URL} group=${TIER
 #    JS bundle onto the cached native base, else runs Gradle. It prints the APK
 #    path as `APK=…`, which we adopt (the cached/overlaid path differs from the
 #    conventional one).
-if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ] && [ "${MOBILE_E2E_SKIP_BUILD:-0}" != "1" ]; then
+if [ "$PLATFORM" != "ios" ] && [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ] && [ "${MOBILE_E2E_SKIP_BUILD:-0}" != "1" ]; then
   echo "[1/5] building the app (cached via apk-cache.js; override with MOBILE_E2E_SKIP_BUILD=1)"
   BUILD_LOG="$SERVE_DIR/device-up-build.log"
   if [ -x "$ROOT/scripts/qa/mobile-e2e/build-apk.sh" ]; then
@@ -129,6 +136,8 @@ if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ] && [ "${MOBILE_E2E_SKIP_BUILD:-0}"
   else
     echo "  (no build-apk.sh / build-dev-apk.sh; set MOBILE_E2E_SKIP_BUILD=1 if the APK is prebuilt)"
   fi
+elif [ "$PLATFORM" = "ios" ]; then
+  echo "[1/5] build skipped (platform=ios — the Android APK is not used)"
 else
   echo "[1/5] build skipped"
 fi
@@ -164,7 +173,11 @@ start_dev() {
   node scripts/serve.js start --cmd "$DEV_CMD" --url "$DEV_URL" --name "$DEV_NAME" --group "$TIER_GROUP" --mem-max "$DEV_MEM_MAX"
 }
 
-echo "[2/5] adb server + emulator (boot-emulator.sh)"
+if [ "$PLATFORM" = "ios" ]; then
+  echo "[2/5] iOS Simulator (boot-emulator.sh delegates to ios-simulator-up.sh on platform=ios)"
+else
+  echo "[2/5] adb server + emulator (boot-emulator.sh)"
+fi
 OVERLAP="${MOBILE_E2E_OVERLAP:-1}"
 DEV_PID=""
 if [ "$WITH_DEV" = "1" ] && [ "$OVERLAP" = "1" ]; then
@@ -173,7 +186,7 @@ if [ "$WITH_DEV" = "1" ] && [ "$OVERLAP" = "1" ]; then
   DEV_PID=$!
   if ! bash scripts/qa/mobile-e2e/boot-emulator.sh; then
     kill "$DEV_PID" 2>/dev/null || true
-    echo "FAIL — emulator bring-up failed; see boot-emulator.sh output and .serve/emulator.err.log" >&2
+    echo "FAIL — device bring-up failed; see boot-emulator.sh output and .serve/emulator.err.log" >&2
     exit 1
   fi
 else
@@ -181,13 +194,16 @@ else
 fi
 T_BOOT="$(now_ms)"
 
-if [ ! -x "$ADB" ]; then
+if [ "$PLATFORM" != "ios" ] && [ ! -x "$ADB" ]; then
   echo "FAIL — adb not found at $ADB (set ANDROID_HOME)." >&2
   exit 1
 fi
 
-# 3. Install the (now-built) APK onto the booted device.
-if [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ]; then
+# 3. Install the (now-built) APK onto the booted device. iOS installs the .app
+#    inside ios-simulator-up.sh, so there is nothing to do here.
+if [ "$PLATFORM" = "ios" ]; then
+  echo "[3/5] install skipped (platform=ios — the app is installed by ios-simulator-up.sh)"
+elif [ "${MOBILE_E2E_SKIP_INSTALL:-0}" != "1" ]; then
   if [ -n "$APP_ID" ] && [ -f "$APK" ]; then
     echo "[3/5] installing $APK"
     timeout 300 "$ADB" install -r "$APK"
@@ -213,16 +229,19 @@ elif [ -n "$DEV_PID" ]; then
 fi
 T_DEV="$(now_ms)"
 
-# 5. Bounded readiness of the whole tier.
+# 5. Bounded readiness of the whole tier. The Android boot gate is adb-only;
+#    iOS readiness is the simulator install (already done) plus the dev URL.
 echo "[5/5] readiness"
-timeout 30 "$ADB" wait-for-device
-boot=""
-for _ in $(seq 1 30); do
-  boot="$(timeout 10 "$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
-  [ "$boot" = "1" ] && break
-  sleep 2
-done
-[ "$boot" = "1" ] || { echo "FAIL — emulator did not finish booting." >&2; exit 1; }
+if [ "$PLATFORM" != "ios" ]; then
+  timeout 30 "$ADB" wait-for-device
+  boot=""
+  for _ in $(seq 1 30); do
+    boot="$(timeout 10 "$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+    [ "$boot" = "1" ] && break
+    sleep 2
+  done
+  [ "$boot" = "1" ] || { echo "FAIL — emulator did not finish booting." >&2; exit 1; }
+fi
 
 if [ "$WITH_DEV" = "1" ]; then
   node scripts/wait-for.js --health "$DEV_URL" --timeout 120 --quiet || {

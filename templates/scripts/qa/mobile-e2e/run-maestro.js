@@ -54,6 +54,8 @@
  *   --flows <a,b,...>   journey ids (flow basenames) or `all` (required to run)
  *   --api-url <url>     EXPO_PUBLIC_API_URL for the dev backend (default http://localhost:3000)
  *   --app-id <id>       app under test (default local.json `appId`, then com.example.app)
+ *   --platform <p>      target platform android (default) or ios
+ *   --udid <id>         iOS Simulator UDID (default MOBILE_E2E_IOS_UDID or a booted sim)
  *   --no-reset          skip the reset.js step (use the current dev DB state)
  *   --no-seed           run reset.js --no-seed (mint actor auth only; keep seeded data)
  *   --reuse-session     sign in once per actor and batch same-actor setup-free flows
@@ -105,6 +107,15 @@ function readLocalConfig() {
 const LOCAL_CONFIG = readLocalConfig();
 const DEFAULT_APP_ID = process.env.MOBILE_E2E_APP_ID || LOCAL_CONFIG.appId || 'com.example.app';
 const DEFAULT_ACTOR = process.env.MOBILE_E2E_DEFAULT_ACTOR || LOCAL_CONFIG.defaultActor || '';
+/**
+ * Target platform: env MOBILE_E2E_PLATFORM > local.json `platform` > android.
+ * `android` is the historical behavior (byte-identical); `ios` switches the
+ * preflight off adb and onto an iOS Simulator UDID passed to `maestro test`.
+ */
+const DEFAULT_PLATFORM =
+  String(process.env.MOBILE_E2E_PLATFORM || LOCAL_CONFIG.platform || 'android').toLowerCase() === 'ios'
+    ? 'ios'
+    : 'android';
 const SEED_STATE_FILE = 'mobile-e2e-seed.json';
 
 /**
@@ -212,6 +223,8 @@ function usage() {
     '  --flows <a,b,...>    journey ids (flow basenames) or `all` (required to run)',
     '  --api-url <url>      EXPO_PUBLIC_API_URL for the dev backend (default http://localhost:3000)',
     '  --app-id <id>        app under test (default com.libraryos.app; Expo Go = host.exp.exponent)',
+    '  --platform <p>       target platform: android (default) or ios',
+    '  --udid <id>          iOS Simulator UDID to target (default: MOBILE_E2E_IOS_UDID or a booted sim)',
     '  --no-reset           skip reset.js (use the current dev DB state)',
     '  --no-seed            run reset.js --no-seed (mint actor auth only)',
     '  --force-reset        always run the full seed (disable the automatic subset skip)',
@@ -244,12 +257,19 @@ function parseMaxSameReason(raw, fallback) {
   return Number.isNaN(parsed) || parsed < 0 ? fallback : parsed;
 }
 
+/** Coerce a `--platform` value to one of `android` / `ios` (default android). */
+function normalizePlatform(raw) {
+  return String(raw || '').trim().toLowerCase() === 'ios' ? 'ios' : 'android';
+}
+
 function parseArgs(argv) {
   const options = {
     help: false,
     flows: null,
     apiUrl: 'http://localhost:3000',
     appId: DEFAULT_APP_ID,
+    platform: DEFAULT_PLATFORM,
+    udid: null,
     noReset: false,
     noSeed: false,
     forceReset: false,
@@ -270,6 +290,10 @@ function parseArgs(argv) {
     else if (arg.startsWith('--api-url=')) options.apiUrl = arg.slice('--api-url='.length);
     else if (arg === '--app-id' && argv[i + 1]) options.appId = argv[++i];
     else if (arg.startsWith('--app-id=')) options.appId = arg.slice('--app-id='.length);
+    else if (arg === '--platform' && argv[i + 1]) options.platform = normalizePlatform(argv[++i]);
+    else if (arg.startsWith('--platform=')) options.platform = normalizePlatform(arg.slice('--platform='.length));
+    else if (arg === '--udid' && argv[i + 1]) options.udid = argv[++i];
+    else if (arg.startsWith('--udid=')) options.udid = arg.slice('--udid='.length);
     else if (arg === '--no-reset') options.noReset = true;
     else if (arg === '--no-seed') options.noSeed = true;
     else if (arg === '--force-reset') options.forceReset = true;
@@ -486,6 +510,48 @@ function preflightAdb() {
   console.error('  the equivalent is:');
   console.error(`    node scripts/serve.js start --cmd "${adb} -a nodaemon server" --name adb-server --port 5037 --timeout 30000`);
   process.exit(1);
+}
+
+/**
+ * Resolve the iOS Simulator UDID to hand to `maestro test --device`. Priority:
+ * an explicit `--udid`, then `MOBILE_E2E_IOS_UDID`, then a booted simulator
+ * discovered via `xcrun simctl list devices booted -j` and matched against
+ * local.json `ios.deviceName`. Fails loudly when nothing resolves — a run with
+ * no target device would otherwise fail later with a cryptic Maestro error.
+ */
+function resolveIosUdid(options = {}) {
+  const explicit = options.udid || process.env.MOBILE_E2E_IOS_UDID;
+  if (explicit) return String(explicit).trim();
+  const deviceName =
+    process.env.MOBILE_E2E_IOS_DEVICE_NAME || (LOCAL_CONFIG.ios && LOCAL_CONFIG.ios.deviceName) || '';
+  const probe = spawnSync('xcrun', ['simctl', 'list', 'devices', 'booted', '-j'], {
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  if (probe.error || probe.status !== 0) {
+    console.error('FAIL — could not list booted iOS simulators (is this a macOS host with Xcode?).');
+    console.error('  Bring one up first: node scripts/qa/mobile-e2e/ios-simulator-up.sh');
+    process.exit(1);
+  }
+  let list;
+  try {
+    list = JSON.parse(probe.stdout || '{}');
+  } catch {
+    list = {};
+  }
+  const all = [];
+  for (const devices of Object.values(list.devices || {})) {
+    for (const device of devices) all.push(device);
+  }
+  const match = deviceName ? all.find((d) => d.name === deviceName) : null;
+  const udid = (match || all[0] || {}).udid;
+  if (!udid) {
+    console.error('FAIL — no booted iOS Simulator found.');
+    console.error('  Bring one up first: node scripts/qa/mobile-e2e/ios-simulator-up.sh');
+    console.error('  Or pass --udid <id> / set MOBILE_E2E_IOS_UDID.');
+    process.exit(1);
+  }
+  return String(udid);
 }
 
 /** Strip ANSI SGR escape sequences so a captured reason is stable text. */
@@ -808,6 +874,9 @@ function runMaestroFlows(files, options, session, onChunk) {
     args.push('--config', options.config);
   }
   if (!options.reinstallDriver) args.push('--no-reinstall-driver');
+  // iOS: every invocation targets the resolved Simulator explicitly. Android
+  // leaves `udid` null, so its command line is byte-identical to before.
+  if (options.udid) args.push('--device', options.udid);
   args.push('-e', `APP_ID=${options.appId}`);
   args.push('-e', `MOBILE_E2E_SWITCH=${session.switchUser ? '1' : '0'}`);
   args.push('-e', `MOBILE_E2E_PHONE=${session.actor}`);
@@ -865,10 +934,15 @@ function reportFailFast(signature, flowNames, skipped) {
 function printSequence(options) {
   console.log('Mobile E2E (Maestro) — device run');
   console.log(`appId: ${options.appId}`);
+  if (options.platform === 'ios') console.log('platform: ios (Simulator)');
   if (options.reuseSession) console.log('mode: reuse-session (one sign-in per actor, batched)');
   console.log('');
   console.log('Documented sequence:');
-  console.log('  1. node scripts/qa/mobile-e2e/boot-emulator.sh');
+  console.log(
+    options.platform === 'ios'
+      ? '  1. node scripts/qa/mobile-e2e/ios-simulator-up.sh'
+      : '  1. node scripts/qa/mobile-e2e/boot-emulator.sh'
+  );
   console.log('  2. node scripts/serve.js start --cmd "npm run dev" --url http://localhost:3000');
   console.log(
     options.noReset
@@ -1093,7 +1167,14 @@ async function main() {
     process.exit(1);
   }
 
-  preflightAdb();
+  if (options.platform === 'ios') {
+    // iOS Simulator: resolve the UDID and target `maestro test --device`. adb
+    // is Android-only, so the adb preflight is skipped entirely.
+    options.udid = resolveIosUdid(options);
+    console.log(`target: ios simulator ${options.udid}`);
+  } else {
+    preflightAdb();
+  }
 
   // A subset selection (--failed, or an explicit list rather than `all`) may skip
   // the full seed when the seed fingerprint is unchanged; a full matrix run
@@ -1322,6 +1403,8 @@ if (require.main === module) {
 module.exports = {
   parseArgs,
   resolveMaestro,
+  resolveIosUdid,
+  normalizePlatform,
   runMaestroFlows,
   resolveFlowFiles,
   resolveFailedReport,

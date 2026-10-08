@@ -9867,6 +9867,59 @@ test("[drift-guard] device tier is right-sized, group-budgeted, and notifyable",
   assert.match(plugin, /readEvents/, "job-notify tails the progress stream");
 });
 
+test("[drift-guard] mobile E2E ships a platform.ios sibling (simulator bring-up + iOS runner)", () => {
+  const meDir = path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e");
+
+  // (a) config.yaml disables animations on BOTH platforms.
+  const config = read(path.join(meDir, "config.yaml"));
+  assert.match(config, /platform:/, "config.yaml declares the platform map");
+  assert.match(config, /android:/, "the existing Android entry is kept");
+  assert.match(config, /ios:/, "config.yaml declares a platform.ios sibling");
+  assert.match(config, /disableAnimations:\s*true/, "animations are disabled for the run");
+  const iosBlock = config.split(/^\s*ios:\s*$/m)[1] || "";
+  assert.match(iosBlock, /disableAnimations:\s*true/, "the ios entry disables animations too");
+
+  // (b) the two harness-owned iOS bring-up/teardown scripts ship.
+  assert.ok(exists(path.join(meDir, "ios-simulator-up.sh")), "ios-simulator-up.sh must ship");
+  assert.ok(exists(path.join(meDir, "ios-simulator-down.sh")), "ios-simulator-down.sh must ship");
+  const up = read(path.join(meDir, "ios-simulator-up.sh"));
+  assert.match(up, /xcrun simctl/, "the up script drives xcrun simctl");
+  assert.match(up, /MOBILE_E2E_IOS_UDID/, "and reads/exports the UDID override");
+  assert.match(up, /MOBILE_E2E_IOS_BUNDLE_ID/, "and the bundle-id override");
+  assert.match(up, /GITHUB_ENV/, "and exports the ids to CI");
+  assert.ok(!/com\.libraryos\.app|LibraryOS iPhone/.test(up), "no LibraryOS-specific defaults leak upstream");
+  assert.match(up, /com\.example\.app/, "the generic bundle-id default is used when unset");
+
+  // (c) boot-emulator.sh delegates on platform=ios.
+  const boot = read(path.join(meDir, "boot-emulator.sh"));
+  assert.match(boot, /MOBILE_E2E_PLATFORM/, "boot-emulator.sh reads the platform env");
+  assert.match(boot, /platform=ios/, "and names the ios platform");
+  assert.match(boot, /delegat/, "and announces the delegation");
+  assert.match(boot, /ios-simulator-up\.sh/, "delegating to the iOS bring-up script");
+
+  // (d) run-maestro.js exposes --platform / --udid and passes --device.
+  const runner = read(path.join(meDir, "run-maestro.js"));
+  assert.match(runner, /--platform/, "run-maestro.js accepts --platform");
+  assert.match(runner, /--udid/, "and --udid");
+  assert.match(runner, /'--device'/, "and passes --device to maestro test");
+  assert.match(runner, /resolveIosUdid/, "and resolves the booted simulator UDID");
+  assert.match(runner, /preflightAdb\(\);/, "the android path still preflights adb");
+
+  // (e) device-up.sh branches on platform=ios and skips the Android-only steps.
+  const upDev = read(path.join(meDir, "device-up.sh"));
+  assert.match(upDev, /PLATFORM="\$\{MOBILE_E2E_PLATFORM/, "device-up.sh resolves the platform");
+  assert.match(upDev, /platform=ios/, "and names the ios branch");
+  assert.match(upDev, /ios-simulator-up\.sh/, "and points at the iOS bring-up");
+  assert.match(upDev, /device-up:timings/, "and still emits the timings contract");
+  assert.match(upDev, /device-up: OK/, "and the OK contract");
+
+  // (f) teardown is platform-aware too.
+  const downSh = read(path.join(meDir, "device-down.sh"));
+  assert.match(downSh, /ios-simulator-down\.sh/, "device-down.sh delegates the iOS teardown");
+  const det = read(path.join(meDir, "run-detached.sh"));
+  assert.match(det, /"simctl", "terminate"/, "run-detached --stop terminates the iOS app");
+});
+
 test("mobile E2E job-events reduce the progress stream for the notifier", () => {
   const j = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "job-events.js"));
   const seq = [

@@ -8,6 +8,11 @@
 # Assertions, selectors, and coverage are unchanged — only the dead wait time.
 #
 # run-maestro.js passes this file explicitly with `maestro test --config`.
+# Both platforms get `disableAnimations: true`; Maestro applies only the entry
+# for the target device's platform, so keeping the Android block does not affect
+# an iOS run (and vice versa).
 platform:
   android:
+    disableAnimations: true
+  ios:
     disableAnimations: true

@@ -124,8 +124,20 @@ if (pid && alive(pid)) {
   }
 }
 let appId = process.env.MOBILE_E2E_APP_ID || "com.example.app";
-try { appId = JSON.parse(fs.readFileSync(path.join(selfDir, "local.json"), "utf8")).appId || appId; } catch {}
-try { spawnSync("adb", ["shell", "am", "force-stop", appId], { timeout: 5000, stdio: "ignore" }); } catch {}
+let localCfg = {};
+try { localCfg = JSON.parse(fs.readFileSync(path.join(selfDir, "local.json"), "utf8")); } catch {}
+if (localCfg.appId) appId = localCfg.appId;
+// Platform: env MOBILE_E2E_PLATFORM > local.json `platform` > android. On iOS
+// stop the app via `xcrun simctl terminate <bundle> <udid>`; on Android the
+// historical `adb shell am force-stop` is unchanged.
+const platform = String(process.env.MOBILE_E2E_PLATFORM || localCfg.platform || "android").toLowerCase();
+if (platform === "ios") {
+  const bundleId = process.env.MOBILE_E2E_IOS_BUNDLE_ID || (localCfg.ios && localCfg.ios.bundleId) || appId;
+  const udid = process.env.MOBILE_E2E_IOS_UDID || "";
+  try { spawnSync("xcrun", ["simctl", "terminate", bundleId].concat(udid ? [udid] : []), { timeout: 5000, stdio: "ignore" }); } catch {}
+} else {
+  try { spawnSync("adb", ["shell", "am", "force-stop", appId], { timeout: 5000, stdio: "ignore" }); } catch {}
+}
 if (rec.events) {
   try {
     fs.appendFileSync(rec.events, JSON.stringify({

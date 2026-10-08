@@ -91,6 +91,54 @@ together — e.g. `720x1600` @ `280` keeps the same dp geometry as the AVD's
 `1080x2400` @ `420`, so selectors are unchanged while the emulator moves ~2.3×
 fewer pixels per command.
 
+### iOS Simulator (`platform.ios`)
+
+The driver is platform-aware. Select iOS with `MOBILE_E2E_PLATFORM=ios` or
+`"platform": "ios"` in `scripts/qa/mobile-e2e/local.json` (env wins; default is
+`android`). The iOS route needs **macOS with Xcode command-line tools** — it
+cannot boot a Simulator on Linux — and brings up the tier with `xcrun simctl`
+instead of adb/emulator:
+
+```bash
+node scripts/qa/mobile-e2e/ios-simulator-up.sh     # boot/reuse sim + install the unsigned .app
+node scripts/qa/mobile-e2e/device-up.sh            # platform=ios: skips Gradle/adb, boots sim + dev server
+node scripts/qa/mobile-e2e/run-maestro.js --flows all --platform ios
+node scripts/qa/mobile-e2e/ios-simulator-down.sh   # shutdown (add --delete to remove the device)
+```
+
+`ios-simulator-up.sh` reads the `ios` block from `local.json` — `bundleId`,
+`deviceName`, `deviceType`, `appPath` (the unsigned simulator `.app`) — and emits
+`UDID=…` / `BUNDLE_ID=…`; in CI it appends `MOBILE_E2E_IOS_UDID` /
+`MOBILE_E2E_IOS_BUNDLE_ID` to `$GITHUB_ENV`. It fails loudly when `xcrun` is
+missing (not macOS), the `.app` is absent (build it first with an EAS local
+unsigned profile), or no iOS runtime is installed.
+
+`boot-emulator.sh` owns the Android bring-up only: on `platform=ios` it delegates
+to `ios-simulator-up.sh`. `device-up.sh` skips the APK/Gradle build, the adb
+server, and the adb install/readiness gate on iOS (the `.app` install happens in
+the up script), and still starts the dev server in the `mobile` group and gates
+on its health URL. `run-maestro.js` resolves the Simulator UDID (explicit
+`--udid`, else `MOBILE_E2E_IOS_UDID`, else a booted sim matched to
+`ios.deviceName` via `xcrun simctl list devices booted`), skips the adb preflight,
+and passes `--device <udid>` to every `maestro test`. `config.yaml` disables
+animations on both platforms.
+
+A Simulator has no camera: a camera-based journey (e.g. scan-add) is **not**
+covered on iOS — that stays a physical-device check.
+
+```jsonc
+// scripts/qa/mobile-e2e/local.json
+{
+  "platform": "ios",
+  "ios": {
+    "bundleId": "com.example.app",
+    "deviceName": "iOS Simulator",
+    "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+    "appPath": "mobile/build/ios-simulator-app.app"
+  }
+}
+```
+
 ### GPU acceleration on WSL2 (the biggest wall-clock lever)
 
 On a software renderer the emulator is CPU-bound — ~2.5 s/command, ~3.6 s/tap
@@ -383,9 +431,10 @@ carries a performance layer; coverage and assertions are unchanged:
    and never sees the walkthrough. Ordering the `clearState` first stops its
    app-data wipe from resetting the sessions the rest of the run depends on.
 3. **Animations are disabled** for the run by `config.yaml`
-   (`platform.android.disableAnimations: true`, passed via `maestro test
-   --config`), removing the per-command animation-settle wait. Override with
-   `--config <file>`.
+   (`platform.android.disableAnimations: true` and
+   `platform.ios.disableAnimations: true`, passed via `maestro test --config`),
+   removing the per-command animation-settle wait on either platform. Override
+   with `--config <file>`.
 4. **`--no-seed`** runs `reset.js --no-seed` (mint actor auth, keep the seeded
    data) so a re-verification run skips the full DB seed.
 5. **`--failed`** re-runs only the journeys that failed last time, from
@@ -419,7 +468,8 @@ Project-specific defaults (app id, default actor/AVD, the dev-server and
 optional backend-build commands) live in `scripts/qa/mobile-e2e/local.json` —
 project-owned, not overwritten by the harness. The mechanism (`run-maestro.js`,
 `check-flows.js`, `config.yaml`, `boot-emulator.sh`, `device-up.sh`,
-`backend-build-cache.js`, `run-detached.sh`, `job-events.js`) plus the
+`ios-simulator-up.sh`, `ios-simulator-down.sh`, `backend-build-cache.js`,
+`run-detached.sh`, `job-events.js`) plus the
 `job-notify` plugin are harness-owned under `templates/`, so fix them upstream
 and `agent-harness update` the projects.
 

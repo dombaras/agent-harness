@@ -87,6 +87,23 @@ for arg in "$@"; do
   esac
 done
 
+# Platform selection: env MOBILE_E2E_PLATFORM > local.json `platform` > android.
+# This script owns the Android bring-up only; on iOS it delegates to the sibling
+# ios-simulator-up.sh (no Android/adb/simctl logic is attempted inline here).
+resolve_platform() {
+  local p="${MOBILE_E2E_PLATFORM:-}"
+  [ -z "$p" ] && [ -f "$LOCAL_CONFIG" ] && p="$(node -e "try{process.stdout.write(String(require('$LOCAL_CONFIG').platform||''))}catch(e){}" 2>/dev/null || true)"
+  case "$p" in ios|iOS|IOS) echo ios ;; *) echo android ;; esac
+}
+PLATFORM="$(resolve_platform)"
+
+# `-h/--help` still prints this script's Android runbook (and exits) below; every
+# other invocation on the iOS platform delegates.
+if [ "$PLATFORM" = "ios" ] && [ "$PRINT_PROFILE" != "2" ]; then
+  echo "platform=ios — delegating to ios-simulator-up.sh (boot-emulator.sh owns the Android bring-up)"
+  exec bash "$(dirname "${BASH_SOURCE[0]}")/ios-simulator-up.sh"
+fi
+
 # AVD: env override, else local.json `avd`, else fail with the available list.
 AVD="${MOBILE_E2E_AVD:-}"
 if [ -z "$AVD" ] && [ -f "$LOCAL_CONFIG" ]; then

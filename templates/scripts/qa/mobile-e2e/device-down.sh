@@ -10,8 +10,11 @@
 #
 # Usage:
 #   scripts/qa/mobile-e2e/device-down.sh              # stop dev server + prune
-#   scripts/qa/mobile-e2e/device-down.sh --emulator   # also stop the emulator
+#   scripts/qa/mobile-e2e/device-down.sh --emulator   # also stop the emulator (or iOS Simulator)
 #   scripts/qa/mobile-e2e/device-down.sh --all        # stop-all heavy tiers
+#
+# Platform: android (default) or ios from `MOBILE_E2E_PLATFORM` / local.json
+# `platform`. On ios the simulator is stopped via ios-simulator-down.sh.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -20,6 +23,12 @@ LOCAL_CONFIG="$ROOT/scripts/qa/mobile-e2e/local.json"
 
 DEV_NAME="${MOBILE_E2E_DEV_NAME:-$(node -e "try{const c=require('$LOCAL_CONFIG');process.stdout.write(c.devName||'')}catch(e){}" 2>/dev/null || true)}"
 [ -z "$DEV_NAME" ] && DEV_NAME="app-dev"
+
+# Platform selection: env MOBILE_E2E_PLATFORM > local.json `platform` > android.
+# On ios the simulator is stopped via the sibling ios-simulator-down.sh instead
+# of the adb/emulator teardown (which is Android-only).
+PLATFORM="${MOBILE_E2E_PLATFORM:-$(node -e "try{const c=require('$LOCAL_CONFIG');process.stdout.write(c.platform||'')}catch(e){}" 2>/dev/null || true)}"
+case "$PLATFORM" in ios|iOS|IOS) PLATFORM=ios ;; *) PLATFORM=android ;; esac
 
 MODE="dev"
 for arg in "$@"; do
@@ -56,16 +65,22 @@ save_snapshot() {
 
 if [ "$MODE" = "all" ]; then
   echo "device-down: stop-all + prune"
-  save_snapshot
+  if [ "$PLATFORM" = "android" ]; then save_snapshot; fi
   node scripts/serve.js stop-all || true
+  if [ "$PLATFORM" = "ios" ]; then bash scripts/qa/mobile-e2e/ios-simulator-down.sh || true; fi
 else
   echo "device-down: stop dev server ($DEV_NAME)"
   node scripts/serve.js stop --name "$DEV_NAME" || true
   if [ "$MODE" = "emulator" ]; then
-    save_snapshot
-    echo "device-down: stop emulator"
-    node scripts/serve.js stop --name emulator || true
-    node scripts/serve.js stop --name adb-server || true
+    if [ "$PLATFORM" = "ios" ]; then
+      echo "device-down: stop iOS Simulator"
+      bash scripts/qa/mobile-e2e/ios-simulator-down.sh || true
+    else
+      save_snapshot
+      echo "device-down: stop emulator"
+      node scripts/serve.js stop --name emulator || true
+      node scripts/serve.js stop --name adb-server || true
+    fi
   fi
 fi
 
