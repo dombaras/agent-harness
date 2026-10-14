@@ -655,8 +655,8 @@ infrastructure are called out as remaining.
   asserts every V2 plugin declares a stable `id:` and a `setup()`/`effect()`
   entrypoint and only calls a hook name from the pinned V2 set
   (`execute.before`/`execute.after`/`context`/`prompt`/`evaluate`, from
-  `@opencode/plugin@2.0.29`). This is static; the **real-loader e2e** the review
-  asked for stays open (below).
+  `@opencode/plugin@2.0.29`). This is the static half of "registered ≠ working";
+  the live-loader half landed in **§20** (`tests/plugin-loader.e2e.js`).
 - **G12/G13 — permission-model limits are now documented** in a new README
   "Permission model & limits" subsection: `permissions` are ordered
   last-match-wins and a project rule is appended *after* the harness rules (so a
@@ -669,10 +669,57 @@ infrastructure are called out as remaining.
 
 **Remaining:**
 
-1. **G3 — the `f-343` worktree** still runs the V1 harness (needs a rebase/merge
-   decision on its local work, then the `AGENTS.md` §5 worktree sweep).
-2. **G11 — a real-loader e2e** (boot a throwaway server, activate a fixture
-   location, assert the plugin ids + one end-to-end guard event). Static guards
-   now cover the name/id class; behaviour still depends on probes.
-3. **G12 — optional policy hardening:** V2's managed `policies` (hard-deny) is
+1. **G12 — optional policy hardening:** V2's managed `policies` (hard-deny) is
    the unused lever if a harness deny must not be overridable by a project rule.
+
+G3 and G11 — listed here as remaining in 0.1.162 — were closed in **§20**.
+
+---
+
+## 20. Real-loader plugin e2e (G11), the `f-343` worktree (G3), and project doc drift (0.1.163)
+
+**G11 — a real-loader e2e now exists.** The static drift-guard proves the plugin
+*source* declares a stable id and only pinned V2 hooks; it cannot prove the
+running loader actually loads the files or that a real event reaches a hook — the
+exact class the 0.1.157 event bug lived in. `tests/plugin-loader.e2e.js` (wired as
+`npm run test:plugin-loader`, and in the default `npm test`):
+
+1. builds a fixture location from the real `templates/` (plugin sources +
+   `scripts/` + memory),
+2. asks the running OpenCode service which plugins are active there
+   (`GET /api/plugin?location[directory]=…`, polled — activation is async) and
+   asserts **every** harness plugin id registered, then
+3. fires one real event — creates a session — and asserts `context-guard`'s
+   observable side effect: a `.serve/sessions/<id>.json` lease.
+
+It **skips** when there is no opencode binary / no running service (always the
+case in CI), so the suite stays green there while the check has real teeth on a
+dev box. Two facts discovered while building it, worth recording:
+
+- **A bare `opencode serve` does not run the location plugin pipeline** on
+  2.0.29 — its `/api/plugin` returns an *empty* list and a configured
+  `.opencode/plugins/*.ts` never runs `setup()`. The **background service**
+  (`opencode serve --service`) does; that is the only runtime the e2e can use.
+- A second `opencode serve --service` is **not safe to start from a test** — it
+  replaces the singleton service and restarts the caller's session. Hence the
+  e2e reuses the running service and skips when absent, rather than booting a
+  throwaway server (the mechanism the review originally suggested).
+
+The fixture uses a **stable** path (`os.tmpdir()/agent-harness-plugin-loader`) so
+the service reuses one plugin instance across runs instead of accumulating a new
+location per invocation; it deletes the session it creates.
+
+**G3 — the `f-343` worktree is back on the V2 harness.** The LibraryOS `f-343`
+checkout was still on harness 0.1.156 (V1), so its plugins did not load. Its
+uncommitted iOS-keyboard flow fix was committed, the branch was **rebased onto
+`origin/main`** (now 9 ahead / 0 behind, harness 0.1.162), `check-flows.js` is
+26/26, and the rebased branch was pushed (`--force-with-lease`). The feature
+itself stays blocked on the external GitHub Actions macOS billing stop — a
+non-code blocker recorded in its handoff, not a harness gap.
+
+**Project-side doc drift.** `.agents/memory/model-routing.md` is
+create-if-missing (project-owned after first deploy), so the 0.1.162 template fix
+did not overwrite the deployed copies: both LibraryOS and FamilyBudget still said
+the deterministic personas "pin `temperature: 0.1`". Both copies were corrected
+in place to the `#low` **model variant** wording (the V2 truth), matching the
+template.

@@ -552,6 +552,13 @@ node bin/agent-harness.js list
 node bin/agent-harness.js init --target /tmp/demo --name Demo --yes
 ```
 
+`npm test` runs the hermetic unit suite **and** `tests/plugin-loader.e2e.js` — a
+**real-loader** check that loads the shipped plugins into a fixture location on a
+running OpenCode service and asserts one guard event fires end-to-end (a session
+lease). It **skips** when no service is running (always the case in CI), so
+`npm run test:plugin-loader` is the explicit invocation on a dev box. See
+`docs/opencode-v2-migration.md` §20.
+
 ### Running on WSL2
 
 - Keep the checkout and target projects on the Linux filesystem
