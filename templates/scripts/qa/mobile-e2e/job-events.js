@@ -12,7 +12,7 @@
  *   * `run-detached.sh` records the job (pid + log + events path) and points the
  *     runner at the events file;
  *   * the `job-notify` opencode plugin tails the events file and pushes a TUI
- *     notification per scenario, waking the agent (session.promptAsync) on the
+ *     notification per scenario, waking the agent (session.prompt) on the
  *     first failure and at completion.
  *
  * Pure and dependency-free so both the runner and the plugin (and the tests)

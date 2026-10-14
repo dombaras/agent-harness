@@ -169,8 +169,9 @@ against the checkout it selects, so `git -C <main>` is resolved rather than
 bypassed. At the
 checkpoint band the nudge is imperative: write ONE checkpoint, then stop at the
 current **phase boundary** — a fresh bounded context resumes from it. The nudge is
-injected **cache-safely**: it is appended as a synthetic tail message via
-`experimental.chat.messages.transform`, never written into the system prompt — a
+injected **cache-safely**: it is appended as a synthetic tail message via the V2
+`context` session hook (`ctx.session.hook("context")`), never written into the
+system prompt — a
 system-prompt change on a band crossing evicts the provider's entire prompt cache
 and re-bills the whole transcript at full input price (measured: every full-price
 re-read landed on turn 50/60/80/100). Appending at the tail keeps the cached

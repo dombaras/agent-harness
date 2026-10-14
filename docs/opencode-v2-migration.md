@@ -439,3 +439,53 @@ guidance changed from the V1 `"tools": { "<server>*": false }` disable to a
       when V2 sends request bodies.
 - [ ] Decide whether to sweep the historical docs (§12).
 - [ ] Resolve the two manual worktrees (§14.2).
+
+---
+
+## 16. Post-review pass (0.1.159)
+
+A second full review of the port (2026-10-14) verified the migration against the real
+V2 runtime and the published `@opencode/*@2.0.29` types, and turned §15 into findings.
+Outcome and fixes:
+
+**Verified good (no change):**
+- `npm run lint` green; `npm test` **424/424** (the V1→V2 converge/prune tests included).
+- Deployed projects resolve correctly under V2: agents discover with their
+  `model#variant` pins (22 agents in LibraryOS), the `permissions` precedence is
+  global → project → agent with last-match-wins, and credential denies sit *after* the
+  work-root allow. `test:dispatch` / `test:prefix` green in the project.
+- The 10 project plugins load with the real loader and correct ids.
+
+**Corrections to the previous review's findings:**
+- The `v1Result` "error → `[object Object]`" claim is **wrong**. `event.error` is a
+  `Tool.Error` (an `Error` subclass), so `String(it)` yields `"Tool.Error: <message>"`;
+  the same-failure signature keeps the message. A new test (§11, `execute.after`
+  adapter) now locks this so a future change cannot silently collapse it.
+- The global `harness-freshness.ts` "load failure" is the **long-running server that
+  started before the port** memoizing the V1 load error, not the file. A fresh server
+  loads it clean; `opencode service restart` clears it.
+
+**Fixes shipped in 0.1.159:**
+1. `templates/opencode.json` (and the repo's own `opencode.json`): `*` matches `/` in a
+   V2 shell pattern, so the `rm -rf /*` deny also blocked `rm -rf /tmp/…` (reproduced
+   live). Added a later `rm -rf /tmp/*` allow so absolute temp scratch cleanup works
+   while `rm -rf /`, `rm -rf /usr`, `rm -rf ~`, `rm -rf ~/*` stay denied.
+2. Doc/prose drift the port trimmed elsewhere but missed:
+   `templates/.agents/skills/features/SKILL.md` (`task` tool → `subagent`),
+   `templates/docs/mobile-testing.md` + `templates/scripts/qa/mobile-e2e/job-events.js`
+   (`session.promptAsync` → `session.prompt`), `README.md`
+   (`experimental.chat.messages.transform` → the V2 `context` session hook), and a
+   `context-guard-core.js` comment.
+3. `tests/agent-harness.test.js`: a `tool.execute.after` error-path test (the adapter
+   was previously untested).
+
+**Also actioned (outside the repo):** removed the leftover duplicate
+`~/.config/opencode/plugins/zz-global-test.ts` (a byte-identical copy of
+`harness-freshness.ts`, which double-ran the freshness check); migrated the machine
+config `~/.config/opencode/opencode.jsonc` from the V1 `permission` map to a V2
+`permissions` array; removed the stale `.opencode/package.json`
+(`@opencode-ai/plugin`) from the projects; re-synced the `f-064` / `f-343` worktrees
+(§14.2).
+
+**Still open:** `request.body`/`temperature` is a documented V2 no-op (§3, §10);
+historical docs are intentionally left as-is (§12).

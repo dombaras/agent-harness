@@ -364,7 +364,7 @@ carries a performance layer; coverage and assertions are unchanged:
    pass/fail, fail-fast, done, with `durationMs`) plus `<jobdir>/<id>.json`
    (pid + log + events paths). The `job-notify` opencode plugin tails the stream
    and turns it into a **push**: a TUI toast per scenario (live progress with no
-   LLM turn), and a message injected back into the session (`session.promptAsync`)
+   LLM turn), and a message injected back into the session (`session.prompt`)
    on the **first failure** and at **completion** — so the agent resumes on real
    results instead of polling. The report lands at `.serve/mobile-e2e-last-run.json`
    and now carries the **invocation count, matrix/invocation wall time, and each

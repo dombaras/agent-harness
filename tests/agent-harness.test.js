@@ -5583,6 +5583,52 @@ test("context-guard injects at the conversation tail and never mutates the cache
   assert.strictEqual(childMessages.length, 1, "subagent sessions get no guard message");
 });
 
+test("context-guard keeps a per-message failure signature through the V2 execute.after adapter", async () => {
+  // The V2 `execute.after` event carries `{status:"error", error}` where `error`
+  // is a Tool.Error (an Error subclass). The adapter (`v1Result`) maps it to the
+  // V1 result shape and the same-failure detector hashes the message, so two
+  // DISTINCT errors must never collapse to one signature — the regression this
+  // guards against (a raw object would stringify to `[object Object]`).
+  const target = tmpdir();
+  const g = await loadGuardPlugin({ directory: target });
+  const sid = "ses_guard_err";
+  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
+
+  const eventsFile = path.join(target, ".agents", "guard-events.jsonl");
+  const failures = () => {
+    if (!fs.existsSync(eventsFile)) return [];
+    return fs
+      .readFileSync(eventsFile, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.kind === "failure");
+  };
+
+  // Three identical errored calls cross the same-failure threshold (default 3).
+  for (let i = 0; i < 3; i++) {
+    await g.toolAfter("edit", sid, { filePath: "src/a.ts" }, { status: "error", error: new Error("boom A") });
+  }
+  const first = failures();
+  assert.strictEqual(first.length, 1, "the repeated identical failure is flagged once");
+  assert.strictEqual(first[0].tool, "edit");
+  assert.strictEqual(first[0].count, 3);
+  assert.ok(first[0].keyHash, "a failure signature is recorded");
+
+  // A success clears the streak; a DIFFERENT message then re-arms with a new key.
+  await g.toolAfter("edit", sid, { filePath: "src/a.ts" }, { status: "completed", result: { content: "ok" } });
+  for (let i = 0; i < 3; i++) {
+    await g.toolAfter("edit", sid, { filePath: "src/a.ts" }, { status: "error", error: new Error("boom B") });
+  }
+  const second = failures();
+  assert.strictEqual(second.length, 2);
+  assert.notStrictEqual(
+    second[1].keyHash,
+    first[0].keyHash,
+    "distinct error messages must not collapse to one failure signature"
+  );
+});
+
 test("context-guard injects the session-start orient brief until the first material action", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });

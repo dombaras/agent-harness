@@ -178,6 +178,11 @@
       "action": "shell",
       "resource": "rm -rf ~/*",
       "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rm -rf /tmp/*",
+      "effect": "allow"
     }
   ]
 }

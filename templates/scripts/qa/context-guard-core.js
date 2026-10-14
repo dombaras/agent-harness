@@ -175,7 +175,7 @@ const SERVE_POLL = /serve\.js\s+(list|status)\b/;
 /* A tool call that MATERIALLY changes repository state (as opposed to a read,
  * grep, test run, or dispatch). Used only by the no-state-change detector: a
  * whole turn with none of these is spinning, and the recovery nudge fires. A
- * `task` dispatch counts as material — a subagent that edits files is progress
+ * `subagent` dispatch counts as material — a subagent that edits files is progress
  * even though the orchestrator's own tool arguments changed nothing. */
 const MATERIAL_TOOLS = new Set(["write", "edit", "patch", "multiedit", "apply_patch", "task", "subagent"]);
 const MATERIAL_BASH_RE =
