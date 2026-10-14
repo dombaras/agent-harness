@@ -573,3 +573,45 @@ shape. Findings isolated live against OpenCode **2.0.29** and the published
    plus one `session.renamed`. So `session.step.ended` counts only real orchestrator model
    calls; no `session.step.started.agent` filter was added. (`session.usage.updated` is
    still deliberately excluded from turn counting — it also fires at admission.)
+
+---
+
+## 18. Post-review fixes — G1 (MCP gating) + G2 (recon tool names), 0.1.161
+
+A third review (2026-10-14) of the shipped 0.1.160 port found two "registered but
+not working" regressions in the measurement/integration periphery — the same class
+as the 0.1.157 event bug. Fixed here.
+
+**G1 — per-agent MCP gating was dead.** V2 has **no `tools` field** (confirmed
+against `Agent.Info` in `@opencode/schema@2.0.29`). A project that gated MCP the
+V1 way — global `"tools": { "pg*": false }` plus `agents.<name>.tools: { "pg*":
+true }` — saw `opencode mcp list` report the server *connected*, while the global
+disable survived as a `permissions` rule and the per-agent allow was silently
+dropped: no agent could call a `pg_*`/`playwright_*` tool (live in LibraryOS,
+regressing H-32). Fix:
+1. `mergeOpencodeJson` now migrates both maps — a new `convertV1Tools` (sharing
+   the `V1_ACTION` rename table with `convertV1Permission`) turns the top-level map
+   into global rules and each `agents.<name>.tools` map into **appended** agent
+   rules, then drops the V1 `tools` keys. Agent rules are appended last, so a
+   per-agent `allow` still wins the global `deny`.
+2. `doctor` warns while a project still declares `tools` (top-level and/or
+   per-agent) and points at `agent-harness update`.
+3. `templates/docs/mcp-integrations.md`: the Deploy-safety section now documents
+   the migration instead of claiming `tools` is preserved.
+4. Tests: `convertV1Tools` unit coverage, a merge test (agent's own rules kept +
+   migrated enables appended), and a `doctor` warning test.
+
+**G2 — `session-recon.js` was half-blind under V2.** `WORK_TOOLS` listed `"task"`
+(not `"subagent"`) and the shell branch tested `tool === "bash"` (not `"shell"`),
+so `report:recon` measured **zero** shell use, dispatches, `cd`-chaining and
+inspection — the exact data the H-23/H-25/H-34 loop depends on. Fixes:
+- `session-recon.js` accepts both names (`shell`, `subagent`), matching
+  `context-guard-core.js`.
+- The same bug sat in `context-guard-core.js:isLoopExempt` (only `"bash"`), which
+  `provider-stats.js` uses to exclude serve polls — also fixed.
+- A new **`[drift-guard]`** test scans the tool-name classifiers
+  (`session-recon.js`, `context-guard-core.js`, the plugin) and fails any
+  `bash`/`task` tool comparison or `*TOOLS*` set that omits the V2 alias, so this
+  class is caught in CI rather than by a manual probe.
+- The `session-recon` fixture test now includes `shell`/`subagent` rows (the old
+  test fed only V1 names, masking the bug).

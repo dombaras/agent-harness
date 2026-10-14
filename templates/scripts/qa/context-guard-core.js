@@ -319,7 +319,7 @@ function shortHash(text) {
 function isLoopExempt(tool, args) {
   const name = String(tool || "");
   if (EXEMPT_TOOLS.has(name)) return true;
-  if (name === "bash") {
+  if (name === "bash" || name === "shell") {
     const command = String(args?.command || "");
     if (SERVE_POLL.test(command)) return true;
   }

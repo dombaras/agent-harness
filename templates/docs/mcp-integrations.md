@@ -80,7 +80,18 @@ opencode mcp debug <name>  # connection/auth diagnostics
 ## Deploy safety
 
 `agent-harness update` deep-merges `opencode.json` by key: it preserves this
-project's `mcp`, top-level `tools`, and per-agent `tools`. If the harness ever
-ships a default `mcp` block it merges **by server name** (project wins), so a
-project's server is never clobbered. Sources: `mergeOpencodeJson` /
-`mergeMcp` in `bin/agent-harness.js`.
+project's `mcp` servers and its `permissions`. If the harness ever ships a default
+`mcp` block it merges **by server name** (project wins), so a project's server is
+never clobbered. Sources: `mergeOpencodeJson` / `mergeMcp` in
+`bin/agent-harness.js`.
+
+**V1 `tools` gating is migrated, not preserved.** V2 has no top-level or
+per-agent `tools` field (only `permissions`), so an older project that gates MCP
+the V1 way (`"tools": { "pg*": false }` plus `agents.<name>.tools: { "pg*": true }`)
+would otherwise be silently broken: the server reports *connected* while no agent
+can call its tools. `update` translates both maps into ordered rules — the
+top-level map into global `{ "action": "<name>", "resource": "*", "effect":
+"deny" }` rules and each `agents.<name>.tools` map into that agent's own rules
+(an `allow` wins the global deny, since agent rules are appended last) — and drops
+the V1 `tools` keys. `agent-harness doctor` warns while a project still declares
+`tools`; re-run `update` to convert it.

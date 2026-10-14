@@ -35,8 +35,18 @@ const EDIT_TOOLS = new Set(["edit", "write", "patch", "multiedit", "apply_patch"
 
 /* Tools that count as "real work started" for the orientation-depth metric: the
  * first edit/write or dispatch marks the end of the orientation prologue. A
- * resume/claim session otherwise re-derives git/serve/capacity state by hand. */
-const WORK_TOOLS = new Set(["edit", "write", "patch", "multiedit", "apply_patch", "task"]);
+ * resume/claim session otherwise re-derives git/serve/capacity state by hand.
+ * Both the V1 names and their V2 aliases (`task`->`subagent`) — the guard core
+ * does the same, and a drift-guard test enforces it. */
+const WORK_TOOLS = new Set([
+  "edit",
+  "write",
+  "patch",
+  "multiedit",
+  "apply_patch",
+  "task",
+  "subagent",
+]);
 
 // ---------------------------------------------------------------- pure core
 
@@ -106,7 +116,7 @@ function analyzeTools(parts) {
     if (!perDay.has(day)) perDay.set(day, { bash: 0, inspect: 0, cdWrapped: 0 });
     const d = perDay.get(day);
 
-    if (tool === "bash") {
+    if (tool === "bash" || tool === "shell") {
       bash += 1;
       d.bash += 1;
       const input = parseInput(row.input);
@@ -146,7 +156,7 @@ function analyzeTools(parts) {
         seen.add(fp);
         readSeen.set(row.session_id, seen);
       }
-    } else if (tool === "task") {
+    } else if (tool === "task" || tool === "subagent") {
       taskCount += 1;
       const input = parseInput(row.input);
       const bytes = typeof input.prompt === "string" ? input.prompt.length : 0;

@@ -525,9 +525,9 @@ test("opencode.json permission union keeps a project's own rules", () => {
 });
 
 test("opencode.json mcp is project-owned and deep-merged by server name (D prerequisite)", () => {
-  // MCP is wired project-side under `mcp.servers` (V2). A project's `mcp` block,
-  // top-level `tools` disable, and per-agent `tools` enable must all survive a
-  // re-merge untouched.
+  // MCP is wired project-side under `mcp.servers` (V2). A project's `mcp` block
+  // must survive a re-merge untouched, and a V1 `tools` gating map must be
+  // migrated to ordered `permissions` (G1).
   const target = tmpdir();
   fs.writeFileSync(
     path.join(target, "opencode.json"),
@@ -544,11 +544,17 @@ test("opencode.json mcp is project-owned and deep-merged by server name (D prere
   );
   const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
   assert.ok(merged.mcp && merged.mcp.servers && merged.mcp.servers.pg, "project mcp server preserved");
-  assert.strictEqual(merged.tools["pg*"], false, "top-level MCP tool disable preserved");
-  assert.strictEqual(
-    merged.agents["data-engineer"].tools["pg*"],
-    true,
-    "per-agent MCP tool enable preserved"
+  // G1: V2 has no top-level or per-agent `tools` field, so both maps become
+  // ordered permission rules and the V1 keys are dropped.
+  assert.ok(!("tools" in merged), "the V1 top-level tools map is dropped");
+  const globalRule = merged.permissions.find((p) => p.action === "pg*" && p.resource === "*");
+  assert.strictEqual(globalRule?.effect, "deny", "global MCP disable migrated to a permission deny");
+  const agent = merged.agents["data-engineer"];
+  assert.ok(!("tools" in agent), "the V1 per-agent tools map is dropped");
+  assert.deepStrictEqual(
+    agent.permissions,
+    [{ action: "pg*", resource: "*", effect: "allow" }],
+    "per-agent MCP enable migrated to an agent permission allow (wins over the global deny)"
   );
 
   // A future harness default server merges BY NAME (project wins), never clobbers
@@ -611,6 +617,88 @@ test("opencode.json merge converges a V1 deploy to native V2 (no stale small_mod
     "the harness `instructions` entry is dropped (V2 reads AGENTS.md)"
   );
   assert.ok(merged.instructions.includes("docs/my-rules.md"), "project instructions are preserved");
+});
+
+test("convertV1Tools maps a V1 tools map to V2 permission rules (G1)", () => {
+  // V2 has no `tools` field; `convertV1Tools` is the shared migration used by
+  // `mergeOpencodeJson` (top-level and per-agent).
+  assert.deepStrictEqual(
+    h.convertV1Tools({ "pg*": false, "playwright*": true }),
+    [
+      { action: "pg*", resource: "*", effect: "deny" },
+      { action: "playwright*", resource: "*", effect: "allow" },
+    ]
+  );
+  // V2-renamed V1 tool names go through the same map as the permission conversion.
+  assert.deepStrictEqual(h.convertV1Tools({ bash: false, write: true, task: false }), [
+    { action: "shell", resource: "*", effect: "deny" },
+    { action: "edit", resource: "*", effect: "allow" },
+    { action: "subagent", resource: "*", effect: "deny" },
+  ]);
+  assert.deepStrictEqual(h.convertV1Tools(null), []);
+  assert.deepStrictEqual(h.convertV1Tools(["x"]), []);
+});
+
+test("opencode.json merge migrates V1 tools gating to permissions without clobbering agent rules (G1)", () => {
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify(
+      {
+        tools: { "pg*": false, write: false },
+        agents: {
+          // a project agent with its own rules AND a V1 tools enable
+          "diagnostics-expert": {
+            permissions: [{ action: "shell", resource: "psql *", effect: "allow" }],
+            tools: { "pg*": true, "playwright*": true },
+          },
+        },
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+  const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
+  assert.ok(!("tools" in merged), "top-level tools dropped");
+  const global = (a, r) => merged.permissions.find((p) => p.action === a && p.resource === r);
+  assert.strictEqual(global("pg*", "*")?.effect, "deny");
+  assert.strictEqual(global("edit", "*")?.effect, "deny", "V1 `write:false` maps to the edit action");
+  const agent = merged.agents["diagnostics-expert"];
+  assert.ok(!("tools" in agent), "per-agent tools dropped");
+  assert.deepStrictEqual(
+    agent.permissions,
+    [
+      { action: "shell", resource: "psql *", effect: "allow" },
+      { action: "pg*", resource: "*", effect: "allow" },
+      { action: "playwright*", resource: "*", effect: "allow" },
+    ],
+    "the agent's own rules are kept and the migrated enables appended after them"
+  );
+});
+
+test("doctor warns when a project still declares a V1 tools map (G1)", () => {
+  const target = tmpdir();
+  // Minimal git repo so doctor gets past its first gate.
+  spawnSync("git", ["init", "-q"], { cwd: target });
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify({ tools: { "pg*": false }, agents: { "data-engineer": { tools: { "pg*": true } } } }, null, 2) + "\n",
+    "utf8"
+  );
+  const out = [];
+  const orig = console.log;
+  const prevExit = process.exitCode;
+  console.log = (...a) => out.push(a.join(" "));
+  try {
+    h.doctor(target);
+  } finally {
+    console.log = orig;
+    process.exitCode = prevExit;
+  }
+  const text = out.join("\n");
+  assert.match(text, /MCP gating: V1 `tools` map is ignored by V2/, "doctor flags the dead gating");
+  assert.match(text, /agent-harness update/, "doctor points at the migration");
 });
 
 test("update is non-interactive (never prompts)", async () => {
@@ -6337,10 +6425,13 @@ test("session-recon classifies shell tool-choice, cd-chaining, dumps and read hy
     { session_id: "s", tool: "read", input: JSON.stringify({ filePath: "big.ts" }), status: "completed", outputLen: 40000, time_created: at },
     { session_id: "s", tool: "read", input: JSON.stringify({ filePath: "gone.ts" }), status: "error", outputLen: 0, time_created: at },
     { session_id: "s", tool: "task", input: JSON.stringify({ prompt: "x".repeat(1200) }), status: "completed", outputLen: 0, time_created: at },
+    // V2 native tool names must classify identically to their V1 aliases (G2).
+    { session_id: "s", tool: "shell", input: JSON.stringify({ command: "ls -la" }), status: "completed", outputLen: 100, time_created: at },
+    { session_id: "s", tool: "subagent", input: JSON.stringify({ prompt: "y".repeat(800) }), status: "completed", outputLen: 0, time_created: at },
   ];
   const h2 = sr.analyzeTools(parts);
-  assert.strictEqual(h2.bash, 4);
-  assert.strictEqual(h2.inspectTotal, 2, "grep and find are both inspections");
+  assert.strictEqual(h2.bash, 5, "shell counts alongside bash");
+  assert.strictEqual(h2.inspectTotal, 3, "grep, find and the V2 `shell` ls are all inspections");
   assert.strictEqual(h2.inspect.find((i) => i.tool === "grep").count, 1);
   assert.strictEqual(h2.cdWrapped, 1);
   assert.strictEqual(h2.dumps, 1);
@@ -6350,8 +6441,9 @@ test("session-recon classifies shell tool-choice, cd-chaining, dumps and read hy
   assert.strictEqual(h2.read.rereads, 1);
   assert.strictEqual(h2.read.large, 1);
   assert.strictEqual(h2.read.errors, 1);
-  assert.strictEqual(h2.task.count, 1);
+  assert.strictEqual(h2.task.count, 2, "subagent counts alongside task");
   assert.strictEqual(h2.task.promptBytesMax, 1200);
+  assert.strictEqual(h2.task.promptBytesAvg, 1000, "(1200 + 800) / 2");
   assert.strictEqual(h2.perDay.length, 1, "one calendar day in the fixture");
 });
 
@@ -6417,6 +6509,51 @@ test("session-recon CLI reads a fixture, prints observed habits, and exports a r
   const badRes = spawnSync(process.execPath, [SR, "--fixture", path.join(target, "missing.json")], { encoding: "utf8" });
   assert.strictEqual(badRes.status, 1, "an unreadable fixture fails loudly");
   assert.match(badRes.stderr, /session-recon:/);
+});
+
+test("[drift-guard] tool-name classifiers accept the V2 alias, never the V1 name alone", () => {
+  // V2 renamed the shell and dispatch tools (`bash`->`shell`, `task`->`subagent`).
+  // A classifier that keys only the V1 name silently reports zero activity under
+  // V2 — exactly the G2 `session-recon` regression (and the `isLoopExempt` miss).
+  // This is a text scan so the whole class is caught in CI, not just the two sites.
+  const classifiers = [
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "session-recon.js"),
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"),
+    path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"),
+  ];
+  const ALIAS = { bash: "shell", task: "subagent" };
+  // A tool-name comparison: `tool === "bash"`, `String(tool || "") === "bash"`,
+  // `name === "task"`, `n === "bash"` — the identifier names the classifier uses.
+  const cmp = /(?:String\(\s*(?:tool|name|n)\b[^)]*\)|\b(?:tool|name|n)\b)\s*(?:===?|!==?)\s*"(bash|task)"/g;
+  // A tool-name Set: `const WORK_TOOLS = new Set([ ... ])`, possibly multi-line.
+  const setRe = /const\s+\w*TOOLS\w*\s*=\s*new Set\(\[([\s\S]*?)\]\)/g;
+  for (const file of classifiers) {
+    const src = fs.readFileSync(file, "utf8");
+    for (const line of src.split(/\r?\n/)) {
+      let m;
+      cmp.lastIndex = 0;
+      while ((m = cmp.exec(line))) {
+        const v1 = m[1];
+        assert.ok(
+          line.includes(`"${ALIAS[v1]}"`),
+          `${path.basename(file)}: a \`${v1}\` tool comparison must also accept \`${ALIAS[v1]}\` — ${line.trim()}`
+        );
+      }
+    }
+    let sm;
+    setRe.lastIndex = 0;
+    while ((sm = setRe.exec(src))) {
+      const body = sm[1];
+      for (const v1 of Object.keys(ALIAS)) {
+        if (new RegExp(`"${v1}"`).test(body)) {
+          assert.ok(
+            new RegExp(`"${ALIAS[v1]}"`).test(body),
+            `${path.basename(file)}: a TOOLS set naming \`${v1}\` must also name \`${ALIAS[v1]}\``
+          );
+        }
+      }
+    }
+  }
 });
 
 test("agent-report --cost joins handoffs to provider sessions and reports cost per shipped feature", async () => {

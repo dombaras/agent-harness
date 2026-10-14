@@ -252,17 +252,31 @@ function mergeOpencodeJson(target, variables) {
 
   // --- V1 -> V2 config convergence -------------------------------------------
   // An older deploy wrote harness-managed V1 keys (`small_model`, the singular
-  // `agent` map, the keyed `permission` map, and an `instructions` entry). V2
-  // normalizes V1 shapes, but the file would then keep both forms forever, so
-  // migrate the project's own values into the native V2 shape and drop the V1 key.
-  const priorAgents = {
-    ...(existing.agent && typeof existing.agent === "object" && !Array.isArray(existing.agent)
-      ? existing.agent
-      : {}),
-    ...(existing.agents && typeof existing.agents === "object" && !Array.isArray(existing.agents)
-      ? existing.agents
-      : {}),
+  // `agent` map, the keyed `permission` map, the `tools` enable/disable map, and an
+  // `instructions` entry). V2 normalizes V1 shapes, but the file would then keep
+  // both forms forever, so migrate the project's own values into the native V2
+  // shape and drop the V1 key.
+  //
+  // `tools` (G1): V2 has no top-level or per-agent `tools` field, so a project's
+  // MCP gating (`tools: { "pg*": false }` + `agents.<name>.tools: { "pg*": true }`)
+  // lost the per-agent allow and left the server connected but unusable. Migrate
+  // both maps into ordered `permissions` rules; per-agent rules are appended to
+  // that agent's own rules, so the agent allow still wins over the global deny.
+  const absorbAgentTools = (cfg) => {
+    if (!cfg || typeof cfg !== "object" || Array.isArray(cfg) || !("tools" in cfg)) return cfg;
+    const rules = convertV1Tools(cfg.tools);
+    const out = { ...cfg };
+    delete out.tools;
+    if (rules.length) {
+      out.permissions = [...(Array.isArray(cfg.permissions) ? cfg.permissions : []), ...rules];
+    }
+    return out;
   };
+  const priorAgents = {};
+  for (const src of [existing.agent, existing.agents]) {
+    if (!src || typeof src !== "object" || Array.isArray(src)) continue;
+    for (const [name, cfg] of Object.entries(src)) priorAgents[name] = absorbAgentTools(cfg);
+  }
   if (
     typeof existing.small_model === "string" &&
     !(priorAgents.title && typeof priorAgents.title === "object" && priorAgents.title.model)
@@ -272,10 +286,12 @@ function mergeOpencodeJson(target, variables) {
   const priorPermissions = [
     ...(Array.isArray(existing.permissions) ? existing.permissions : []),
     ...convertV1Permission(existing.permission),
+    ...convertV1Tools(existing.tools),
   ];
   delete merged.agent;
   delete merged.small_model;
   delete merged.permission;
+  delete merged.tools;
   if (Array.isArray(merged.instructions)) {
     const kept = merged.instructions.filter((x) => x !== ".agents/rules/00-operating.md");
     if (kept.length) merged.instructions = kept;
@@ -324,6 +340,14 @@ function mergeOpencodeJson(target, variables) {
   return JSON.stringify(merged, null, 2) + "\n";
 }
 
+/* V1 -> V2 renamed tool/permission actions (docs/opencode-v2-migration:
+ * "Permission actions also changed"). A V1 name that is not here either already
+ * matches its V2 action (`edit`, `read`, `skill`, a `<server>_*` MCP action) or
+ * has no V2 equivalent and would produce a rule that can never match. Shared by
+ * `convertV1Permission` (the keyed `permission` map) and `convertV1Tools` (the
+ * `tools` enable/disable map) so the two migrations can never drift. */
+const V1_ACTION = { bash: "shell", task: "subagent", write: "edit", patch: "edit" };
+
 /* Convert a V1 keyed `permission` map (`{ <action>: { <resource>: effect } }`, or
  * `{ <action>: effect }`) into the V2 ordered rules array, mapping the renamed V1
  * actions (`bash`/`write`/`patch`/`task`) to their V2 names. Entry order is
@@ -332,11 +356,8 @@ function mergeOpencodeJson(target, variables) {
 function convertV1Permission(v1) {
   const out = [];
   if (!v1 || typeof v1 !== "object" || Array.isArray(v1)) return out;
-  // V1 -> V2 action renames (docs/opencode-v2-migration: "Permission actions also
-  // changed"). Unmapped V1 actions would produce rules that can never match.
-  const ACTION = { bash: "shell", task: "subagent", write: "edit", patch: "edit" };
   for (const [action, rule] of Object.entries(v1)) {
-    const actionName = ACTION[action] || action;
+    const actionName = V1_ACTION[action] || action;
     if (rule && typeof rule === "object" && !Array.isArray(rule)) {
       for (const [resource, effect] of Object.entries(rule)) {
         if (typeof effect === "string") out.push({ action: actionName, resource, effect });
@@ -344,6 +365,24 @@ function convertV1Permission(v1) {
     } else if (typeof rule === "string") {
       out.push({ action: actionName, resource: "*", effect: rule });
     }
+  }
+  return out;
+}
+
+/* Convert a V1 `tools` map (`{ <tool-or-glob>: boolean }`) into V2 permission
+ * rules. V2 has **no top-level or per-agent `tools` field** (confirmed against
+ * `Agent.Info` in `@opencode/schema@2.0.29`): tool enablement is an ordered
+ * permission rule whose `action` is the tool name (`<server>_<tool>` for MCP) and
+ * whose `resource` is `"*"`. Without this the V1 global disable survived as a
+ * `permission` rule but the per-agent re-enable was silently dropped, so an MCP
+ * server showed `connected` yet no agent could call its tools (G1, LibraryOS).
+ * V1 tool names that V2 renamed go through the same `V1_ACTION` map. */
+function convertV1Tools(v1) {
+  const out = [];
+  if (!v1 || typeof v1 !== "object" || Array.isArray(v1)) return out;
+  for (const [name, enabled] of Object.entries(v1)) {
+    if (typeof enabled !== "boolean") continue;
+    out.push({ action: V1_ACTION[name] || name, resource: "*", effect: enabled ? "allow" : "deny" });
   }
   return out;
 }
@@ -1698,6 +1737,31 @@ function doctor(target) {
       : "missing — re-run `agent-harness update`"
   );
 
+  // MCP per-agent gating (G1): V2 has no `tools` field, so a project still
+  // declaring the V1 `tools` map (a top-level disable and/or `agents.<name>.tools`
+  // enable) has that gating silently ignored — the server connects but no agent
+  // can call its tools. `update` migrates both maps into ordered `permissions`.
+  {
+    const ocPath = path.join(target, "opencode.json");
+    const doc = fs.existsSync(ocPath) ? safeJson(fs.readFileSync(ocPath, "utf8"), null) : null;
+    if (doc && typeof doc === "object") {
+      const top = doc.tools && typeof doc.tools === "object" ? Object.keys(doc.tools) : [];
+      const perAgent = Object.entries(doc.agents && typeof doc.agents === "object" ? doc.agents : {})
+        .filter(([, a]) => a && typeof a === "object" && a.tools && typeof a.tools === "object")
+        .map(([n]) => n);
+      if (top.length || perAgent.length) {
+        const parts = [];
+        if (top.length) parts.push(`top-level ${top.join(", ")}`);
+        if (perAgent.length) parts.push(`per-agent ${perAgent.join(", ")}`);
+        add(
+          "warn",
+          "MCP gating",
+          `V1 \`tools\` map is ignored by V2 (${parts.join("; ")}) — run \`agent-harness update\` to migrate to \`permissions\``
+        );
+      }
+    }
+  }
+
   // Nightly E2E cycle: the orchestrator + config, whether a systemd --user
   // timer is installed, and the last verdict (advisory — the day loop still
   // ships on cheap gates; nightly is the full-E2E authority).
@@ -2444,6 +2508,8 @@ module.exports = {
   resolveVars,
   workspaceRootFor,
   mergeOpencodeJson,
+  convertV1Permission,
+  convertV1Tools,
   mergeMcp,
   deploy,
   migrateBacklog,
