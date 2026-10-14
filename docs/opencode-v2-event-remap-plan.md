@@ -1,7 +1,15 @@
 # OpenCode V2 event-stream remap — implementation plan
 
-**Status:** planned, not started. Written 2026-10-14 against harness **0.1.159**
-(commit `335a5c0`), OpenCode **2.0.29**.
+**Status:** executed — shipped in harness **0.1.160** (commit `46749df`), deployed to
+LibraryOS + FamilyBudget; OpenCode **2.0.29**. Written 2026-10-14 against harness
+**0.1.159** (commit `335a5c0`).
+
+**Outcome (0.1.160):** all work items W1–W9 landed; the §11/§12 turn-count caveat was
+**resolved by probe** — `session.step.ended` fires only for real orchestrator model calls
+(title generation emits `session.renamed`; compaction emits its own `session.compaction.*`
+family), so no `agent` filter was added. Lease + child-tracking were re-verified live
+against a real V2 event stream. The durable record is
+`docs/opencode-v2-migration.md` §17.
 
 **Purpose:** this is the *whole* plan. A fresh context should be able to execute it
 top to bottom without re-deriving anything. Every V2 fact below was verified
