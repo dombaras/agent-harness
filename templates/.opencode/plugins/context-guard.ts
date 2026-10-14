@@ -1,4 +1,4 @@
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Context } from "@opencode/plugin"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -44,7 +44,13 @@ const GUARD_LOG_REL = path.join(".agents", "guard-events.jsonl")
 const GUARD_MESSAGE_ID = "context-guard"
 
 
-export const ContextGuard: Plugin = async ({ directory, client }) => {
+export default {
+  id: "context-guard",
+  async setup(ctx: Context) {
+  const directory = ctx.location.directory as string
+  // V2: plugin registrations live for the plugin's lifetime; this controller
+  // aborts the event subscription on unload.
+  const controller = new AbortController()
   const sessions = new Map<string, any>()
   const childSessions = new Set<string>()
   const childParent = new Map<string, string>()
@@ -95,6 +101,13 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
   const isPrimary = (sessionID: unknown): sessionID is string =>
     typeof sessionID === "string" && sessionID.length > 0 && !childSessions.has(sessionID)
 
+  /* The V2 shell tool is named `shell`; V1 called it `bash`. Accept both so the
+   * pure core and any transitional caller keep working. */
+  const isShell = (tool: unknown): boolean => {
+    const n = String(tool || "").toLowerCase()
+    return n === "bash" || n === "shell"
+  }
+
   const loadThresholds = () => {
     if (thresholds) return thresholds
     let text = ""
@@ -119,11 +132,13 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     }
   }
 
+  // V2 plugins have no `client`; log to the opencode server log (stdout/stderr).
   const report = async (message: string, level: "info" | "warn" = "warn") => {
     try {
-      await client.app.log({ body: { service: "context-guard", level, message } })
+      if (level === "info") console.log(`context-guard: ${message}`)
+      else console.warn(`context-guard: ${message}`)
     } catch {
-      /* logging is best-effort (no server/TUI in some modes) */
+      /* logging is best-effort */
     }
   }
 
@@ -341,7 +356,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
     /* best-effort */
   }
 
-  return {
+  const hooks = {
     event: async ({ event }: any) => {
       try {
         const type = event?.type
@@ -496,7 +511,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       // rerooted into it, so bash matches the session's feature tree instead of the
       // MAIN tree opencode pinned at launch. Runs BEFORE the main-checkout guard so
       // that classifier sees the rewritten command.
-      if (String(input?.tool || "").toLowerCase() === "bash") {
+      if (isShell(input?.tool)) {
         try {
           const args = output?.args || {}
           if (!args.workdir) {
@@ -542,7 +557,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         const tool = String(input?.tool || "").toLowerCase()
         const args = output?.args || {}
         const isEdit = EDIT_TOOLS.has(tool)
-        const isBash = tool === "bash"
+        const isBash = isShell(tool)
         if (isEdit) {
           if (args.filePath && guard.isCodePath(args.filePath)) {
             const base = path.resolve(String(args.workdir || directory))
@@ -642,7 +657,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       let capCommand = ""
       try {
         if (
-          String(input?.tool || "").toLowerCase() === "bash" &&
+          isShell(input?.tool) &&
           process.env.AGENT_CAPACITY_DISABLE !== "1"
         ) {
           capCommand = String(output?.args?.command || "")
@@ -696,7 +711,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         // is cleared after injection (`clearOneShot`), so it never nags.
         try {
           const tool = String(input?.tool || "").toLowerCase()
-          if (tool === "bash") {
+          if (isShell(tool)) {
             const command = String(output?.args?.command || "")
             const inspect = guard.inspectCommand(command)
             if (inspect) {
@@ -810,7 +825,7 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
         const tool = input?.tool
         const exit = output?.metadata?.exit
         const failed =
-          !!output?.error || (String(tool || "") === "bash" && Number.isFinite(exit) && exit !== 0)
+          !!output?.error || (isShell(tool) && Number.isFinite(exit) && exit !== 0)
         const failureText = output?.error
           ? String(output.error)
           : failed && typeof output?.output === "string"
@@ -839,78 +854,104 @@ export const ContextGuard: Plugin = async ({ directory, client }) => {
       }
     },
 
-    // Cache-safe nudge injection: a synthetic user message appended to the TAIL
-    // of the request, so the leading system prompt / transcript prefix is
-    // byte-identical between turns and the provider's prompt cache survives a
-    // band crossing. Never touch `output.system` here.
-    //
-    // Two opencode behaviours shape this (verified live against 1.18.31):
-    //   - the transform is per-request and is NOT persisted, so the stored
-    //     transcript (and thus the cached prefix) is untouched;
-    //   - a synthetic *part* appended to the last message is stripped before the
-    //     provider sees it, but a whole synthetic *message* (the compaction-
-    //     continue shape) is forwarded — hence `messages.push`, not `parts.push`.
-    "experimental.chat.messages.transform": async (_input: any, output: any) => {
-      try {
-        const messages = output?.messages
-        if (!Array.isArray(messages) || messages.length === 0) return
-        // The hook carries no sessionID; it belongs to the last message in the
-        // request (its own session). Child/subagent requests are skipped.
-        let sid: string | null = null
-        for (let i = messages.length - 1; i >= 0; i--) {
-          const id = messages[i]?.info?.sessionID
-          if (typeof id === "string" && id.length > 0) {
-            sid = id
-            break
-          }
-        }
-        if (!isPrimary(sid)) return
-        const state = stateFor(sid)
-        // The capacity notice (set by the heavy-launch guard) rides the same
-        // cache-safe tail message as the context-budget nudges; the session-start
-        // orientation block rides it too until the first material action.
-        const text = [
-          guard.composeGuardText(state, loadThresholds()),
-          state.orientPending ? state.orientText : null,
-          state.resourceNotice,
-        ]
-          .filter(Boolean)
-          .join("\n\n")
-        if (!text) return
-        // The tool-choice / read / dump notices are one-shot: once injected, clear
-        // them so they never nag on later requests (bands/funds/loop persist).
-        guard.clearOneShot(state)
-        const last = messages[messages.length - 1]
-        if (last?.info?.id === GUARD_MESSAGE_ID) {
-          // Same turn, re-request (e.g. a band advanced): update in place.
-          const part = (last.parts || []).find((p: any) => p?.type === "text")
-          if (part && part.text !== text) part.text = text
-          return
-        }
-        messages.push({
-          info: { id: GUARD_MESSAGE_ID, role: "user", sessionID: sid, synthetic: true },
-          parts: [{ type: "text", text, synthetic: true }],
-        })
-      } catch {
-        /* never break a request */
-      }
-    },
-
-    "permission.ask": async (input: any) => {
-      try {
-        const type = String(input?.type || "")
-        const title = String(input?.title || "")
-        if (type !== "doom_loop" && !/doom.?loop/i.test(title)) return
-        // The runtime's own consecutive-identical-call guard fired: surface it
-        // and arm the recovery rule for the next request.
-        logEvent({ kind: "doom_loop", sessionID: input?.sessionID, title })
-        if (isPrimary(input?.sessionID)) {
-          stateFor(input.sessionID).loopPending = true
-          await report(`built-in doom-loop guard fired${title ? `: ${title}` : ""}`)
-        }
-      } catch {
-        /* visibility only; never alter the permission decision */
-      }
-    },
+    // Cache-safe nudge injection is registered as the V2 `context` session hook
+    // below (see `onContext`); the V1 `experimental.chat.messages.transform`
+    // shape no longer exists.
   }
+
+  /* V1 tool-result shape adapter: the hook bodies above keep the V1
+   * (input, output) contract; the V2 tool event carries a structured result. */
+  const v1Result = (event: any) => {
+    const completed = event?.status === "completed"
+    const content = completed
+      ? typeof event?.result?.content === "string"
+        ? event.result.content
+        : Array.isArray(event?.result?.content)
+          ? event.result.content.map((p: any) => p?.text || "").join("")
+          : ""
+      : ""
+    return {
+      args: event?.input,
+      status: event?.status,
+      error: completed ? undefined : event?.error,
+      output: content,
+      metadata: completed ? event?.result?.metadata : event?.error?.metadata,
+    }
+  }
+
+  /* V2 replacement for the V1 messages transform: OpenCode hands the request
+   * session and a structured Message[] directly, so we append a synthetic tail
+   * message (role user) and never touch the cached leading prefix. */
+  const onContext = (event: any) => {
+    try {
+      const sid = event?.sessionID
+      if (!isPrimary(sid)) return
+      const messages = event?.messages
+      if (!Array.isArray(messages)) return
+      const state = stateFor(sid)
+      // The capacity notice (set by the heavy-launch guard) rides the same
+      // cache-safe tail message as the context-budget nudges; the session-start
+      // orientation block rides it too until the first material action.
+      const text = [
+        guard.composeGuardText(state, loadThresholds()),
+        state.orientPending ? state.orientText : null,
+        state.resourceNotice,
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+      if (!text) return
+      // The tool-choice / read / dump notices are one-shot: once injected, clear
+      // them so they never nag on later requests (bands/funds/loop persist).
+      guard.clearOneShot(state)
+      const last = messages[messages.length - 1]
+      if (last?.id === GUARD_MESSAGE_ID) {
+        // Same turn, re-request (e.g. a band advanced): update in place.
+        const part = (last.content || []).find((p: any) => p?.type === "text")
+        if (part && part.text !== text) part.text = text
+        return
+      }
+      messages.push({
+        id: GUARD_MESSAGE_ID,
+        role: "user",
+        content: [{ type: "text", text }],
+        metadata: { synthetic: true },
+      })
+    } catch {
+      /* never break a request */
+    }
+  }
+
+  // ---- V2 registration ----
+  // The event stream replaces the V1 `event` hook; the tool hooks are driven
+  // through the V1-shaped bodies above via thin adapters so the pure core
+  // contract is unchanged. `permission.ask` has no V2 equivalent (V2 dropped the
+  // `doom_loop` action), so the runtime's own loop guard is no longer mirrored.
+  void (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        try {
+          await hooks.event({ event })
+        } catch {
+          /* never break the stream */
+        }
+      }
+    } catch {
+      /* subscription unavailable/ended */
+    }
+  })()
+  await ctx.tool.hook("execute.before", async (event: any) => {
+    await hooks["tool.execute.before"](
+      { tool: event?.tool, sessionID: event?.sessionID },
+      { args: event?.input }
+    )
+  })
+  await ctx.tool.hook("execute.after", async (event: any) => {
+    await hooks["tool.execute.after"](
+      { tool: event?.tool, sessionID: event?.sessionID },
+      v1Result(event)
+    )
+  })
+  await ctx.session.hook("context", onContext)
+  return () => controller.abort()
+  },
 }

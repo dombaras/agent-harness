@@ -24,18 +24,22 @@ dev-only**. Read this before adding or changing an MCP server.
 ```jsonc
 {
   "mcp": {
-    "pg": {
-      "type": "local",
-      "command": ["npx", "-y", "prisma", "mcp"],
-      "enabled": true
+    "servers": {
+      "pg": {
+        "type": "local",
+        "command": ["npx", "-y", "prisma", "mcp"],
+        "disabled": false
+      }
     }
   },
-  // Disable ALL of the server's tools globally (prefix = server name + "_").
-  "tools": { "pg*": false },
-  "agent": {
-    // Re-enable only for the personas that need live DB state.
-    "data-engineer":     { "tools": { "pg*": true } },
-    "diagnostics-expert": { "tools": { "pg*": true } }
+  // Deny ALL of the server's tools globally (the action prefix is the server
+  // name + "_"; V2 permissions replace the V1 top-level `tools` disable).
+  "permissions": [{ "action": "pg_*", "resource": "*", "effect": "deny" }],
+  "agents": {
+    // Re-enable only for the personas that need live DB state (agent rules are
+    // appended after global rules, so a later allow wins).
+    "data-engineer": { "permissions": [{ "action": "pg_*", "resource": "*", "effect": "allow" }] },
+    "diagnostics-expert": { "permissions": [{ "action": "pg_*", "resource": "*", "effect": "allow" }] }
   }
 }
 ```

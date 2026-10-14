@@ -19,8 +19,10 @@
  *   - `.agents/memory/*` + `.agents/features/*` is project data -> create-if-missing (never overwrite).
  *   - `BACKLOG.md` (repo root) is project data -> create-if-missing (never overwrite); it is the
  *     canonical task list, and `update` must never clobber the project's live board.
- *   - `opencode.json` is MERGED: harness manages $schema/model/small_model/
- *     instructions; every other key the project adds is preserved.
+ *   - `opencode.json` is MERGED: harness manages $schema/model and the `agents`
+ *     defaults (title/build/explore) + the `permissions` baseline; every other
+ *     key the project adds is preserved. (Native V2 shape: no `small_model`,
+ *     singular `agent`, or keyed `permission`.)
  *   - `.gitattributes` and `.ignore` are MERGED as a harness-managed begin/end
  *     block; project entries outside the block are preserved.
  *   - all other harness-owned files are overwritten. If a harness-owned file was
@@ -247,56 +249,69 @@ function mergeOpencodeJson(target, variables) {
   const existing = fs.existsSync(p) ? safeJson(fs.readFileSync(p, "utf8"), {}) : {};
 
   const merged = { ...existing, ...harness };
-  if (Array.isArray(harness.instructions)) {
-    const prior = Array.isArray(existing.instructions) ? existing.instructions : [];
-    merged.instructions = [...new Set([...prior, ...harness.instructions])];
-  }
-  // The harness `agent` block ships ADD-ONLY defaults (e.g. `build.steps`): a
-  // project's own agent config — including an overridden steps cap — always
-  // wins, and every agent the project defines is preserved.
-  if (harness.agent && typeof harness.agent === "object") {
+  // The harness `agents` block ships ADD-ONLY defaults (e.g. `build.steps`, the
+  // `title` small-model pin, the opportunistic `explore` pin): a project's own
+  // agent config — including an overridden steps cap or model — always wins, and
+  // every agent the project defines is preserved. (Native V2 shape: the V1
+  // singular `agent` map and top-level `small_model` are gone.)
+  if (harness.agents && typeof harness.agents === "object" && !Array.isArray(harness.agents)) {
     const priorAgents =
-      existing.agent && typeof existing.agent === "object" && !Array.isArray(existing.agent)
-        ? existing.agent
+      existing.agents && typeof existing.agents === "object" && !Array.isArray(existing.agents)
+        ? existing.agents
         : {};
-    const agent = { ...priorAgents };
-    for (const [name, cfg] of Object.entries(harness.agent)) {
-      const prior = agent[name] && typeof agent[name] === "object" ? agent[name] : {};
-      agent[name] = { ...cfg, ...prior };
+    const agents = { ...priorAgents };
+    for (const [name, cfg] of Object.entries(harness.agents)) {
+      const prior = agents[name] && typeof agents[name] === "object" ? agents[name] : {};
+      agents[name] = { ...cfg, ...prior };
     }
-    merged.agent = agent;
+    merged.agents = agents;
   }
-  // The permission block is a least-privilege baseline (external_directory
-  // allowlist + secret denies). Deep-merge it so a project's own permission
-  // keys are never dropped: within a key the harness rules come first and the
-  // project's appended after (project rules win on a pattern collision), and a
-  // project's scalar rule (e.g. `edit: "deny"`) replaces the harness object.
-  if (harness.permission && typeof harness.permission === "object" && !Array.isArray(harness.permission)) {
-    merged.permission = mergePermission(harness.permission, existing.permission);
+  // The `permissions` baseline is an ordered array (V2: the last matching rule
+  // wins), so a plain keyed merge is impossible. Union it: harness rules first,
+  // the project's own rules appended after so they win a resource collision, and
+  // exact duplicates dropped.
+  if (Array.isArray(harness.permissions)) {
+    const priorPerms = Array.isArray(existing.permissions) ? existing.permissions : [];
+    const seen = new Set();
+    const permissions = [];
+    for (const rule of [...harness.permissions, ...priorPerms]) {
+      const key = JSON.stringify(rule);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      permissions.push(rule);
+    }
+    merged.permissions = permissions;
   }
-  // MCP servers are keyed by name. A project owns its own `mcp` block (servers
-  // are project-side, e.g. a dev-DB server), so if the harness ever ships a
-  // default server the top-level spread would replace the WHOLE block. Deep-merge
-  // by server NAME instead: a project's same-named server wins (its keys win on
-  // a collision), project-only servers are preserved, harness-only servers are
-  // added. This is the guard the backlog requires before any default `mcp` block
-  // can ship in templates/opencode.json.
+  // MCP servers live under `mcp.servers` in V2. A project owns its own `mcp`
+  // block (servers are project-side, e.g. a dev-DB server), so if the harness
+  // ever ships a default server the top-level spread would replace the WHOLE
+  // block. Deep-merge by server NAME instead: a project's same-named server wins
+  // (its keys win on a collision), project-only servers are preserved,
+  // harness-only servers are added. This is the guard the backlog requires
+  // before any default `mcp` block can ship in templates/opencode.json.
   if (harness.mcp && typeof harness.mcp === "object" && !Array.isArray(harness.mcp)) {
     merged.mcp = mergeMcp(harness.mcp, existing.mcp);
   }
   return JSON.stringify(merged, null, 2) + "\n";
 }
 
-/* Merge a harness `mcp` block with a project's, by server name. Two plain-object
- * server configs for the same name are shallow-merged (project last, so it wins
- * a key collision); anything else (e.g. a project replacing a server) is taken
- * from the project. Servers only the harness defines are added. */
+/* Merge a harness `mcp` block with a project's, by server name under
+ * `mcp.servers` (the V2 location). Two plain-object server configs for the same
+ * name are shallow-merged (project last, so it wins a key collision); anything
+ * else (e.g. a project replacing a server) is taken from the project. Servers
+ * only the harness defines are added. Any other top-level `mcp` key is preserved
+ * (project wins). */
 function mergeMcp(harnessMcp, priorMcp) {
   const prior =
     priorMcp && typeof priorMcp === "object" && !Array.isArray(priorMcp) ? priorMcp : {};
   const out = { ...harnessMcp };
-  for (const [name, server] of Object.entries(prior)) {
-    const base = out[name];
+  for (const [k, v] of Object.entries(prior)) if (k !== "servers") out[k] = v;
+  const harnessServers =
+    harnessMcp.servers && typeof harnessMcp.servers === "object" ? harnessMcp.servers : {};
+  const priorServers = prior.servers && typeof prior.servers === "object" ? prior.servers : {};
+  const servers = { ...harnessServers };
+  for (const [name, server] of Object.entries(priorServers)) {
+    const base = servers[name];
     const bothObjects =
       base &&
       typeof base === "object" &&
@@ -304,30 +319,9 @@ function mergeMcp(harnessMcp, priorMcp) {
       server &&
       typeof server === "object" &&
       !Array.isArray(server);
-    out[name] = bothObjects ? { ...base, ...server } : server;
+    servers[name] = bothObjects ? { ...base, ...server } : server;
   }
-  return out;
-}
-
-/* Merge a harness permission block with a project's. Per permission key:
- * plain-object rules are shallow-merged (project last, so it wins collisions);
- * anything else (a scalar like `"deny"`) is taken from the project when
- * present. Keys only the harness defines are added. */
-function mergePermission(harnessPerm, priorPerm) {
-  const prior =
-    priorPerm && typeof priorPerm === "object" && !Array.isArray(priorPerm) ? priorPerm : {};
-  const out = { ...harnessPerm };
-  for (const [name, rule] of Object.entries(prior)) {
-    const base = out[name];
-    const bothObjects =
-      base &&
-      typeof base === "object" &&
-      !Array.isArray(base) &&
-      rule &&
-      typeof rule === "object" &&
-      !Array.isArray(rule);
-    out[name] = bothObjects ? { ...base, ...rule } : rule;
-  }
+  if (harnessMcp.servers || prior.servers || Object.keys(servers).length) out.servers = servers;
   return out;
 }
 
@@ -832,6 +826,58 @@ function firstGitErrorLine(err) {
   return line || "git command failed";
 }
 
+/* The V1 -> V2 layout moved `.opencode/tools/*.ts` into `.opencode/plugins/`
+ * and the singular `.opencode/command/` dir into `.opencode/commands/`. A deploy
+ * cannot see a removed template, so without this a project keeps the stale V1
+ * files — and V2 still discovers the legacy `command/` dir, so the old command
+ * text would shadow the new `commands/`. Remove only the files the harness
+ * itself shipped (never a project-added one), then prune the dir if empty. */
+const OBSOLETE_HARNESS_FILES = [
+  ".opencode/tools/backlog.ts",
+  ".opencode/tools/checkpoint.ts",
+  ".opencode/tools/session.ts",
+  ".opencode/tools/orient.ts",
+  ".opencode/tools/gates.ts",
+  ".opencode/tools/wait.ts",
+  ".opencode/tools/where.ts",
+  ".opencode/command/board.md",
+  ".opencode/command/checkpoint.md",
+  ".opencode/command/feature.md",
+  ".opencode/command/finish.md",
+  ".opencode/command/next.md",
+  ".opencode/command/report.md",
+  ".opencode/command/resume.md",
+  ".opencode/command/switch-model.md",
+];
+
+function pruneObsoleteHarnessFiles(target, dryRun) {
+  const removed = [];
+  const dirs = new Set();
+  for (const rel of OBSOLETE_HARNESS_FILES) {
+    const abs = path.join(target, rel);
+    if (!fs.existsSync(abs)) continue;
+    removed.push(relKey(rel));
+    dirs.add(path.dirname(abs));
+    if (!dryRun) {
+      try {
+        fs.unlinkSync(abs);
+      } catch (_) {
+        /* best-effort */
+      }
+    }
+  }
+  if (!dryRun) {
+    for (const dir of dirs) {
+      try {
+        if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      } catch (_) {
+        /* leave a dir a project still uses */
+      }
+    }
+  }
+  return removed;
+}
+
 // ---------------------------------------------------------------- deploy
 
 function backup(target, rel, content) {
@@ -1147,6 +1193,13 @@ async function deploy(target, opts) {
     }
   }
 
+  // V1 -> V2 cleanup: drop the stale `.opencode/tools/*` and legacy
+  // `.opencode/command/*` files the harness used to ship (now `.opencode/plugins/`
+  // and `.opencode/commands/`), so an old command cannot shadow the new one.
+  for (const rel of pruneObsoleteHarnessFiles(target, dryRun)) {
+    actions.push({ rel, kind: "remove-obsolete" });
+  }
+
   // Present-but-untracked harness files. An "unchanged" file is never in
   // `changedRels`, so a deploy that left it untracked (a skipped commit, or a
   // file restored by the freshness plugin) would NEVER bring it into git — and a
@@ -1170,7 +1223,7 @@ async function deploy(target, opts) {
   // report it clearly instead of printing a zero-delta "Updated", and leave the
   // target byte-for-byte untouched (no .harness.json timestamp churn, no commit).
   const changedRelsAll = actions
-    .filter((a) => ["create", "overwrite", "overwrite (backup)", "merge", "add-untracked"].includes(a.kind))
+    .filter((a) => ["create", "overwrite", "overwrite (backup)", "merge", "add-untracked", "remove-obsolete"].includes(a.kind))
     .map((a) => a.rel);
   const nothingToUpdate =
     !!isUpdate && changedRelsAll.length === 0 && compareVersions(existing.version || "0", PKG.version) === 0;
@@ -1271,7 +1324,8 @@ function printSummary(result, isUpdate) {
   console.log(
     `\n  ${counts.create || 0} created, ${counts.overwrite || 0} overwritten, ` +
       `${counts["overwrite (backup)"] || 0} backed up (locally modified), ` +
-      `${counts.merge || 0} merged, ${counts.preserve || 0} preserved, ${counts.unchanged || 0} unchanged.`
+      `${counts.merge || 0} merged, ${counts["remove-obsolete"] || 0} removed (obsolete), ` +
+      `${counts.preserve || 0} preserved, ${counts.unchanged || 0} unchanged.`
   );
 }
 
@@ -2337,7 +2391,6 @@ module.exports = {
   resolveVars,
   workspaceRootFor,
   mergeOpencodeJson,
-  mergePermission,
   mergeMcp,
   deploy,
   migrateBacklog,

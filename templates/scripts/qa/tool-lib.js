@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 /*
- * tool-lib — shared plumbing for the `.opencode/tools/*.ts` wrappers.
+ * tool-lib — shared plumbing for the `.opencode/plugins/*.ts` wrappers.
  *
  * The three deterministic-tool wrappers (backlog/checkpoint/session) each need
  * the same two things, and used to carry private copies that drifted:

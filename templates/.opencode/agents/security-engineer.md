@@ -1,17 +1,27 @@
 ---
 description: Use when a change touches auth, secrets, input validation, external services, or dependencies — security review + audit.
 mode: subagent
-model: deepseek/deepseek-v4-pro
 steps: 30
-permission:
-  edit:
-    "*": allow
-    "opencode.json": deny
-    ".harness.json": deny
-    ".opencode/**": deny
-    ".agents/**": deny
-  bash:
-    "*": allow
+model: deepseek/deepseek-v4-pro
+permissions:
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "opencode.json"
+    effect: deny
+  - action: edit
+    resource: ".harness.json"
+    effect: deny
+  - action: edit
+    resource: ".opencode/**"
+    effect: deny
+  - action: edit
+    resource: ".agents/**"
+    effect: deny
+  - action: shell
+    resource: "*"
+    effect: allow
 ---
 
 You are the {{PROJECT_NAME}} Security Engineer. Read and follow the complete persona instructions in `.agents/skills/security-engineer/SKILL.md`, then carry out the task.

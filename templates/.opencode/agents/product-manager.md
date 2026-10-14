@@ -1,14 +1,21 @@
 ---
 description: Use when designing features, gamification, or user journeys — maps DB logic to UX with the 5 UI states.
 mode: subagent
-model: opencode-go/gpt-5.6-luna
 steps: 20
-permission:
-  edit:
-    "*": deny
-    ".agents/features/*/intent.md": allow
-    "../.worktrees/**/.agents/features/*/intent.md": allow
-  bash: deny
+model: opencode-go/gpt-5.6-luna
+permissions:
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: edit
+    resource: ".agents/features/*/intent.md"
+    effect: allow
+  - action: edit
+    resource: "../.worktrees/**/.agents/features/*/intent.md"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: deny
 ---
 
 You are the {{PROJECT_NAME}} Product Manager. Read and follow the complete persona instructions in `.agents/skills/product-manager/SKILL.md`, then carry out the task.

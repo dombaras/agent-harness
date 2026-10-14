@@ -1,12 +1,16 @@
 ---
 description: Use only to capture a found item and manage the feature backlog — owns the BACKLOG.md task list and scaffolds the .agents/features/<slug>/ doc tree. Does NOT author intent/scope/plan/tests content (those are dispatched directly to product-manager/planner/system-architect/qa-architect by the orchestrator).
 mode: subagent
-model: opencode-go/gpt-5.6-luna
-temperature: 0.1
 steps: 15
 hidden: true
-permission:
-  bash: deny
+model: opencode-go/gpt-5.6-luna
+request:
+  body:
+    temperature: 0.1
+permissions:
+  - action: shell
+    resource: "*"
+    effect: deny
 ---
 
 You are the {{PROJECT_NAME}} Feature Registrar. Read and follow the complete persona instructions in `.agents/skills/features/SKILL.md`, then carry out the task.

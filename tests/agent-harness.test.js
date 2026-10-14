@@ -151,20 +151,20 @@ test("listFiles enumerates the full template tree", () => {
   assert.strictEqual(agentCount, 15);
 });
 
-test("agents carry mechanical enforcement frontmatter", () => {
+test("agents carry mechanical enforcement frontmatter (native V2 permissions)", () => {
   const dir = path.join(h.TEMPLATES_DIR, ".opencode", "agents");
   const planner = read(path.join(dir, "planner.md"));
   assert.match(planner, /hidden:\s*true/);
-  assert.match(planner, /"\*":\s*deny/);
-  assert.match(planner, /\.agents\/features\/\*\/plan\.md":\s*allow/);
-  assert.match(planner, /bash:\s*deny/);
+  assert.match(planner, /action:\s*edit\s*\n\s*resource:\s*"\*"\s*\n\s*effect:\s*deny/);
+  assert.match(planner, /resource:\s*"\.agents\/features\/\*\/plan\.md"\s*\n\s*effect:\s*allow/);
+  assert.match(planner, /action:\s*shell\s*\n\s*resource:\s*"\*"\s*\n\s*effect:\s*deny/);
   assert.match(planner, /steps:\s*\d+/);
   const productManager = read(path.join(dir, "product-manager.md"));
-  assert.match(productManager, /"\*":\s*deny/);
-  assert.match(productManager, /\.agents\/features\/\*\/intent\.md":\s*allow/);
-  assert.match(productManager, /bash:\s*deny/);
+  assert.match(productManager, /action:\s*edit\s*\n\s*resource:\s*"\*"\s*\n\s*effect:\s*deny/);
+  assert.match(productManager, /resource:\s*"\.agents\/features\/\*\/intent\.md"\s*\n\s*effect:\s*allow/);
+  assert.match(productManager, /action:\s*shell\s*\n\s*resource:\s*"\*"\s*\n\s*effect:\s*deny/);
   const qaArchitect = read(path.join(dir, "qa-architect.md"));
-  assert.match(qaArchitect, /bash:\s*deny/);
+  assert.match(qaArchitect, /action:\s*shell\s*\n\s*resource:\s*"\*"\s*\n\s*effect:\s*deny/);
 });
 
 test("thinker artifact grants are narrow (deny-by-default; owned doc writable in main tree and feature worktree)", () => {
@@ -174,17 +174,19 @@ test("thinker artifact grants are narrow (deny-by-default; owned doc writable in
     ["product-manager.md", "intent.md"],
   ]) {
     const src = read(path.join(dir, agent));
+    const permBlock = src.split("permissions:")[1].split("\n---")[0];
     // deny-by-default for every path...
-    assert.match(src, /"\*":\s*deny/);
-    // ...except the single owned artifact, written in the same `edit:` block.
-    const editBlock = src.split("permission:")[1].split("bash:")[0];
-    assert.match(editBlock, new RegExp("\\.agents/features/\\*/" + allowed.replace(".", "\\.") + "\":\\s*allow"));
+    assert.match(permBlock, /action:\s*edit\s*\n\s*resource:\s*"\*"\s*\n\s*effect:\s*deny/);
+    // ...except the single owned artifact (written as a specific allow rule).
+    assert.match(
+      permBlock,
+      new RegExp('resource:\\s*"\\.agents/features/\\*/' + allowed.replace(".", "\\.") + '"\\s*\\n\\s*effect:\\s*allow')
+    );
     // ...also writable when the artifact lives in the feature's git worktree
     // sibling (`../.worktrees/**`, where per-feature work is isolated).
-    assert.match(editBlock, /\.\.\/\.worktrees\/\*\*\/\.agents\/features\/\*/);
+    assert.match(permBlock, /\.\.\/\.worktrees\/\*\*\/\.agents\/features\/\*/);
     // no broad .agents/** allow sneaks in
-    assert.doesNotMatch(editBlock, /\.agents\/\*\*\s*:\s*allow/);
-    assert.doesNotMatch(editBlock, /"\*":\s*allow/);
+    assert.doesNotMatch(permBlock, /resource:\s*"\.agents\/\*\*"\s*\n\s*effect:\s*allow/);
   }
 });
 
@@ -207,7 +209,31 @@ test("deploy init materializes files, substitutes placeholders, writes config", 
   assert.ok(cfg.files && typeof cfg.files === "object");
 
   const oc = JSON.parse(read(path.join(target, "opencode.json")));
-  assert.strictEqual(oc.agent.build.steps, 100, "deploy writes the mechanical turn cap");
+  assert.strictEqual(oc.agents.build.steps, 100, "deploy writes the mechanical turn cap");
+});
+
+test("update prunes the V1 obsolete layout (.opencode/tools + legacy command/)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  // Simulate a project deployed by a V1 harness: the old tool + command files.
+  const staleTool = path.join(target, ".opencode", "tools", "backlog.ts");
+  const staleCmd = path.join(target, ".opencode", "command", "board.md");
+  fs.mkdirSync(path.dirname(staleTool), { recursive: true });
+  fs.mkdirSync(path.dirname(staleCmd), { recursive: true });
+  fs.writeFileSync(staleTool, "// v1 tool\n", "utf8");
+  fs.writeFileSync(staleCmd, "---\ndescription: v1 board\n---\n", "utf8");
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.ok(!exists(staleTool), "the stale .opencode/tools file is removed");
+  assert.ok(!exists(staleCmd), "the stale legacy .opencode/command file is removed");
+  assert.ok(
+    exists(path.join(target, ".opencode", "plugins", "backlog.ts")),
+    "the V2 tool plugin is deployed"
+  );
+  assert.ok(
+    exists(path.join(target, ".opencode", "commands", "board.md")),
+    "the V2 command is deployed"
+  );
 });
 
 test("deploy preserves project-owned handoff files on re-deploy", async () => {
@@ -350,12 +376,16 @@ test("dry-run writes nothing", async () => {
   assert.ok(!exists(path.join(target, "AGENTS.md")));
 });
 
-test("opencode.json merge preserves project keys and unions instructions", () => {
+test("opencode.json merge preserves project keys (native V2 shape)", () => {
   const target = tmpdir();
   fs.writeFileSync(
     path.join(target, "opencode.json"),
     JSON.stringify(
-      { model: "custom/model", permission: { edit: "deny" }, instructions: ["docs/my-rules.md"] },
+      {
+        model: "custom/model",
+        permissions: [{ action: "edit", resource: "*", effect: "deny" }],
+        agents: { reviewer: { description: "custom" } },
+      },
       null,
       2
     ) + "\n",
@@ -364,19 +394,31 @@ test("opencode.json merge preserves project keys and unions instructions", () =>
 
   const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
   assert.strictEqual(merged.model, "opencode-go/deepseek-v4.1-flash");
-  assert.strictEqual(merged.small_model, "opencode-go/glm-5.3-flash");
-  assert.strictEqual(merged.permission.edit, "deny");
-  assert.ok(merged.instructions.includes("docs/my-rules.md"));
-  assert.ok(merged.instructions.includes(".agents/rules/00-operating.md"));
+  // V2 native: the small-model pin moved onto the built-in `title` agent, and
+  // there is no V1 `small_model`/`instructions` key (V2 reads `AGENTS.md`).
+  assert.strictEqual(merged.agents.title.model, "opencode-go/glm-5.3-flash");
+  assert.ok(!("small_model" in merged), "no V1 small_model key");
+  assert.ok(!("instructions" in merged), "no V1 instructions key (V2 ignores it)");
+  assert.ok(!("agent" in merged), "no V1 singular agent map");
+  assert.ok(!("permission" in merged), "no V1 keyed permission map");
+  assert.strictEqual(merged.agents.reviewer.description, "custom", "a project agent is preserved");
+  const rule = (a, r) => merged.permissions.find((p) => p.action === a && p.resource === r);
+  assert.deepStrictEqual(
+    rule("edit", "*"),
+    { action: "edit", resource: "*", effect: "deny" },
+    "a project permission rule is preserved"
+  );
 });
 
-test("opencode.json merge ships agent.build.steps as an ADD-ONLY default", () => {
-  // fresh project: the harness turn cap appears
+test("opencode.json merge ships agents.build.steps as an ADD-ONLY default", () => {
+  // fresh project: the harness turn cap + small/opportunistic pins appear
   const fresh = tmpdir();
   const defaults = JSON.parse(
     h.mergeOpencodeJson(fresh, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" })
   );
-  assert.strictEqual(defaults.agent.build.steps, 100, "hard turn cap is deployed by default");
+  assert.strictEqual(defaults.agents.build.steps, 100, "hard turn cap is deployed by default");
+  assert.strictEqual(defaults.agents.title.model, "opencode-go/glm-5.3-flash", "small-model pin on the title agent");
+  assert.strictEqual(defaults.agents.explore.model, "opencode-go/glm-5.3-flash", "opportunistic explore pin");
 
   // a project override and unrelated agent config are preserved
   const target = tmpdir();
@@ -384,7 +426,7 @@ test("opencode.json merge ships agent.build.steps as an ADD-ONLY default", () =>
     path.join(target, "opencode.json"),
     JSON.stringify(
       {
-        agent: {
+        agents: {
           build: { steps: 150, model: "custom/model" },
           explore: { model: "custom/explore" },
         },
@@ -397,9 +439,9 @@ test("opencode.json merge ships agent.build.steps as an ADD-ONLY default", () =>
   const merged = JSON.parse(
     h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" })
   );
-  assert.strictEqual(merged.agent.build.steps, 150, "project steps override wins");
-  assert.strictEqual(merged.agent.build.model, "custom/model");
-  assert.strictEqual(merged.agent.explore.model, "custom/explore");
+  assert.strictEqual(merged.agents.build.steps, 150, "project steps override wins");
+  assert.strictEqual(merged.agents.build.model, "custom/model");
+  assert.strictEqual(merged.agents.explore.model, "custom/explore");
 });
 
 test("opencode.json ships a least-privilege external-directory policy", () => {
@@ -412,16 +454,17 @@ test("opencode.json ships a least-privilege external-directory policy", () => {
       WORKSPACE_ROOT: workspaceRoot,
     })
   );
-  const ext = merged.permission.external_directory;
+  const ext = (resource) =>
+    merged.permissions.find((p) => p.action === "external_directory" && p.resource === resource);
 
   // Work + test artifacts are auto-allowed (the F-291 Maestro prompt fix).
-  assert.strictEqual(ext["/tmp/**"], "allow");
-  assert.strictEqual(ext["~/.maestro/**"], "allow", "Maestro E2E artifacts are auto-allowed");
-  assert.strictEqual(ext["~/.android/**"], "allow", "the emulator AVD is auto-allowed");
-  assert.strictEqual(ext[`${workspaceRoot}/**`], "allow", "repo + sibling worktrees are allowed");
+  assert.strictEqual(ext("/tmp/**")?.effect, "allow");
+  assert.strictEqual(ext("~/.maestro/**")?.effect, "allow", "Maestro E2E artifacts are auto-allowed");
+  assert.strictEqual(ext("~/.android/**")?.effect, "allow", "the emulator AVD is auto-allowed");
+  assert.strictEqual(ext(`${workspaceRoot}/**`)?.effect, "allow", "repo + sibling worktrees are allowed");
 
-  // Credential stores are denied even though the work root is allowed. Because
-  // the last matching rule wins, the denies must follow the allows in the file.
+  // Credential stores are denied even though the work root is allowed. V2 keeps
+  // rule order (last match wins), so the denies follow the allows in the file.
   for (const p of [
     "~/.ssh/**",
     "~/.aws/**",
@@ -431,25 +474,26 @@ test("opencode.json ships a least-privilege external-directory policy", () => {
     "~/.git-credentials",
     "~/.config/opencode/auth.json",
   ]) {
-    assert.strictEqual(ext[p], "deny", `${p} must be denied`);
+    assert.strictEqual(ext(p)?.effect, "deny", `${p} must be denied`);
   }
   assert.ok(
-    !Object.prototype.hasOwnProperty.call(ext, "*"),
+    !merged.permissions.some((p) => p.action === "external_directory" && p.resource === "*"),
     "no blanket allow: an unmatched external path must still prompt"
   );
 
   // Write separation: the agent cannot rewrite its own policy/config or system.
-  assert.strictEqual(merged.permission.edit["~/.config/opencode/**"], "deny");
-  assert.strictEqual(merged.permission.edit["/etc/**"], "deny");
-  assert.strictEqual(merged.permission.bash["sudo *"], "deny");
+  const find = (a, r) => merged.permissions.find((p) => p.action === a && p.resource === r);
+  assert.strictEqual(find("edit", "~/.config/opencode/**")?.effect, "deny");
+  assert.strictEqual(find("edit", "/etc/**")?.effect, "deny");
+  assert.strictEqual(find("shell", "sudo *")?.effect, "deny");
 });
 
-test("opencode.json permission merge keeps a project's own rules", () => {
+test("opencode.json permission union keeps a project's own rules", () => {
   const target = tmpdir();
   fs.writeFileSync(
     path.join(target, "opencode.json"),
     JSON.stringify(
-      { permission: { external_directory: { "~/custom/**": "allow" }, edit: "deny" } },
+      { permissions: [{ action: "external_directory", resource: "~/custom/**", effect: "allow" }] },
       null,
       2
     ) + "\n",
@@ -462,35 +506,36 @@ test("opencode.json permission merge keeps a project's own rules", () => {
       WORKSPACE_ROOT: "/w",
     })
   );
-  assert.strictEqual(merged.permission.edit, "deny", "a project's scalar rule is preserved");
+  const find = (a, r) => merged.permissions.find((p) => p.action === a && p.resource === r);
   assert.strictEqual(
-    merged.permission.external_directory["~/custom/**"],
+    find("external_directory", "~/custom/**")?.effect,
     "allow",
-    "a project's external_directory rule is added"
+    "a project's rule is preserved"
   );
   assert.strictEqual(
-    merged.permission.external_directory["~/.maestro/**"],
+    find("external_directory", "~/.maestro/**")?.effect,
     "allow",
     "the harness baseline still applies"
   );
   assert.strictEqual(
-    merged.permission.external_directory["~/.ssh/**"],
+    find("external_directory", "~/.ssh/**")?.effect,
     "deny",
     "secret denies survive the merge"
   );
 });
 
 test("opencode.json mcp is project-owned and deep-merged by server name (D prerequisite)", () => {
-  // MCP is wired project-side. A project's `mcp` block, top-level `tools` disable,
-  // and per-agent `tools` enable must all survive a re-merge untouched.
+  // MCP is wired project-side under `mcp.servers` (V2). A project's `mcp` block,
+  // top-level `tools` disable, and per-agent `tools` enable must all survive a
+  // re-merge untouched.
   const target = tmpdir();
   fs.writeFileSync(
     path.join(target, "opencode.json"),
     JSON.stringify(
       {
-        mcp: { pg: { type: "local", command: ["npx", "-y", "prisma", "mcp"], enabled: true } },
+        mcp: { servers: { pg: { type: "local", command: ["npx", "-y", "prisma", "mcp"], enabled: true } } },
         tools: { "pg*": false },
-        agent: { "data-engineer": { tools: { "pg*": true } } },
+        agents: { "data-engineer": { tools: { "pg*": true } } },
       },
       null,
       2
@@ -498,10 +543,10 @@ test("opencode.json mcp is project-owned and deep-merged by server name (D prere
     "utf8"
   );
   const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
-  assert.ok(merged.mcp && merged.mcp.pg, "project mcp server preserved");
+  assert.ok(merged.mcp && merged.mcp.servers && merged.mcp.servers.pg, "project mcp server preserved");
   assert.strictEqual(merged.tools["pg*"], false, "top-level MCP tool disable preserved");
   assert.strictEqual(
-    merged.agent["data-engineer"].tools["pg*"],
+    merged.agents["data-engineer"].tools["pg*"],
     true,
     "per-agent MCP tool enable preserved"
   );
@@ -509,15 +554,15 @@ test("opencode.json mcp is project-owned and deep-merged by server name (D prere
   // A future harness default server merges BY NAME (project wins), never clobbers
   // the whole block, and a harness-only server is added.
   const out = h.mergeMcp(
-    { pg: { type: "local", command: ["npx", "harness-pg"] }, other: { type: "remote", url: "https://x" } },
-    { pg: { enabled: false } }
+    { servers: { pg: { type: "local", command: ["npx", "harness-pg"] }, other: { type: "remote", url: "https://x" } } },
+    { servers: { pg: { enabled: false } } }
   );
   assert.deepStrictEqual(
-    out.pg,
+    out.servers.pg,
     { type: "local", command: ["npx", "harness-pg"], enabled: false },
     "same-named server merged key-by-key with the project winning"
   );
-  assert.ok(out.other, "harness-only server added");
+  assert.ok(out.servers.other, "harness-only server added");
 });
 
 test("update is non-interactive (never prompts)", async () => {
@@ -661,7 +706,7 @@ test("switch-model command + script are deployed to every project", async () => 
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
-  const cmd = read(path.join(target, ".opencode", "command", "switch-model.md"));
+  const cmd = read(path.join(target, ".opencode", "commands", "switch-model.md"));
   assert.match(cmd, /^---/, "switch-model command frontmatter");
   assert.match(cmd, /opencode-go\/deepseek-v4\.1-flash/, "command targets the OpenCode Go default");
   assert.match(cmd, /deepseek\/deepseek-flash/, "command exposes the direct deepseek fallback alias");
@@ -679,9 +724,9 @@ test("switch-model command + script are deployed to every project", async () => 
   assert.match(script, /6 reasoning-tier agents|planner\.md/, "script rewrites the reasoning agents");
 
   // the command is re-deployed (overwritten) on update, like any harness file
-  fs.writeFileSync(path.join(target, ".opencode", "command", "switch-model.md"), "LOCAL EDIT", "utf8");
+  fs.writeFileSync(path.join(target, ".opencode", "commands", "switch-model.md"), "LOCAL EDIT", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
-  assert.match(read(path.join(target, ".opencode", "command", "switch-model.md")), /opencode-go\/deepseek-v4\.1-flash/, "command restored on update");
+  assert.match(read(path.join(target, ".opencode", "commands", "switch-model.md")), /opencode-go\/deepseek-v4\.1-flash/, "command restored on update");
 });
 
 test("switch-reasoning-model.ps1: replace list is derived from the alias map (no hardcoded find list)", () => {
@@ -761,7 +806,7 @@ test("board command is deployed to every project (delegates to the deterministic
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
-  const cmd = read(path.join(target, ".opencode", "command", "board.md"));
+  const cmd = read(path.join(target, ".opencode", "commands", "board.md"));
   assert.match(cmd, /^---/, "board command frontmatter");
   assert.match(cmd, /BACKLOG\.md/, "command reads the local canonical board");
   assert.match(cmd, /node scripts\/backlog\.js list/, "command runs the deterministic CLI");
@@ -770,16 +815,16 @@ test("board command is deployed to every project (delegates to the deterministic
   assert.match(cmd, /Do NOT .* edit `BACKLOG\.md`/, "command forbids hand-editing the board");
 
   // the command is re-deployed (overwritten) on update, like any harness file
-  fs.writeFileSync(path.join(target, ".opencode", "command", "board.md"), "LOCAL EDIT", "utf8");
+  fs.writeFileSync(path.join(target, ".opencode", "commands", "board.md"), "LOCAL EDIT", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });
-  assert.match(read(path.join(target, ".opencode", "command", "board.md")), /BACKLOG\.md/, "board command restored on update");
+  assert.match(read(path.join(target, ".opencode", "commands", "board.md")), /BACKLOG\.md/, "board command restored on update");
 });
 
 test("report command + deterministic agent-report script are deployed to every project", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
-  const cmd = read(path.join(target, ".opencode", "command", "report.md"));
+  const cmd = read(path.join(target, ".opencode", "commands", "report.md"));
   assert.match(cmd, /^---/, "report command frontmatter");
   assert.match(cmd, /scripts[\\/]agent-report\.js/, "command runs the deterministic report script");
   assert.match(cmd, /Do NOT fabricate token counts/, "command forbids fabricated token/cost");
@@ -976,20 +1021,20 @@ test("backlog CLI + custom tools + notify plugin are deployed to every project",
 
   assert.ok(exists(path.join(target, "scripts", "backlog.js")), "deterministic backlog CLI deployed");
 
-  const tools = read(path.join(target, ".opencode", "tools", "backlog.ts"));
-  // file "backlog.ts" + these exports become tools backlog_list/add/take/archive/freeze
-  assert.match(tools, /export const list\b/);
-  assert.match(tools, /export const add\b/);
-  assert.match(tools, /export const take\b/);
-  assert.match(tools, /export const archive\b/);
-  assert.match(tools, /export const freeze\b/);
+  const tools = read(path.join(target, ".opencode", "plugins", "backlog.ts"));
+  // V2: one plugin registers the backlog_* tools explicitly by name.
+  assert.match(tools, /name:\s*"backlog_list"/);
+  assert.match(tools, /name:\s*"backlog_add"/);
+  assert.match(tools, /name:\s*"backlog_take"/);
+  assert.match(tools, /name:\s*"backlog_archive"/);
+  assert.match(tools, /name:\s*"backlog_freeze"/);
   assert.match(tools, /scripts[\\/]backlog\.js/, "tools shell out to the CLI");
   assert.doesNotMatch(tools, /--full/, "list tool is bounded, not a full-board dump");
   assert.match(tools, /--limit/, "list tool exposes the bounded limit");
 
   const plugin = read(path.join(target, ".opencode", "plugins", "backlog-notify.ts"));
-  assert.match(plugin, /tool\.execute\.after/, "plugin hooks tool execution");
-  assert.match(plugin, /showToast/, "plugin pushes a toast");
+  assert.match(plugin, /ctx\.tool\.hook\(\s*"execute\.after"/, "plugin hooks tool execution (V2)");
+  assert.match(plugin, /console\.log/, "plugin logs the mutation (V2 has no server-side toast)");
 
   // the `backlog` npm script is wired so `npm run backlog -- list` works
   const pkg = JSON.parse(read(path.join(target, "package.json")));
@@ -1019,7 +1064,7 @@ test("opencode tools resolve a real node runtime, never the opencode binary (pro
 
   const tools = ["backlog.ts", "checkpoint.ts", "session.ts"];
   for (const f of tools) {
-    const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", f));
+    const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", f));
     assert.doesNotMatch(
       src,
       /execFileSync\(\s*[^,)]*execPath/,
@@ -1030,11 +1075,19 @@ test("opencode tools resolve a real node runtime, never the opencode binary (pro
     assert.match(src, /tool-lib\.js/, `${f} must use the shared tool-lib`);
     assert.match(src, /toolLib\.runScript\(|toolLib\.sessionRoot\(/, `${f} must delegate to tool-lib`);
   }
-  // static gate over the whole template tree: no tool spawns the opencode binary
-  const toolDir = path.join(h.TEMPLATES_DIR, ".opencode", "tools");
-  for (const f of fs.readdirSync(toolDir).filter((n) => n.endsWith(".ts"))) {
+  // static gate over the tool plugins: none spawns the opencode binary
+  const toolPluginFiles = [
+    "backlog.ts",
+    "checkpoint.ts",
+    "session.ts",
+    "orient.ts",
+    "gates.ts",
+    "wait.ts",
+    "where.ts",
+  ];
+  for (const f of toolPluginFiles) {
     assert.doesNotMatch(
-      read(path.join(toolDir, f)),
+      read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", f)),
       /execFileSync\(\s*[^,)]*execPath/,
       `${f} must not spawn the opencode binary (process.execPath)`
     );
@@ -1590,7 +1643,7 @@ test("/next command claims atomically (next --take) before anything else", async
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
 
-  const cmd = read(path.join(target, ".opencode", "command", "next.md"));
+  const cmd = read(path.join(target, ".opencode", "commands", "next.md"));
   assert.match(cmd, /^---/, "next command frontmatter");
   assert.match(cmd, /next --take/, "next command runs the atomic claim");
   assert.match(cmd, /claim it first/i, "claim is the first step");
@@ -1846,7 +1899,7 @@ test("docs persona supports mid-project reconstruction from history inputs", () 
   assert.match(skill, /never run git yourself/i);
   assert.match(skill, /Never fabricate/);
   const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", "docs.md"));
-  assert.match(agent, /bash:\s*deny/);
+  assert.match(agent, /action:\s*shell\s*\n\s*resource:\s*"\*"\s*\n\s*effect:\s*deny/);
   assert.match(agent, /Reconstruction mode/);
 });
 
@@ -2393,7 +2446,7 @@ test("init auto-commits everything it deploys (scaffolds + BACKLOG.md tracked)",
   assert.ok(tracked.includes("BACKLOG.md"), "BACKLOG.md tracked after init");
   assert.ok(tracked.includes(".agents/handoffs/README.md"), "handoffs scaffold tracked after init");
   assert.ok(tracked.includes(".agents/features/INDEX.md"), "features scaffold tracked after init");
-  assert.ok(tracked.includes(".opencode/command/board.md"), "command tracked after init");
+  assert.ok(tracked.includes(".opencode/commands/board.md"), "command tracked after init");
   assert.ok(tracked.includes("AGENTS.md"), "AGENTS.md tracked after init");
   assert.ok(!exists(path.join(target, ".gitignore")), "init never creates a .gitignore (project-owned)");
   assert.strictEqual(git(target, ["status", "--porcelain"]), "", "working tree clean after init");
@@ -3903,8 +3956,8 @@ test("test:concurrency + run-clean are deployed and auto-wired", async () => {  
   const pkg = JSON.parse(read(path.join(target, "package.json")));
   assert.strictEqual(pkg.scripts["test:concurrency"], "node scripts/qa/check-concurrency.js");
 
-  const tools = read(path.join(target, ".opencode", "tools", "backlog.ts"));
-  assert.match(tools, /export const worktree\b/, "backlog_worktree tool deployed");
+  const tools = read(path.join(target, ".opencode", "plugins", "backlog.ts"));
+  assert.match(tools, /name:\s*"backlog_worktree"/, "backlog_worktree tool deployed");
   assert.match(tools, /worktree/, "worktree tool shells out to the CLI");
   // Mid-session worktree isolation: the tools reroot to the worktree the CLI
   // recorded for this session (`.serve/sessions/<id>.worktree`).
@@ -4398,7 +4451,7 @@ test("MCP guidance is deployed and the explore dispatch is step-bounded (D/C2)",
   assert.ok(exists(path.join(target, "docs", "mcp-integrations.md")), "MCP guidance doc deployed");
 
   const cfg = JSON.parse(read(path.join(h.TEMPLATES_DIR, "opencode.json")));
-  assert.strictEqual(cfg.agent.explore.steps, 40, "explore is step-bounded");
+  assert.strictEqual(cfg.agents.explore.steps, 40, "explore is step-bounded");
 });
 
 // ---------------------------------------------------------------- test:quality gate (M4)
@@ -5267,16 +5320,16 @@ test("context-guard recognizes provider funds/quota errors (hard stop) and ignor
 
 test("context-guard plugin source-contract: hooks wired to the core, no hardcoded thresholds", () => {
   const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
-  assert.match(src, /from "@opencode-ai\/plugin"/);
+  assert.match(src, /from "@opencode\/plugin"/);
+  assert.match(src, /id: "context-guard"/, "the V2 plugin declares its stable id");
   assert.match(src, /context-guard-core\.js/, "loads the shared pure core");
   for (const hook of [
-    "event:",
-    '"tool.execute.before"',
-    '"tool.execute.after"',
-    '"experimental.chat.messages.transform"',
-    '"permission.ask"',
+    'ctx.tool.hook("execute.before"',
+    'ctx.tool.hook("execute.after"',
+    'ctx.session.hook("context"',
+    "ctx.event.subscribe",
   ]) {
-    assert.ok(src.includes(hook), `hook ${hook} present`);
+    assert.ok(src.includes(hook), `V2 registration ${hook} present`);
   }
   assert.doesNotMatch(
     src,
@@ -5317,7 +5370,8 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /fundsError/, "detects provider funds/quota errors mechanically");
   assert.match(src, /session\.error/, "also watches provider session errors");
   assert.match(src, /fundsPending = false/, "a user message releases the funds stop");
-  assert.match(src, /doom_loop/, "builds on the built-in doom-loop permission");
+  assert.doesNotMatch(src, /"permission\.ask"/, "V2 has no permission.ask hook (the doom_loop action was removed)");
+  assert.match(src, /no V2 equivalent/, "the dropped doom-loop mirror is documented");
   assert.match(src, /inspectCommand/, "steers shell file-inspection to the dedicated tools");
   assert.match(src, /rerootBash/, "lifts a leading `cd <tree> &&` into the bash workdir argument");
   assert.match(src, /sessionBashRoot/, "defaults bash into the session's mid-session worktree");
@@ -5330,35 +5384,122 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.doesNotMatch(src, /(?:===|==|>=|>)\s*(?:50|60|80|100)\b/, "no hardcoded turn band numbers");
 });
 
-test("context-guard injects at the conversation tail and never mutates the cached prefix", async () => {
+/* Load the V2 context-guard plugin and return a small driver: a fake `ctx` that
+ * records the V2 hooks the plugin registers, plus `emit` (event stream) and
+ * `toolBefore`/`toolAfter`/`context` helpers that build the V2 event shapes. */
+async function loadGuardPlugin(opts = {}) {
   const { pathToFileURL } = require("node:url");
   const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
   const mod = await import(pathToFileURL(pluginPath).href);
-  const plugin = await mod.ContextGuard({
-    directory: tmpdir(),
-    client: { app: { log: async () => {} } },
-  });
+  const registered = { tool: {}, session: {}, shell: {}, permission: {} };
+  const queue = [];
+  let waiter = null;
+  const wake = () => {
+    const w = waiter;
+    waiter = null;
+    if (w) w();
+  };
+  const directory = opts.directory || tmpdir();
+  const ctx = {
+    location: { directory, project: { id: "proj", canonical: directory } },
+    options: {},
+    app: { name: "opencode", version: "2.0.29", channel: "dev" },
+    tool: {
+      hook: async (name, cb) => {
+        (registered.tool[name] ||= []).push(cb);
+        return { dispose: async () => {} };
+      },
+      transform: async () => ({ dispose: async () => {} }),
+      list: async () => [],
+    },
+    session: {
+      hook: async (name, cb) => {
+        (registered.session[name] ||= []).push(cb);
+        return { dispose: async () => {} };
+      },
+      prompt: async () => {},
+      synthetic: async () => {},
+    },
+    shell: {
+      hook: async (name, cb) => {
+        (registered.shell[name] ||= []).push(cb);
+        return { dispose: async () => {} };
+      },
+    },
+    permission: {
+      hook: async (name, cb) => {
+        (registered.permission[name] ||= []).push(cb);
+        return { dispose: async () => {} };
+      },
+    },
+    event: {
+      subscribe: ({ signal } = {}) =>
+        (async function* () {
+          for (;;) {
+            if (signal?.aborted) return;
+            if (queue.length) {
+              yield queue.shift();
+              continue;
+            }
+            await new Promise((r) => {
+              waiter = r;
+            });
+          }
+        })(),
+    },
+  };
+  const cleanup = await mod.default.setup(ctx);
+  const settle = () => new Promise((r) => setImmediate(r));
+  const emit = async (event) => {
+    queue.push(event);
+    wake();
+    await settle();
+  };
+  const toolBefore = async (tool, sessionID, input) => {
+    const event = { tool, sessionID, agent: "build", messageID: "m1", id: "c1", input };
+    for (const cb of registered.tool["execute.before"] || []) await cb(event);
+    return event;
+  };
+  const toolAfter = async (tool, sessionID, input, extra = {}) => {
+    const event = { tool, sessionID, agent: "build", messageID: "m1", id: "c1", input, ...extra };
+    for (const cb of registered.tool["execute.after"] || []) await cb(event);
+    return event;
+  };
+  const context = async (sessionID, messages) => {
+    const event = {
+      sessionID,
+      agent: "build",
+      model: { providerID: "x", id: "y" },
+      system: [],
+      messages,
+      options: {},
+      tools: {},
+    };
+    for (const cb of registered.session.context || []) cb(event);
+    return event;
+  };
+  return { mod, ctx, registered, cleanup, emit, toolBefore, toolAfter, context };
+}
 
+test("context-guard injects at the conversation tail and never mutates the cached prefix", async () => {
+  const g = await loadGuardPlugin();
   const sid = "ses_guard_primary";
-  await plugin.event({ event: { type: "session.created", properties: { info: { id: sid } } } });
+  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
   // Cross the first band (checkpoint warning at turn 50).
   for (let i = 1; i <= 50; i++) {
-    await plugin.event({
-      event: {
-        type: "message.updated",
-        properties: { info: { id: "m" + i, role: "assistant", sessionID: sid } },
-      },
+    await g.emit({
+      type: "message.updated",
+      properties: { info: { id: "m" + i, role: "assistant", sessionID: sid } },
     });
   }
 
   const messages = [
-    { info: { role: "user", sessionID: sid }, parts: [{ type: "text", text: "hello" }] },
-    { info: { role: "assistant", sessionID: sid }, parts: [{ type: "text", text: "working" }] },
-    { info: { role: "user", sessionID: sid }, parts: [{ type: "text", text: "continue" }] },
+    { role: "user", content: [{ type: "text", text: "hello" }] },
+    { role: "assistant", content: [{ type: "text", text: "working" }] },
+    { role: "user", content: [{ type: "text", text: "continue" }] },
   ];
   const before = JSON.parse(JSON.stringify(messages));
-  const output = { messages };
-  await plugin["experimental.chat.messages.transform"]({}, output);
+  await g.context(sid, messages);
 
   assert.strictEqual(messages.length, before.length + 1, "one synthetic guard message is appended");
   assert.deepStrictEqual(
@@ -5367,56 +5508,46 @@ test("context-guard injects at the conversation tail and never mutates the cache
     "the entire stored transcript is byte-identical — the provider prompt cache survives"
   );
   const injected = messages[messages.length - 1];
-  assert.strictEqual(injected.info.role, "user");
-  assert.strictEqual(injected.info.synthetic, true);
-  assert.strictEqual(injected.parts.length, 1);
-  assert.match(injected.parts[0].text, /AUTOMATED HARNESS NUDGE/, "the tail is labelled synthetic");
-  assert.match(injected.parts[0].text, /CONTEXT GUARD/);
-  assert.match(injected.parts[0].text, /checkpoint warning/);
+  assert.strictEqual(injected.role, "user");
+  assert.strictEqual(injected.metadata.synthetic, true);
+  assert.strictEqual(injected.content.length, 1);
+  assert.match(injected.content[0].text, /AUTOMATED HARNESS NUDGE/, "the tail is labelled synthetic");
+  assert.match(injected.content[0].text, /CONTEXT GUARD/);
+  assert.match(injected.content[0].text, /checkpoint warning/);
 
   // A re-request in the same turn must update in place, never stack duplicates.
-  await plugin["experimental.chat.messages.transform"]({}, output);
+  await g.context(sid, messages);
   assert.strictEqual(messages.length, before.length + 1, "no duplicate guard message");
 
   // Crossing the next band updates the tail message while the prefix stays put.
   for (let i = 51; i <= 60; i++) {
-    await plugin.event({
-      event: {
-        type: "message.updated",
-        properties: { info: { id: "m" + i, role: "assistant", sessionID: sid } },
-      },
+    await g.emit({
+      type: "message.updated",
+      properties: { info: { id: "m" + i, role: "assistant", sessionID: sid } },
     });
   }
-  await plugin["experimental.chat.messages.transform"]({}, output);
+  await g.context(sid, messages);
   assert.strictEqual(messages.length, before.length + 1);
-  assert.match(messages[messages.length - 1].parts[0].text, /soft turn budget reached/);
+  assert.match(messages[messages.length - 1].content[0].text, /soft turn budget reached/);
   assert.deepStrictEqual(messages.slice(0, before.length), before, "prefix still byte-identical");
 
   // A child/subagent session is never nudged.
-  await plugin.event({
-    event: {
-      type: "session.created",
-      properties: { info: { id: "ses_guard_child", parentID: sid } },
-    },
+  await g.emit({
+    type: "session.created",
+    properties: { info: { id: "ses_guard_child", parentID: sid } },
   });
-  const childMessages = [{ info: { role: "user", sessionID: "ses_guard_child" }, parts: [] }];
-  await plugin["experimental.chat.messages.transform"]({}, { messages: childMessages });
+  const childMessages = [{ role: "user", content: [] }];
+  await g.context("ses_guard_child", childMessages);
   assert.strictEqual(childMessages.length, 1, "subagent sessions get no guard message");
 });
 
 test("context-guard injects the session-start orient brief until the first material action", async () => {
-  const { pathToFileURL } = require("node:url");
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
-  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
-  const mod = await import(pathToFileURL(pluginPath).href);
-  const plugin = await mod.ContextGuard({
-    directory: target,
-    client: { app: { log: async () => {} } },
-  });
+  const g = await loadGuardPlugin({ directory: target });
 
   const sid = "ses_orient_primary";
-  await plugin.event({ event: { type: "session.created", properties: { info: { id: sid } } } });
+  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
 
   // orient runs async (it spawns git/backlog) — poll for its guard event.
   const eventsFile = path.join(target, ".agents", "guard-events.jsonl");
@@ -5431,31 +5562,27 @@ test("context-guard injects the session-start orient brief until the first mater
   }
   assert.ok(logged, "the orient collection logged its guard event");
 
-  const messages = [{ info: { role: "user", sessionID: sid }, parts: [{ type: "text", text: "resume" }] }];
-  await plugin["experimental.chat.messages.transform"]({}, { messages });
+  const messages = [{ role: "user", content: [{ type: "text", text: "resume" }] }];
+  await g.context(sid, messages);
   assert.strictEqual(messages.length, 2, "the orient brief is injected into the tail");
-  assert.match(messages[1].parts[0].text, /SESSION ORIENT/, "the brief is labelled");
-  assert.match(messages[1].parts[0].text, /do not re-derive/, "the brief tells the agent not to hand-derive");
+  assert.match(messages[1].content[0].text, /SESSION ORIENT/, "the brief is labelled");
+  assert.match(messages[1].content[0].text, /do not re-derive/, "the brief tells the agent not to hand-derive");
 
   // A material action (a dispatch) clears the orient block.
-  await plugin["tool.execute.before"]({ tool: "task", sessionID: sid }, { args: {} });
-  const after = [{ info: { role: "user", sessionID: sid }, parts: [{ type: "text", text: "go" }] }];
-  await plugin["experimental.chat.messages.transform"]({}, { messages: after });
-  const injected = after.length > 1 ? after[after.length - 1].parts[0].text : "";
+  await g.toolBefore("subagent", sid, {});
+  const after = [{ role: "user", content: [{ type: "text", text: "go" }] }];
+  await g.context(sid, after);
+  const injected = after.length > 1 ? after[after.length - 1].content[0].text : "";
   assert.doesNotMatch(injected, /SESSION ORIENT/, "orient is dropped once real work starts");
 });
 
 test("context-guard blocks the first pure inspection + poll once per head/kind (kill-switch honored)", async () => {
-  const { pathToFileURL } = require("node:url");
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
-  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
-  const mod = await import(pathToFileURL(pluginPath).href);
-  const plugin = await mod.ContextGuard({ directory: target, client: { app: { log: async () => {} } } });
+  const g = await loadGuardPlugin({ directory: target });
   const sid = "ses_toolblock";
-  await plugin.event({ event: { type: "session.created", properties: { info: { id: sid } } } });
-  const before = (command) =>
-    plugin["tool.execute.before"]({ tool: "bash", sessionID: sid }, { args: { command } });
+  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
+  const before = (command) => g.toolBefore("shell", sid, { command });
 
   await assert.rejects(before("cat src/a.ts"), /TOOL BLOCK/, "the first pure `cat` is blocked");
   await before("cat src/a.ts"); // same head: no longer blocked
@@ -5468,51 +5595,38 @@ test("context-guard blocks the first pure inspection + poll once per head/kind (
   process.env.AGENT_GUARD_TOOLBLOCK = "0";
   try {
     const relaxed = "ses_toolblock_relaxed";
-    await plugin.event({ event: { type: "session.created", properties: { info: { id: relaxed } } } });
-    await plugin["tool.execute.before"]({ tool: "bash", sessionID: relaxed }, { args: { command: "cat src/a.ts" } });
+    await g.emit({ type: "session.created", properties: { info: { id: relaxed } } });
+    await g.toolBefore("shell", relaxed, { command: "cat src/a.ts" });
   } finally {
     delete process.env.AGENT_GUARD_TOOLBLOCK;
   }
 });
 
 test("branch-switch plugin guard aborts a HEAD move only while another live session shares the checkout", async () => {
-  const { pathToFileURL } = require("node:url");
   const leases = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"));
-  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
-  const mod = await import(pathToFileURL(pluginPath).href);
-  const client = { app: { log: async () => {} } };
 
   // Two primary sessions in one checkout: another live lease is present.
   const shared = tmpdir();
   leases.writeLease(shared, "ses_other", {});
-  const plugin = await mod.ContextGuard({ directory: shared, client });
-  await plugin.event({ event: { type: "session.created", properties: { info: { id: "ses_me" } } } });
+  const g = await loadGuardPlugin({ directory: shared });
+  await g.emit({ type: "session.created", properties: { info: { id: "ses_me" } } });
 
   await assert.rejects(
-    plugin["tool.execute.before"](
-      { tool: "bash", sessionID: "ses_me", callID: "c1" },
-      { args: { command: "cd /repo && git checkout main 2>&1 | tail -2" } }
-    ),
+    g.toolBefore("shell", "ses_me", { command: "cd /repo && git checkout main 2>&1 | tail -2" }),
     /SESSION GUARD[\s\S]*ses_other[\s\S]*backlog worktree/,
     "the switch is aborted (thrown) while another live session shares the tree"
   );
 
   // File restores and non-git commands are never blocked.
   for (const command of ["git checkout -- BACKLOG.md", "git restore --staged .", "npm run test:quick"]) {
-    await plugin["tool.execute.before"](
-      { tool: "bash", sessionID: "ses_me", callID: "c2" },
-      { args: { command } }
-    );
+    await g.toolBefore("shell", "ses_me", { command });
   }
 
   // Solo checkout: the same switch is allowed.
   const solo = tmpdir();
-  const soloPlugin = await mod.ContextGuard({ directory: solo, client });
-  await soloPlugin.event({ event: { type: "session.created", properties: { info: { id: "ses_solo" } } } });
-  await soloPlugin["tool.execute.before"](
-    { tool: "bash", sessionID: "ses_solo", callID: "c3" },
-    { args: { command: "git checkout main" } }
-  );
+  const sg = await loadGuardPlugin({ directory: solo });
+  await sg.emit({ type: "session.created", properties: { info: { id: "ses_solo" } } });
+  await sg.toolBefore("shell", "ses_solo", { command: "git checkout main" });
 
   // A dead-pid lease is not live, so it must not block an innocent switch.
   const dead = tmpdir();
@@ -5529,20 +5643,12 @@ test("branch-switch plugin guard aborts a HEAD move only while another live sess
       heartbeatAt: Date.now(),
     })
   );
-  const deadPlugin = await mod.ContextGuard({ directory: dead, client });
-  await deadPlugin.event({ event: { type: "session.created", properties: { info: { id: "ses_d" } } } });
-  await deadPlugin["tool.execute.before"](
-    { tool: "bash", sessionID: "ses_d", callID: "c4" },
-    { args: { command: "git switch main" } }
-  );
+  const dg = await loadGuardPlugin({ directory: dead });
+  await dg.emit({ type: "session.created", properties: { info: { id: "ses_d" } } });
+  await dg.toolBefore("shell", "ses_d", { command: "git switch main" });
 });
 
 test("main-checkout plugin guard judges git ops by paths + effective target; docs maintenance on main is allowed", async () => {
-  const { pathToFileURL } = require("node:url");
-  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
-  const mod = await import(pathToFileURL(pluginPath).href);
-  const client = { app: { log: async () => {} } };
-
   const origin = tmpdir();
   git(origin, ["init", "--bare", "-q"]);
   const main = tmpdir();
@@ -5557,13 +5663,9 @@ test("main-checkout plugin guard judges git ops by paths + effective target; doc
   git(main, ["remote", "add", "origin", origin]);
   git(main, ["push", "-q", "-u", "origin", "HEAD:main"]);
 
-  const plugin = await mod.ContextGuard({ directory: main, client });
-  await plugin.event({ event: { type: "session.created", properties: { info: { id: "ses_main" } } } });
-  const run = (command, args = {}) =>
-    plugin["tool.execute.before"](
-      { tool: "bash", sessionID: "ses_main", callID: "c" },
-      { args: { command, ...args } }
-    );
+  const g = await loadGuardPlugin({ directory: main });
+  await g.emit({ type: "session.created", properties: { info: { id: "ses_main" } } });
+  const run = (command, args = {}) => g.toolBefore("shell", "ses_main", { command, ...args });
   const assertBlocked = (command) =>
     assert.rejects(run(command), /SESSION GUARD[\s\S]*MAIN checkout[\s\S]*NOT executed/, `blocked: ${command}`);
 
@@ -5602,13 +5704,9 @@ test("main-checkout plugin guard judges git ops by paths + effective target; doc
   // the worktree cwd (the hole the docs-commit workaround exploited).
   const wt = path.join(tmpdir(), "linked");
   git(main, ["worktree", "add", "-q", wt, "-b", "feat"]);
-  const wtPlugin = await mod.ContextGuard({ directory: wt, client });
-  await wtPlugin.event({ event: { type: "session.created", properties: { info: { id: "ses_wt" } } } });
-  const runWt = (command) =>
-    wtPlugin["tool.execute.before"](
-      { tool: "bash", sessionID: "ses_wt", callID: "c" },
-      { args: { command } }
-    );
+  const wg = await loadGuardPlugin({ directory: wt });
+  await wg.emit({ type: "session.created", properties: { info: { id: "ses_wt" } } });
+  const runWt = (command) => wg.toolBefore("shell", "ses_wt", { command });
   // main's index carries the unpushed code commit's tree? It's committed, so
   // stage fresh code and confirm the -C commit is blocked.
   fs.writeFileSync(path.join(main, "app.ts"), "export const x = 4\n");
@@ -5683,66 +5781,57 @@ test("tool-choice / reroot / read-hygiene core helpers classify the measured ant
 });
 
 test("bash reroot lifts `cd <tree> &&` into workdir and defaults to the session worktree", async () => {
-  const { pathToFileURL } = require("node:url");
   const leases = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"));
-  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
-  const mod = await import(pathToFileURL(pluginPath).href);
   const directory = tmpdir();
   const wt = tmpdir();
-  const plugin = await mod.ContextGuard({ directory, client: { app: { log: async () => {} } } });
-  await plugin.event({ event: { type: "session.created", properties: { info: { id: "ses_r" } } } });
+  const g = await loadGuardPlugin({ directory });
+  await g.emit({ type: "session.created", properties: { info: { id: "ses_r" } } });
 
-  // An explicit `cd <abs> && ...` is lifted into the bash workdir argument.
-  const a = { args: { command: `cd ${wt} && npm run test:quick` } };
-  await plugin["tool.execute.before"]({ tool: "bash", sessionID: "ses_r", callID: "c1" }, a);
-  assert.strictEqual(a.args.workdir, wt);
-  assert.strictEqual(a.args.command, "npm run test:quick");
+  // An explicit `cd <abs> && ...` is lifted into the shell workdir argument.
+  const a = { command: `cd ${wt} && npm run test:quick` };
+  await g.toolBefore("shell", "ses_r", a);
+  assert.strictEqual(a.workdir, wt);
+  assert.strictEqual(a.command, "npm run test:quick");
 
   // A recorded mid-session worktree defaults a cwd-less command into it.
   leases.writeWorktree(directory, "ses_r", wt);
-  const b = { args: { command: "git status --short" } };
-  await plugin["tool.execute.before"]({ tool: "bash", sessionID: "ses_r", callID: "c2" }, b);
-  assert.strictEqual(b.args.workdir, wt);
+  const b = { command: "git status --short" };
+  await g.toolBefore("shell", "ses_r", b);
+  assert.strictEqual(b.workdir, wt);
 
   // An explicit workdir is never overwritten.
-  const c = { args: { command: "git status", workdir: "/elsewhere" } };
-  await plugin["tool.execute.before"]({ tool: "bash", sessionID: "ses_r", callID: "c3" }, c);
-  assert.strictEqual(c.args.workdir, "/elsewhere");
+  const c = { command: "git status", workdir: "/elsewhere" };
+  await g.toolBefore("shell", "ses_r", c);
+  assert.strictEqual(c.workdir, "/elsewhere");
 });
 
 test("the guard nudges shell tool-choice and re-reads once, on the cache-safe tail", async () => {
-  const { pathToFileURL } = require("node:url");
-  const pluginPath = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts");
-  const mod = await import(pathToFileURL(pluginPath).href);
-  const plugin = await mod.ContextGuard({ directory: tmpdir(), client: { app: { log: async () => {} } } });
+  const g = await loadGuardPlugin();
   const sid = "ses_hygiene";
-  await plugin.event({ event: { type: "session.created", properties: { info: { id: sid } } } });
+  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
 
   // This test covers the ADVISORY (the fallback when the structural block is
   // off); the block itself is covered by the tool-block test.
   process.env.AGENT_GUARD_TOOLBLOCK = "0";
   try {
-    await plugin["tool.execute.before"](
-      { tool: "bash", sessionID: sid, callID: "c1" },
-      { args: { command: "grep -rn foo lib/" } }
-    );
+    await g.toolBefore("shell", sid, { command: "grep -rn foo lib/" });
   } finally {
     delete process.env.AGENT_GUARD_TOOLBLOCK;
   }
-  const out1 = { messages: [{ info: { role: "user", sessionID: sid }, parts: [] }] };
-  await plugin["experimental.chat.messages.transform"]({}, out1);
-  assert.match(out1.messages.at(-1).parts[0].text, /read-only shell inspection/);
+  const out1 = [{ role: "user", content: [] }];
+  await g.context(sid, out1);
+  assert.match(out1.at(-1).content[0].text, /read-only shell inspection/);
   // The notice is one-shot: the next request does not repeat it.
-  const out2 = { messages: [{ info: { role: "user", sessionID: sid }, parts: [] }] };
-  await plugin["experimental.chat.messages.transform"]({}, out2);
-  assert.strictEqual(out2.messages.length, 1, "the tool-choice nudge is not repeated");
+  const out2 = [{ role: "user", content: [] }];
+  await g.context(sid, out2);
+  assert.strictEqual(out2.length, 1, "the tool-choice nudge is not repeated");
 
   // A second read of the same path arms the re-read nudge.
-  await plugin["tool.execute.before"]({ tool: "read", sessionID: sid, callID: "r1" }, { args: { filePath: "a.ts" } });
-  await plugin["tool.execute.before"]({ tool: "read", sessionID: sid, callID: "r2" }, { args: { filePath: "a.ts" } });
-  const out3 = { messages: [{ info: { role: "user", sessionID: sid }, parts: [] }] };
-  await plugin["experimental.chat.messages.transform"]({}, out3);
-  assert.match(out3.messages.at(-1).parts[0].text, /already read this file/);
+  await g.toolBefore("read", sid, { filePath: "a.ts" });
+  await g.toolBefore("read", sid, { filePath: "a.ts" });
+  const out3 = [{ role: "user", content: [] }];
+  await g.context(sid, out3);
+  assert.match(out3.at(-1).content[0].text, /already read this file/);
 });
 
 test("funds scan trusts only structured failure evidence — docs quoting the rule never arm the stop", () => {
@@ -6237,19 +6326,19 @@ test("agent-report --cost joins handoffs to provider sessions and reports cost p
 });
 
 test("session_info tool ships, reports the join key, and both telemetry files stay harness-owned", async () => {
-  const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "session.ts"));
-  assert.match(src, /export const info\b/, "file session.ts + export info -> the session_info tool");
+  const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "session.ts"));
+  assert.match(src, /name:\s*"session_info"/, "the session_info tool registers by name");
   assert.match(src, /context\.sessionID/, "reports the calling session id");
   assert.match(src, /session: \$\{rootID \|\| sessionID\}/, "the session: line is the primary join key");
   assert.match(src, /provider-stats\.js/, "reads observed telemetry, never fabricates it");
   assert.match(src, /unavailable/, "an unreachable store is reported as unavailable");
 
-  const cmd = read(path.join(h.TEMPLATES_DIR, ".opencode", "command", "report.md"));
+  const cmd = read(path.join(h.TEMPLATES_DIR, ".opencode", "commands", "report.md"));
   assert.match(cmd, /--cost/, "the report command documents the cost join");
 
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
-  assert.ok(exists(path.join(target, ".opencode", "tools", "session.ts")), "session_info tool deployed");
+  assert.ok(exists(path.join(target, ".opencode", "plugins", "session.ts")), "session_info tool deployed");
   assert.ok(exists(path.join(target, "scripts", "qa", "provider-stats.js")), "provider-stats deployed");
 
   const scriptPath = path.join(target, "scripts", "qa", "provider-stats.js");
@@ -6263,7 +6352,7 @@ test("session_info tool ships, reports the join key, and both telemetry files st
 test("model-routing ships the opportunistic tier with fallback + privacy caveat and machine-read targets", () => {
   const doc = read(path.join(h.TEMPLATES_DIR, ".agents", "memory", "model-routing.md"));
   assert.match(doc, /opportunistic \(free\/low-cost\)/);
-  assert.match(doc, /agent\.explore\.model/);
+  assert.match(doc, /agents\.explore\.model/);
   assert.match(doc, /opencode-go\/glm-5\.3-flash/);
   assert.doesNotMatch(
     doc,
@@ -6286,8 +6375,8 @@ test("model-routing ships the opportunistic tier with fallback + privacy caveat 
 
   const cfg = JSON.parse(read(path.join(h.TEMPLATES_DIR, "opencode.json")));
   assert.strictEqual(cfg.model, "opencode-go/deepseek-v4.1-flash", "OpenCode Go is the default provider");
-  assert.strictEqual(cfg.small_model, "opencode-go/glm-5.3-flash", "the cheap Go model handles small jobs");
-  assert.strictEqual(cfg.agent.explore.model, "opencode-go/glm-5.3-flash", "explore is the reference opportunistic pin (Go, no Zen)");
+  assert.strictEqual(cfg.agents.title.model, "opencode-go/glm-5.3-flash", "the cheap Go model handles small jobs");
+  assert.strictEqual(cfg.agents.explore.model, "opencode-go/glm-5.3-flash", "explore is the reference opportunistic pin (Go, no Zen)");
 });
 
 test("architect-tier personas pin direct DeepSeek V4 Pro; engineering pins Go V4.1 Flash", () => {
@@ -6297,7 +6386,7 @@ test("architect-tier personas pin direct DeepSeek V4 Pro; engineering pins Go V4
   }
   for (const name of ["frontend-engineer", "mobile-engineer", "data-engineer", "devops-engineer", "qa-runner", "diagnostics-expert"]) {
     const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", `${name}.md`));
-    assert.match(agent, /^model: opencode-go\/deepseek-v4\.1-flash$/m, `${name} must pin Go V4.1 Flash`);
+    assert.match(agent, /^model: opencode-go\/deepseek-v4\.1-flash(#low)?$/m, `${name} must pin Go V4.1 Flash`);
   }
 });
 
@@ -6310,8 +6399,8 @@ test("test:dispatch accepts declared tier targets and still fails a stray unpinn
   const clean = runGate();
   assert.strictEqual(clean.status, 0, clean.stdout + clean.stderr);
   assert.match(clean.stdout, /declared escalation target/);
-  assert.match(clean.stdout, /agent\.explore\.model/, "the explore pin is validated like every other pin");
-  assert.doesNotMatch(clean.stdout, /agent\.explore\.model `opencode\//, "explore is not pinned to Zen");
+  assert.match(clean.stdout, /agents\.explore\.model/, "the explore pin is validated like every other pin");
+  assert.doesNotMatch(clean.stdout, /agents\.explore\.model `opencode\//, "explore is not pinned to Zen");
 
   const routing = path.join(target, ".agents", "memory", "model-routing.md");
   fs.appendFileSync(routing, "\nstray mention: opencode-go/kimi-k2.6\n", "utf8");
@@ -6555,7 +6644,7 @@ test("checkpoint writes a deterministic bounded-state block and resume prints it
     "no stray undefined.md handoff is ever written"
   );
   // the tool wrapper rejects the sentinel before shelling out (defence in depth)
-  const cpTool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "checkpoint.ts"));
+  const cpTool = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "checkpoint.ts"));
   assert.match(cpTool, /requireFeature/, "checkpoint tool validates the feature id");
 });
 
@@ -6585,18 +6674,18 @@ test("checkpoint writes into the feature worktree when the session root is main"
 });
 
 test("checkpoint CLI, tools, commands, and report:cost are deployed and stay harness-owned", async () => {
-  const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "checkpoint.ts"));
-  assert.match(tool, /export const write\b/);
-  assert.match(tool, /export const resume\b/);
+  const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "checkpoint.ts"));
+  assert.match(tool, /name:\s*"checkpoint_write"/);
+  assert.match(tool, /name:\s*"checkpoint_resume"/);
   assert.match(tool, /checkpoint\.js/, "shells out to the deterministic CLI");
 
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
   for (const rel of [
     "scripts/checkpoint.js",
-    ".opencode/tools/checkpoint.ts",
-    ".opencode/command/checkpoint.md",
-    ".opencode/command/resume.md",
+    ".opencode/plugins/checkpoint.ts",
+    ".opencode/commands/checkpoint.md",
+    ".opencode/commands/resume.md",
     "scripts/qa/check-prefix-stability.js",
   ]) {
     assert.ok(exists(path.join(target, ...rel.split("/"))), rel + " deployed");
@@ -8507,7 +8596,7 @@ test("context-guard carries the finalization carve-out (run finalize, do not sto
 test("finalize command + script are deployed and wired", async () => {
   const t = await scaffoldGatedTarget();
   assert.ok(exists(path.join(t, "scripts", "finalize.js")), "scripts/finalize.js deployed");
-  assert.ok(exists(path.join(t, ".opencode", "command", "finish.md")), "/finish command deployed");
+  assert.ok(exists(path.join(t, ".opencode", "commands", "finish.md")), "/finish command deployed");
   const pkg = JSON.parse(read(path.join(t, "package.json")));
   assert.strictEqual(pkg.scripts.finalize, "node scripts/finalize.js", "npm run finalize wired");
   const doctorOut = [];
@@ -9863,7 +9952,7 @@ test("[drift-guard] device tier is right-sized, group-budgeted, and notifyable",
   assert.match(runner, /flow_result/, "run-maestro.js emits per-scenario results");
 
   const plugin = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "job-notify.ts"));
-  assert.match(plugin, /promptAsync/, "job-notify wakes the session with a push notification");
+  assert.match(plugin, /ctx\.session\.prompt/, "job-notify wakes the session with a push notification (V2)");
   assert.match(plugin, /readEvents/, "job-notify tails the progress stream");
 });
 
@@ -10401,8 +10490,8 @@ test("run-gates: phase resolution, skip-unwired, stop-at-first-failure", () => {
 
 test("[drift-guard] gates is wired into npm scripts, the tool, and the pre-push hook", () => {
   assert.strictEqual(h.HARNESS_SCRIPTS.gates, "node scripts/qa/run-gates.js", "gates wired into HARNESS_SCRIPTS");
-  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "gates.ts")), "gates tool wrapper deployed");
-  assert.match(read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "gates.ts")), /scripts\/qa\/run-gates\.js/);
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "gates.ts")), "gates tool wrapper deployed");
+  assert.match(read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "gates.ts")), /scripts\/qa\/run-gates\.js/);
   const hook = read(path.join(h.TEMPLATES_DIR, ".husky", "pre-push"));
   assert.match(hook, /gates -- --phase=pre-push/, "the hook delegates to the one gate list");
 });
@@ -10450,8 +10539,8 @@ test("where: parses owners, matches globs, bounds results, and annotates hits", 
 
 test("[drift-guard] where is wired into npm scripts and the tool", () => {
   assert.strictEqual(h.HARNESS_SCRIPTS.where, "node scripts/qa/where.js", "where wired into HARNESS_SCRIPTS");
-  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "where.ts")), "where tool wrapper deployed");
-  assert.match(read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "where.ts")), /scripts\/qa\/where\.js/);
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "where.ts")), "where tool wrapper deployed");
+  assert.match(read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "where.ts")), /scripts\/qa\/where\.js/);
 });
 
 test("feature-scaffold: writes the gate-shaped doc skeletons once, never overwriting", () => {
@@ -10490,19 +10579,19 @@ test("[drift-guard] feature:scaffold is wired and the /feature command points at
     "node scripts/qa/feature-scaffold.js",
     "feature:scaffold wired into HARNESS_SCRIPTS"
   );
-  const cmd = read(path.join(h.TEMPLATES_DIR, ".opencode", "command", "feature.md"));
+  const cmd = read(path.join(h.TEMPLATES_DIR, ".opencode", "commands", "feature.md"));
   assert.match(cmd, /feature-scaffold\.js/, "the command runs the scaffold in one call");
   assert.match(cmd, /execution_mode: direct/, "the command right-sizes trivial work");
 });
 
 test("[drift-guard] orient is wired into npm scripts, the tool, and the resume/next commands", () => {
   assert.strictEqual(h.HARNESS_SCRIPTS.orient, "node scripts/orient.js", "orient wired into HARNESS_SCRIPTS");
-  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "orient.ts")), "orient tool wrapper deployed");
-  const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "orient.ts"));
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "orient.ts")), "orient tool wrapper deployed");
+  const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "orient.ts"));
   assert.match(tool, /scripts\/orient\.js/, "tool shells out to the script");
-  const resume = read(path.join(h.TEMPLATES_DIR, ".opencode", "command", "resume.md"));
+  const resume = read(path.join(h.TEMPLATES_DIR, ".opencode", "commands", "resume.md"));
   assert.match(resume, /orient\.js/, "resume orients in one call");
-  const next = read(path.join(h.TEMPLATES_DIR, ".opencode", "command", "next.md"));
+  const next = read(path.join(h.TEMPLATES_DIR, ".opencode", "commands", "next.md"));
   assert.match(next, /orient\.js/, "next orients in one call");
 });
 
@@ -10591,8 +10680,8 @@ test("run-detached.sh --stop writes matrix_aborted and --list renders the job", 
 
 test("[drift-guard] wait-for is wired into npm scripts and the wait tool", () => {
   assert.strictEqual(h.HARNESS_SCRIPTS.wait, "node scripts/wait-for.js", "wait wired into HARNESS_SCRIPTS");
-  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "wait.ts")), "wait tool wrapper deployed");
-  const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "tools", "wait.ts"));
+  assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "wait.ts")), "wait tool wrapper deployed");
+  const tool = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "wait.ts"));
   assert.match(tool, /scripts\/wait-for\.js/);
   assert.match(tool, /timeout/, "the wait tool is timeout-bounded");
   // A full 26-journey device matrix runs ~33 min, so a 30-min cap forced a second

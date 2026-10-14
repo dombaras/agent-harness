@@ -143,7 +143,7 @@ function fundsError(text) {
  * is context, never failure evidence. Returns the text to scan, or null. */
 function fundsArmText(tool, output) {
   if (output?.error) return String(output.error);
-  if (String(tool || "") === "bash") {
+  if (String(tool || "") === "bash" || String(tool || "") === "shell") {
     const exit = output?.metadata?.exit;
     if (Number.isFinite(exit) && exit !== 0) {
       return typeof output?.output === "string" ? output.output : JSON.stringify(output ?? {});
@@ -168,7 +168,7 @@ function modelLabel(info) {
  * todo list rewrites, user questions, dispatches (retries are governed by the
  * bounded-retry ladder), batched calls, board listings, the session join-key
  * lookup, and the documented serve.js health polling. */
-const EXEMPT_TOOLS = new Set(["todowrite", "question", "task", "batch", "backlog_list", "session_info"]);
+const EXEMPT_TOOLS = new Set(["todowrite", "question", "task", "subagent", "batch", "backlog_list", "session_info"]);
 
 const SERVE_POLL = /serve\.js\s+(list|status)\b/;
 
@@ -177,14 +177,14 @@ const SERVE_POLL = /serve\.js\s+(list|status)\b/;
  * whole turn with none of these is spinning, and the recovery nudge fires. A
  * `task` dispatch counts as material — a subagent that edits files is progress
  * even though the orchestrator's own tool arguments changed nothing. */
-const MATERIAL_TOOLS = new Set(["write", "edit", "patch", "multiedit", "apply_patch", "task"]);
+const MATERIAL_TOOLS = new Set(["write", "edit", "patch", "multiedit", "apply_patch", "task", "subagent"]);
 const MATERIAL_BASH_RE =
   /(^|[^a-z])(git\s+(commit|push|apply|am|merge|rebase|cherry-pick|stash|add)\b)|\|\s*tee\b|\bsed\s+-i\b|\b(rm|mv|cp|mkdir|touch)\b|>>?\s*[^&\s]|\bnpm\s+(install|ci|i)\b/;
 
 function isMaterial(tool, args) {
   const name = String(tool || "").toLowerCase();
   if (MATERIAL_TOOLS.has(name)) return true;
-  if (name === "bash") return MATERIAL_BASH_RE.test(String(args?.command || ""));
+  if (name === "bash" || name === "shell") return MATERIAL_BASH_RE.test(String(args?.command || ""));
   return false;
 }
 

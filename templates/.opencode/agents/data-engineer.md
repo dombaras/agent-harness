@@ -1,18 +1,27 @@
 ---
 description: Use for catalog/data ingestion and entity resolution — external-source ingestion, canonical-record dedup, external service telemetry.
 mode: subagent
-model: opencode-go/deepseek-v4.1-flash
-variant: low
 steps: 40
-permission:
-  edit:
-    "*": allow
-    "opencode.json": deny
-    ".harness.json": deny
-    ".opencode/**": deny
-    ".agents/**": deny
-  bash:
-    "*": allow
+model: opencode-go/deepseek-v4.1-flash#low
+permissions:
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "opencode.json"
+    effect: deny
+  - action: edit
+    resource: ".harness.json"
+    effect: deny
+  - action: edit
+    resource: ".opencode/**"
+    effect: deny
+  - action: edit
+    resource: ".agents/**"
+    effect: deny
+  - action: shell
+    resource: "*"
+    effect: allow
 ---
 
 You are the {{PROJECT_NAME}} Data Engineer. Read and follow the complete persona instructions in `.agents/skills/data-engineer/SKILL.md`, then carry out the task.

@@ -9,6 +9,14 @@ and QA gates — then deploys them into any project.
 > personas" layer is **not** an inherent part of the app codebase. It lives in its
 > own repo and is installed via `npx @dombaras/agent-harness init`.
 
+> **OpenCode V2 (2.0.29+), V2-native.** The harness ships the V2 plugin API
+> (`@opencode/plugin`; plugins default-export `{ id, setup }` and register tools
+> via `ctx.tool.transform` and behavior via `ctx.tool`/`ctx.session`/`ctx.shell`/
+> `ctx.permission`/`ctx.event` hooks) — V1 plugin implementations do **not** run in
+> V2. Configuration is native V2 (`permissions`, `agents`, `mcp.servers`, no
+> `small_model`), commands live in `.opencode/commands/`, and the always-loaded
+> project instructions are `AGENTS.md` (V2 ignores the `instructions` config key).
+
 ## Why
 
 - The agent harness is tooling, not application code. Its source lives in the
@@ -34,22 +42,22 @@ npx @dombaras/agent-harness init --target . --dry-run
 
 | Path | Content | Ownership |
 |---|---|---|
-| `AGENTS.md` | root dispatcher (points to the rulebook) | harness (overwrite) |
+| `AGENTS.md` | always-loaded project instructions (OpenCode V2 reads `AGENTS.md`; the V1 `instructions` key is ignored) | harness (overwrite) |
 | `BACKLOG.md` | canonical task list (Open / In progress / Frozen / Archive / Not tracking) | **project** (create-if-missing) |
-| `.opencode/agents/*.md` | 15 persona subagent defs (with `model:` pins + `permission`/`steps`/`temperature`/`hidden`) | harness (overwrite) |
-| `.agents/AGENTS.md` | full canonical operating rulebook | harness (overwrite) |
-| `.agents/rules/00-operating.md` | always-loaded rules summary (wired into `opencode.json` `instructions`) | harness (overwrite) |
-| `.agents/skills/*/SKILL.md` | persona instruction skills | harness (overwrite) |
+| `.opencode/agents/*.md` | 15 persona subagent defs (native V2 frontmatter: `model: provider/model#variant`, `permissions`, `steps`, `request.body`, `hidden`) | harness (overwrite) |
+| `.agents/AGENTS.md` | full canonical operating rulebook (V2 auto-discovers it as you work under `.agents/`) | harness (overwrite) |
+| `.agents/rules/00-operating.md` | expanded operating rules (referenced from `AGENTS.md`; V2 ignores the `instructions` config key) | harness (overwrite) |
+| `.agents/skills/*/SKILL.md` | persona instruction skills (V2 also discovers `.agents/skills/` as skills) | harness (overwrite) |
 | `.agents/features/INDEX.md` | pointer to `BACKLOG.md` (per-feature doc tree root) | **project** (create-if-missing) |
-| `opencode.json` | main/small model routing + `instructions` | harness (**merged**, see below) |
+| `opencode.json` | main model + `agents` defaults (small-model on `title`, opportunistic `explore`) + the `permissions` baseline | harness (**merged**, see below) |
 | `scripts/qa/*` | `test:dispatch` / `test:governance` / `test:qa-plan` / `test:prefix` gates + QA-script wiring check | harness (overwrite) |
 | `scripts/backlog.js` | deterministic `BACKLOG.md` editor (list/add/take/archive/freeze) | harness (overwrite) |
-| `.opencode/tools/backlog.ts` | `backlog_*` custom tools the LLM calls (shell out to the CLI) | harness (overwrite) |
-| `.opencode/plugins/backlog-notify.ts` | toast/log whenever an agent mutates the board | harness (overwrite) |
+| `.opencode/plugins/backlog.ts` | `backlog_*` custom tools the LLM calls (V2 plugin registering the tools; shells out to the CLI) | harness (overwrite) |
+| `.opencode/plugins/backlog-notify.ts` | structured log whenever an agent mutates the board | harness (overwrite) |
 | `.opencode/plugins/context-guard.ts` | mid-session checkpoint/loop nudges read from `orchestration.md` (core: `scripts/qa/context-guard-core.js`) | harness (overwrite) |
-| `.opencode/tools/session.ts` | `session_info` tool — reports the primary orchestrator session id (the handoff `session:` join key) + observed cost/tokens/turns | harness (overwrite) |
-| `.opencode/tools/checkpoint.ts` | `checkpoint_write` / `checkpoint_resume` tools (shell out to `scripts/checkpoint.js`) | harness (overwrite) |
-| `.opencode/command/checkpoint.md`, `.opencode/command/resume.md` | mid-session checkpoint + bounded resume-from-checkpoint commands | harness (overwrite) |
+| `.opencode/plugins/session.ts` | `session_info` tool — reports the primary orchestrator session id (the handoff `session:` join key) + observed cost/tokens/turns | harness (overwrite) |
+| `.opencode/plugins/checkpoint.ts` | `checkpoint_write` / `checkpoint_resume` tools (shell out to `scripts/checkpoint.js`) | harness (overwrite) |
+| `.opencode/commands/checkpoint.md`, `.opencode/commands/resume.md` | mid-session checkpoint + bounded resume-from-checkpoint commands | harness (overwrite) |
 | `scripts/checkpoint.js` | deterministic checkpoint write/replace/read for one session handoff (no timestamps, `unknown` for absent state) | harness (overwrite) |
 | `scripts/ship.js` | deterministic branch lander (`npm run ship`): rebase on `origin/main`, branch gates, direct fast-forward push of `HEAD:main`, then wait for green CI on the landed SHA | harness (overwrite) |
 | `scripts/qa/check-prefix-stability.js` | `test:prefix` gate — fails a volatile value (clock timestamp, machine path, session id) in the always-loaded prompt prefix | harness (overwrite) |
@@ -70,10 +78,13 @@ npx @dombaras/agent-harness init --target . --dry-run
 
 ### `opencode.json` is merged, not clobbered
 
-The harness owns only `$schema`, `model`, `small_model`, and its own
-`instructions` entry (`.agents/rules/00-operating.md`). Every other key your
-project adds — `permission`, `mcp`, `plugin`, custom `instructions`, etc. — is
-preserved across `init`/`update`.
+The harness owns only `$schema`, `model`, its `agents` defaults
+(`title`/`build`/`explore` — the V2 small-model pin lives on `agents.title.model`)
+and the `permissions` baseline. Every other key your project adds — extra
+`permissions`, `mcp.servers`, `plugins`, custom `agents`, etc. — is preserved
+across `init`/`update` (the `permissions` array is unioned and `agents` is
+add-only per agent). This is the **native V2 shape**: there is no V1
+`small_model`, singular `agent`, keyed `permission`, or `instructions` key.
 
 ## Placeholders
 
@@ -192,20 +203,21 @@ plan.
 
 ## Model routing & enforcement
 
-- Concrete models are set in `.opencode/agents/<name>.md` (`model:` field) and
-  `opencode.json` (`model` + `small_model`).
-- Personas also carry mechanical guardrails in frontmatter:
+- Concrete models are set in `.opencode/agents/<name>.md` (`model:
+  provider/model#variant`) and `opencode.json` (`model`, plus `agents.title.model`
+  for the small-model pin).
+- Personas also carry mechanical guardrails in native V2 `permissions` frontmatter:
   - thinkers (`planner`, `product-manager`) → `edit` deny-by-default with a narrow
     artifact write grant (planner → `.agents/features/<feature>/plan.md`,
     product-manager → `.agents/features/<feature>/intent.md`, each writable in the
-    main tree or the feature's `.worktrees` sibling), `bash: deny`
-  - `qa-architect`, `handoff`, `docs` → `permission: { bash: deny }`
+    main tree or the feature's `.worktrees` sibling), plus a `shell` deny
+  - `qa-architect`, `handoff`, `docs` → a `shell` deny
   - code personas (`frontend-engineer`, `mobile-engineer`, `ui-designer`,
     `data-engineer`, `devops-engineer`, `security-engineer`, `system-architect`,
-    `diagnostics-expert`) → `permission.edit` allows everything EXCEPT
+    `diagnostics-expert`) → an `edit` allow narrowed by denies for
     `opencode.json`, `.harness.json`, `.opencode/**`, `.agents/**` (governance
-    and harness files are read-only), plus `bash: allow`
-  - deterministic personas → `temperature: 0.1`
+    and harness files are read-only), plus a `shell` allow
+  - deterministic personas → `request.body.temperature: 0.1`
   - all personas → a `steps:` cap (cost ceiling)
   - `planner`, `handoff` → `hidden: true`
 - `.agents/skills/*/SKILL.md` carries a `model:` label only (informational).
@@ -217,7 +229,7 @@ plan.
   legal declared targets, not drift.
 - **Opportunistic tier** (`.agents/memory/model-routing.md`): free/low-cost
   models for best-effort bulk exploration/summarization, pinned through
-  `opencode.json` `agent.explore.model` (default `opencode/big-pickle`) and
+  `opencode.json` `agents.explore.model` (default `opencode-go/glm-5.3-flash`) and
   ADD-ONLY overridable per project — with a mandatory fallback to the persona's
   normal tier and a no-confidential-data caveat. `report` classifies the model
   mix by tier.
@@ -238,7 +250,7 @@ plan.
   injects the same stop; reading a document that merely quotes the rule (the
   session-start `model-routing.md`, a handoff, a plan) never trips it.
 - **`/switch-model` command** — every deploy ships an opencode command
-  (`.opencode/command/switch-model.md`) plus per-platform twins
+  (`.opencode/commands/switch-model.md`) plus per-platform twins
   `scripts/switch-reasoning-model.ps1` (Windows PowerShell) and
   `scripts/switch-reasoning-model.sh` (WSL/Linux/macOS; the command invokes this
   one on POSIX). It rewrites the main `opencode.json` `model` and the six
@@ -257,7 +269,7 @@ plan.
   (OpenRouter), or any explicit `provider/model`. Restart opencode after
   switching (config reads once).
 - **`/board` command** — every deploy ships an opencode command
-  (`.opencode/command/board.md`) that runs the deterministic `scripts/backlog.js
+  (`.opencode/commands/board.md`) that runs the deterministic `scripts/backlog.js
   list` and shows the active rows verbatim — no LLM filtering, no re-ordering, no
   transformation. Read-only, no git — the local file is the source of truth.
 
@@ -532,7 +544,7 @@ node bin/agent-harness.js init --target /tmp/demo --name Demo --yes
   by the `/switch-model` command.
 - Worktrees live in a sibling container (`<repo>/../.worktrees/<repo>/<id>`), so
   allow `~/develop/**` in the global `opencode.jsonc`
-  `permission.external_directory` or each worktree access prompts.
+  an `external_directory` allow rule in the `permissions` array, or each worktree access prompts.
 
 Clear the data-test except keep `templates/` generic; do not commit a target
 project's `.agents/memory/` into this repo.

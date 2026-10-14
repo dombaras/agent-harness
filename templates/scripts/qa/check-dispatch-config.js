@@ -11,9 +11,9 @@
  *      `.opencode/agents/<name>.md` and vice-versa (no path/skill drift).
  *   3. Every agent body carries the output-contract marker (Result / Evidence /
  *      Deferred & risks) so subagents return a consistent report shape.
- *   4. `opencode.json` main `model` + `small_model` and every
- *      `agent.<name>.model` override (e.g. the opportunistic `explore` pin) are
- *      real provider IDs.
+ *   4. `opencode.json` main `model` + `agents.title.model` (the small-model pin)
+ *      and every `agents.<name>.model` override (e.g. the opportunistic
+ *      `explore` pin) are real provider IDs.
  *   5. `.agents/memory/model-routing.md` does not name a concrete model that is
  *      no longer pinned by any agent or opencode.json (doc↔config drift) —
  *      except IDs declared on a machine-readable `opportunistic_models:` /
@@ -83,7 +83,41 @@ function frontmatterModel(file) {
   if (!m) return null;
   const modelLine = m[1].split(/\r?\n/).find((l) => /^model:/i.test(l.trim()));
   if (!modelLine) return null;
-  return modelLine.replace(/^model:\s*/i, "").trim();
+  // Native V2 pins join the variant to the model (`provider/model#variant`); the
+  // provider allowlist holds base IDs, so strip any `#variant` before matching.
+  return modelLine.replace(/^model:\s*/i, "").trim().replace(/#.*$/, "");
+}
+
+/* Parse the agent's native V2 `permissions:` list from the frontmatter into
+ * `{ action, resource, effect }` entries (order preserved). */
+function frontmatterPermissions(file) {
+  const src = fs.readFileSync(file, "utf8");
+  const m = src.match(/^---\r?\n([\s\S]*?)(?:\r?\n)?---\r?\n/m);
+  if (!m) return [];
+  const lines = m[1].split(/\r?\n/);
+  const perms = [];
+  let inPerm = false;
+  let cur = null;
+  for (const raw of lines) {
+    const indent = raw.length - raw.trimStart().length;
+    const t = raw.trim();
+    if (/^permissions:\s*$/.test(t)) {
+      inPerm = true;
+      continue;
+    }
+    if (!inPerm) continue;
+    if (indent === 0 && t) break;
+    if (/^-\s+action:/.test(t)) {
+      cur = { action: t.replace(/^-\s+action:\s*/, "").trim(), resource: "", effect: "" };
+      perms.push(cur);
+      continue;
+    }
+    if (!cur) continue;
+    let mm;
+    if ((mm = t.match(/^resource:\s*(.+)$/))) cur.resource = mm[1].trim();
+    else if ((mm = t.match(/^effect:\s*(.+)$/))) cur.effect = mm[1].trim();
+  }
+  return perms;
 }
 
 function escapeRe(s) {
@@ -110,9 +144,9 @@ for (const f of agentNames) {
   if (!fs.existsSync(skillMd)) fail(`agent ${name}: referenced skill missing \`${path.relative(root, skillMd)}\``);
   if (!/return your final message in this exact order[\s\S]*Deferred & risks/i.test(body))
     fail(`agent ${name}: missing output-contract marker (Result -> Evidence -> Deferred & risks)`);
-  const canBash = /^\s*bash:\s*"\*":\s*allow\s*$/m.test(body);
+  const canBash = frontmatterPermissions(file).some((p) => p.action === "shell" && p.effect === "allow");
   if (canBash && !/git rev-parse --show-toplevel/.test(body))
-    fail(`agent ${name}: bash-enabled editor missing the working-tree gate (verify \`git rev-parse --show-toplevel\` + branch before editing)`);
+    fail(`agent ${name}: shell-enabled editor missing the working-tree gate (verify \`git rev-parse --show-toplevel\` + branch before editing)`);
 }
 
 // 2. bidirectional parity: every skill dir has a matching agent file
@@ -127,26 +161,31 @@ for (const a of agentSet) if (!skillSet.has(a)) fail(`agent ${a}: no matching .a
 if (skillNames.join("|") === [...agentNames].map((f) => f.replace(/\.md$/, "")).sort().join("|"))
   pass(`persona parity: ${agentNames.length} agents == ${skillNames.length} skills`);
 
-// 3. opencode.json main + small model are real provider IDs (and any
-// `agent.<name>.model` override — e.g. the opportunistic `explore` pin)
+// 3. opencode.json main model + every `agents.<name>.model` override (the V2
+// small-model pin lives on the built-in `title` agent; `explore` is the
+// opportunistic pin) are real provider IDs.
 const configModels = new Set();
 if (fs.existsSync(opencodeJson)) {
   const cfg = JSON.parse(fs.readFileSync(opencodeJson, "utf8"));
-  for (const key of ["model", "small_model"]) {
-    const v = cfg[key];
-    if (v) configModels.add(v);
-    if (!v) warn(`opencode.json: no \`${key}\` set`);
-    else if (allowlist.has(v)) pass(`opencode.json ${key} \`${v}\` is a real provider model`);
-    else fail(`opencode.json ${key} \`${v}\` NOT in provider allowlist`);
-  }
-  if (cfg.agent && typeof cfg.agent === "object") {
-    for (const [name, agentCfg] of Object.entries(cfg.agent)) {
-      const v = agentCfg && typeof agentCfg === "object" ? agentCfg.model : null;
-      if (!v) continue;
-      configModels.add(v);
-      if (allowlist.has(v)) pass(`opencode.json agent.${name}.model \`${v}\` is a real provider model`);
-      else fail(`opencode.json agent.${name}.model \`${v}\` NOT in provider allowlist`);
+  const checkModel = (label, raw) => {
+    // Strip any `#variant` so the base ID is checked against the allowlist.
+    const v = raw ? String(raw).replace(/#.*$/, "") : raw;
+    if (!v) {
+      warn(`opencode.json: no \`${label}\` set`);
+      return;
     }
+    configModels.add(v);
+    if (allowlist.has(v)) pass(`opencode.json ${label} \`${v}\` is a real provider model`);
+    else fail(`opencode.json ${label} \`${v}\` NOT in provider allowlist`);
+  };
+  checkModel("model", cfg.model);
+  const cfgAgents = cfg.agents && typeof cfg.agents === "object" ? cfg.agents : {};
+  if (!cfgAgents.title || !cfgAgents.title.model)
+    warn("opencode.json: no `agents.title.model` (V2 small-model) set");
+  for (const [name, agentCfg] of Object.entries(cfgAgents)) {
+    const v = agentCfg && typeof agentCfg === "object" ? agentCfg.model : null;
+    if (!v) continue;
+    checkModel(`agents.${name}.model`, v);
   }
 } else warn("opencode.json not found (skip)");
 

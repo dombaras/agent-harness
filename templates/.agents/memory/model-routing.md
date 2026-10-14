@@ -102,7 +102,7 @@ Free or near-free models are a **best-effort** lane, never an authority. Use
 them for genuinely disposable work: broad exploration/searches, chunk
 summarization, mechanical repetition, first-pass drafts. The built-in `explore`
 subagent is the reference pin — the harness ships it as
-`opencode.json` → `agent.explore.model` (default `opencode-go/glm-5.3-flash` —
+`opencode.json` → `agents.explore.model` (default `opencode-go/glm-5.3-flash` —
 the Go subscription's cheap flash model; Zen pay-as-you-go `opencode/*` is not
 in the policy) and a project may repoint it, on its main persona set or not at
 all.
@@ -136,10 +136,10 @@ frontmatter:
   chain lives) — so a thinker authors its own doc instead of forcing a
   dispatch → blocked → orchestrator-write cycle — and `bash: deny`.
   Every other path stays read-only.
-- **`qa-architect`** has `permission: { bash: deny }` (authors tests, never runs).
-- **`handoff`** has `permission: { bash: deny }`.
-- **`features`** (Feature Registrar) has `permission: { bash: deny }` — owns `BACKLOG.md` (repo root) + `.agents/features/*` **tree structure only** (scaffolding, never doc content). It does NOT author `intent`/`scope`/`plan`/`tests` and does NOT dispatch author personas — those are dispatched by the orchestrator directly.
-- **`docs`** (Documentation Keeper) has `permission: { bash: deny }` and `edit` allowing everything except harness/governance paths — owns `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and `docs/**` (human-facing docs); never edits code or `.agents/**` memory.
+- **`qa-architect`** has `permissions` deny the `shell` action (authors tests, never runs).
+- **`handoff`** has `permissions` deny the `shell` action.
+- **`features`** (Feature Registrar) has `permissions` deny the `shell` action — owns `BACKLOG.md` (repo root) + `.agents/features/*` **tree structure only** (scaffolding, never doc content). It does NOT author `intent`/`scope`/`plan`/`tests` and does NOT dispatch author personas — those are dispatched by the orchestrator directly.
+- **`docs`** (Documentation Keeper) has `permissions` deny the `shell` action and `edit` allowing everything except harness/governance paths — owns `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and `docs/**` (human-facing docs); never edits code or `.agents/**` memory.
 - **Code personas** (`frontend-engineer`, `mobile-engineer`, `ui-designer`,
   `data-engineer`, `devops-engineer`, `security-engineer`, `system-architect`,
   `diagnostics-expert`) allow `edit` everywhere except governance/harness paths

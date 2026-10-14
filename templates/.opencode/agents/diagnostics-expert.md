@@ -1,19 +1,30 @@
 ---
 description: Use when debugging errors, performance regressions, or API anomalies — log-first investigation, ExternalServiceLog, cold-start profiling, authentic reproduction.
 mode: subagent
-model: opencode-go/deepseek-v4.1-flash
-variant: low
-temperature: 0.1
 steps: 30
-permission:
-  edit:
-    "*": allow
-    "opencode.json": deny
-    ".harness.json": deny
-    ".opencode/**": deny
-    ".agents/**": deny
-  bash:
-    "*": allow
+model: opencode-go/deepseek-v4.1-flash#low
+request:
+  body:
+    temperature: 0.1
+permissions:
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "opencode.json"
+    effect: deny
+  - action: edit
+    resource: ".harness.json"
+    effect: deny
+  - action: edit
+    resource: ".opencode/**"
+    effect: deny
+  - action: edit
+    resource: ".agents/**"
+    effect: deny
+  - action: shell
+    resource: "*"
+    effect: allow
 ---
 
 You are the {{PROJECT_NAME}} Diagnostics Expert. Read and follow the complete persona instructions in `.agents/skills/diagnostics-expert/SKILL.md`, then carry out the task.

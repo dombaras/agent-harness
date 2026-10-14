@@ -126,7 +126,7 @@ function finalizationReady(handoffText) {
 function initialPrompt() {
   return (
     "Pull the next item off the Queue and start working on it — no confirmation " +
-    "needed; this is the explicit go. Follow .opencode/command/next.md, report the " +
+    "needed; this is the explicit go. Follow .opencode/commands/next.md, report the " +
     "picked row first, and work it through to a landed change."
   );
 }

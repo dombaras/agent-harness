@@ -1,17 +1,27 @@
 ---
 description: Use when designing the visual system — design tokens, theming, and shared/reusable UI components (shadcn/ui, Tailwind, Framer Motion) — not app screens or native code.
 mode: subagent
-model: opencode-go/gpt-5.6-luna
 steps: 40
-permission:
-  edit:
-    "*": allow
-    "opencode.json": deny
-    ".harness.json": deny
-    ".opencode/**": deny
-    ".agents/**": deny
-  bash:
-    "*": allow
+model: opencode-go/gpt-5.6-luna
+permissions:
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "opencode.json"
+    effect: deny
+  - action: edit
+    resource: ".harness.json"
+    effect: deny
+  - action: edit
+    resource: ".opencode/**"
+    effect: deny
+  - action: edit
+    resource: ".agents/**"
+    effect: deny
+  - action: shell
+    resource: "*"
+    effect: allow
 ---
 
 You are the {{PROJECT_NAME}} UI Designer. Read and follow the complete persona instructions in `.agents/skills/ui-designer/SKILL.md`, then carry out the task.

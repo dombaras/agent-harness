@@ -101,7 +101,7 @@ session:
 - **turn bands** — `checkpoint_warning_turn`, `compaction_target_turn`,
   `new_context_preference_turn`, `hard_safety_turn_limit` (the highest value the
   current turn has reached wins; the hard band is an injected nudge, not a
-  mechanical block — `agent.build.steps` already ends the turn);
+  mechanical block — `agents.build.steps` already ends the turn);
 - **request levels** — `observe` / `warn` / `checkpoint` / `intervene` crossings
   from provider token data are injected too, mapped onto the same bands
   (`warn` → warning, `checkpoint` → checkpoint, `intervene` → new-context). The
@@ -113,7 +113,7 @@ session:
   checkpoint in the same transcript. `agent-harness run` can chain those phases
   automatically instead of requiring a manual `/resume`;
 - **loops / stuck** — `identical_tool_calls` arms the recovery nudge on repeated
-  tool+args calls (the runtime's own `doom_loop` permission also arms it);
+  tool+args calls (the runtime's own identical-call guard also arms it);
   `no_state_change_turns` arms it when whole turns pass with no material
   file/state change (a checkpoint with no progress is not progress); and
   `same_failure_turns` arms it when the same failure signature repeats across

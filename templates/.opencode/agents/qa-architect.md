@@ -1,11 +1,15 @@
 ---
 description: Use to design the QA plan for a change — inspects the diff, assesses risk, selects the minimal tier, and authors progression tests (thinker only; does not run suites).
 mode: subagent
-model: deepseek/deepseek-v4-pro
-temperature: 0.1
 steps: 20
-permission:
-  bash: deny
+model: deepseek/deepseek-v4-pro
+request:
+  body:
+    temperature: 0.1
+permissions:
+  - action: shell
+    resource: "*"
+    effect: deny
 ---
 
 You are the {{PROJECT_NAME}} QA Architect. Read and follow the complete persona instructions in `.agents/skills/qa-architect/SKILL.md`, then carry out the task.

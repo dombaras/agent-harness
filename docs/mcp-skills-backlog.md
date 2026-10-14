@@ -105,12 +105,12 @@ measurement shows explore stays heavy.
 
 ### Cross-cutting facts (verified 2026-10-01, opencode docs)
 
-- Config lives under `mcp` in `opencode.json`; each server is `type: "local"`
-  (`command: [...]`, `environment: {}`, `cwd`, `enabled`, `timeout`) or
-  `type: "remote"` (`url`, `headers`, `oauth`).
+- Config lives under `mcp.servers` in `opencode.json` (V2); each server is
+  `type: "local"` (`command: [...]`, `environment: {}`, `cwd`, `disabled`,
+  `timeout`) or `type: "remote"` (`url`, `headers`, `oauth`).
 - MCP tools are registered **prefixed by server name** and are **available to
-  every agent by default**; disable via top-level `"tools": { "<server>*": false }`
-  and re-enable per agent via `"agent": { "<agent>": { "tools": { "<server>*": true } } }`.
+  every agent by default**; deny via a `<server>_*` rule in the top-level
+  `permissions` array and re-enable per agent via `"agents": { "<agent>": { "permissions": [{ "action": "<server>_*", "resource": "*", "effect": "allow" }] } }`.
 - CLI: `opencode mcp list` / `opencode mcp auth <name>` / `opencode mcp debug <name>`.
 - **Context cost is the dominant risk:** the docs warn MCP servers add to the
   prompt and that GitHub MCP in particular "tends to add a lot of tokens". Every

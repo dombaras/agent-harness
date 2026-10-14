@@ -1,9 +1,10 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "opencode-go/deepseek-v4.1-flash",
-  "small_model": "opencode-go/glm-5.3-flash",
-  "instructions": [".agents/rules/00-operating.md"],
-  "agent": {
+  "agents": {
+    "title": {
+      "model": "opencode-go/glm-5.3-flash"
+    },
     "build": {
       "steps": 100
     },
@@ -12,45 +13,171 @@
       "steps": 40
     }
   },
-  "permission": {
-    "external_directory": {
-      "{{WORKSPACE_ROOT}}/**": "allow",
-      "/tmp/**": "allow",
-      "~/AppData/Local/Temp/**": "allow",
-      "~/.maestro/**": "allow",
-      "~/.android/**": "allow",
-      "~/.local/share/opencode/**": "allow",
-      "~/.config/opencode/**": "allow",
-      "~/.config/agent-harness/**": "allow",
-      "/etc/**": "allow",
-      "/proc/**": "allow",
-      "~/.ssh/**": "deny",
-      "~/.aws/**": "deny",
-      "~/.gnupg/**": "deny",
-      "~/.config/gh/**": "deny",
-      "~/.docker/**": "deny",
-      "~/.kube/**": "deny",
-      "~/.netrc": "deny",
-      "~/.git-credentials": "deny",
-      "~/.config/opencode/auth.json": "deny",
-      "~/.local/share/opencode/auth.json": "deny"
+  "permissions": [
+    {
+      "action": "external_directory",
+      "resource": "{{WORKSPACE_ROOT}}/**",
+      "effect": "allow"
     },
-    "edit": {
-      "~/.config/opencode/**": "deny",
-      "~/.local/share/opencode/**": "deny",
-      "~/.config/agent-harness/**": "deny",
-      "~/.ssh/**": "deny",
-      "~/.aws/**": "deny",
-      "~/.gnupg/**": "deny",
-      "~/.config/gh/**": "deny",
-      "/etc/**": "deny",
-      "/proc/**": "deny"
+    {
+      "action": "external_directory",
+      "resource": "/tmp/**",
+      "effect": "allow"
     },
-    "bash": {
-      "sudo *": "deny",
-      "rm -rf /*": "deny",
-      "rm -rf ~": "deny",
-      "rm -rf ~/*": "deny"
+    {
+      "action": "external_directory",
+      "resource": "~/AppData/Local/Temp/**",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.maestro/**",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.android/**",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.local/share/opencode/**",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.config/opencode/**",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.config/agent-harness/**",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "/etc/**",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "/proc/**",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.ssh/**",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.aws/**",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.gnupg/**",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.config/gh/**",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.docker/**",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.kube/**",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.netrc",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.git-credentials",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.config/opencode/auth.json",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "~/.local/share/opencode/auth.json",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "~/.config/opencode/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "~/.local/share/opencode/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "~/.config/agent-harness/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "~/.ssh/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "~/.aws/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "~/.gnupg/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "~/.config/gh/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "/etc/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "/proc/**",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "sudo *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rm -rf /*",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rm -rf ~",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rm -rf ~/*",
+      "effect": "deny"
     }
-  }
+  ]
 }

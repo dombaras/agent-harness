@@ -1,6 +1,6 @@
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin } from "@opencode/plugin"
 
-// Pushes a toast + structured log whenever an agent mutates the board via the
+// Pushes a structured log whenever an agent mutates the board via the
 // `backlog_*` tools, so "an agent finished an item" reaches you as a notification
 // instead of a manual `/board` refresh.
 
@@ -35,28 +35,23 @@ function summarize(name: string, args: any): string {
   }
 }
 
-export const BacklogNotify: Plugin = async ({ client }) => {
-  return {
-    "tool.execute.after": async (input: any, output: any) => {
-      const name = input?.tool || ""
+const BacklogNotify: Plugin = {
+  id: "backlog-notify",
+  async setup(ctx) {
+    await ctx.tool.hook("execute.after", (event: any) => {
+      const name = event?.tool || ""
       if (!name.startsWith("backlog_")) return
 
-      const args =
-        (output?.args as any) ?? (output?.input?.args as any) ?? input?.args ?? {}
+      const args = (event?.input as any) ?? {}
       const message = `Backlog: ${summarize(name, args)}`
 
-      try {
-        await client.tui.showToast({ body: { message, variant: "info" } })
-      } catch {
-        /* toast is best-effort (no TUI in headless/server mode) */
-      }
-      try {
-        await client.app.log({
-          body: { service: "backlog", level: "info", message },
-        })
-      } catch {
-        /* logging is best-effort */
-      }
-    },
-  }
+      // V1 pushed a TUI toast + `client.app.log`; V2 server plugins have no
+      // toast and no `client`, so this is a best-effort console log.
+      console.log(message)
+    })
+
+    return () => {}
+  },
 }
+
+export default BacklogNotify

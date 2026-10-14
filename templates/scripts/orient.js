@@ -18,7 +18,7 @@
  * Usage:
  *   node scripts/orient.js [--feature <id>] [--json] [--root <dir>]
  *
- * The same gatherer is exported for the `.opencode/tools/orient.ts` wrapper and
+ * The same gatherer is exported for the `.opencode/plugins/orient.ts` wrapper and
  * for unit tests (inject `git`/`fs`/`readCheckpoint` to keep it hermetic).
  */
 

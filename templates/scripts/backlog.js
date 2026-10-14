@@ -6,7 +6,7 @@
  * The canonical task list is `BACKLOG.md` at the repo root. This script reads
  * and mutates it directly, so humans and agents can accumulate / review /
  * delegate work without a model round-trip. It is the single implementation
- * behind the opencode custom tools (`.opencode/tools/backlog.ts`) and the human
+ * behind the opencode custom tools (`.opencode/plugins/backlog.ts`) and the human
  * CLI (`npm run backlog -- <cmd>`).
  *
  * Commands:
