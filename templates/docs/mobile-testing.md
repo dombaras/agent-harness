@@ -3,7 +3,7 @@
 How an agent boots the Android emulator, installs a build, and runs Maestro
 flows **without freezing its own tool call**. The mechanics here are the reason
 this doc exists: the naïve way to background the emulator hangs the agent's
-`bash` tool forever (no error, no timeout), which looks like "the tests are
+`shell` tool forever (no error, no timeout), which looks like "the tests are
 taking ages" when in fact nothing is running at all.
 
 ## The rule

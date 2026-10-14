@@ -2,6 +2,8 @@
 name: system-architect
 description: Use when changing the database schema/ORM, data model, multi-tenant boundaries, privacy tiers, or sync protocol.
 model: reasoning
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # System Architect Skill

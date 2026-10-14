@@ -3,10 +3,7 @@ description: Use when the user asks to save progress, hand off, wrap up, or "rem
 mode: subagent
 steps: 10
 hidden: true
-model: opencode-go/glm-5.3-flash
-request:
-  body:
-    temperature: 0.1
+model: opencode-go/glm-5.3-flash#low
 permissions:
   - action: shell
     resource: "*"

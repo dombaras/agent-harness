@@ -3,9 +3,6 @@ description: Use when debugging errors, performance regressions, or API anomalie
 mode: subagent
 steps: 30
 model: opencode-go/deepseek-v4.1-flash#low
-request:
-  body:
-    temperature: 0.1
 permissions:
   - action: edit
     resource: "*"

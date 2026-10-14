@@ -325,14 +325,18 @@ function mergeOpencodeJson(target, variables) {
 }
 
 /* Convert a V1 keyed `permission` map (`{ <action>: { <resource>: effect } }`, or
- * `{ <action>: effect }`) into the V2 ordered rules array, mapping the V1 `bash`
- * action to V2 `shell`. Entry order is preserved so the V2 "last matching rule
- * wins" semantics match the V1 glob map as closely as possible. */
+ * `{ <action>: effect }`) into the V2 ordered rules array, mapping the renamed V1
+ * actions (`bash`/`write`/`patch`/`task`) to their V2 names. Entry order is
+ * preserved so the V2 "last matching rule wins" semantics match the V1 glob map as
+ * closely as possible. */
 function convertV1Permission(v1) {
   const out = [];
   if (!v1 || typeof v1 !== "object" || Array.isArray(v1)) return out;
+  // V1 -> V2 action renames (docs/opencode-v2-migration: "Permission actions also
+  // changed"). Unmapped V1 actions would produce rules that can never match.
+  const ACTION = { bash: "shell", task: "subagent", write: "edit", patch: "edit" };
   for (const [action, rule] of Object.entries(v1)) {
-    const actionName = action === "bash" ? "shell" : action;
+    const actionName = ACTION[action] || action;
     if (rule && typeof rule === "object" && !Array.isArray(rule)) {
       for (const [resource, effect] of Object.entries(rule)) {
         if (typeof effect === "string") out.push({ action: actionName, resource, effect });

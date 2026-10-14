@@ -2,6 +2,8 @@
 name: devops-engineer
 description: Use for deployment, CI/CD, cron/scheduling, env & secrets management, hosting config, and mobile build/release setup.
 model: general
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # DevOps / Infrastructure Engineer

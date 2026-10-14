@@ -2,6 +2,8 @@
 name: docs
 description: Use when the user asks to create, update, or maintain project documentation — README.md, CHANGELOG.md, docs/ (architecture, ADRs, runbooks, API), CONTRIBUTING.md — keeping docs in sync with code and never duplicated.
 model: general
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # Docs — durable human-facing documentation

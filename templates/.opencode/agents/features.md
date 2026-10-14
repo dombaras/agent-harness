@@ -3,10 +3,7 @@ description: Use only to capture a found item and manage the feature backlog —
 mode: subagent
 steps: 15
 hidden: true
-model: opencode-go/gpt-5.6-luna
-request:
-  body:
-    temperature: 0.1
+model: opencode-go/gpt-5.6-luna#low
 permissions:
   - action: shell
     resource: "*"

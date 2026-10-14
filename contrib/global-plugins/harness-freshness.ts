@@ -264,8 +264,11 @@ const HarnessFreshness: Plugin = {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
           try {
+            // V2 envelope: the payload is `event.data` (V1's `properties` field does
+            // not exist). A child session carries `data.parentID`.
+            const d: any = (event as any)?.data || {}
             if (event?.type === "session.deleted") {
-              const sid = (event as any)?.properties?.info?.id
+              const sid = d.sessionID
               if (typeof sid === "string" && sid) {
                 notices.delete(sid)
                 checked.delete(sid)
@@ -273,13 +276,15 @@ const HarnessFreshness: Plugin = {
               continue
             }
             if (event?.type !== "session.created") continue
-            const info: any = (event as any)?.properties?.info
-            const sid = info?.id
+            const sid = d.sessionID
             if (typeof sid !== "string" || !sid) continue
-            if (info?.parentID) continue // child/subagent session
+            if (d.parentID) continue // child/subagent session
             if (checked.has(sid)) continue
             checked.add(sid)
-            const dir = typeof info?.directory === "string" && info.directory ? info.directory : ctx.location.directory
+            const dir =
+              typeof d.location?.directory === "string" && d.location.directory
+                ? d.location.directory
+                : ctx.location.directory
             await evaluate(sid, dir)
           } catch (err: any) {
             report(`check failed: ${err?.message || err}`, "warn")

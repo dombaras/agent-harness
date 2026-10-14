@@ -2,6 +2,8 @@
 name: product-manager
 description: Use when designing features, gamification, or user journeys — maps DB logic to UX with the 5 UI states.
 model: reasoning
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # Product Manager & UX Architect Skill

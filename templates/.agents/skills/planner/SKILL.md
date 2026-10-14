@@ -2,6 +2,8 @@
 name: planner
 description: Use to plan/decompose a task and emit the Step Zero subagent dispatch plan (personas, models, order, parallel batches) before any work.
 model: reasoning
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # Planner / Tech Lead — value-led

@@ -3,9 +3,6 @@ description: Use to design the QA plan for a change — inspects the diff, asses
 mode: subagent
 steps: 20
 model: deepseek/deepseek-v4-pro
-request:
-  body:
-    temperature: 0.1
 permissions:
   - action: shell
     resource: "*"

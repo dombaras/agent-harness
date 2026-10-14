@@ -3,9 +3,6 @@ description: Use to execute a QA plan or test tier (including the catalog E2E jo
 mode: subagent
 steps: 50
 model: opencode-go/deepseek-v4.1-flash#low
-request:
-  body:
-    temperature: 0.1
 ---
 
 You are the {{PROJECT_NAME}} QA Runner. Read and follow the complete persona instructions in `.agents/skills/qa-runner/SKILL.md`, then carry out the task.

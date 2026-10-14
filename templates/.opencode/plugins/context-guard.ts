@@ -10,8 +10,8 @@ import toolLib from "../../scripts/qa/tool-lib.js"
 
 // Mechanical half of the context budget: read the project-owned thresholds from
 // `.agents/memory/orchestration.md` and nudge the PRIMARY orchestrator session as
-// it crosses them. The nudge is injected into the conversation TAIL via
-// `experimental.chat.messages.transform`, never the system prompt: changing the
+// it crosses them. The nudge is injected into the conversation TAIL via the V2
+// `context` session hook, never the system prompt: changing the
 // system prefix on a band crossing evicts the provider's whole prompt cache and
 // re-bills the entire transcript at full input price (measured: every full-price
 // re-read landed on turn 50/60/80/100). Appending at the tail keeps the cached
@@ -56,6 +56,8 @@ export default {
   const childParent = new Map<string, string>()
   const sessionModel = new Map<string, string>()
   let thresholds: any = null
+  let thresholdsMtime = -1
+  const ORCHESTRATION_ABS = path.join(directory, ORCHESTRATION_REL)
 
   const stateFor = (sessionID: string) => {
     let state = sessions.get(sessionID)
@@ -108,15 +110,26 @@ export default {
     return n === "bash" || n === "shell"
   }
 
+  /* Read `.agents/memory/orchestration.md` once and cache it, re-reading whenever
+   * the file's mtime changes. This replaces V1's `file.watcher.updated` branch
+   * (that event name does not exist in V2): a plain stat is cheaper than relying on
+   * an event we have not observed firing in 2.0.29, and it cannot go stale. */
   const loadThresholds = () => {
-    if (thresholds) return thresholds
+    let mtime = -1
+    try {
+      mtime = fs.statSync(ORCHESTRATION_ABS).mtimeMs
+    } catch {
+      /* missing/unreadable -> documented defaults from the core */
+    }
+    if (thresholds && mtime === thresholdsMtime) return thresholds
     let text = ""
     try {
-      text = fs.readFileSync(path.join(directory, ORCHESTRATION_REL), "utf8")
+      text = fs.readFileSync(ORCHESTRATION_ABS, "utf8")
     } catch {
-      /* missing/unreadable file -> documented defaults from the core */
+      /* missing/unreadable -> documented defaults from the core */
     }
     thresholds = guard.parseThresholds(text)
+    thresholdsMtime = mtime
     return thresholds
   }
 
@@ -356,26 +369,68 @@ export default {
     /* best-effort */
   }
 
+  /* V2 ModelRef ({ id, providerID, variant }) -> the shape `guard.modelLabel`
+   * reads ({ providerID, modelID }). Never invent a label. */
+  const modelFields = (m: any) =>
+    m && typeof m === "object" ? { providerID: m.providerID, modelID: m.id } : null
+
   const hooks = {
     event: async ({ event }: any) => {
       try {
+        // V2 event envelope: { id, created, type, location, data }. The payload is
+        // `event.data` — V1's `properties` payload field does NOT exist in V2 — and
+        // several event NAMES changed (session.updated, message.updated,
+        // file.watcher.updated and session.error are gone). See
+        // docs/opencode-v2-event-remap-plan.md.
         const type = event?.type
-        const props = event?.properties || {}
+        const d = event?.data || {}
 
-        if (type === "session.created" || type === "session.updated") {
-          if (props.info?.id && props.info.parentID) {
-            childSessions.add(props.info.id)
-            childParent.set(props.info.id, props.info.parentID)
-          } else if (type === "session.created" && props.info?.id) {
-            writeLease(props.info.id)
-            syncBoard()
-            void collectOrient(props.info.id, directory)
+        if (type === "session.created") {
+          const sid = d.sessionID
+          if (typeof sid !== "string" || sid.length === 0) return
+          if (d.parentID) {
+            // A subagent dispatch. Track it so the guard never treats a persona
+            // session as the primary orchestrator (leases, tool blocks, and funds
+            // attribution all key off isPrimary/primaryRoot). A CHILD's
+            // session.created carries no `model`, so its funds label comes from
+            // `session.step.started` below.
+            childSessions.add(sid)
+            childParent.set(sid, d.parentID)
+            return
           }
+          const label = guard.modelLabel(modelFields(d.model))
+          if (label) sessionModel.set(sid, label)
+          writeLease(sid)
+          syncBoard()
+          const root =
+            typeof d.location?.directory === "string" && d.location.directory
+              ? d.location.directory
+              : directory
+          void collectOrient(sid, root)
+          return
+        }
+
+        /* Per-step model capture. V1 stored the label from every assistant message
+         * (including children, which is what `armFunds`'s fallback needs); in V2 a
+         * child's `session.created` omits `model`, so `session.step.started` — which
+         * carries `{ agent, model }` for every session — is the reliable source. */
+        if (type === "session.step.started") {
+          const sid = d.sessionID
+          const label = guard.modelLabel(modelFields(d.model))
+          if (typeof sid === "string" && sid.length > 0 && label) sessionModel.set(sid, label)
+          return
+        }
+
+        // Keeps the funds-stop label current when the user switches model mid-session.
+        if (type === "session.model.selected") {
+          const sid = d.sessionID
+          const label = guard.modelLabel(modelFields(d.model))
+          if (typeof sid === "string" && sid.length > 0 && label) sessionModel.set(sid, label)
           return
         }
 
         if (type === "session.deleted") {
-          const id = props.info?.id
+          const id = d.sessionID
           if (id) {
             clearLease(id)
             childSessions.delete(id)
@@ -401,47 +456,34 @@ export default {
           return
         }
 
-        if (type === "file.watcher.updated") {
-          if (String(props.file || "").endsWith("orchestration.md")) thresholds = null
-          return
-        }
-
-        if (type === "message.updated") {
-          const info = props.info
-          const sid = info?.sessionID
+        // One model call == one assistant message == one orchestrator turn. This is
+        // the V2 replacement for V1's `message.updated` (which no longer exists);
+        // `data.tokens` is the same TokenUsageInfo the pure core already reads.
+        if (type === "session.step.ended") {
+          const sid = d.sessionID
           if (typeof sid !== "string" || sid.length === 0) return
-          if (info?.role === "assistant") {
-            const label = guard.modelLabel(info)
-            if (label) sessionModel.set(sid, label)
-            // A failed dispatch reports its own provider/model on the assistant
-            // message — capture it even for child (subagent) sessions.
-            if (info?.error && guard.fundsError(JSON.stringify(info.error))) {
-              await armFunds(sid, label, "assistant error")
-            }
-          }
           if (!isPrimary(sid)) return
           touchLease(sid)
-          if (info?.role === "user") {
-            // The user is speaking (usually the top-up-complete message):
-            // release the funds stop so work can resume.
-            const state = stateFor(sid)
-            state.fundsPending = false
-            state.fundsNotice = null
-            return
-          }
-          if (info?.role !== "assistant") return
-          const note = guard.noteAssistant(stateFor(sid), info, loadThresholds())
-          // Not gated on `newTurn`: a request-token crossing can arrive on a
-          // repeat emit of the same message (the token-bearing update), so the
-          // band transition must be logged whenever it actually changes.
+          const note = guard.noteAssistant(
+            stateFor(sid),
+            {
+              id: d.assistantMessageID,
+              sessionID: sid,
+              role: "assistant",
+              tokens: d.tokens,
+            },
+            loadThresholds()
+          )
+          // Not gated on `newTurn`: a token-band crossing must be logged whenever it
+          // actually changes.
           if (note.bandChanged && note.band) {
-            logEvent({ kind: "band", sessionID: info.sessionID, band: note.band, turn: note.turns })
+            logEvent({ kind: "band", sessionID: sid, band: note.band, turn: note.turns })
             await report(`turn ${note.turns}: ${note.band} band`)
           }
           if (note.requestChanged && note.requestLevel) {
             logEvent({
               kind: "request",
-              sessionID: info.sessionID,
+              sessionID: sid,
               level: note.requestLevel,
               tokens: note.requestTokens,
             })
@@ -449,7 +491,7 @@ export default {
           if (note.noStateChanged) {
             logEvent({
               kind: "no_state",
-              sessionID: info.sessionID,
+              sessionID: sid,
               turn: note.turns,
               noStateTurns: note.noStateTurns,
             })
@@ -458,13 +500,16 @@ export default {
           return
         }
 
-        if (type === "session.error") {
-          const sid = props.sessionID || props.info?.sessionID
+        // V2 renamed `session.error`. A failed dispatch reports its own provider/
+        // model on the structured error; capture it even for child sessions so the
+        // funds stop is armed on the session the user actually sees.
+        if (type === "session.execution.failed" || type === "session.step.failed") {
+          const sid = d.sessionID
           if (typeof sid !== "string" || sid.length === 0) return
-          const text = JSON.stringify(props.error ?? props.message ?? props)
+          const text = JSON.stringify(d.error ?? d)
           if (!guard.fundsError(text)) return
-          const label = guard.modelLabel(props.error) || sessionModel.get(sid) || null
-          await armFunds(sid, label, "session.error")
+          const label = guard.modelLabel(d.error) || sessionModel.get(sid) || null
+          await armFunds(sid, label, type)
           return
         }
       } catch {
@@ -952,6 +997,21 @@ export default {
     )
   })
   await ctx.session.hook("context", onContext)
+  await ctx.session.hook("prompt", (event: any) => {
+    try {
+      // A real user turn releases the provider funds stop (the top-up-complete
+      // message). This is the V2 replacement for the dead `message.updated`
+      // role==="user" branch. Synthetic/shell/compaction submissions do not fire
+      // this hook, so the stop cannot be cleared by the harness's own traffic.
+      const sid = event?.sessionID
+      if (!isPrimary(sid)) return
+      const state = stateFor(sid as string)
+      state.fundsPending = false
+      state.fundsNotice = null
+    } catch {
+      /* never break a prompt */
+    }
+  })
   return () => controller.abort()
   },
 }

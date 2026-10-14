@@ -44,8 +44,9 @@ dev-only**. Read this before adding or changing an MCP server.
 }
 ```
 
-- MCP tools are registered **prefixed by the server name** (`pg_*`), so the glob
-  is `"<server>*": false` / `true`.
+- MCP tools are registered **prefixed by the server name** (`pg_*`), so in V2 the
+  deny/allow rule is an `action` of `"pg_*"` (the form used above). If action
+  wildcards do not match in your V2 build, list per-tool rules instead.
 - `--yes`/`-y` on `npx` avoids an interactive install prompt at startup.
 - Keep a secret URL out of the tracked config: use `{env:...}` or a local
   untracked override. `npx` servers inherit the project `.env` (dev) as usual.

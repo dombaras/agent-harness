@@ -2,6 +2,8 @@
 name: security-engineer
 description: Use when a change touches auth, secrets, input validation, external services, or dependencies — security review + audit.
 model: reasoning
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # Security Engineer Skill

@@ -2,6 +2,8 @@
 name: ui-designer
 description: Use when designing the visual system — design tokens, theming, and shared/reusable UI components (shadcn/ui, Tailwind, Framer Motion) — not app screens or native code.
 model: general
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # UI Designer Skill (shadcn/ui + Tailwind CSS)

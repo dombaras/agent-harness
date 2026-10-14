@@ -2,6 +2,8 @@
 name: mobile-engineer
 description: Use when writing or fixing Expo / React Native native code — native runtime, Fabric, reanimated, worklets, css-interop, Android/iOS build issues.
 model: general
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # Mobile Engineer (Expo / React Native)

@@ -2,6 +2,8 @@
 name: qa-runner
 description: Use to execute a QA plan or test tier (including the catalog E2E journey and catalog test-data cleanup) and report pass/fail — does not design tests or judge risk.
 model: general
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # QA Runner (Doer)

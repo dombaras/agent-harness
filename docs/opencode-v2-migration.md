@@ -129,16 +129,16 @@ Mechanical V1→V2 frontmatter conversion (done by a one-off script, then review
 |---|---|---|---|---|---|
 | `data-engineer` | `opencode-go/deepseek-v4.1-flash#low` | 40 | | | edit `*` allow; edit `opencode.json`/`.harness.json`/`.opencode/**`/`.agents/**` deny; shell `*` allow |
 | `devops-engineer` | `opencode-go/deepseek-v4.1-flash#low` | 40 | | | same as data-engineer |
-| `diagnostics-expert` | `opencode-go/deepseek-v4.1-flash#low` | 30 | | `temperature: 0.1` | same as data-engineer |
-| `docs` | `opencode-go/gpt-5.6-luna` | 20 | | `temperature: 0.1` | edit `*` allow + governance denies; shell `*` **deny** |
-| `features` | `opencode-go/gpt-5.6-luna` | 15 | ✓ | `temperature: 0.1` | shell `*` deny |
+| `diagnostics-expert` | `opencode-go/deepseek-v4.1-flash#low` | 30 | | | same as data-engineer |
+| `docs` | `opencode-go/gpt-5.6-luna#low` | 20 | | | edit `*` allow + governance denies; shell `*` **deny** |
+| `features` | `opencode-go/gpt-5.6-luna#low` | 15 | ✓ | | shell `*` deny |
 | `frontend-engineer` | `opencode-go/deepseek-v4.1-flash#low` | 40 | | | same as data-engineer |
-| `handoff` | `opencode-go/glm-5.3-flash` | 10 | ✓ | `temperature: 0.1` | shell `*` deny |
+| `handoff` | `opencode-go/glm-5.3-flash#low` | 10 | ✓ | | shell `*` deny |
 | `mobile-engineer` | `opencode-go/deepseek-v4.1-flash#low` | 40 | | | same as data-engineer |
-| `planner` | `deepseek/deepseek-v4-pro` | 15 | ✓ | `temperature: 0.1` | edit `*` deny; allow `.agents/features/*/plan.md`, `../.worktrees/**/.agents/features/*/plan.md`; shell `*` deny |
+| `planner` | `deepseek/deepseek-v4-pro` | 15 | ✓ | | edit `*` deny; allow `.agents/features/*/plan.md`, `../.worktrees/**/.agents/features/*/plan.md`; shell `*` deny |
 | `product-manager` | `opencode-go/gpt-5.6-luna` | 20 | | | edit `*` deny; allow `.agents/features/*/intent.md`, `../.worktrees/**/…/intent.md`; shell `*` deny |
-| `qa-architect` | `deepseek/deepseek-v4-pro` | 20 | | `temperature: 0.1` | shell `*` deny |
-| `qa-runner` | `opencode-go/deepseek-v4.1-flash#low` | 50 | | `temperature: 0.1` | (none) |
+| `qa-architect` | `deepseek/deepseek-v4-pro` | 20 | | | shell `*` deny |
+| `qa-runner` | `opencode-go/deepseek-v4.1-flash#low` | 50 | | | (none) |
 | `security-engineer` | `deepseek/deepseek-v4-pro` | 30 | | | same as data-engineer |
 | `system-architect` | `deepseek/deepseek-v4-pro` | 40 | | | same as data-engineer |
 | `ui-designer` | `opencode-go/gpt-5.6-luna` | 40 | | | same as data-engineer |
@@ -173,9 +173,13 @@ permissions:
 ---
 ```
 
-> **Review note:** V2 `request.body` values are *preserved but not yet sent* with model
-> requests (documented V2 warning). `temperature: 0.1` therefore currently has no
-> runtime effect in V2 — kept for forward-compat and to record intent.
+> **Review note (superseded in §17):** V2 `request.body` values are *preserved but not
+> sent* with model requests (documented V2 warning), so the migrated `temperature: 0.1`
+> had no runtime effect. §17 removed the blocks and expressed the intended determinism
+> as a **model variant** instead: the mechanical/fast personas (`docs`, `features`,
+> `handoff`, plus the already-`#low` `diagnostics-expert`/`qa-runner`) pin `#low`, while
+> the Pro architect tier (`planner`, `qa-architect`) keeps full reasoning effort with no
+> variant, matching their `system-architect`/`security-engineer` siblings.
 
 ---
 
@@ -346,7 +350,7 @@ guidance changed from the V1 `"tools": { "<server>*": false }` disable to a
 |---|---|---|
 | Board/notify toasts gone | no TUI in a V2 server plugin | board mutations + E2E progress still go to the **log**; `job-notify` still wakes the session via `ctx.session.prompt` |
 | `doom_loop` mirror gone | V2 removed the permission action | the plugin's own loop detector still nudges; the built-in guard no longer adds a notice |
-| `temperature: 0.1` no-op | V2 preserves `request.body` but does not send it yet | deterministic personas still run at default temperature until V2 wires it |
+| `temperature: 0.1` no-op removed | V2 preserves `request.body` but does not send it, so the value was dead config | the intent moved to a **model variant** (`#low`) on the mechanical personas; the Pro architect tier keeps full reasoning (no variant) |
 | `AGENTS.md` is now the always-loaded file | V2 ignores `instructions` | rules still loaded; `.agents/rules/00-operating.md` & `.agents/AGENTS.md` are auto-discovered as the agent works under `.agents/` |
 | `.agents/skills/*` now skills | V2 discovers `.agents/skills` | persona skills are also advertised via the `skill` tool (was read-only files) |
 | Legacy V1 files removed on update | avoid stale `command/` shadowing | project keeps only `.opencode/{agents,commands,plugins,skills}` |
@@ -398,6 +402,12 @@ guidance changed from the V1 `"tools": { "<server>*": false }` disable to a
 - All harness plugins use **`import type` only** — no runtime `@opencode/*` resolution is
   required (the project `.opencode/node_modules` still holds the old `@opencode-ai/plugin`,
   which is now unused).
+- **Not verified here (found 2026-10-14):** the plugin **event stream**. These checks cover
+  **load** and **config gates**, not event behaviour. The port carried the V1 event contract
+  (`event.properties`, `message.updated`, `file.watcher.updated`, `session.error`) into the
+  V2 `ctx.event.subscribe()` loop, so the guard's session/telemetry half and the global
+  `harness-freshness` safety net were silently dead, and the test suite missed it because its
+  fake stream still emitted the V1 shape. Fixed in **§17** (0.1.160).
 
 ---
 
@@ -489,3 +499,77 @@ config `~/.config/opencode/opencode.jsonc` from the V1 `permission` map to a V2
 
 **Still open:** `request.body`/`temperature` is a documented V2 no-op (§3, §10);
 historical docs are intentionally left as-is (§12).
+
+**Correction (0.1.160):** "the 10 project plugins load with the real loader and correct
+ids" verified **registration**, not **event behaviour**. The event stream was still
+V1-shaped (it loaded and returned an id, then ignored every event); see §17.
+
+---
+
+## 17. Event-stream remap (0.1.160)
+
+The 0.1.157 port moved the plugin `event` hook to `ctx.event.subscribe()` but carried the
+**V1 event contract** (event *names* and the `event.properties` payload) across unchanged.
+V2's server API is one of the three documented breaking changes, so this was in-scope for
+the port; it silently disabled the `context-guard` session/telemetry half (`writeLease` at
+session start, `clearLease`/`syncBoard`/`collectOrient`, subagent child tracking, turn/band
+/request telemetry, funds arming from session errors) and the whole `harness-freshness`
+safety net. The suite missed it because `loadGuardPlugin()`'s fake stream emitted the V1
+shape. Findings isolated live against OpenCode **2.0.29** and the published
+`@opencode/@2.0.29` types.
+
+**The V2 event envelope has no `properties`.** It is
+`{ id, created, type, durable?, location, data }`: the payload is **`event.data`**
+(`event.properties` is always `undefined`). The event *names* changed too:
+
+| V1 name (used until 0.1.159) | V2 name | Note |
+|---|---|---|
+| `session.created` | `session.created` | same name, different payload (`data.sessionID`; a child carries `data.parentID`) |
+| `session.updated` | *(gone)* | a child's `parentID` arrives on `session.created` |
+| `session.deleted` | `session.deleted` | `data.sessionID` |
+| `message.updated` | *(gone)* | use `session.step.ended` / `session.usage.updated` |
+| `file.watcher.updated` | `filesystem.changed` | nominal rename; **not observed firing** even on real add/change/unlink — not relied on |
+| `session.error` | `session.execution.failed` (and `session.step.failed`) | `data.sessionID`, `data.error` |
+
+**Fixes:**
+1. `templates/.opencode/plugins/context-guard.ts` — `hooks.event` reads `event.data` and the
+   V2 names. `session.step.ended` (`data.tokens` is exactly the `TokenUsageInfo` the core
+   already reads) is the V1 `message.updated` analogue: one model call == one orchestrator
+   turn. A child's `session.created` omits `model`, so the per-step model comes from
+   `session.step.started`; a new `modelFields()` maps the V2 `ModelRef`
+   (`{id, providerID, variant}`) to the `{providerID, modelID}` `modelLabel` reads.
+2. **Threshold reload without the watcher.** `loadThresholds()` is now mtime-aware
+   (`statSync`), replacing the dead `file.watcher.updated` cache-bust. `filesystem.changed`
+   was **not** wired: it exists in the manifest but did not fire in a probe, so the guard
+   must not depend on it.
+3. **Funds release on real user input.** V1 released the stop on a `message.updated`
+   `role:"user"`. In V2 that branch is gone; the new `ctx.session.hook("prompt", …)` clears
+   `fundsPending` for a **primary** session only (synthetic/shell/compaction submissions do
+   not fire it, and a child's prompt cannot clear the orchestrator's stop).
+4. `contrib/global-plugins/harness-freshness.ts` — reads `event.data`, skips children via
+   `data.parentID`, and uses `data.location.directory`.
+5. **Tests:** the `loadGuardPlugin()` fixtures now emit V2 payloads; a new
+   **`[drift-guard]`** test fails any `event.subscribe` plugin that reads `event.properties`
+   or names a V1 event (this is the guard that would have caught the original bug); new tests
+   cover the V2 lease/child path and the `prompt`-hook funds release.
+6. **`convertV1Permission`** now maps every renamed V1 action (`bash→shell`, `write`/
+   `patch→edit`, `task→subagent`), not just `bash`.
+7. **Persona skills** carry `metadata: { opencode/autoinvoke: false }` so the 15
+   persona `SKILL.md` files stay registered/loadable by ID but leave the model's advertised
+   skill list (they are persona definitions read with `read`/`grep`, never `skill`-tool
+   targets). `dev-loop`/`bounded-explore` stay advertised.
+8. Per-agent `request.body.temperature` (a documented V2 no-op) was removed from the 7
+   agent files that carried it, and the intended determinism was expressed as a **model
+   variant**: `docs`, `features` and `handoff` now pin `#low` (joining the already-`#low`
+   mechanical tier), while `planner`/`qa-architect` keep full reasoning effort on
+   `deepseek/deepseek-v4-pro` (no variant) to match their architect-tier siblings.
+9. **Turn-count caveat resolved — no auxiliary-step filter needed.** The plan flagged a
+   risk that `session.step.ended` might fire for title/compaction steps and inflate the
+   orchestrator turn count (plan §11/§12). A live probe against 2.0.29 showed this does
+   **not** happen: title generation emits **`session.renamed`** (`{ sessionID, title }`),
+   never `session.step.*`, and compaction has its **own** event family
+   (`session.compaction.started/ended/failed/delta`) — the ACP layer tracks it separately.
+   A 2-turn run produced exactly 2 `session.step.started`/`ended` (both `agent: "build"`)
+   plus one `session.renamed`. So `session.step.ended` counts only real orchestrator model
+   calls; no `session.step.started.agent` filter was added. (`session.usage.updated` is
+   still deliberately excluded from turn counting — it also fires at admission.)

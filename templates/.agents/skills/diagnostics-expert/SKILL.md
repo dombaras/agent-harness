@@ -2,6 +2,8 @@
 name: diagnostics-expert
 description: Use when debugging errors, performance regressions, or API anomalies — log-first investigation, telemetry, cold-start profiling, authentic reproduction.
 model: reasoning
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # Diagnostics & SRE Expert Skill

@@ -2,6 +2,8 @@
 name: qa-architect
 description: Use to design the QA plan for a change — inspects the diff, assesses risk, selects the minimal tier, and authors progression tests (thinker; does not run suites).
 model: reasoning
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # QA Architect (Thinker)

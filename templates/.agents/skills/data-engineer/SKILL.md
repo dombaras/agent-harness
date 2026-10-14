@@ -2,6 +2,8 @@
 name: data-engineer
 description: Use for catalog/data ingestion and entity resolution — external-source ingestion, canonical-record dedup, external service telemetry.
 model: general
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # Data / Catalog Engineer

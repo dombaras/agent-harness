@@ -579,6 +579,9 @@ test("opencode.json merge converges a V1 deploy to native V2 (no stale small_mod
           external_directory: { "~/custom/**": "allow" },
           bash: { "make *": "allow" },
           edit: "deny",
+          write: { "src/**": "allow" },
+          patch: { "**/*.md": "deny" },
+          task: { explore: "deny" },
         },
         instructions: ["docs/my-rules.md", ".agents/rules/00-operating.md"],
       },
@@ -600,6 +603,9 @@ test("opencode.json merge converges a V1 deploy to native V2 (no stale small_mod
   assert.strictEqual(find("external_directory", "~/custom/**")?.effect, "allow", "V1 external_directory rule migrated");
   assert.strictEqual(find("shell", "make *")?.effect, "allow", "V1 bash rule migrated to the shell action");
   assert.strictEqual(find("edit", "*")?.effect, "deny", "a V1 scalar action rule migrated to a resource:* rule");
+  assert.strictEqual(find("edit", "src/**")?.effect, "allow", "a V1 write rule migrated to the edit action");
+  assert.strictEqual(find("edit", "**/*.md")?.effect, "deny", "a V1 patch rule migrated to the edit action");
+  assert.strictEqual(find("subagent", "explore")?.effect, "deny", "a V1 task rule migrated to the subagent action");
   assert.ok(
     !merged.instructions.includes(".agents/rules/00-operating.md"),
     "the harness `instructions` entry is dropped (V2 reads AGENTS.md)"
@@ -5380,7 +5386,7 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   );
   assert.match(src, /orchestration\.md/, "thresholds come from the project memory file");
   assert.match(src, /parseThresholds/, "parses thresholds at runtime");
-  assert.match(src, /file\.watcher\.updated/, "invalidates the threshold cache on edits");
+  assert.match(src, /thresholdsMtime/, "re-reads the threshold cache when the file's mtime changes");
   assert.match(src, /guard-events\.jsonl/);
   assert.match(src, /guard-event log write failed/, "a failed guard-log write is surfaced, never silent");
   assert.match(src, /childSessions/, "child sessions are tracked to be excluded from band/loop counting");
@@ -5410,7 +5416,7 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
     "a band crossing is logged whenever it changes, not only on a new turn (token refresh emits are repeats)"
   );
   assert.match(src, /fundsError/, "detects provider funds/quota errors mechanically");
-  assert.match(src, /session\.error/, "also watches provider session errors");
+  assert.match(src, /session\.execution\.failed/, "also watches provider session failures");
   assert.match(src, /fundsPending = false/, "a user message releases the funds stop");
   assert.doesNotMatch(src, /"permission\.ask"/, "V2 has no permission.ask hook (the doom_loop action was removed)");
   assert.match(src, /no V2 equivalent/, "the dropped doom-loop mirror is documented");
@@ -5424,6 +5430,27 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /clearOneShot/, "hygiene notices are one-shot, never nagging");
   assert.doesNotMatch(src, /identical_tool_calls\s*[:=]\s*\d/, "no hardcoded loop threshold");
   assert.doesNotMatch(src, /(?:===|==|>=|>)\s*(?:50|60|80|100)\b/, "no hardcoded turn band numbers");
+});
+
+test("[drift-guard] event-stream plugins read event.data, never V1 event.properties", () => {
+  const files = [
+    path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"),
+    path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+  ];
+  for (const f of files) {
+    const src = fs.readFileSync(f, "utf8");
+    if (!src.includes("event.subscribe")) continue;
+    assert.doesNotMatch(
+      src,
+      /event\??\.properties/,
+      `${path.basename(f)}: V2 event envelopes have no \`properties\` field (payload is \`event.data\`)`
+    );
+    assert.doesNotMatch(
+      src,
+      /"message\.updated"|"file\.watcher\.updated"|"session\.updated"|"session\.error"/,
+      `${path.basename(f)}: that V1 event name does not exist in V2`
+    );
+  }
 });
 
 /* Load the V2 context-guard plugin and return a small driver: a fake `ctx` that
@@ -5526,12 +5553,12 @@ async function loadGuardPlugin(opts = {}) {
 test("context-guard injects at the conversation tail and never mutates the cached prefix", async () => {
   const g = await loadGuardPlugin();
   const sid = "ses_guard_primary";
-  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
+  await g.emit({ type: "session.created", data: { sessionID: sid } });
   // Cross the first band (checkpoint warning at turn 50).
   for (let i = 1; i <= 50; i++) {
     await g.emit({
-      type: "message.updated",
-      properties: { info: { id: "m" + i, role: "assistant", sessionID: sid } },
+      type: "session.step.ended",
+      data: { sessionID: sid, assistantMessageID: "m" + i },
     });
   }
 
@@ -5564,8 +5591,8 @@ test("context-guard injects at the conversation tail and never mutates the cache
   // Crossing the next band updates the tail message while the prefix stays put.
   for (let i = 51; i <= 60; i++) {
     await g.emit({
-      type: "message.updated",
-      properties: { info: { id: "m" + i, role: "assistant", sessionID: sid } },
+      type: "session.step.ended",
+      data: { sessionID: sid, assistantMessageID: "m" + i },
     });
   }
   await g.context(sid, messages);
@@ -5576,7 +5603,7 @@ test("context-guard injects at the conversation tail and never mutates the cache
   // A child/subagent session is never nudged.
   await g.emit({
     type: "session.created",
-    properties: { info: { id: "ses_guard_child", parentID: sid } },
+    data: { sessionID: "ses_guard_child", parentID: sid },
   });
   const childMessages = [{ role: "user", content: [] }];
   await g.context("ses_guard_child", childMessages);
@@ -5592,7 +5619,7 @@ test("context-guard keeps a per-message failure signature through the V2 execute
   const target = tmpdir();
   const g = await loadGuardPlugin({ directory: target });
   const sid = "ses_guard_err";
-  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
+  await g.emit({ type: "session.created", data: { sessionID: sid } });
 
   const eventsFile = path.join(target, ".agents", "guard-events.jsonl");
   const failures = () => {
@@ -5635,7 +5662,7 @@ test("context-guard injects the session-start orient brief until the first mater
   const g = await loadGuardPlugin({ directory: target });
 
   const sid = "ses_orient_primary";
-  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
+  await g.emit({ type: "session.created", data: { sessionID: sid } });
 
   // orient runs async (it spawns git/backlog) — poll for its guard event.
   const eventsFile = path.join(target, ".agents", "guard-events.jsonl");
@@ -5664,12 +5691,68 @@ test("context-guard injects the session-start orient brief until the first mater
   assert.doesNotMatch(injected, /SESSION ORIENT/, "orient is dropped once real work starts");
 });
 
+test("context-guard: a V2 session.created writes a lease and marks a child as non-primary", async () => {
+  const target = tmpdir();
+  const g = await loadGuardPlugin({ directory: target });
+  const parent = "ses_v2_parent";
+
+  await g.emit({
+    type: "session.created",
+    data: { sessionID: parent, location: { directory: target } },
+  });
+  const lease = path.join(target, ".serve", "sessions", `${parent}.json`);
+  assert.ok(fs.existsSync(lease), "the plugin wrote a session lease from the V2 event payload");
+  assert.strictEqual(JSON.parse(fs.readFileSync(lease, "utf8")).sessionID, parent);
+
+  // A child session must NOT be treated as a primary orchestrator.
+  await g.emit({ type: "session.created", data: { sessionID: "ses_v2_child", parentID: parent } });
+  // The first pure inspection is blocked for a primary session...
+  await assert.rejects(
+    g.toolBefore("shell", parent, { command: "cat src/a.ts" }),
+    /TOOL BLOCK/
+  );
+  // ...but never for a child/subagent session.
+  await g.toolBefore("shell", "ses_v2_child", { command: "cat src/a.ts" });
+});
+
+test("context-guard: the V2 prompt hook releases the funds stop on a primary, not a child", async () => {
+  const target = tmpdir();
+  const g = await loadGuardPlugin({ directory: target });
+  const sid = "ses_funds_primary";
+  await g.emit({ type: "session.created", data: { sessionID: sid } });
+  // Arm the stop through a structured provider failure (the V2 name for session.error).
+  await g.emit({
+    type: "session.execution.failed",
+    data: { sessionID: sid, error: { type: "provider", message: "Insufficient balance", status: 402 } },
+  });
+  const armed = [{ role: "user", content: [{ type: "text", text: "go" }] }];
+  await g.context(sid, armed);
+  assert.match(armed.at(-1).content[0].text, /PROVIDER GUARD/, "the funds stop is armed from the V2 failure event");
+
+  // A child dispatch's prompt must not clear the primary's stop.
+  await g.emit({ type: "session.created", data: { sessionID: "ses_funds_child", parentID: sid } });
+  for (const cb of g.registered.session.prompt || []) cb({ sessionID: "ses_funds_child" });
+  const stillArmed = [{ role: "user", content: [{ type: "text", text: "go" }] }];
+  await g.context(sid, stillArmed);
+  assert.match(stillArmed.at(-1).content[0].text, /PROVIDER GUARD/, "a child prompt never clears the orchestrator's stop");
+
+  // A real user prompt on the primary releases it.
+  for (const cb of g.registered.session.prompt || []) cb({ sessionID: sid });
+  const released = [{ role: "user", content: [{ type: "text", text: "topped up" }] }];
+  await g.context(sid, released);
+  assert.doesNotMatch(
+    released.at(-1)?.content?.[0]?.text || "",
+    /PROVIDER GUARD/,
+    "a primary prompt released the stop"
+  );
+});
+
 test("context-guard blocks the first pure inspection + poll once per head/kind (kill-switch honored)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
   const g = await loadGuardPlugin({ directory: target });
   const sid = "ses_toolblock";
-  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
+  await g.emit({ type: "session.created", data: { sessionID: sid } });
   const before = (command) => g.toolBefore("shell", sid, { command });
 
   await assert.rejects(before("cat src/a.ts"), /TOOL BLOCK/, "the first pure `cat` is blocked");
@@ -5683,7 +5766,7 @@ test("context-guard blocks the first pure inspection + poll once per head/kind (
   process.env.AGENT_GUARD_TOOLBLOCK = "0";
   try {
     const relaxed = "ses_toolblock_relaxed";
-    await g.emit({ type: "session.created", properties: { info: { id: relaxed } } });
+    await g.emit({ type: "session.created", data: { sessionID: relaxed } });
     await g.toolBefore("shell", relaxed, { command: "cat src/a.ts" });
   } finally {
     delete process.env.AGENT_GUARD_TOOLBLOCK;
@@ -5697,7 +5780,7 @@ test("branch-switch plugin guard aborts a HEAD move only while another live sess
   const shared = tmpdir();
   leases.writeLease(shared, "ses_other", {});
   const g = await loadGuardPlugin({ directory: shared });
-  await g.emit({ type: "session.created", properties: { info: { id: "ses_me" } } });
+  await g.emit({ type: "session.created", data: { sessionID: "ses_me" } });
 
   await assert.rejects(
     g.toolBefore("shell", "ses_me", { command: "cd /repo && git checkout main 2>&1 | tail -2" }),
@@ -5713,7 +5796,7 @@ test("branch-switch plugin guard aborts a HEAD move only while another live sess
   // Solo checkout: the same switch is allowed.
   const solo = tmpdir();
   const sg = await loadGuardPlugin({ directory: solo });
-  await sg.emit({ type: "session.created", properties: { info: { id: "ses_solo" } } });
+  await sg.emit({ type: "session.created", data: { sessionID: "ses_solo" } });
   await sg.toolBefore("shell", "ses_solo", { command: "git checkout main" });
 
   // A dead-pid lease is not live, so it must not block an innocent switch.
@@ -5732,7 +5815,7 @@ test("branch-switch plugin guard aborts a HEAD move only while another live sess
     })
   );
   const dg = await loadGuardPlugin({ directory: dead });
-  await dg.emit({ type: "session.created", properties: { info: { id: "ses_d" } } });
+  await dg.emit({ type: "session.created", data: { sessionID: "ses_d" } });
   await dg.toolBefore("shell", "ses_d", { command: "git switch main" });
 });
 
@@ -5752,7 +5835,7 @@ test("main-checkout plugin guard judges git ops by paths + effective target; doc
   git(main, ["push", "-q", "-u", "origin", "HEAD:main"]);
 
   const g = await loadGuardPlugin({ directory: main });
-  await g.emit({ type: "session.created", properties: { info: { id: "ses_main" } } });
+  await g.emit({ type: "session.created", data: { sessionID: "ses_main" } });
   const run = (command, args = {}) => g.toolBefore("shell", "ses_main", { command, ...args });
   const assertBlocked = (command) =>
     assert.rejects(run(command), /SESSION GUARD[\s\S]*MAIN checkout[\s\S]*NOT executed/, `blocked: ${command}`);
@@ -5793,7 +5876,7 @@ test("main-checkout plugin guard judges git ops by paths + effective target; doc
   const wt = path.join(tmpdir(), "linked");
   git(main, ["worktree", "add", "-q", wt, "-b", "feat"]);
   const wg = await loadGuardPlugin({ directory: wt });
-  await wg.emit({ type: "session.created", properties: { info: { id: "ses_wt" } } });
+  await wg.emit({ type: "session.created", data: { sessionID: "ses_wt" } });
   const runWt = (command) => wg.toolBefore("shell", "ses_wt", { command });
   // main's index carries the unpushed code commit's tree? It's committed, so
   // stage fresh code and confirm the -C commit is blocked.
@@ -5873,7 +5956,7 @@ test("bash reroot lifts `cd <tree> &&` into workdir and defaults to the session 
   const directory = tmpdir();
   const wt = tmpdir();
   const g = await loadGuardPlugin({ directory });
-  await g.emit({ type: "session.created", properties: { info: { id: "ses_r" } } });
+  await g.emit({ type: "session.created", data: { sessionID: "ses_r" } });
 
   // An explicit `cd <abs> && ...` is lifted into the shell workdir argument.
   const a = { command: `cd ${wt} && npm run test:quick` };
@@ -5896,7 +5979,7 @@ test("bash reroot lifts `cd <tree> &&` into workdir and defaults to the session 
 test("the guard nudges shell tool-choice and re-reads once, on the cache-safe tail", async () => {
   const g = await loadGuardPlugin();
   const sid = "ses_hygiene";
-  await g.emit({ type: "session.created", properties: { info: { id: sid } } });
+  await g.emit({ type: "session.created", data: { sessionID: sid } });
 
   // This test covers the ADVISORY (the fallback when the structural block is
   // off); the block itself is covered by the tool-block test.

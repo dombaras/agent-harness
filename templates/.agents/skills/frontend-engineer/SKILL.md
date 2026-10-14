@@ -2,6 +2,8 @@
 name: frontend-engineer
 description: Use when writing or fixing web React / Next.js / Tailwind / shadcn code (app/, components/, pages/), or resolving web build errors — not Expo/React Native (that's mobile-engineer).
 model: general
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # Frontend Engineer Skill

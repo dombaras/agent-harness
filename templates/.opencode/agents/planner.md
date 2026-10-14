@@ -4,9 +4,6 @@ mode: subagent
 steps: 15
 hidden: true
 model: deepseek/deepseek-v4-pro
-request:
-  body:
-    temperature: 0.1
 permissions:
   - action: edit
     resource: "*"
