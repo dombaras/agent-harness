@@ -615,3 +615,64 @@ inspection — the exact data the H-23/H-25/H-34 loop depends on. Fixes:
   class is caught in CI rather than by a manual probe.
 - The `session-recon` fixture test now includes `shell`/`subagent` rows (the old
   test fed only V1 names, masking the bug).
+
+---
+
+## 19. Periphery cleanup — docs, version guard, plugin contract (0.1.162)
+
+The same third review that produced §18 listed further gaps it did not fix. This
+pass closes the deterministic, in-repo ones; the two that need a decision or
+infrastructure are called out as remaining.
+
+**Closed:**
+
+- **G4/G5/G6 — stale V1 prose.** `README.md` dropped `request.body` from the
+  agent-frontmatter list and from the deterministic-persona bullet (V2 treats it
+  as a no-op; determinism is now a `#low` model **variant**), and the notify
+  plugin is described as a structured **console log** (V2 server plugins have no
+  TUI — V1 "push a toast"), not a toast. `templates/.agents/memory/model-routing.md`
+  now says the mechanical tier pins a `#low` variant while the architect tier
+  keeps full effort, matching the agent files. `templates/docs/mobile-testing.md`
+  says `shell` (not `bash`), and the `job-notify` push is described as a console
+  line per scenario + a `session.prompt` on first-failure/completion.
+- **G7 — `context-guard.ts` comments.** The funds branch now states correctly
+  that `SessionStructuredError` carries no provider/model (the label comes from
+  the observed `sessionModel`), and the registration comment records that V2
+  **does** expose `ctx.permission.hook("evaluate")` — only the built-in
+  `doom_loop` action was removed. The source-contract test asserts both.
+- **G8 — `check-prefix-stability.js` premise.** The gate now explains that under
+  V2 only the root `AGENTS.md` is auto-loaded (`.agents/AGENTS.md` is discovered
+  lazily, `.agents/rules/00-operating.md` is linked, never auto-loaded), so its
+  file set is a **budget proxy** for the deliberate context, not the literal live
+  prefix. Behaviour is unchanged.
+- **G10 — no `opencode` version check.** `doctor` now reports the runtime and
+  **fails** on a V1 banner (the harness is V2-only; V1 loads no plugins while
+  everything else says "ok"), warns on an unparseable banner, and is silent when
+  the binary is absent (CI). `deploy` prints the same warning (cached, one probe
+  per process). Pure `parseOpencodeVersion`/`checkOpencodeVersion` helpers are
+  unit-tested.
+- **G11 (partial) — plugin contract drift guard.** A new `[drift-guard]` test
+  asserts every V2 plugin declares a stable `id:` and a `setup()`/`effect()`
+  entrypoint and only calls a hook name from the pinned V2 set
+  (`execute.before`/`execute.after`/`context`/`prompt`/`evaluate`, from
+  `@opencode/plugin@2.0.29`). This is static; the **real-loader e2e** the review
+  asked for stays open (below).
+- **G12/G13 — permission-model limits are now documented** in a new README
+  "Permission model & limits" subsection: `permissions` are ordered
+  last-match-wins and a project rule is appended *after* the harness rules (so a
+  project `allow` can shadow a harness `deny` — audit when a deny must be
+  absolute), and `permissions` gate tool *selection*, not the host (no OS
+  sandbox; a `shell` call runs with the user's authority).
+
+**Already fixed before this pass:** G9 — `templates/docs/mcp-integrations.md`
+"Deploy safety" was corrected in 0.1.161 (§18.3).
+
+**Remaining:**
+
+1. **G3 — the `f-343` worktree** still runs the V1 harness (needs a rebase/merge
+   decision on its local work, then the `AGENTS.md` §5 worktree sweep).
+2. **G11 — a real-loader e2e** (boot a throwaway server, activate a fixture
+   location, assert the plugin ids + one end-to-end guard event). Static guards
+   now cover the name/id class; behaviour still depends on probes.
+3. **G12 — optional policy hardening:** V2's managed `policies` (hard-deny) is
+   the unused lever if a harness deny must not be overridable by a project rule.

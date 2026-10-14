@@ -145,8 +145,11 @@ frontmatter:
   `diagnostics-expert`) allow `edit` everywhere except governance/harness paths
   — `opencode.json`, `.harness.json`, `.opencode/**`, `.agents/**` are denied —
   so out-of-scope edits are blocked mechanically, not just by prose.
-- **Deterministic personas** (`planner`, `qa-architect`, `qa-runner`, `handoff`,
-  `diagnostics-expert`) pin `temperature: 0.1`.
+- **Deterministic/mechanical personas** pin a `#low` **model variant**
+  (`model: <provider/model>#low`) for lower reasoning effort and cost. The
+  architect tier (`planner`, `qa-architect`) keeps full reasoning effort on
+  `deepseek/deepseek-v4-pro` with **no** variant. (V2 ignores the V1
+  `request.body.temperature` pin this replaced.)
 - **`steps:`** caps iterations per persona (cost ceiling).
 - **`planner` / `handoff`** are `hidden: true` (orchestration-only, not in the
   `@` menu).

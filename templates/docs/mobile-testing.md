@@ -363,11 +363,12 @@ carries a performance layer; coverage and assertions are unchanged:
    It writes `<jobdir>/<id>.events.jsonl` (one JSON line per scenario: start,
    pass/fail, fail-fast, done, with `durationMs`) plus `<jobdir>/<id>.json`
    (pid + log + events paths). The `job-notify` opencode plugin tails the stream
-   and turns it into a **push**: a TUI toast per scenario (live progress with no
-   LLM turn), and a message injected back into the session (`session.prompt`)
-   on the **first failure** and at **completion** — so the agent resumes on real
-   results instead of polling. The report lands at `.serve/mobile-e2e-last-run.json`
-   and now carries the **invocation count, matrix/invocation wall time, and each
+   and turns it into a **push**: a console-log line per scenario (V2 server
+   plugins have no TUI toast; live progress with no LLM turn), and a message
+   injected back into the session (`session.prompt`) on the **first failure** and
+   at **completion** — so the agent resumes on real results instead of polling.
+   The report lands at `.serve/mobile-e2e-last-run.json` and now carries the
+   **invocation count, matrix/invocation wall time, and each
    journey's `durationMs`** (parsed from Maestro's per-flow summary in a batch,
    or the invocation wall clock for a single flow), plus a `Slowest journeys:`
     line — the timing map H-34 asked for. A batched failure is matched by its
@@ -388,7 +389,7 @@ carries a performance layer; coverage and assertions are unchanged:
    **To block for the run's exit code, prefer the async `wait` TOOL, not a
    `--wait` shell call.** The general `wait` tool (`scripts/wait-for.js`, e.g.
    `wait --job <record.json>`) spawns its child asynchronously, so it does
-   **not** freeze opencode's event loop — the plugin's toasts and
+   **not** freeze opencode's event loop — the plugin's log lines and
    first-failure/completion wakes keep flowing while the agent waits. (Before
    0.1.115 the `wait` tool used `execFileSync` and starved the notifier: every
    event flushed in one burst when the wait returned, which is why the F-296 run
@@ -398,7 +399,7 @@ carries a performance layer; coverage and assertions are unchanged:
    a bare CI shell). It blocks the calling shell for the entire run:
 
    ```bash
-   # headless only — from an agent `bash` call this holds the tool for the whole
+   # headless only — from an agent `shell` call this holds the tool for the whole
    # matrix and leaves the transcript blind (the F-296 resume did exactly this).
    scripts/qa/mobile-e2e/run-detached.sh --flows all --reuse-session --wait
    ```

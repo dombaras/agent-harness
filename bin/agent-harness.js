@@ -1035,6 +1035,9 @@ async function deploy(target, opts) {
         `much slower than the WSL ext4 filesystem. Prefer a path under ~/develop.`
     );
   }
+  // The deployed harness is V2-native; warn when the machine's `opencode` is V1
+  // so the mismatch is visible now instead of showing up as "no tools loaded".
+  warnOpencodeVersion();
   const existing = readConfig(target);
   const projectName = name || existing.projectName || path.basename(target);
   const driverName = backlogDriverName(projectName);
@@ -1610,6 +1613,53 @@ function whichBin(cmd, args) {
   return { ok: r.status === 0, out: (r.stdout || "").trim(), err: (r.stderr || "").trim() };
 }
 
+/* Parse the `opencode --version` banner ("opencode v2.0.29" / "2.0.29"). */
+function parseOpencodeVersion(out) {
+  const m = String(out || "").match(/(\d+)\.(\d+)\.(\d+)/);
+  return m ? { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) } : null;
+}
+
+/* Judge a version banner against the harness's V2 floor. The harness is
+ * OpenCode V2-only (V1 plugin implementations do not run), so a machine still on
+ * V1 silently loads no plugins while everything else reports "ok". Pure so both
+ * `doctor` and the unit tests can call it without a real binary. */
+function checkOpencodeVersion(out) {
+  const v = parseOpencodeVersion(out);
+  if (!v) {
+    return {
+      level: "warn",
+      label: "opencode",
+      detail: `unrecognized version "${String(out || "").trim() || "(empty)"}" — cannot verify the runtime`,
+    };
+  }
+  const shown = `v${v.major}.${v.minor}.${v.patch}`;
+  if (v.major < 2) {
+    return {
+      level: "fail",
+      label: "opencode",
+      detail: `${shown} — the harness requires OpenCode V2 (>= 2.0.0); V1 does not load V2 plugins`,
+    };
+  }
+  return { level: "ok", label: "opencode", detail: shown };
+}
+
+/* Warn (never fail) at deploy time when the local `opencode` is V1 — a deploy
+ * target on V1 would get the V2-native harness and silently load no plugins.
+ * Cached: one probe per process, since `deploy` runs many times in the suite. */
+let opencodeVersionCache = null;
+function warnOpencodeVersion() {
+  if (opencodeVersionCache === null) {
+    const oc = whichBin("opencode", ["--version"]);
+    opencodeVersionCache = oc.ok ? checkOpencodeVersion(oc.out) : { level: "ok" };
+  }
+  if (opencodeVersionCache.level === "fail") {
+    console.warn(
+      `  WARNING: ${opencodeVersionCache.detail}. Install OpenCode V2 before starting a ` +
+        "session in this target (`opencode upgrade`)."
+    );
+  }
+}
+
 /* `doctor` — a deterministic (no-LLM) readiness report for the self-contained
  * agent release cycle. It answers, before a session starts, whether the pieces
  * `ship` depends on actually exist: gh + auth, the CI/deploy workflows, the
@@ -1634,6 +1684,16 @@ function doctor(target) {
     "harness deployed",
     config.version ? `v${config.version} (${config.projectName || "?"})` : "no .harness.json — run `agent-harness init`"
   );
+
+  // The harness is OpenCode V2-only: on a V1 runtime every plugin/tool this
+  // deploy writes is silently inert. Assert the floor rather than assume it.
+  const opencode = whichBin("opencode", ["--version"]);
+  if (!opencode.ok) {
+    add("ok", "opencode", "not on PATH — runtime version unverified (fine in CI)");
+  } else {
+    const v = checkOpencodeVersion(opencode.out);
+    add(v.level, v.label, v.detail);
+  }
 
   const remote = runGit(target, ["remote", "get-url", "origin"]);
   add(remote.ok ? "ok" : "warn", "git remote", remote.ok ? remote.out : "no origin remote");
@@ -2519,6 +2579,8 @@ module.exports = {
   mapIndexRow,
   printPersonas,
   doctor,
+  parseOpencodeVersion,
+  checkOpencodeVersion,
   explain,
   explainSection,
   explainList,

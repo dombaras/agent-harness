@@ -701,6 +701,17 @@ test("doctor warns when a project still declares a V1 tools map (G1)", () => {
   assert.match(text, /agent-harness update/, "doctor points at the migration");
 });
 
+test("opencode version guard requires V2 (G10)", () => {
+  assert.deepStrictEqual(h.parseOpencodeVersion("opencode v2.0.29"), { major: 2, minor: 0, patch: 29 });
+  assert.strictEqual(h.parseOpencodeVersion("no version here"), null);
+  assert.strictEqual(h.checkOpencodeVersion("opencode v2.0.29").level, "ok");
+  assert.strictEqual(h.checkOpencodeVersion("2.4.0").level, "ok");
+  const v1 = h.checkOpencodeVersion("opencode v1.9.3");
+  assert.strictEqual(v1.level, "fail", "a V1 runtime fails — the harness is V2-only");
+  assert.match(v1.detail, /requires OpenCode V2/);
+  assert.strictEqual(h.checkOpencodeVersion("garbage").level, "warn", "an unparseable banner warns, never ok");
+});
+
 test("update is non-interactive (never prompts)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: false, isUpdate: true });
@@ -5507,7 +5518,8 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /session\.execution\.failed/, "also watches provider session failures");
   assert.match(src, /fundsPending = false/, "a user message releases the funds stop");
   assert.doesNotMatch(src, /"permission\.ask"/, "V2 has no permission.ask hook (the doom_loop action was removed)");
-  assert.match(src, /no V2 equivalent/, "the dropped doom-loop mirror is documented");
+  assert.match(src, /permission\.hook\("evaluate"\)/, "the V2 permission evaluate hook is documented");
+  assert.match(src, /doom_loop/, "the removed built-in doom-loop action is documented");
   assert.match(src, /inspectCommand/, "steers shell file-inspection to the dedicated tools");
   assert.match(src, /rerootBash/, "lifts a leading `cd <tree> &&` into the bash workdir argument");
   assert.match(src, /sessionBashRoot/, "defaults bash into the session's mid-session worktree");
@@ -5538,6 +5550,32 @@ test("[drift-guard] event-stream plugins read event.data, never V1 event.propert
       /"message\.updated"|"file\.watcher\.updated"|"session\.updated"|"session\.error"/,
       `${path.basename(f)}: that V1 event name does not exist in V2`
     );
+  }
+});
+
+test("[drift-guard] V2 plugins declare an id + setup(), and only pinned V2 hooks (G11)", () => {
+  const dirs = [
+    path.join(h.TEMPLATES_DIR, ".opencode", "plugins"),
+    path.join(__dirname, "..", "contrib", "global-plugins"),
+  ];
+  // The V2 hook surface, pinned from `@opencode/plugin@2.0.29` (see
+  // docs/opencode-v2-event-remap-plan.md §9.1). A name here that is not in the
+  // published types is the "registered but never fires" class this guards.
+  const HOOKS = new Set(["execute.before", "execute.after", "context", "prompt", "evaluate"]);
+  const files = [];
+  for (const d of dirs) {
+    for (const f of fs.readdirSync(d)) if (f.endsWith(".ts")) files.push(path.join(d, f));
+  }
+  assert.ok(files.length >= 4, "plugin files discovered");
+  for (const f of files) {
+    const base = path.basename(f);
+    const src = fs.readFileSync(f, "utf8");
+    assert.match(src, /id:\s*"[a-z0-9-]+"/, `${base}: declares a stable plugin id`);
+    assert.match(src, /setup\s*\(|effect\s*\(/, `${base}: has a setup()/effect() entrypoint`);
+    for (const m of src.matchAll(/\.hook\(\s*"([^"]+)"/g)) {
+      assert.ok(HOOKS.has(m[1]), `${base}: "${m[1]}" is not a pinned V2 hook name`);
+    }
+    assert.doesNotMatch(src, /\.hook\(\s*"tool\.execute/, `${base}: V1 hook name (V2 is execute.before/after)`);
   }
 });
 
@@ -8490,6 +8528,7 @@ test("agent-harness doctor reports release-cycle readiness", () => {
   const out = (res.stdout || "") + (res.stderr || "");
   assert.match(out, /agent-harness doctor/);
   assert.match(out, /CI workflow/);
+  assert.match(out, /opencode: /, "doctor reports the runtime version (G10)");
   assert.match(out, /failure\(s\), \d+ warning\(s\)/);
 });
 

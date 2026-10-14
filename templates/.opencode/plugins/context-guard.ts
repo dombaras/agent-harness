@@ -500,9 +500,12 @@ export default {
           return
         }
 
-        // V2 renamed `session.error`. A failed dispatch reports its own provider/
-        // model on the structured error; capture it even for child sessions so the
-        // funds stop is armed on the session the user actually sees.
+        // V2 renamed `session.error`. The structured failure carries no
+        // provider/model (`SessionStructuredError` is `{ type, message, status?,
+        // response? }`), so the label comes from the per-session model observed
+        // on `session.step.started` (`sessionModel`), with `modelLabel` as a
+        // best-effort parse. Capture even for child sessions so the funds stop
+        // is armed on the session the user actually sees.
         if (type === "session.execution.failed" || type === "session.step.failed") {
           const sid = d.sessionID
           if (typeof sid !== "string" || sid.length === 0) return
@@ -969,8 +972,11 @@ export default {
   // ---- V2 registration ----
   // The event stream replaces the V1 `event` hook; the tool hooks are driven
   // through the V1-shaped bodies above via thin adapters so the pure core
-  // contract is unchanged. `permission.ask` has no V2 equivalent (V2 dropped the
-  // `doom_loop` action), so the runtime's own loop guard is no longer mirrored.
+  // contract is unchanged. The V1 `permission.ask` hook is gone, but V2 does
+  // expose `ctx.permission.hook("evaluate")`; only the built-in `doom_loop`
+  // action was removed, so the core's loop guard is no longer mirrored onto the
+  // permission layer. (Rebuild it on the `evaluate` hook if the runtime mirror
+  // is wanted back — the evaluate hook is present in `permission.d.ts`.)
   void (async () => {
     try {
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {

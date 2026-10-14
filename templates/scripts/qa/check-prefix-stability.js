@@ -3,12 +3,17 @@
 /*
  * test:prefix — cache-prefix stability gate.
  *
- * The always-loaded leading context (the root dispatcher, the rulebook, the
- * operating-rules summary, and the session-start memory reads) is the prompt
- * prefix every turn is billed against. At ~97% cache-read share, one volatile
- * byte in that prefix (a clock timestamp, a machine-specific path, a session
- * id) breaks cache locality for every following turn — a silent, recurring
- * cost. This gate fails when a volatile value is found in a prefix file.
+ * The intended leading context is the root `AGENTS.md` (the always-loaded
+ * dispatcher under V2), the discovered rulebook + operating-rules summary, and
+ * the session-start memory reads — the prompt prefix every turn is billed
+ * against. Under V2 only the root `AGENTS.md` is auto-loaded:
+ * `.agents/AGENTS.md` is discovered lazily (it is an `AGENTS.md`), and
+ * `.agents/rules/00-operating.md` is never auto-loaded (the root file links it).
+ * So this set is a budget proxy for the context the rules *deliberately* pull
+ * in, not a byte-for-byte copy of the live prefix. At ~97% cache-read share, one
+ * volatile byte in that context (a clock timestamp, a machine-specific path, a
+ * session id) breaks cache locality for every following turn — a silent,
+ * recurring cost. This gate fails when a volatile value is found in a prefix file.
  *
  * Scoped to the prefix files only: project memory that legitimately records
  * historical dates, feature docs, handoffs, and the live BACKLOG.md are out of
@@ -50,9 +55,12 @@ const totalBudget = (() => {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_TOTAL_BUDGET;
 })();
 
-/* The always-loaded prefix: root dispatcher -> rulebook -> rules summary, then
- * the memory files the operating rules name as session-start reads. BACKLOG.md
- * is deliberately excluded — it is a live board that changes every session.
+/* The intended always-on prefix: root dispatcher -> rulebook -> rules summary,
+ * then the memory files the operating rules name as session-start reads. Under
+ * V2 only the root `AGENTS.md` is auto-loaded; the rest are discovered lazily or
+ * read on demand, so this list is the deliberate-context budget proxy, not the
+ * literal live prefix. BACKLOG.md is deliberately excluded — it is a live board
+ * that changes every session.
  * `locations.md` is the locations map: absolute machine paths are its whole
  * purpose, so machine paths are allowed there (clock timestamps and session ids
  * are still flagged). */

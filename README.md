@@ -44,7 +44,7 @@ npx @dombaras/agent-harness init --target . --dry-run
 |---|---|---|
 | `AGENTS.md` | always-loaded project instructions (OpenCode V2 reads `AGENTS.md`; the V1 `instructions` key is ignored) | harness (overwrite) |
 | `BACKLOG.md` | canonical task list (Open / In progress / Frozen / Archive / Not tracking) | **project** (create-if-missing) |
-| `.opencode/agents/*.md` | 15 persona subagent defs (native V2 frontmatter: `model: provider/model#variant`, `permissions`, `steps`, `request.body`, `hidden`) | harness (overwrite) |
+| `.opencode/agents/*.md` | 15 persona subagent defs (native V2 frontmatter: `model: provider/model#variant`, `permissions`, `steps`, `hidden`) | harness (overwrite) |
 | `.agents/AGENTS.md` | full canonical operating rulebook (V2 auto-discovers it as you work under `.agents/`) | harness (overwrite) |
 | `.agents/rules/00-operating.md` | expanded operating rules (referenced from `AGENTS.md`; V2 ignores the `instructions` config key) | harness (overwrite) |
 | `.agents/skills/*/SKILL.md` | persona instruction skills (V2 also discovers `.agents/skills/` as skills) | harness (overwrite) |
@@ -218,7 +218,7 @@ plan.
     `diagnostics-expert`) → an `edit` allow narrowed by denies for
     `opencode.json`, `.harness.json`, `.opencode/**`, `.agents/**` (governance
     and harness files are read-only), plus a `shell` allow
-  - deterministic personas → `request.body.temperature: 0.1`
+  - deterministic personas → a `#low` **model variant** (`model: <provider/model>#low`) — V2 treats `request.body.temperature` as a no-op, so the old temperature pin was replaced by the variant
   - all personas → a `steps:` cap (cost ceiling)
   - `planner`, `handoff` → `hidden: true`
 - `.agents/skills/*/SKILL.md` carries a `model:` label only (informational).
@@ -339,9 +339,27 @@ so agents see complete descriptions.
   `backlog_take`, `backlog_archive`, `backlog_freeze`, `backlog_depends`, `backlog_owns`,
   `backlog_worktree`, `backlog_list`) that shell
   out to the CLI — never hand-edit `BACKLOG.md`.
-- A **notify plugin** (`.opencode/plugins/backlog-notify.ts`) pushes a toast +
-  structured log the moment an agent mutates the board, so "an agent finished an
-  item" reaches you as a notification instead of a manual refresh.
+- A **notify plugin** (`.opencode/plugins/backlog-notify.ts`) writes a structured
+  log the moment an agent mutates the board. V2 server plugins have no TUI, so
+  this is a console log (visible in the opencode log), not the V1 toast — but it
+  still surfaces "an agent finished an item" without a manual refresh.
+
+### Permission model & limits
+
+- **Ordering is last-match-wins, so a project rule can shadow a harness deny.**
+  V2 applies `permissions` in order (global → project → agent) and the *last*
+  matching rule wins. `init`/`update` append a project's own rules **after** the
+  harness rules, so a project-level `allow` can override a harness `deny` (for
+  example the credential denies). The deployed baseline is ordered safely
+  (denies after the work-root allow), but a hand-added project rule is stronger
+  than the baseline — audit project `permissions` whenever a deny must be
+  absolute, and treat the project layer as a deliberate escape hatch.
+- **`permissions` gate tool *selection*, not the host.** They are advisory to
+  the model; a `shell` call runs with the host user's full authority regardless
+  of the rules (V2's own docs say so). The harness compensates with mechanical
+  guards — the capacity envelope, the main-checkout / branch-switch guard,
+  per-feature worktrees, session leases — not a kernel sandbox. Keep secrets off
+  the box, and prefer a container or a dedicated user for untrusted work.
 
 ## QA gates
 
@@ -544,8 +562,8 @@ node bin/agent-harness.js init --target /tmp/demo --name Demo --yes
   checkout. See the `switch-reasoning-model.sh` POSIX twin, platform-dispatched
   by the `/switch-model` command.
 - Worktrees live in a sibling container (`<repo>/../.worktrees/<repo>/<id>`), so
-  allow `~/develop/**` in the global `opencode.jsonc`
-  an `external_directory` allow rule in the `permissions` array, or each worktree access prompts.
+  allow `~/develop/**` in the global `opencode.jsonc` (an `external_directory`
+  allow rule in the `permissions` array), or each worktree access prompts.
 
 Clear the data-test except keep `templates/` generic; do not commit a target
 project's `.agents/memory/` into this repo.
