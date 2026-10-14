@@ -249,38 +249,67 @@ function mergeOpencodeJson(target, variables) {
   const existing = fs.existsSync(p) ? safeJson(fs.readFileSync(p, "utf8"), {}) : {};
 
   const merged = { ...existing, ...harness };
-  // The harness `agents` block ships ADD-ONLY defaults (e.g. `build.steps`, the
-  // `title` small-model pin, the opportunistic `explore` pin): a project's own
-  // agent config — including an overridden steps cap or model — always wins, and
-  // every agent the project defines is preserved. (Native V2 shape: the V1
-  // singular `agent` map and top-level `small_model` are gone.)
+
+  // --- V1 -> V2 config convergence -------------------------------------------
+  // An older deploy wrote harness-managed V1 keys (`small_model`, the singular
+  // `agent` map, the keyed `permission` map, and an `instructions` entry). V2
+  // normalizes V1 shapes, but the file would then keep both forms forever, so
+  // migrate the project's own values into the native V2 shape and drop the V1 key.
+  const priorAgents = {
+    ...(existing.agent && typeof existing.agent === "object" && !Array.isArray(existing.agent)
+      ? existing.agent
+      : {}),
+    ...(existing.agents && typeof existing.agents === "object" && !Array.isArray(existing.agents)
+      ? existing.agents
+      : {}),
+  };
+  if (
+    typeof existing.small_model === "string" &&
+    !(priorAgents.title && typeof priorAgents.title === "object" && priorAgents.title.model)
+  ) {
+    priorAgents.title = { ...(priorAgents.title || {}), model: existing.small_model };
+  }
+  const priorPermissions = [
+    ...(Array.isArray(existing.permissions) ? existing.permissions : []),
+    ...convertV1Permission(existing.permission),
+  ];
+  delete merged.agent;
+  delete merged.small_model;
+  delete merged.permission;
+  if (Array.isArray(merged.instructions)) {
+    const kept = merged.instructions.filter((x) => x !== ".agents/rules/00-operating.md");
+    if (kept.length) merged.instructions = kept;
+    else delete merged.instructions;
+  }
+
+  // ADD-ONLY agent defaults (project values win; every project agent preserved).
   if (harness.agents && typeof harness.agents === "object" && !Array.isArray(harness.agents)) {
-    const priorAgents =
-      existing.agents && typeof existing.agents === "object" && !Array.isArray(existing.agents)
-        ? existing.agents
-        : {};
     const agents = { ...priorAgents };
     for (const [name, cfg] of Object.entries(harness.agents)) {
       const prior = agents[name] && typeof agents[name] === "object" ? agents[name] : {};
       agents[name] = { ...cfg, ...prior };
     }
     merged.agents = agents;
+  } else if (Object.keys(priorAgents).length) {
+    merged.agents = priorAgents;
   }
+
   // The `permissions` baseline is an ordered array (V2: the last matching rule
   // wins), so a plain keyed merge is impossible. Union it: harness rules first,
   // the project's own rules appended after so they win a resource collision, and
   // exact duplicates dropped.
   if (Array.isArray(harness.permissions)) {
-    const priorPerms = Array.isArray(existing.permissions) ? existing.permissions : [];
     const seen = new Set();
     const permissions = [];
-    for (const rule of [...harness.permissions, ...priorPerms]) {
+    for (const rule of [...harness.permissions, ...priorPermissions]) {
       const key = JSON.stringify(rule);
       if (seen.has(key)) continue;
       seen.add(key);
       permissions.push(rule);
     }
     merged.permissions = permissions;
+  } else if (priorPermissions.length) {
+    merged.permissions = priorPermissions;
   }
   // MCP servers live under `mcp.servers` in V2. A project owns its own `mcp`
   // block (servers are project-side, e.g. a dev-DB server), so if the harness
@@ -293,6 +322,26 @@ function mergeOpencodeJson(target, variables) {
     merged.mcp = mergeMcp(harness.mcp, existing.mcp);
   }
   return JSON.stringify(merged, null, 2) + "\n";
+}
+
+/* Convert a V1 keyed `permission` map (`{ <action>: { <resource>: effect } }`, or
+ * `{ <action>: effect }`) into the V2 ordered rules array, mapping the V1 `bash`
+ * action to V2 `shell`. Entry order is preserved so the V2 "last matching rule
+ * wins" semantics match the V1 glob map as closely as possible. */
+function convertV1Permission(v1) {
+  const out = [];
+  if (!v1 || typeof v1 !== "object" || Array.isArray(v1)) return out;
+  for (const [action, rule] of Object.entries(v1)) {
+    const actionName = action === "bash" ? "shell" : action;
+    if (rule && typeof rule === "object" && !Array.isArray(rule)) {
+      for (const [resource, effect] of Object.entries(rule)) {
+        if (typeof effect === "string") out.push({ action: actionName, resource, effect });
+      }
+    } else if (typeof rule === "string") {
+      out.push({ action: actionName, resource: "*", effect: rule });
+    }
+  }
+  return out;
 }
 
 /* Merge a harness `mcp` block with a project's, by server name under

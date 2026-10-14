@@ -565,6 +565,48 @@ test("opencode.json mcp is project-owned and deep-merged by server name (D prere
   assert.ok(out.servers.other, "harness-only server added");
 });
 
+test("opencode.json merge converges a V1 deploy to native V2 (no stale small_model/agent/permission)", () => {
+  const target = tmpdir();
+  // Simulate an opencode.json written by a V1 harness (harness-managed V1 keys).
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify(
+      {
+        model: "opencode-go/deepseek-v4.1-flash",
+        small_model: "opencode-go/glm-5.3-flash",
+        agent: { explore: { model: "custom/explore" } },
+        permission: {
+          external_directory: { "~/custom/**": "allow" },
+          bash: { "make *": "allow" },
+          edit: "deny",
+        },
+        instructions: ["docs/my-rules.md", ".agents/rules/00-operating.md"],
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+  const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
+  assert.ok(!("small_model" in merged), "V1 small_model is dropped");
+  assert.ok(!("agent" in merged), "V1 singular agent map is dropped");
+  assert.ok(!("permission" in merged), "V1 keyed permission map is dropped");
+  assert.strictEqual(
+    merged.agents.explore.model,
+    "custom/explore",
+    "the project's agent override is preserved as native agents.explore"
+  );
+  const find = (a, r) => merged.permissions.find((p) => p.action === a && p.resource === r);
+  assert.strictEqual(find("external_directory", "~/custom/**")?.effect, "allow", "V1 external_directory rule migrated");
+  assert.strictEqual(find("shell", "make *")?.effect, "allow", "V1 bash rule migrated to the shell action");
+  assert.strictEqual(find("edit", "*")?.effect, "deny", "a V1 scalar action rule migrated to a resource:* rule");
+  assert.ok(
+    !merged.instructions.includes(".agents/rules/00-operating.md"),
+    "the harness `instructions` entry is dropped (V2 reads AGENTS.md)"
+  );
+  assert.ok(merged.instructions.includes("docs/my-rules.md"), "project instructions are preserved");
+});
+
 test("update is non-interactive (never prompts)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: false, isUpdate: true });
