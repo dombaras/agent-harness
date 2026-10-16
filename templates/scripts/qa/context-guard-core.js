@@ -896,6 +896,57 @@ function isCodeMutationCommand(command) {
   );
 }
 
+/* `pkill -f <pat>` (or `--full`) matches each process's FULL command line —
+ * which includes the `bash -c '<command>'` shell that pkill itself runs in — so
+ * a pattern that also appears in its own command text SIGTERMs the agent's own
+ * shell and interrupts the turn (measured twice in one session, 2026-10-16;
+ * once it also killed the shared opencode service). Returns the self-matching
+ * pattern, or null. `pkill <name>` (no `-f`) matches only the short process
+ * name and is unaffected. */
+function shellSelfKill(command) {
+  const cmd = String(command || "");
+  if (!/\bpkill\b/.test(cmd)) return null;
+  for (const segment of cmd.split(/\r?\n|&&|\|\||;|\|/)) {
+    if (!/\bpkill\b/.test(segment)) continue;
+    const rest = segment.slice(segment.search(/\bpkill\b/));
+    if (!/(^|\s)(?:-f|--full)(?:\s|=)/.test(rest)) continue;
+    const m = rest.match(/(?:-f|--full)(?:=|\s+)(?:"([^"]*)"|'([^']*)'|(\S+))/);
+    const raw = m ? m[1] ?? m[2] ?? m[3] ?? "" : "";
+    if (!raw) continue;
+    let hit;
+    try {
+      hit = new RegExp(raw).test(cmd);
+    } catch {
+      hit = cmd.includes(raw);
+    }
+    if (hit) return raw;
+  }
+  return null;
+}
+
+const SELFKILL_TEXT = (pat) =>
+  `\`pkill -f\` matches the FULL command line of every process, including the ` +
+  `\`bash -c\` shell running it — so the pattern \`${pat}\` also matches this very ` +
+  `command and would SIGTERM your own shell (the turn dies mid-step). Kill by the ` +
+  `recorded PID instead (\`kill <pid>\`), or write the pattern so it cannot match ` +
+  `its own line (e.g. \`port 4[7]44\`). \`pkill <name>\` (no \`-f\`) is unaffected.`;
+
+/* The harness source checkout dogfooding its own guard (`agent-harness dogfood`)
+ * keeps editing `templates/**` on main — its normal workflow — so the
+ * main-checkout block is skipped there. The IO probe is injected so the core
+ * stays pure: the plugin passes a real `fs.existsSync`; tests pass a stub. A
+ * missing/broken probe never disables the guard. */
+const DOGFOOD_MARKER = ".harness-dogfood";
+function mainEditGuardEnabled(markerPath, exists) {
+  if (!markerPath || typeof exists !== "function") return true;
+  try {
+    if (exists(markerPath)) return false;
+  } catch {
+    /* a broken probe must never disable the guard */
+  }
+  return true;
+}
+
 /* The error the plugin throws to abort a code change aimed at the main
  * checkout. Names the target and the fix (isolate) so recovery is mechanical.
  * When the feature id is known, the exact command is printed — the F-291 recon
@@ -1289,6 +1340,10 @@ module.exports = {
   isAllowedWriteTarget,
   stripQuoted,
   mainEditText,
+  shellSelfKill,
+  SELFKILL_TEXT,
+  DOGFOOD_MARKER,
+  mainEditGuardEnabled,
   INSPECT_TEXT,
   READ_TEXTS,
   DUMP_TEXT,

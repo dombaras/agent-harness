@@ -635,6 +635,25 @@ export default {
           }
         }
       }
+      // `pkill -f` self-kill guard. A `-f` pattern that matches its own
+      // `bash -c` line SIGTERMs the shell running it — the turn dies mid-step and
+      // in-flight work is lost (and once it killed the shared opencode service).
+      // Block it and hand back the safe form. MUST throw to abort, so it lives
+      // OUTSIDE the swallow-everything loop-guard try/catch below.
+      if (isShell(input?.tool)) {
+        let selfKill: string | null = null
+        try {
+          selfKill = guard.shellSelfKill(output?.args?.command)
+        } catch {
+          selfKill = null
+        }
+        if (selfKill) {
+          logEvent({ kind: "self-kill", sessionID: input?.sessionID, pattern: selfKill })
+          const message = guard.SELFKILL_TEXT(selfKill)
+          await report(message)
+          throw new Error(message)
+        }
+      }
       // Bash reroot (ALL sessions, best-effort, never blocks). A leading
       // `cd X && rest` becomes workdir=X, command=rest, so the tree is carried by
       // the tool's cwd parameter instead of a shell `cd` — the WSL `cd`-chaining
@@ -685,7 +704,15 @@ export default {
       // branch/branch-name on its own. This MUST throw to abort when it refuses,
       // so it lives OUTSIDE the swallow-everything loop-guard try/catch below.
       let mainViolation: { kind: "edit" | "bash"; target: string } | null = null
-      try {
+      // A dogfood install (the harness source checkout running its own guard) edits
+      // `templates/**` on main by design, so the main-checkout block is skipped
+      // there via the `.harness-dogfood` marker. Every other tree is unchanged.
+      const dogfood = !guard.mainEditGuardEnabled(
+        path.join(rootOf(String(input?.sessionID || "")), guard.DOGFOOD_MARKER),
+        fs.existsSync
+      )
+      if (!dogfood) {
+        try {
         const tool = String(input?.tool || "").toLowerCase()
         const args = output?.args || {}
         const isEdit = EDIT_TOOLS.has(tool)
@@ -723,6 +750,7 @@ export default {
         }
       } catch {
         mainViolation = null
+      }
       }
       if (mainViolation) {
         // Recover by rerooting into the session's own feature worktree when it

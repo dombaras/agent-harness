@@ -233,17 +233,22 @@ function turnsSql(sessionIds, flavour = "v1") {
   );
 }
 
-/* Tool-call parts, for the loop detector (tool + its raw input).
+/* Tool-call parts, for the loop detector AND the recon's tool-habit metrics.
  *   v1: `part` rows, one per part, tool in `$.tool`.
  *   v2: parts are embedded in `session_message.data.content[]` — walk the array
- *       and read `$.name` (V2) falling back to `$.tool`. */
+ *       and read `$.name` (V2) falling back to `$.tool`.
+ * Returns `status` / `outputLen` / `time_created` too, so `session-recon.js` can
+ * share this one flavour-aware query instead of hardcoding `FROM part` (F-15). */
 function toolPartsSql(sessionIds, flavour = "v1") {
   const ids = sessionIds.map(sqlString).join(", ");
   if (flavour === "v2") {
     return (
       "SELECT m.session_id AS session_id, " +
       "COALESCE(json_extract(je.value, '$.name'), json_extract(je.value, '$.tool')) AS tool, " +
-      "json_extract(je.value, '$.state.input') AS input " +
+      "json_extract(je.value, '$.state.input') AS input, " +
+      "json_extract(je.value, '$.state.status') AS status, " +
+      "length(json_extract(je.value, '$.state.output')) AS outputLen, " +
+      "m.time_created AS time_created " +
       "FROM session_message m, json_each(m.data, '$.content') je " +
       `WHERE m.session_id IN (${ids}) AND m.type = 'assistant' ` +
       "AND json_type(m.data, '$.content') = 'array' " +
@@ -252,7 +257,10 @@ function toolPartsSql(sessionIds, flavour = "v1") {
   }
   return (
     "SELECT session_id, json_extract(data, '$.tool') AS tool, " +
-    "json_extract(data, '$.state.input') AS input FROM part " +
+    "json_extract(data, '$.state.input') AS input, " +
+    "json_extract(data, '$.state.status') AS status, " +
+    "length(json_extract(data, '$.state.output')) AS outputLen, " +
+    "time_created AS time_created FROM part " +
     `WHERE session_id IN (${ids}) AND json_valid(data) ` +
     "AND json_extract(data, '$.type') = 'tool'"
   );
@@ -631,12 +639,18 @@ function collectStats(opts = {}) {
   if (!opts.runDb && !opencode) {
     throw new Error("opencode CLI not found — install it, or set OPENCODE_BIN / pass --opencode <path>");
   }
-  // Table generation + engine. An injected `runDb` (tests) implies the V1 shape,
-  // so the SQL it asserts against is unchanged; the CLI path detects the real
-  // store (V2: session_v2 + session_message).
-  const store = opts.runDb
-    ? (opts.store || { flavour: "v1", sessions: "session", messages: "message", parts: "part" })
-    : storeLib.openStore({ ...opts, opencodeBin: opencode, query: opts.query });
+  // Table generation + engine. An explicit `store` (fixtures / advanced callers)
+  // wins; otherwise DETECT the generation through whatever `runDb` we have. A
+  // runtime caller that builds its own `runDb` (session-recon) must still see the
+  // live V2 tables — the old "any runDb implies V1" shortcut made the recon read
+  // the frozen `part` mirror on a V2 store (F-15). A test stub that does not
+  // answer the detection query falls back to V1, preserving the injected-shape
+  // contract (tests assert the V1 SQL).
+  const store = opts.store
+    ? opts.store
+    : opts.runDb
+      ? storeLib.tableSet(opts.runDb, opts.flavour)
+      : storeLib.openStore({ ...opts, opencodeBin: opencode, query: opts.query });
   const runDb = opts.runDb || ((sql) => runDbJson(opencode, sql, { ...opts, dbPath: store.dbPath }));
 
   const projectIds = runDb(projectIdsSql(root)).map((r) => r.id).filter(Boolean);

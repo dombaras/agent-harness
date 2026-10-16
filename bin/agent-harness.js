@@ -1529,6 +1529,9 @@ function printUsage() {
       `  agent-harness install-nightly [--target <dir>] [--time HH:MM] [--force] [--dry-run]\n` +
       `                     # install the off-hours E2E cycle as a systemd --user timer\n` +
       `                     # (scripts/setup-nightly.sh; Persistent=true, linger enabled)\n` +
+      `  agent-harness dogfood [--target <dir>] [--remove] [--dry-run]\n` +
+      `                     # let the harness SOURCE checkout run its own guard/tools:\n` +
+      `                     # symlinks templates/ into the repo root; restart opencode\n` +
       `  agent-harness explain <gate>            # what a gate enforces + how to satisfy/waive it\n` +
       `  agent-harness run [--target <dir>] [--feature <id>] [--prompt <text>]\n` +
       `                     [--max-phases <n>] [--opencode <path>] [--dry-run]\n` +
@@ -2391,6 +2394,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (valueFlags.has(a)) flags[a] = argv[++i];
     else if (a === "--dry-run" || a === "--yes" || a === "-y" || a === "--force") flags[a] = true;
+    else if (a === "--remove") flags[a] = true;
     else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch" || a === "--accept-harness")
       flags[a] = true;
   }
@@ -2496,6 +2500,120 @@ function installGlobal(flags) {
   if (counts.skipped > 0) process.exitCode = 1;
 }
 
+/* dogfood — make the harness's OWN source checkout run the harness it ships.
+ *
+ * The harness repo keeps its source under `templates/` and has no root
+ * `.opencode/`, so an opencode session rooted there loads no guard, no lease and
+ * none of the harness tools (`orient`, `backlog_*`, `session_info`, …) — it only
+ * gets them when some deployed project's plugin instance is co-loaded in the same
+ * server (F-16, harness-field-review-2026-10-16-round2). `dogfood` symlinks the
+ * template tree into the repo root so the checkout dogfoods itself with NO copy
+ * to drift:
+ *
+ *   .opencode/{agents,commands,plugins,skills} -> ../templates/.opencode/*
+ *   scripts                                    -> templates/scripts
+ *   opencode.json                              (template, {{WORKSPACE_ROOT}} filled)
+ *   .harness-dogfood                           marker (relaxes the main-checkout block)
+ *
+ * The plugins' relative imports (`../../scripts/qa/*`) resolve through the real
+ * template path once `.opencode` is a directory of symlinks, and the `scripts`
+ * symlink makes the runtime `scripts/...` spawns resolve too. The marker keeps
+ * `templates/**` editable on main (that IS the harness workflow); every other
+ * checkout is unchanged. `--remove` reverses the links; `--dry-run` prints the plan. */
+function dogfood(target, flags) {
+  const dryRun = !!flags["--dry-run"];
+  const remove = !!flags["--remove"];
+  const src = TEMPLATES_DIR;
+  const dotOpencode = path.join(src, ".opencode");
+  if (!fs.existsSync(dotOpencode)) {
+    console.error(`dogfood: ${dotOpencode} not found — run from (or --target) the harness source checkout.`);
+    process.exitCode = 1;
+    return;
+  }
+  const root = path.resolve(target);
+  const subs = fs
+    .readdirSync(dotOpencode)
+    .filter((n) => fs.statSync(path.join(dotOpencode, n)).isDirectory());
+  console.log(`dogfood ${remove ? "--remove " : ""}→ ${root}${dryRun ? "  (dry-run)" : ""}`);
+
+  const sameLink = (linkPath, linkTarget) => {
+    try {
+      const st = fs.lstatSync(linkPath);
+      if (!st.isSymbolicLink()) return false;
+      return (
+        path.resolve(path.dirname(linkPath), fs.readlinkSync(linkPath)) ===
+        path.resolve(path.dirname(linkPath), linkTarget)
+      );
+    } catch {
+      return false;
+    }
+  };
+  const lstat = (p) => {
+    try {
+      return fs.lstatSync(p);
+    } catch {
+      return null;
+    }
+  };
+  const link = (linkPath, linkTarget) => {
+    const rel = path.relative(root, linkPath);
+    if (remove) {
+      if (lstat(linkPath)) {
+        if (!dryRun) fs.rmSync(linkPath, { force: true });
+        console.log(`  [removed] ${rel}`);
+      }
+      return;
+    }
+    if (sameLink(linkPath, linkTarget)) {
+      console.log(`  [current] ${rel}`);
+      return;
+    }
+    if (lstat(linkPath)) {
+      console.error(`  [skip]    ${rel} exists and is not our symlink`);
+      process.exitCode = 1;
+      return;
+    }
+    if (dryRun) {
+      console.log(`  [link]    ${rel} -> ${linkTarget}`);
+      return;
+    }
+    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+    fs.symlinkSync(linkTarget, linkPath);
+    console.log(`  [link]    ${rel} -> ${linkTarget}`);
+  };
+
+  const ocDir = path.join(root, ".opencode");
+  for (const name of subs) link(path.join(ocDir, name), path.join("..", "templates", ".opencode", name));
+  link(path.join(root, "scripts"), path.join("templates", "scripts"));
+
+  const marker = path.join(root, ".harness-dogfood");
+  const ocJson = path.join(root, "opencode.json");
+  if (remove) {
+    if (lstat(marker)) {
+      if (!dryRun) fs.rmSync(marker, { force: true });
+      console.log("  [removed] .harness-dogfood");
+    }
+    if (!dryRun && lstat(ocDir) && fs.readdirSync(ocDir).length === 0) fs.rmdirSync(ocDir);
+    console.log("\ndogfood removed. Restart opencode to drop the guard/tools.");
+    return;
+  }
+  const tpl = fs.readFileSync(path.join(src, "opencode.json"), "utf8");
+  const conf = substitute(tpl, { WORKSPACE_ROOT: workspaceRootFor(root) });
+  if (dryRun) {
+    console.log(`  [write]   opencode.json (template, WORKSPACE_ROOT=${workspaceRootFor(root)})`);
+    console.log("  [write]   .harness-dogfood");
+  } else {
+    fs.writeFileSync(ocJson, conf.endsWith("\n") ? conf : conf + "\n");
+    fs.writeFileSync(
+      marker,
+      "# dogfood install — this harness source checkout runs its own guard.\n" +
+        "# `templates/**` stays editable on main; remove with `agent-harness dogfood --remove`.\n"
+    );
+    console.log("  [write]   opencode.json + .harness-dogfood");
+  }
+  console.log("\nRestart opencode to load the guard/tools, then edit `templates/**` as usual.");
+}
+
 /* install-nightly — install the off-hours E2E cycle as a systemd --user timer by
  * delegating to the deployed project's `scripts/setup-nightly.sh` (the script
  * owns the unit contents + linger handling, so it stays correct per project and
@@ -2577,6 +2695,9 @@ function main() {
     case "install-nightly":
       installNightly(target, flags);
       break;
+    case "dogfood":
+      dogfood(target, flags);
+      break;
     case "run":
       runCommand(target, flags);
       break;
@@ -2627,6 +2748,7 @@ module.exports = {
   explainSection,
   explainList,
   installGlobal,
+  dogfood,
   opencodeGlobalPluginsDir,
   GLOBAL_PLUGINS_SRC,
   HARNESS_SCRIPTS,

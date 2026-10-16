@@ -67,6 +67,12 @@ run.
 - If a launch or a live-tier call is interrupted, verify state
   (`serve.js list`, `.serve/<name>.out.log`, the health URL) — never infer it
   from the abort. Never kill a process on a port you didn't start.
+- **Never `pkill -f <pattern>`** from a shell tool: `-f` matches the FULL command
+  line of every process, *including the `bash -c` shell running the `pkill`*, so
+  the pattern matches its own command and SIGTERMs your shell (the turn dies
+  mid-step). Kill by the recorded PID (`kill <pid>`), or write the pattern so it
+  cannot match its own line (e.g. `port 4[7]44`). `pkill <name>` (no `-f`) is
+  unaffected. The `context-guard` blocks the self-matching form.
 - **A `Grep` that fails on a very long line** ("Ripgrep JSON record exceeded
   65536 bytes" / "Invalid ripgrep match output" — generated bundles and i18n
   dicts) is the tool hitting one enormous line, not a missing match. Don't retry

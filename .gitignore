@@ -11,3 +11,8 @@ node_modules/
 /.opencode/
 /opencode.json
 /AGENTS.md
+
+# dogfood install (`agent-harness dogfood`): the harness SOURCE checkout runs its
+# own guard/tools via symlinks into templates/ — machine-local, never committed.
+/scripts
+/.harness-dogfood

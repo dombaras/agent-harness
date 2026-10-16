@@ -324,17 +324,12 @@ function analyze(stats) {
 
 // ---------------------------------------------------------------- collect
 
-function readReconPartsSql(sessionIds) {
-  const ids = sessionIds.map(PS.sqlString).join(", ");
-  return (
-    "SELECT session_id, json_extract(data, '$.tool') AS tool, " +
-    "json_extract(data, '$.state.input') AS input, " +
-    "json_extract(data, '$.state.status') AS status, " +
-    "length(json_extract(data, '$.state.output')) AS outputLen, " +
-    "time_created AS time_created FROM part " +
-    `WHERE session_id IN (${ids}) AND json_valid(data) ` +
-    "AND json_extract(data, '$.type') = 'tool'"
-  );
+/* Tool parts come from the SAME table generation the store resolved — on V2 they
+ * are embedded in `session_message.data.content[]`, never the frozen V1 `part`
+ * mirror (F-15). The flavour-aware query lives in provider-stats so the two
+ * consumers cannot drift. */
+function readReconPartsSql(sessionIds, flavour) {
+  return PS.toolPartsSql(sessionIds, flavour);
 }
 
 function readGuardEvents(root) {
@@ -355,9 +350,10 @@ function collectRecon(opts = {}) {
   }
   const runDb = opts.runDb || ((sql) => PS.runDbJson(opencode, sql));
 
-  const stats = PS.collectStats({ root, since: opts.since, opencode, runDb, now: opts.now });
+  const stats = PS.collectStats({ root, since: opts.since, opencode, runDb, now: opts.now, store: opts.store });
   const ids = stats.sessions.map((s) => s.id);
-  const parts = ids.length ? PS.queryChunked(runDb, ids, readReconPartsSql) : [];
+  const flavour = (stats.meta && stats.meta.store && stats.meta.store.flavour) || "v1";
+  const parts = ids.length ? PS.queryChunked(runDb, ids, (chunk) => readReconPartsSql(chunk, flavour)) : [];
   const guardEvents = opts.guardEvents != null ? opts.guardEvents : readGuardEvents(root);
   return { meta: { ...stats.meta, schema: SCHEMA, root }, sessions: stats.sessions, parts, guardEvents };
 }

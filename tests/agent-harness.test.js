@@ -6432,8 +6432,11 @@ test("provider-stats collects by project id (worktree-aware) and detects canonic
 
   const stats = ps.collectStats({ root: "C:/develop/Demo", since: "14d", now, runDb });
   assert.strictEqual(stats.meta.projectIds[0], "p1");
-  assert.ok(calls[0].includes(".worktrees"), "worktree sessions resolve through project_directory");
-  assert.ok(calls[1].includes(`time_created >= ${now - 14 * 86400000}`), "the since window is applied in SQL");
+  assert.ok(calls.some((s) => s.includes(".worktrees")), "worktree sessions resolve through project_directory");
+  assert.ok(
+    calls.some((s) => s.includes(`time_created >= ${now - 14 * 86400000}`)),
+    "the since window is applied in SQL"
+  );
   assert.strictEqual(stats.sessions.length, 2);
   assert.deepStrictEqual(stats.sessions[0].tokens, { input: 10, output: 5, reasoning: 1, cacheRead: 90, cacheWrite: 0 });
   assert.strictEqual(stats.sessions[0].model, "deepseek-flash");
@@ -6650,7 +6653,7 @@ test("store-lib reads a real SQLite file end-to-end (skips without node:sqlite)"
     db.exec("CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT)");
     db.exec("CREATE TABLE project_directory (project_id TEXT, directory TEXT)");
     db.exec("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, title TEXT, directory TEXT, agent TEXT, model TEXT, cost REAL, tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER, time_created INTEGER, time_updated INTEGER)");
-    db.exec("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, data TEXT)");
+    db.exec("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, data TEXT, time_created INTEGER)");
     db.exec("CREATE TABLE session (id TEXT PRIMARY KEY)");
     db.exec("CREATE TABLE message (id TEXT PRIMARY KEY)");
     db.exec("CREATE TABLE part (id TEXT PRIMARY KEY)");
@@ -6663,7 +6666,7 @@ test("store-lib reads a real SQLite file end-to-end (skips without node:sqlite)"
     db.exec(
       "INSERT INTO session_message VALUES ('m1','ses_live','assistant',1,'" +
         JSON.stringify({ content: [{ type: "tool", name: "bash", state: { input: { command: "ls" } } }] }).replace(/'/g, "''") +
-        "')"
+        "',1)"
     );
     db.close();
 
@@ -6679,6 +6682,54 @@ test("store-lib reads a real SQLite file end-to-end (skips without node:sqlite)"
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("session-recon reads tool parts from the V2 store (F-15), never the frozen `part` mirror", () => {
+  const calls = [];
+  const runDb = (sql) => {
+    calls.push(sql);
+    if (sql.includes("sqlite_master")) return [{ name: "session_v2" }, { name: "session_message" }];
+    if (sql.includes("FROM project_directory")) return [{ id: "p1" }];
+    if (sql.includes("FROM session_v2 s"))
+      return [
+        {
+          id: "ses_v",
+          parent_id: null,
+          title: "t",
+          directory: "/repo",
+          agent: "build",
+          model: '{"id":"deepseek-v4.1-flash","providerID":"opencode-go"}',
+          cost: 0.1,
+          tokens_input: 1,
+          tokens_output: 1,
+          tokens_reasoning: 0,
+          tokens_cache_read: 0,
+          tokens_cache_write: 0,
+          time_created: 1,
+          time_updated: 2,
+        },
+      ];
+    if (sql.includes("GROUP BY session_id")) return [{ session_id: "ses_v", turns: 3 }];
+    if (sql.includes("json_each(m.data, '$.content')"))
+      return [
+        { session_id: "ses_v", tool: "shell", input: JSON.stringify({ command: "grep -rn x lib/" }), status: "completed", outputLen: 10, time_created: 1 },
+      ];
+    return [];
+  };
+  const stats = sr.collectRecon({ root: "/repo", since: "14d", runDb, guardEvents: [] });
+  assert.strictEqual(stats.meta.store.flavour, "v2", "the recon detects the V2 store through its own runDb");
+  assert.strictEqual(stats.sessions.length, 1);
+  assert.strictEqual(stats.parts.length, 1, "V2 parts come from session_message.data.content[]");
+  assert.ok(calls.some((s) => s.includes("json_each(m.data, '$.content')")), "the recon walks the V2 content[] array");
+  assert.ok(!calls.some((s) => /FROM\s+part\b/.test(s)), "no query touches the frozen V1 `part` table");
+
+  // Drift guard: the recon source must delegate tool parts to the flavour-aware query.
+  assert.ok(!/FROM\s+part\b/i.test(fs.readFileSync(SR, "utf8")), "session-recon.js must not hardcode `FROM part`");
+
+  // And provider-stats' shared query is right per flavour.
+  assert.match(ps.toolPartsSql(["ses_a"], "v2"), /json_each\(m\.data, '\$\.content'\)/);
+  assert.match(ps.toolPartsSql(["ses_a"], "v2"), /json_extract\(je\.value, '\$\.name'\)/);
+  assert.match(ps.toolPartsSql(["ses_a"], "v1"), /FROM part/);
 });
 
 test("session-recon classifies shell tool-choice, cd-chaining, dumps and read hygiene", () => {
@@ -7565,6 +7616,64 @@ test("[drift-guard] install-global is wired into the CLI and the package ships c
   const bin = read(path.join(h.TEMPLATES_DIR, "..", "bin", "agent-harness.js"));
   assert.match(bin, /case "install-global":/, "install-global is dispatched");
   assert.match(bin, /install-global \[--dry-run\]/, "install-global is documented in usage");
+  assert.match(bin, /case "dogfood":/, "dogfood is dispatched");
+  assert.match(bin, /dogfood \[--target <dir>\] \[--remove\]/, "dogfood is documented in usage");
+});
+
+test("agent-harness dogfood symlinks the harness templates into the source checkout and reverses cleanly (F-16)", () => {
+  const target = tmpdir();
+  const run = (flags) => {
+    const out = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const prevExit = process.exitCode;
+    console.log = (...a) => out.push(a.join(" "));
+    console.error = (...a) => out.push(a.join(" "));
+    process.exitCode = 0;
+    try {
+      h.dogfood(target, flags);
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+    const code = process.exitCode;
+    process.exitCode = prevExit;
+    return { out: out.join("\n"), code };
+  };
+
+  const first = run({});
+  assert.strictEqual(first.code, 0, first.out);
+  const oc = path.join(target, ".opencode");
+  const subs = fs.readdirSync(path.join(h.TEMPLATES_DIR, ".opencode")).filter((n) =>
+    fs.statSync(path.join(h.TEMPLATES_DIR, ".opencode", n)).isDirectory()
+  );
+  assert.ok(subs.includes("plugins") && subs.includes("skills"), "the template tree is what is linked");
+  for (const sub of subs) {
+    const link = path.join(oc, sub);
+    assert.ok(fs.lstatSync(link).isSymbolicLink(), `.opencode/${sub} is a symlink`);
+    assert.strictEqual(
+      fs.readlinkSync(link),
+      path.join("..", "templates", ".opencode", sub),
+      `.opencode/${sub} points at the template source (relative to the checkout root)`
+    );
+  }
+  const scriptLink = path.join(target, "scripts");
+  assert.ok(fs.lstatSync(scriptLink).isSymbolicLink(), "scripts/ is a symlink to the template scripts");
+  assert.strictEqual(fs.readlinkSync(scriptLink), path.join("templates", "scripts"));
+  assert.ok(exists(path.join(target, ".harness-dogfood")), "the dogfood marker is written");
+  const conf = JSON.parse(read(path.join(target, "opencode.json")));
+  assert.ok(
+    JSON.stringify(conf.permissions).includes(path.dirname(target).split(path.sep).join("/")),
+    "the root opencode.json is the template with WORKSPACE_ROOT filled"
+  );
+  assert.strictEqual(conf.agents.build.steps, 120, "the retuned build budget reaches the source checkout (F-18)");
+
+  assert.match(run({}).out, /current/, "re-running is idempotent");
+
+  const removed = run({ "--remove": true });
+  assert.strictEqual(removed.code, 0, removed.out);
+  assert.ok(!exists(path.join(target, ".harness-dogfood")), "the marker is removed");
+  assert.ok(!exists(path.join(oc, "plugins")), "the symlinks are removed");
 });
 
 test("[drift-guard] harness-freshness spawns a real Node, never process.execPath", () => {
@@ -11579,6 +11688,34 @@ test("[drift-guard] plugin wires the new advisories + isolation recovery", () =>
   assert.match(plugin, /noteGateRun/, "gate-rerun advisory wired");
   assert.match(plugin, /via: "isolate"/, "main-checkout recovery reroots into the owned worktree");
   assert.match(plugin, /inferBoardFeature/, "refusal names the feature to isolate");
+  assert.match(plugin, /guard\.shellSelfKill\(/, "the pkill self-kill block is wired (F-17)");
+  assert.match(plugin, /guard\.mainEditGuardEnabled\(/, "the dogfood main-edit opt-out is wired (F-16)");
+});
+
+test("context-guard core: shellSelfKill flags a pkill -f pattern that matches its own command (F-17)", () => {
+  const guard = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"));
+  // `-f` + a pattern present in the same command text -> self-match (SIGTERMs the shell).
+  assert.strictEqual(guard.shellSelfKill('pkill -f "port 4744"'), "port 4744");
+  assert.strictEqual(guard.shellSelfKill("pkill -f 'opencode serve'"), "opencode serve");
+  assert.strictEqual(guard.shellSelfKill("pkill --full node"), "node");
+  // A regex that does NOT match its own line is the sanctioned escape hatch.
+  assert.strictEqual(guard.shellSelfKill('pkill -f "port 4[7]44"'), null);
+  // No `-f` matches only the short process name, never the shell's own command line.
+  assert.strictEqual(guard.shellSelfKill("pkill node"), null);
+  assert.strictEqual(guard.shellSelfKill("kill 1234"), null);
+  assert.strictEqual(guard.shellSelfKill(""), null);
+  assert.match(guard.SELFKILL_TEXT("port 4744"), /kill <pid>/);
+  assert.match(guard.SELFKILL_TEXT("port 4744"), /port 4744/);
+});
+
+test("context-guard core: mainEditGuardEnabled is off only for a dogfood source checkout (F-16)", () => {
+  const guard = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"));
+  const marker = path.join("/repo", guard.DOGFOOD_MARKER);
+  assert.strictEqual(guard.mainEditGuardEnabled(marker, (p) => p === marker), false, "a dogfood marker relaxes the block");
+  assert.strictEqual(guard.mainEditGuardEnabled(marker, () => false), true, "a normal checkout keeps the block");
+  assert.strictEqual(guard.mainEditGuardEnabled(marker, () => { throw new Error("boom"); }), true, "a broken probe never disables the guard");
+  assert.strictEqual(guard.mainEditGuardEnabled("", () => true), true);
+  assert.strictEqual(guard.mainEditGuardEnabled(marker, undefined), true);
 });
 
 // ---------------------------------------------------------------- nightly E2E

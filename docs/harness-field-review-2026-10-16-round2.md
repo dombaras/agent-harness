@@ -147,3 +147,27 @@ nightly.
   `~/develop/agent-harness/.agents/guard-events.jsonl`.
 - Sessions `ses_ec4193c1fffe7YXke0LwsfujOD`, `ses_ec4fae833ffeuiZLYjewFisGkf`.
 - Nightly `~/develop/PublicVirtualLibrary/.agents/qa-runs/nightly/2026-10-16T0348/`.
+
+## Resolution (0.1.165)
+
+All four workstreams landed:
+
+- **W6.1 (F-15).** `collectStats` now detects the store generation through whatever
+  `runDb` it is handed (an explicit `store` still wins), and both consumers share
+  the flavour-aware `toolPartsSql` (extended with `status`/`outputLen`/
+  `time_created`); `session-recon.js` no longer hardcodes `FROM part`. Live: the
+  harness recon now reads `flavour: v2` — **19 sessions / 2,335 parts** (was
+  2/34). Tests cover a V2 `collectRecon` + a drift guard against `FROM part`. The
+  H-23 / H-39(b) re-measure is now meaningful (the first reading: shell
+  file-inspection 37.0% of bash — the W4 escalation is **not** yet visibly biting
+  on this small window; re-measure after a real week).
+- **W6.2 (F-16 / H-40).** `agent-harness dogfood` symlinks `templates/` into the
+  source checkout (`.opencode/{agents,commands,plugins,skills}`, `scripts`,
+  `opencode.json`, a `.harness-dogfood` marker) so harness sessions run the guard
+  and tools they ship — with no copy to drift. The marker relaxes only the
+  main-checkout block (the harness edits `templates/**` on main by design).
+  Applied to this checkout; loads on the next opencode restart.
+- **W6.3 (F-17).** `context-guard` blocks a self-matching `pkill -f <pattern>`
+  (`shellSelfKill`), names the PID/regex fix, and `dev-loop` documents it.
+- **W6.4 (F-18).** The dogfood `opencode.json` is the template rendered with
+  `{{WORKSPACE_ROOT}}` — `build = opencode-go/deepseek-v4.1-flash#high`, steps 120.
