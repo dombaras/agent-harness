@@ -15,7 +15,6 @@ $aliases = @{
   "flash"             = "deepseek/deepseek-flash"
   "deepseek-flash"    = "deepseek/deepseek-flash"
   "direct"            = "deepseek/deepseek-flash"
-  "deepseek-v4-flash" = "deepseek/deepseek-v4-flash"
   "deepseek-pro"      = "deepseek/deepseek-v4-pro"
   "deepseek-v4-pro"   = "deepseek/deepseek-v4-pro"
   "pro"               = "deepseek/deepseek-v4-pro"

@@ -2,7 +2,7 @@
 description: Use for deployment, CI/CD, cron/scheduling, env & secrets management, hosting config, and mobile build/release setup.
 mode: subagent
 steps: 40
-model: opencode-go/deepseek-v4.1-flash#low
+model: opencode-go/deepseek-v4.1-flash#high
 permissions:
   - action: edit
     resource: "*"

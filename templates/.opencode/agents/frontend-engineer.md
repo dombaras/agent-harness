@@ -1,8 +1,8 @@
 ---
 description: Use when writing or fixing web React / Next.js / Tailwind / shadcn code (app/, components/, pages/), or resolving web build errors — not Expo/React Native (that's mobile-engineer).
 mode: subagent
-steps: 40
-model: opencode-go/deepseek-v4.1-flash#low
+steps: 50
+model: opencode-go/deepseek-v4.1-flash#high
 permissions:
   - action: edit
     resource: "*"

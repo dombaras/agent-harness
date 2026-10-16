@@ -188,3 +188,76 @@ test("[e2e] one guard event fires end-to-end (session.created -> session lease)"
     await client.deleteSession(sid).catch(() => {});
   }
 });
+
+/* The 0.1.164 regression: V2's event stream is process-wide, so EVERY loaded
+ * plugin instance received EVERY session's events. A session in project A wrote
+ * its lease (and guard events) into project B's checkout — which corrupts the
+ * live-session view `test:concurrency`/`worktree-prune` read, and mis-attributes
+ * guard evidence. Two fixture locations give the real shape: both loaded, one
+ * session. */
+test("[e2e] a session writes its lease into its OWN location only (no cross-project leak)", async (t) => {
+  if (SKIP) return t.skip(SKIP);
+  const OTHER = path.join(os.tmpdir(), "agent-harness-plugin-loader-b");
+  const buildOther = () => {
+    fs.rmSync(OTHER, { recursive: true, force: true });
+    fs.mkdirSync(path.join(OTHER, ".opencode"), { recursive: true });
+    fs.mkdirSync(path.join(OTHER, ".agents", "memory"), { recursive: true });
+    fs.cpSync(path.join(TEMPLATES_DIR, ".opencode", "plugins"), path.join(OTHER, ".opencode", "plugins"), { recursive: true });
+    fs.cpSync(path.join(TEMPLATES_DIR, "scripts"), path.join(OTHER, "scripts"), { recursive: true });
+    for (const mem of ["orchestration.md", "model-routing.md"]) {
+      fs.copyFileSync(path.join(TEMPLATES_DIR, ".agents", "memory", mem), path.join(OTHER, ".agents", "memory", mem));
+    }
+    fs.writeFileSync(path.join(OTHER, "opencode.json"), '{ "$schema": "https://opencode.ai/config.json" }\n');
+    const git = (...args) => spawnSync("git", ["-C", OTHER, ...args], { stdio: "ignore" });
+    git("init", "-q");
+    git("config", "user.email", "plugin-loader@harness.local");
+    git("config", "user.name", "plugin-loader");
+    git("add", "-A");
+    git("commit", "-qm", "fixture-b");
+  };
+  buildFixture();
+  buildOther();
+
+  // Activate BOTH locations so two plugin instances are live in the service.
+  for (const dir of [FIXTURE, OTHER]) {
+    for (let i = 0; i < 20; i++) {
+      const { json } = await client.pluginList(dir);
+      const ids = (json.data || []).map((p) => p.id);
+      if (ids.includes("context-guard")) break;
+      await sleep(500);
+    }
+  }
+
+  const mineA = path.join(FIXTURE, ".serve", "sessions");
+  const otherB = path.join(OTHER, ".serve", "sessions");
+  fs.rmSync(mineA, { recursive: true, force: true });
+  fs.rmSync(otherB, { recursive: true, force: true });
+
+  const created = await client.createSession(FIXTURE);
+  const sid = created.json && created.json.data && created.json.data.id;
+  assert.ok(sid, "session id returned");
+  try {
+    let own = null;
+    for (let i = 0; i < 20; i++) {
+      if (fs.existsSync(path.join(mineA, `${sid}.json`))) {
+        own = path.join(mineA, `${sid}.json`);
+        break;
+      }
+      await sleep(500);
+    }
+    assert.ok(own, "the owning location's guard wrote the lease");
+    // Give the foreign instance every chance to (wrongly) write it too.
+    await sleep(2000);
+    assert.ok(
+      !fs.existsSync(path.join(otherB, `${sid}.json`)),
+      "the OTHER location's guard must NOT lease a session it does not own (cross-project leak)"
+    );
+    assert.ok(
+      !fs.existsSync(path.join(OTHER, ".agents", "guard-events.jsonl")) ||
+        !fs.readFileSync(path.join(OTHER, ".agents", "guard-events.jsonl"), "utf8").includes(sid),
+      "the OTHER location's guard log must not mention a foreign session"
+    );
+  } finally {
+    await client.deleteSession(sid).catch(() => {});
+  }
+});

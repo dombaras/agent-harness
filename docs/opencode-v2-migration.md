@@ -88,7 +88,7 @@ repo root uses the literal `/home/ronen/develop/**`.
   "model": "opencode-go/deepseek-v4.1-flash",
   "agents": {
     "title":   { "model": "opencode-go/glm-5.3-flash" },   // was small_model
-    "build":   { "steps": 100 },
+    "build":   { "model": "opencode-go/deepseek-v4.1-flash#high", "steps": 120 },
     "explore": { "model": "opencode-go/glm-5.3-flash", "steps": 40 }
   },
   "permissions": [
@@ -127,20 +127,20 @@ Mechanical V1→V2 frontmatter conversion (done by a one-off script, then review
 
 | Agent | `model` | steps | hidden | request.body | permissions |
 |---|---|---|---|---|---|
-| `data-engineer` | `opencode-go/deepseek-v4.1-flash#low` | 40 | | | edit `*` allow; edit `opencode.json`/`.harness.json`/`.opencode/**`/`.agents/**` deny; shell `*` allow |
-| `devops-engineer` | `opencode-go/deepseek-v4.1-flash#low` | 40 | | | same as data-engineer |
-| `diagnostics-expert` | `opencode-go/deepseek-v4.1-flash#low` | 30 | | | same as data-engineer |
+| `data-engineer` | `opencode-go/deepseek-v4.1-flash#high` | 40 | | | edit `*` allow; edit `opencode.json`/`.harness.json`/`.opencode/**`/`.agents/**` deny; shell `*` allow |
+| `devops-engineer` | `opencode-go/deepseek-v4.1-flash#high` | 40 | | | same as data-engineer |
+| `diagnostics-expert` | `opencode-go/deepseek-v4.1-flash#high` | 40 | | | same as data-engineer |
 | `docs` | `opencode-go/gpt-5.6-luna#low` | 20 | | | edit `*` allow + governance denies; shell `*` **deny** |
 | `features` | `opencode-go/gpt-5.6-luna#low` | 15 | ✓ | | shell `*` deny |
-| `frontend-engineer` | `opencode-go/deepseek-v4.1-flash#low` | 40 | | | same as data-engineer |
+| `frontend-engineer` | `opencode-go/deepseek-v4.1-flash#high` | 50 | | | same as data-engineer |
 | `handoff` | `opencode-go/glm-5.3-flash#low` | 10 | ✓ | | shell `*` deny |
-| `mobile-engineer` | `opencode-go/deepseek-v4.1-flash#low` | 40 | | | same as data-engineer |
-| `planner` | `deepseek/deepseek-v4-pro` | 15 | ✓ | | edit `*` deny; allow `.agents/features/*/plan.md`, `../.worktrees/**/.agents/features/*/plan.md`; shell `*` deny |
+| `mobile-engineer` | `opencode-go/deepseek-v4.1-flash#high` | 50 | | | same as data-engineer |
+| `planner` | `opencode-go/deepseek-v4-pro#high` | 25 | ✓ | | edit `*` deny; allow `.agents/features/*/plan.md`, `../.worktrees/**/.agents/features/*/plan.md`; shell `*` deny |
 | `product-manager` | `opencode-go/gpt-5.6-luna` | 20 | | | edit `*` deny; allow `.agents/features/*/intent.md`, `../.worktrees/**/…/intent.md`; shell `*` deny |
-| `qa-architect` | `deepseek/deepseek-v4-pro` | 20 | | | shell `*` deny |
+| `qa-architect` | `opencode-go/deepseek-v4-pro#high` | 40 | | | shell `*` deny |
 | `qa-runner` | `opencode-go/deepseek-v4.1-flash#low` | 50 | | | (none) |
-| `security-engineer` | `deepseek/deepseek-v4-pro` | 30 | | | same as data-engineer |
-| `system-architect` | `deepseek/deepseek-v4-pro` | 40 | | | same as data-engineer |
+| `security-engineer` | `opencode-go/deepseek-v4-pro#high` | 40 | | | same as data-engineer |
+| `system-architect` | `opencode-go/deepseek-v4-pro#high` | 40 | | | same as data-engineer |
 | `ui-designer` | `opencode-go/gpt-5.6-luna` | 40 | | | same as data-engineer |
 
 Example (`data-engineer.md`):
@@ -150,7 +150,7 @@ Example (`data-engineer.md`):
 description: Use for catalog/data ingestion and entity resolution — …
 mode: subagent
 steps: 40
-model: opencode-go/deepseek-v4.1-flash#low
+model: opencode-go/deepseek-v4.1-flash#high
 permissions:
   - action: edit
     resource: "*"
@@ -173,20 +173,24 @@ permissions:
 ---
 ```
 
-> **Review note (superseded in §17):** V2 `request.body` values are *preserved but not
-> sent* with model requests (documented V2 warning), so the migrated `temperature: 0.1`
-> had no runtime effect. §17 removed the blocks and expressed the intended determinism
-> as a **model variant** instead: the mechanical/fast personas (`docs`, `features`,
-> `handoff`, plus the already-`#low` `diagnostics-expert`/`qa-runner`) pin `#low`, while
-> the Pro architect tier (`planner`, `qa-architect`) keeps full reasoning effort with no
-> variant, matching their `system-architect`/`security-engineer` siblings.
+> **Review note (superseded in §17, retuned in §20):** V2 `request.body` values are
+> *preserved but not sent* with model requests (documented V2 warning), so the migrated
+> `temperature: 0.1` had no runtime effect. §17 removed the blocks and expressed the
+> intended determinism as a **model variant** instead. The final routing (§20 / the
+> 2026-10-16 field review) is **Go-first for every tier**: the architect tier
+> (`planner`, `qa-architect`, `system-architect`, `security-engineer`) pins
+> `opencode-go/deepseek-v4-pro#high` (direct `deepseek/deepseek-v4-pro` is the
+> announced fallback), the engineering/debug tier pins `opencode-go/deepseek-v4.1-flash#high`,
+> and only the mechanical/content personas (`docs`, `features`, `handoff`, `qa-runner`)
+> keep `#low`.
 
 ---
 
 ## 4. Commands — `.opencode/command/` → `.opencode/commands/`
 
 Pure rename (git-rename, 8 files, contents unchanged): `board`, `checkpoint`,
-`feature`, `finish`, `next`, `report`, `resume`, `switch-model`. V2 discovers both the
+`feature`, `finish`, `next`, `report`, `resume`, `switch-model` (a 9th, `tidy`, was
+added later). V2 discovers both the
 singular and plural dirs, so the deploy also **removes the stale singular dir** (§8).
 
 ---
@@ -350,7 +354,7 @@ guidance changed from the V1 `"tools": { "<server>*": false }` disable to a
 |---|---|---|
 | Board/notify toasts gone | no TUI in a V2 server plugin | board mutations + E2E progress still go to the **log**; `job-notify` still wakes the session via `ctx.session.prompt` |
 | `doom_loop` mirror gone | V2 removed the permission action | the plugin's own loop detector still nudges; the built-in guard no longer adds a notice |
-| `temperature: 0.1` no-op removed | V2 preserves `request.body` but does not send it, so the value was dead config | the intent moved to a **model variant** (`#low`) on the mechanical personas; the Pro architect tier keeps full reasoning (no variant) |
+| `temperature: 0.1` no-op removed | V2 preserves `request.body` but does not send it, so the value was dead config | the intent moved to a **model variant**: the mechanical/content personas pin `#low`, the engineering/debug and architect tiers pin `#high` (final routing, §20) |
 | `AGENTS.md` is now the always-loaded file | V2 ignores `instructions` | rules still loaded; `.agents/rules/00-operating.md` & `.agents/AGENTS.md` are auto-discovered as the agent works under `.agents/` |
 | `.agents/skills/*` now skills | V2 discovers `.agents/skills` | persona skills are also advertised via the `skill` tool (was read-only files) |
 | Legacy V1 files removed on update | avoid stale `command/` shadowing | project keeps only `.opencode/{agents,commands,plugins,skills}` |
@@ -723,3 +727,44 @@ did not overwrite the deployed copies: both LibraryOS and FamilyBudget still sai
 the deterministic personas "pin `temperature: 0.1`". Both copies were corrected
 in place to the `#low` **model variant** wording (the V2 truth), matching the
 template.
+
+---
+
+## 21. Field review — V2 store re-port, guard root, routing retune (0.1.164)
+
+A review of the harness **as deployed** after 0.1.157–0.1.163 (LibraryOS + the
+harness repo) produced findings **F-1…F-13** and a five-workstream plan; it
+shipped as 0.1.164. The consolidated record is
+[`harness-field-review-2026-10-16.md`](harness-field-review-2026-10-16.md); the
+V2-relevant changes are:
+
+- **V2 store re-port (F-1).** The telemetry read the store through the removed
+  `opencode db` subcommand and the V1 `session`/`message`/`part` tables. A shared
+  `scripts/qa/store-lib.js` now resolves the DB via `opencode debug paths` and
+  reads **both** `session_v2` + `session_message` and the V1 shape, so
+  `provider-stats.js`, `session.ts` (`session_info`), and the guard read V2
+  sessions. `doctor` gained a CLI/store-surface stanza.
+- **Plugin/guard root (F-2).** A V2 plugin instance is loaded **per location**
+  but the event stream is **process-wide**, so a session in project A wrote its
+  lease and guard events into project B's checkout. The guard now records each
+  session's own `location.directory` (from `session.created`; unseen sessions are
+  resolved from the store), filters events by location, roots all writes at the
+  session's checkout, and stamps `root=<dir>` on every event.
+- **Routing retune (§3/§10/§17 values superseded).** The architect tier is
+  `opencode-go/deepseek-v4-pro#high` (direct `deepseek/deepseek-v4-pro` is the
+  **announced fallback**), the engineering/debug tier is
+  `opencode-go/deepseek-v4.1-flash#high`, and only the mechanical/content
+  personas keep `#low`; step budgets were raised to the measured p95, and the
+  dead `deepseek-v4-flash` aliases were removed.
+- **Nightly trust (F-3).** The failure reason is taken from the flow-level
+  `reason` rather than `tail(…,3)`; a device **preflight** names a missing
+  `adb`/`maestro`/SDK before the long run; a harness-side failure annotates
+  instead of reopening a product row.
+- **Guardrails (F-4…F-7).** `gates`/`where`/`orient` surfaced in the `orient`
+  digest + `AGENTS.md` + `dev-loop`; a pure single-path `cat`/`ls` blocks on every
+  occurrence; a bounded **`diff`** tool was added; step budgets raised.
+- **Hygiene (F-12/F-13).** `apply_patch` added to the `V1_ACTION` map (it maps to
+  the `edit` action); `doctor` gained a Windows stray-listener stanza; the
+  `/tidy` command and the cross-repo harness-fix route were added; the
+  `no_state` nudge gained a startup grace so the orientation prologue does not
+  read as "stuck".

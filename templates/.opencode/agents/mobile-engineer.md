@@ -1,8 +1,8 @@
 ---
 description: Use when writing or fixing Expo / React Native native code — native runtime, Fabric, reanimated, worklets, css-interop, Android/iOS build issues.
 mode: subagent
-steps: 40
-model: opencode-go/deepseek-v4.1-flash#low
+steps: 50
+model: opencode-go/deepseek-v4.1-flash#high
 permissions:
   - action: edit
     resource: "*"

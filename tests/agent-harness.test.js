@@ -209,7 +209,7 @@ test("deploy init materializes files, substitutes placeholders, writes config", 
   assert.ok(cfg.files && typeof cfg.files === "object");
 
   const oc = JSON.parse(read(path.join(target, "opencode.json")));
-  assert.strictEqual(oc.agents.build.steps, 100, "deploy writes the mechanical turn cap");
+  assert.strictEqual(oc.agents.build.steps, 120, "deploy writes the mechanical turn cap");
 });
 
 test("update prunes the V1 obsolete layout (.opencode/tools + legacy command/)", async () => {
@@ -416,7 +416,7 @@ test("opencode.json merge ships agents.build.steps as an ADD-ONLY default", () =
   const defaults = JSON.parse(
     h.mergeOpencodeJson(fresh, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" })
   );
-  assert.strictEqual(defaults.agents.build.steps, 100, "hard turn cap is deployed by default");
+  assert.strictEqual(defaults.agents.build.steps, 120, "hard turn cap is deployed by default");
   assert.strictEqual(defaults.agents.title.model, "opencode-go/glm-5.3-flash", "small-model pin on the title agent");
   assert.strictEqual(defaults.agents.explore.model, "opencode-go/glm-5.3-flash", "opportunistic explore pin");
 
@@ -637,6 +637,22 @@ test("convertV1Tools maps a V1 tools map to V2 permission rules (G1)", () => {
   ]);
   assert.deepStrictEqual(h.convertV1Tools(null), []);
   assert.deepStrictEqual(h.convertV1Tools(["x"]), []);
+});
+
+test("[drift-guard] apply_patch/patch are governed by the `edit` permission", () => {
+  // V2 maps the `apply_patch` TOOL -> `patch` -> the `edit` permission action
+  // (verified against the 2.0.31 binary), so a persona's narrow `edit` grant must
+  // cover it. A V1 `tools`/`permission` entry therefore migrates to `edit`, and
+  // the guard counts apply_patch as a material (state-changing) tool.
+  assert.deepStrictEqual(h.convertV1Tools({ patch: false, write: false, apply_patch: false }), [
+    { action: "edit", resource: "*", effect: "deny" },
+    { action: "edit", resource: "*", effect: "deny" },
+    { action: "edit", resource: "*", effect: "deny" },
+  ]);
+  const core = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"));
+  assert.ok(core.isMaterial("apply_patch", {}), "apply_patch is a material (state-changing) tool");
+  const plugin = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
+  assert.match(plugin, /EDIT_TOOLS = new Set\(\[[^\]]*"apply_patch"/, "the plugin counts apply_patch as an edit");
 });
 
 test("opencode.json merge migrates V1 tools gating to permissions without clobbering agent rules (G1)", () => {
@@ -864,7 +880,7 @@ test("switch-model command + script are deployed to every project", async () => 
   assert.match(script, /opencode-go\/deepseek-v4\.1-flash/, "script aliases map to the OpenCode Go default");
   assert.match(script, /opencode-go\/deepseek-v4-pro/, "script exposes the Go pro escalation alias");
   assert.match(script, /deepseek\/deepseek-flash/, "script aliases map to the direct deepseek fallback");
-  assert.match(script, /deepseek\/deepseek-v4-flash/, "script keeps the legacy v4 flash pin replaceable (migration/rollback)");
+  assert.doesNotMatch(script, /deepseek\/deepseek-v4-flash/, "the dead v4-flash alias is gone (F-10)");
   assert.match(script, /deepseek\/deepseek-v4-pro/, "script aliases map to the pro escalation model");
   assert.match(script, /openrouter\/minimax\/minimax-m3/, "script exposes the OpenRouter alias");
   assert.match(script, /nvidia\/nemotron-3-ultra-550b-a55b:free/, "script exposes the Nemotron free alias");
@@ -4930,6 +4946,7 @@ test("context-guard parses the orchestration.md tables and falls back to default
     same_failure_turns: 3,
     identical_tool_calls: 3,
     no_state_change_turns: 4,
+    no_state_grace_turns: 8,
     inspect_rearm_every: 10,
     gate_rerun_turns: 3,
   });
@@ -5212,8 +5229,39 @@ test("context-guard classifies material vs read-only tool calls", () => {
   assert.strictEqual(cg.isMaterial("grep", { pattern: "x" }), false);
 });
 
+test("context-guard does not arm the no-state nudge during the startup grace window", () => {
+  // The 2026-10-16 field review: 78/143 sessions fired `no_state` at turn 5 with
+  // no material change — the orientation prologue (read/grep/shell), not a stuck
+  // session. The first `no_state_grace_turns` turns are therefore exempt.
+  const thresholds = cg.parseThresholds("");
+  const grace = thresholds.stuck.no_state_grace_turns;
+  assert.strictEqual(grace, 8, "the startup grace is the documented default");
+  const state = cg.createSessionState();
+  const turn = (id) => cg.noteAssistant(state, { id, role: "assistant", tokens: null }, thresholds);
+
+  // A pure orientation prologue: every turn reads/greps with no edit, for the
+  // whole grace window.
+  for (let i = 0; i < grace; i++) {
+    turn(`g${i}`);
+    cg.noteToolCall(state, "read", { filePath: "a.ts" }, thresholds.stuck);
+  }
+  // Still inside the grace: no streak, so no nudge (the default threshold of 4
+  // turns of non-material work would long since have fired without the grace).
+  assert.strictEqual(state.noStateTurns, 0, "grace turns never accumulate a streak");
+  assert.strictEqual(state.noStatePending, false, "no nudge inside the grace window");
+
+  // Past the grace, a run of non-material turns arms the nudge normally.
+  for (let i = 0; i < thresholds.stuck.no_state_change_turns + 2; i++) {
+    turn(`p${i}`);
+    cg.noteToolCall(state, "read", { filePath: "a.ts" }, thresholds.stuck);
+  }
+  assert.strictEqual(state.noStatePending, true, "a real post-grace streak still arms the nudge");
+});
+
 test("context-guard flags whole turns with no material state change (no-state detector)", () => {
   const thresholds = cg.parseThresholds("");
+  // Exercise the streak logic itself, with the startup grace disabled.
+  thresholds.stuck.no_state_grace_turns = 0;
   const stuck = thresholds.stuck;
   const state = cg.createSessionState();
   const turn = (id) => cg.noteAssistant(state, { id, role: "assistant", tokens: null }, thresholds);
@@ -5433,6 +5481,15 @@ test("main-checkout guard message names the target and points at isolation", () 
   assert.match(text, /NOT executed/);
   assert.match(cg.mainEditText("bash", "/repo"), /command/);
   assert.match(cg.mainEditText("bash", "/repo"), /was NOT executed/);
+  // F-12: a cross-repo target (a project session editing the harness `templates/`)
+  // must NOT be told to isolate here — isolation is per-repo — but pointed at the
+  // harness checkout instead.
+  const sameRepo = cg.mainEditText("edit", "/repo/app/x.ts", null, { crossRepo: false });
+  assert.doesNotMatch(sameRepo, /DIFFERENT checkout/);
+  const crossRepo = cg.mainEditText("edit", "/harness/templates/x.ts", null, { crossRepo: true });
+  assert.match(crossRepo, /DIFFERENT checkout/);
+  assert.match(crossRepo, /agent-harness/);
+  assert.match(crossRepo, /agent-harness update/);
 });
 
 test("context-guard recognizes provider funds/quota errors (hard stop) and ignores ordinary failures", () => {
@@ -5873,7 +5930,7 @@ test("context-guard: the V2 prompt hook releases the funds stop on a primary, no
   );
 });
 
-test("context-guard blocks the first pure inspection + poll once per head/kind (kill-switch honored)", async () => {
+test("context-guard blocks a pure cat/ls every time and other heads once (kill-switch honored)", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
   const g = await loadGuardPlugin({ directory: target });
@@ -5881,9 +5938,12 @@ test("context-guard blocks the first pure inspection + poll once per head/kind (
   await g.emit({ type: "session.created", data: { sessionID: sid } });
   const before = (command) => g.toolBefore("shell", sid, { command });
 
-  await assert.rejects(before("cat src/a.ts"), /TOOL BLOCK/, "the first pure `cat` is blocked");
-  await before("cat src/a.ts"); // same head: no longer blocked
+  // A pure single-path `cat`/`ls` blocks on EVERY occurrence (H-23).
+  await assert.rejects(before("cat src/a.ts"), /TOOL BLOCK/, "a pure `cat <file>` is blocked");
+  await assert.rejects(before("cat src/a.ts"), /TOOL BLOCK/, "and again on the next occurrence (H-23)");
+  // Other inspection heads keep the one-shot block (grep/find/sed).
   await assert.rejects(before("grep -rn foo lib/"), /TOOL BLOCK/, "a different head is blocked once");
+  await before("grep -rn foo lib/"); // same head: one-shot only, allowed now
   await assert.rejects(before("sleep 5; tail -1 run.log"), /bounded waiter/, "hand-rolled polling is blocked");
   await before("sleep 5; tail -1 run.log"); // same poll kind: allowed now
   await before("git log | grep foo"); // downstream filter is not a pure inspection
@@ -6451,6 +6511,176 @@ test("provider-stats CLI reads a fixture, prints observed telemetry, and exports
   assert.match(badRes.stderr, /provider-stats:/);
 });
 
+// ---------------------------------------------------------------- store-lib / V2 store (0.1.164)
+
+const SL = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "store-lib.js"));
+
+test("store-lib parses `opencode debug paths` and resolves the store path without a CLI", () => {
+  const paths = SL.parseDebugPaths(
+    "home       /home/ronen\n" +
+      "data       /home/ronen/.local/share/opencode\n" +
+      "db         /home/ronen/.local/share/opencode/opencode.db\n" +
+      "config     /home/ronen/.config/opencode\n"
+  );
+  assert.strictEqual(paths.data, "/home/ronen/.local/share/opencode");
+  assert.strictEqual(paths.db, "/home/ronen/.local/share/opencode/opencode.db");
+
+  // Explicit env override wins over the CLI probe and the default.
+  const db = SL.resolveDbPath({
+    env: { OPENCODE_DATA_DIR: "/custom/data" },
+    paths: {},
+    exists: (p) => p === "/custom/data",
+  });
+  assert.strictEqual(db, path.join("/custom/data", "opencode.db"), "OPENCODE_DATA_DIR is honoured");
+
+  // `debug paths` db wins when the env is absent.
+  const db2 = SL.resolveDbPath({ env: {}, paths: { db: "/x/opencode.db" }, exists: () => true });
+  assert.strictEqual(db2, "/x/opencode.db");
+
+  // No CLI and no override -> the platform default under $HOME.
+  const db3 = SL.resolveDbPath({ env: {}, paths: {}, homedir: () => "/home/u", exists: () => false });
+  assert.strictEqual(db3, path.join("/home/u", SL.DEFAULT_DATA_REL, "opencode.db"));
+  assert.match(SL.resolveDataRoot({ env: {}, paths: { data: "/d" }, exists: () => true }), /^\/d$/);
+});
+
+test("store-lib picks the V2 table generation and falls through engines loudly", () => {
+  // V2 present (legacy mirror also present in a real store) -> v2 tables.
+  const v2Query = (sql) =>
+    /sqlite_master/.test(sql) ? [{ name: "session_v2" }, { name: "session_message" }] : [];
+  assert.deepStrictEqual(SL.detectFlavour(v2Query), {
+    flavour: "v2",
+    sessions: "session_v2",
+    messages: "session_message",
+    parts: null,
+  });
+  const v2 = SL.openStore({ dbPath: "/tmp/x.db", query: v2Query, noCache: true });
+  assert.strictEqual(v2.flavour, "v2");
+  assert.strictEqual(v2.sessions, "session_v2");
+
+  // V1 only -> the legacy names (the pre-V2 behaviour, unchanged).
+  const v1 = SL.openStore({ dbPath: "/tmp/x.db", query: () => [], noCache: true });
+  assert.strictEqual(v1.flavour, "v1");
+  assert.strictEqual(v1.sessions, "session");
+  assert.strictEqual(v1.messages, "message");
+
+  // A forced flavour never probes the store.
+  assert.strictEqual(SL.tableSet(() => { throw new Error("must not probe"); }, "v2").messages, "session_message");
+
+  // A stat error during detection is not fatal — it degrades to V1 rather than
+  // reporting "0 sessions" for a live store.
+  assert.strictEqual(SL.detectFlavour(() => { throw new Error("locked"); }).flavour, "v1");
+
+  // Every engine failing is a loud, actionable throw — never an empty aggregate.
+  const query = SL.makeQuery("/tmp/x.db", { engines: [() => undefined, () => undefined] });
+  assert.throws(() => query("SELECT 1"), /opencode store unreachable: no SQLite engine available/);
+  assert.match(SL.noEngineError("/tmp/x.db").message, /OPENCODE_DB|OPENCODE_DATA_DIR/);
+
+  // First engine that returns rows (even []) wins; later engines are not tried.
+  const seen = [];
+  const q2 = SL.makeQuery("/tmp/x.db", {
+    engines: [(db, sql) => (seen.push("a"), undefined), (db, sql) => (seen.push("b"), []) ],
+  });
+  assert.deepStrictEqual(q2("SELECT 1"), []);
+  assert.deepStrictEqual(seen, ["a", "b"]);
+
+  // sessionDirectory is the V2 replacement for the plugin's captured location.
+  const store = SL.openStore({
+    dbPath: "/tmp/x.db",
+    noCache: true,
+    query: (sql) => (/sqlite_master/.test(sql) ? [{ name: "session_v2" }, { name: "session_message" }] : [{ directory: "/repo/wt" }]),
+  });
+  assert.strictEqual(SL.sessionDirectory("ses_a", { store }), "/repo/wt");
+  assert.strictEqual(SL.sessionDirectory("", { store }), "", "no id -> no guess");
+});
+
+test("provider-stats reads the V2 store (session_v2 + session_message) — the 0.1.164 regression", () => {
+  // The shape that broke: V2 has no `opencode db`, `session`/`message`/`part` are
+  // a frozen legacy mirror, and parts are embedded in `session_message.data`.
+  const calls = [];
+  const sessionRows = [
+    { id: "ses_v2", parent_id: null, title: "V2 primary", directory: "/repo", agent: "build", model: '{"id":"deepseek-v4.1-flash","providerID":"opencode-go","variant":"high"}', cost: 0.4, tokens_input: 10, tokens_output: 5, tokens_reasoning: 3, tokens_cache_read: 90, tokens_cache_write: 0, time_created: 1, time_updated: 2 },
+  ];
+  const runDb = (sql) => {
+    calls.push(sql);
+    if (sql.includes("sqlite_master")) return [{ name: "session_v2" }, { name: "session_message" }];
+    if (sql.includes("FROM project_directory")) return [{ id: "p1" }];
+    if (sql.includes("FROM session_v2 s")) return sessionRows;
+    if (sql.includes("FROM session_message") && sql.includes("AS turns")) return [{ session_id: "ses_v2", turns: 42 }];
+    if (sql.includes("json_each")) {
+      return [
+        { session_id: "ses_v2", tool: "bash", input: '{"command":"npm test"}' },
+        { session_id: "ses_v2", tool: "bash", input: '{"command":"npm test"}' },
+        { session_id: "ses_v2", tool: "bash", input: '{"command":"npm test"}' },
+      ];
+    }
+    return [];
+  };
+  const stats = ps.collectStats({ root: "/repo", runDb, store: { flavour: "v2", sessions: "session_v2", messages: "session_message", parts: null } });
+
+  assert.strictEqual(stats.meta.store.flavour, "v2");
+  assert.ok(calls.some((s) => s.includes("FROM session_v2 s")), "sessions come from session_v2, not the legacy mirror");
+  assert.ok(calls.some((s) => s.includes("FROM session_message") && s.includes("type = 'assistant'")), "turns come from session_message.type");
+  assert.ok(calls.some((s) => s.includes("json_each(m.data, '$.content')")), "parts are walked out of content[]");
+  assert.ok(calls.some((s) => /json_extract\(je\.value, '\$\.name'\)/.test(s)), "V2 tool parts read $.name");
+
+  assert.strictEqual(stats.sessions[0].turns, 42, "V2 turns are counted");
+  assert.strictEqual(stats.sessions[0].model, "deepseek-v4.1-flash");
+  assert.strictEqual(stats.sessions[0].provider, "opencode-go");
+  // 3 identical bash calls -> still detected through the V2 extraction.
+  assert.strictEqual(stats.sessions[0].maxIdentical, 3);
+  assert.strictEqual(stats.sessions[0].loops[0].tool, "bash");
+
+  // The V1 SQL is untouched when a caller injects the legacy tables.
+  assert.match(ps.turnsSql(["ses_a"]), /FROM message .*json_extract\(data, '\$\.role'\) = 'assistant'/);
+  assert.match(ps.toolPartsSql(["ses_a"]), /FROM part/);
+  assert.match(ps.turnsSql(["ses_a"], "v2"), /FROM session_message WHERE session_id IN \('ses_a'\) AND type = 'assistant'/);
+});
+
+test("store-lib reads a real SQLite file end-to-end (skips without node:sqlite)", (t) => {
+  let DatabaseSync;
+  try {
+    DatabaseSync = require("node:sqlite").DatabaseSync;
+  } catch {
+    return t.skip("node:sqlite unavailable on this Node");
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "store-lib-"));
+  const dbPath = path.join(dir, "opencode.db");
+  try {
+    const db = new DatabaseSync(dbPath);
+    db.exec("CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT)");
+    db.exec("CREATE TABLE project_directory (project_id TEXT, directory TEXT)");
+    db.exec("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, title TEXT, directory TEXT, agent TEXT, model TEXT, cost REAL, tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER, time_created INTEGER, time_updated INTEGER)");
+    db.exec("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, data TEXT)");
+    db.exec("CREATE TABLE session (id TEXT PRIMARY KEY)");
+    db.exec("CREATE TABLE message (id TEXT PRIMARY KEY)");
+    db.exec("CREATE TABLE part (id TEXT PRIMARY KEY)");
+    db.exec("INSERT INTO project (id, worktree) VALUES ('p1', '/repo')");
+    db.exec("INSERT INTO project_directory (project_id, directory) VALUES ('p1', '/repo')");
+    db.exec(
+      "INSERT INTO session_v2 VALUES ('ses_live','p1',NULL,'live session','/repo','build'," +
+        `'{"id":"deepseek-v4.1-flash","providerID":"opencode-go"}',0.25,10,5,2,80,0,1,2)`
+    );
+    db.exec(
+      "INSERT INTO session_message VALUES ('m1','ses_live','assistant',1,'" +
+        JSON.stringify({ content: [{ type: "tool", name: "bash", state: { input: { command: "ls" } } }] }).replace(/'/g, "''") +
+        "')"
+    );
+    db.close();
+
+    const store = SL.openStore({ dbPath, noCache: true });
+    assert.strictEqual(store.flavour, "v2", "real file detection picks V2");
+    const stats = ps.collectStats({ root: "/repo", store, query: store.query });
+    assert.strictEqual(stats.meta.store.flavour, "v2");
+    assert.strictEqual(stats.sessions.length, 1);
+    assert.strictEqual(stats.sessions[0].id, "ses_live");
+    assert.strictEqual(stats.sessions[0].turns, 1, "the assistant row is a turn");
+    assert.strictEqual(stats.sessions[0].toolCalls, 1, "the embedded tool part is counted");
+    assert.strictEqual(SL.sessionDirectory("ses_live", { store }), "/repo");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("session-recon classifies shell tool-choice, cd-chaining, dumps and read hygiene", () => {
   const at = Date.parse("2026-09-20T00:00:00Z");
   const parts = [
@@ -6712,8 +6942,9 @@ test("model-routing ships the opportunistic tier with fallback + privacy caveat 
   assert.match(doc, /^fallback_models: /m);
   assert.match(doc, /model_escalation_evidence/);
 
-  // Go-first provider policy (V4 Pro architect tier excepted) + the funds stop.
-  assert.match(doc, /Provider priority & fallback \(Go for flash\/default, direct for V4 Pro\)/);
+  // Go-first provider policy (every tier, including the V4 Pro architect tier) +
+  // the funds stop.
+  assert.match(doc, /Provider priority & fallback \(Go first for every tier; direct is the announced fallback\)/);
   assert.match(doc, /deepseek\/deepseek-v4-pro/);
   assert.match(doc, /Provider funds stop \(hard rule — pause, announce, wait\)/);
   assert.match(doc, /opencode-go\/deepseek-v4\.1-flash/);
@@ -6725,14 +6956,22 @@ test("model-routing ships the opportunistic tier with fallback + privacy caveat 
   assert.strictEqual(cfg.agents.explore.model, "opencode-go/glm-5.3-flash", "explore is the reference opportunistic pin (Go, no Zen)");
 });
 
-test("architect-tier personas pin direct DeepSeek V4 Pro; engineering pins Go V4.1 Flash", () => {
+test("architect tier pins Go V4 Pro #high; engineering pins Go V4.1 Flash #high (W5)", () => {
+  // Go-first: the highest-value personas no longer gate on the pay-per-token
+  // direct key (3 funds stops on 2026-09-16/17). Direct V4 Pro is the announced
+  // fallback, not the pin.
   for (const name of ["planner", "qa-architect", "system-architect", "security-engineer"]) {
     const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", `${name}.md`));
-    assert.match(agent, /^model: deepseek\/deepseek-v4-pro$/m, `${name} must pin direct V4 Pro (never Go)`);
+    assert.match(agent, /^model: opencode-go\/deepseek-v4-pro#high$/m, `${name} must pin Go V4 Pro #high (never direct)`);
   }
-  for (const name of ["frontend-engineer", "mobile-engineer", "data-engineer", "devops-engineer", "qa-runner", "diagnostics-expert"]) {
+  for (const name of ["frontend-engineer", "mobile-engineer", "data-engineer", "devops-engineer", "diagnostics-expert"]) {
     const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", `${name}.md`));
-    assert.match(agent, /^model: opencode-go\/deepseek-v4\.1-flash(#low)?$/m, `${name} must pin Go V4.1 Flash`);
+    assert.match(agent, /^model: opencode-go\/deepseek-v4\.1-flash#high$/m, `${name} must pin Go V4.1 Flash #high`);
+  }
+  // Mechanical/content personas keep the cheap #low variant.
+  for (const name of ["qa-runner"]) {
+    const agent = read(path.join(h.TEMPLATES_DIR, ".opencode", "agents", `${name}.md`));
+    assert.match(agent, /^model: opencode-go\/deepseek-v4\.1-flash#low$/m, `${name} keeps the mechanical #low pin`);
   }
 });
 
@@ -6749,7 +6988,7 @@ test("test:dispatch accepts declared tier targets and still fails a stray unpinn
   assert.doesNotMatch(clean.stdout, /agents\.explore\.model `opencode\//, "explore is not pinned to Zen");
 
   const routing = path.join(target, ".agents", "memory", "model-routing.md");
-  fs.appendFileSync(routing, "\nstray mention: opencode-go/kimi-k2.6\n", "utf8");
+  fs.appendFileSync(routing, "\nstray mention: opencode-go/kimi-k3\n", "utf8");
   const dirty = runGate();
   assert.strictEqual(dirty.status, 1, "an undeclared unpinned model still fails the drift check");
   assert.match(dirty.stdout, /doc\u2194config drift/);
@@ -8529,6 +8768,7 @@ test("agent-harness doctor reports release-cycle readiness", () => {
   assert.match(out, /agent-harness doctor/);
   assert.match(out, /CI workflow/);
   assert.match(out, /opencode: /, "doctor reports the runtime version (G10)");
+  assert.match(out, /session store/, "doctor reports the local session store generation (W1)");
   assert.match(out, /failure\(s\), \d+ warning\(s\)/);
 });
 
@@ -9654,6 +9894,25 @@ test("capacity: host-aware .wslconfig advice flags processor oversubscription an
   assert.match(tight, /leaves Windows ~3\.0 GB/);
 });
 
+test("capacity: readWindowsStrays parses host listeners and is empty off WSL", () => {
+  // F-13: a Windows-side Metro/emulator holds a dev port the WSL session needs.
+  assert.deepStrictEqual(capacity.readWindowsStrays({ strays: "8081 5037 8081" }), [8081, 5037]);
+  assert.deepStrictEqual(capacity.readWindowsStrays({ strays: "" }), []);
+  // Off WSL (or an unqueryable host) it never invents listeners.
+  const prevForce = process.env.AGENT_CAPACITY_FORCE_WSL;
+  const prevStrays = process.env.AGENT_WINDOWS_STRAYS;
+  process.env.AGENT_CAPACITY_FORCE_WSL = "0";
+  delete process.env.AGENT_WINDOWS_STRAYS;
+  try {
+    assert.deepStrictEqual(capacity.readWindowsStrays(), []);
+  } finally {
+    if (prevForce === undefined) delete process.env.AGENT_CAPACITY_FORCE_WSL;
+    else process.env.AGENT_CAPACITY_FORCE_WSL = prevForce;
+    if (prevStrays === undefined) delete process.env.AGENT_WINDOWS_STRAYS;
+    else process.env.AGENT_WINDOWS_STRAYS = prevStrays;
+  }
+});
+
 test("capacity: readTuning reports swappiness and the user.slice ceiling", () => {
   const dir = tmpdir();
   const sysctl = path.join(dir, "sys");
@@ -10251,6 +10510,67 @@ test("[drift-guard] mobile E2E mechanism ships (runner, validator, config, helpe
   assert.match(doc, /run-detached\.sh/, "runbook documents the detached runner helper");
   assert.match(doc, /--reuse-session/, "runbook documents session reuse");
   assert.match(doc, /boot-emulator\.sh/, "runbook documents the emulator helper");
+});
+
+test("[drift-guard] the device runner hands its resolved tooling to a journey's setup step (the device-e2e 127)", () => {
+  const runner = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
+  // A journey's `adb …` setup is shell-resolved under a headless PATH that omits
+  // platform-tools — the 2026-10-16 `device-e2e code 127` (`/bin/sh: 1: adb: not
+  // found`) after a 23-minute, otherwise-passing matrix.
+  const sdk = fs.mkdtempSync(path.join(os.tmpdir(), "maestro-sdk-"));
+  const platformTools = path.join(sdk, "platform-tools");
+  fs.mkdirSync(platformTools, { recursive: true });
+  fs.writeFileSync(
+    path.join(platformTools, process.platform === "win32" ? "adb.exe" : "adb"),
+    process.platform === "win32" ? "" : "#!/bin/sh\nexit 0\n",
+    { mode: 0o755 }
+  );
+  const savedHome = process.env.ANDROID_HOME;
+  const savedRoot = process.env.ANDROID_SDK_ROOT;
+  try {
+    process.env.ANDROID_HOME = sdk;
+    delete process.env.ANDROID_SDK_ROOT;
+    const dirs = runner.toolPathDirs();
+    assert.ok(dirs.includes(platformTools), "the resolved platform-tools dir is on the tool PATH");
+    const env = runner.toolEnv();
+    assert.ok(
+      env.PATH.split(path.delimiter)[0] === platformTools,
+      "PATH is prepended so a bare `adb` resolves in the step shell"
+    );
+    assert.strictEqual(env.ANDROID_HOME, sdk, "the rest of the environment is inherited");
+  } finally {
+    fs.rmSync(sdk, { recursive: true, force: true });
+    if (savedHome === undefined) delete process.env.ANDROID_HOME;
+    else process.env.ANDROID_HOME = savedHome;
+    if (savedRoot === undefined) delete process.env.ANDROID_SDK_ROOT;
+    else process.env.ANDROID_SDK_ROOT = savedRoot;
+  }
+  // The declared-step runner actually applies it (not just defines it).
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js"));
+  assert.match(src, /spawnSync\(step\.command, \{ stdio: 'inherit', shell: true, env: toolEnv\(\) \}\)/, "setup steps run under toolEnv()");
+  // The nightly asserts the toolchain before the 23-minute run.
+  const nightly = read(path.join(h.TEMPLATES_DIR, "scripts", "nightly.js"));
+  assert.match(nightly, /device-preflight/, "the device phase preflights the toolchain first");
+});
+
+test("run-maestro --preflight names a missing tool and exits non-zero", () => {
+  const PS = path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "run-maestro.js");
+  // A deliberately barren environment: no SDK, no PATH tools, an empty HOME so
+  // the conventional ~/.maestro/bin is absent too.
+  const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "maestro-home-"));
+  const res = spawnSync(process.execPath, [PS, "--flows", "all", "--preflight"], {
+    encoding: "utf8",
+    timeout: 60000,
+    env: { PATH: "", HOME: emptyHome, ANDROID_HOME: "", ANDROID_SDK_ROOT: "" },
+  });
+  try {
+    assert.strictEqual(res.status, 1, "a missing toolchain is a non-zero preflight");
+    assert.match(res.stdout, /device-preflight: FAIL *adb/, "the missing adb is named");
+    assert.match(res.stdout, /device-preflight: FAIL *maestro/, "the missing maestro is named");
+    assert.match(res.stdout, /device-preflight: FAILED \(.*adb.*maestro/, "the summary names the failures");
+  } finally {
+    fs.rmSync(emptyHome, { recursive: true, force: true });
+  }
 });
 
 test("[drift-guard] device tier is right-sized, group-budgeted, and notifyable", () => {
@@ -10890,6 +11210,54 @@ test("[drift-guard] where is wired into npm scripts and the tool", () => {
   assert.match(read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "where.ts")), /scripts\/qa\/where\.js/);
 });
 
+test("diff: bounds output, selects the range, and lists untracked files", () => {
+  const D = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "diff.js"));
+  // The default is the working tree vs HEAD, with no pipe-bounded shell needed.
+  assert.deepStrictEqual(D.gitArgs(D.parseArgs([])), ["diff", "--no-color", "--unified=3", "HEAD"]);
+  assert.deepStrictEqual(D.gitArgs(D.parseArgs(["--staged"])), ["diff", "--no-color", "--unified=3", "--cached"]);
+  assert.deepStrictEqual(D.gitArgs(D.parseArgs(["--base", "origin/main"])), ["diff", "--no-color", "--unified=3", "origin/main"]);
+  assert.deepStrictEqual(D.gitArgs(D.parseArgs(["--stat"])), ["diff", "--stat", "HEAD"]);
+  assert.deepStrictEqual(D.gitArgs(D.parseArgs(["--files"])), ["diff", "--name-status", "HEAD"]);
+  assert.deepStrictEqual(D.gitArgs(D.parseArgs(["--paths", "a.ts, b/c.ts", "--unified=0"])), ["diff", "--no-color", "--unified=0", "HEAD", "--", "a.ts", "b/c.ts"]);
+  assert.deepStrictEqual(D.splitPaths("a.ts, b.ts\nc.ts"), ["a.ts", "b.ts", "c.ts"]);
+
+  // Bounding is the whole point: a large change is capped with a visible marker.
+  const big = Array.from({ length: 10 }, (_, i) => `line ${i}`).join("\n");
+  const capped = D.capLines(big, 4);
+  assert.strictEqual(capped.truncated, 6);
+  assert.match(capped.text, /^line 0\nline 1\nline 2\nline 3$/);
+  assert.strictEqual(D.capLines("a\nb", 5).truncated, 0);
+
+  // --limit is clamped to a sane floor/ceiling; --unified likewise.
+  assert.strictEqual(D.parseArgs(["--limit", "0"]).limit, 20);
+  assert.strictEqual(D.parseArgs(["--limit", "99999"]).limit, 5000);
+  assert.strictEqual(D.parseArgs(["--unified", "500"]).unified, 50);
+
+  // collect() injects git and always reports untracked files (they have no diff).
+  const calls = [];
+  const run = (dir, args) => {
+    calls.push([dir, args.join(" ")]);
+    if (args[0] === "ls-files") return "new-file.ts\n";
+    return "--- a/x\n+++ b/x\n+added\n";
+  };
+  const res = D.collect(D.parseArgs(["--root", "/repo"]), run);
+  assert.match(res.body, /\+added/);
+  assert.deepStrictEqual(res.untracked, ["new-file.ts"]);
+  assert.ok(calls.some((c) => c[1].startsWith("ls-files --others --exclude-standard")), "untracked files are listed");
+});
+
+test("[drift-guard] diff is wired into npm scripts and the tool", () => {
+  assert.strictEqual(h.HARNESS_SCRIPTS.diff, "node scripts/qa/diff.js", "diff wired into HARNESS_SCRIPTS");
+  const wrapper = path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "diff.ts");
+  assert.ok(exists(wrapper), "diff tool wrapper deployed");
+  assert.match(read(wrapper), /scripts\/qa\/diff\.js/, "the tool shells out to the script");
+  assert.match(
+    JSON.parse(read(path.join(__dirname, "..", "package.json"))).scripts.lint,
+    /scripts\/qa\/diff\.js/,
+    "lint syntax-checks diff.js"
+  );
+});
+
 test("feature-scaffold: writes the gate-shaped doc skeletons once, never overwriting", () => {
   const fsc = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "feature-scaffold.js"));
   const low = fsc.skeletons("F-302", { slug: "f-302-cover-sync", risk: "low" });
@@ -11088,6 +11456,43 @@ test("context-guard: notePollCall arms the advisory once per session", () => {
   assert.ok(cg.composeGuardText(s, cg.parseThresholds("")).includes(cg.WAIT_TEXT));
 });
 
+test("context-guard: location ownership (a plugin instance never acts on a foreign checkout)", () => {
+  const CG = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"));
+  const owns = CG.ownsLocation;
+  // The 2026-10-16 field shape: a session in `agent-harness` (no plugins there)
+  // fell back to LibraryOS's instance, which leased + guard-logged it.
+  assert.strictEqual(owns("/home/ronen/develop/PublicVirtualLibrary", "/home/ronen/develop/agent-harness"), false);
+  assert.strictEqual(owns("/home/ronen/develop/PublicVirtualLibrary", "/home/ronen/develop/PublicVirtualLibrary"), true);
+  // Trailing slash / backslash / `.` forms are the same location.
+  assert.strictEqual(owns("/repo/", "/repo"), true);
+  assert.strictEqual(owns("C:\\develop\\Demo", "C:/develop/Demo"), true);
+  assert.strictEqual(owns("C:/develop/Demo", "c:/develop/DEMO"), true, "Windows paths are case-insensitive");
+  assert.strictEqual(owns("/repo", "/Repo"), false, "POSIX paths are case-sensitive");
+  // Worktree siblings are DIFFERENT locations (each has its own plugin copy).
+  assert.strictEqual(owns("/repo", "/repo/../.worktrees/repo/f-1"), false);
+  assert.strictEqual(owns("/repo/../.worktrees/repo/f-1", "/repo/../.worktrees/repo/f-1"), true);
+  // A missing location is owned: never drop a real event on an envelope gap.
+  assert.strictEqual(owns("/repo", undefined), true);
+  assert.strictEqual(owns("/repo", ""), true);
+  assert.strictEqual(owns("", "/repo"), true);
+  assert.strictEqual(CG.normalizeRootPath("/repo///"), "/repo");
+  assert.strictEqual(CG.normalizeRootPath("C:\\a\\b\\"), "C:/a/b");
+  assert.strictEqual(CG.normalizeRootPath(null), "");
+  assert.strictEqual(CG.normalizeRootPath("/"), "");
+});
+
+test("[drift-guard] the guard confirms location ownership before any per-session write", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
+  assert.match(src, /guard\.ownsLocation\(directory, loc\)/, "the event stream filters by the shared rule");
+  assert.match(src, /if \(!sameLocation\(event\)\) return/, "a foreign-location event is dropped");
+  assert.match(src, /const sessionOurs = /, "the tool/context hooks gate on the session's root");
+  assert.match(src, /if \(!sessionOurs\(event\?\.sessionID\)\) return/, "tool.execute.before is gated");
+  assert.match(src, /if \(!sessionOurs\(event\?\.sessionID\)\) return/, "tool.execute.after is gated");
+  assert.match(src, /leases\.writeLease\(rootOf\(sessionID\), sessionID\)/, "the lease follows the session's own root");
+  assert.match(src, /guard\.formatGuardEvent\(\{ \.\.\.event, root: rootOf/, "the guard log records its root for attribution");
+  assert.match(src, /sessionRoots\.set\(sid, d\.location\.directory\)/, "session.created records the session's location");
+});
+
 test("context-guard: structural tool-block texts + kill switch", () => {
   const s = cg.createSessionState();
   assert.deepStrictEqual([...s.blockedInspectHeads], [], "no heads blocked at session start");
@@ -11097,6 +11502,30 @@ test("context-guard: structural tool-block texts + kill switch", () => {
   assert.strictEqual(cg.toolBlockEnabled({}), true, "enabled by default");
   assert.strictEqual(cg.toolBlockEnabled({ AGENT_GUARD_TOOLBLOCK: "0" }), false, "kill switch");
   assert.strictEqual(cg.toolBlockEnabled({ AGENT_GUARD_TOOLBLOCK: "1" }), true);
+});
+
+test("context-guard: a pure single-path cat/ls is blocked on every occurrence (H-23)", () => {
+  // The habit stayed flat across the 2-week re-measure, so a pure `cat <file>` /
+  // `ls [<dir>]` blocks every time — Read/Glob is an exact substitute.
+  assert.strictEqual(cg.repeatInspectBlock("cat package.json"), "cat");
+  assert.strictEqual(cg.repeatInspectBlock("cat -n README.md"), "cat");
+  assert.strictEqual(cg.repeatInspectBlock("  ls  "), "ls");
+  assert.strictEqual(cg.repeatInspectBlock("ls -la src/"), "ls");
+  // Real shell work, multi-target reads, and the dump case are NOT hard-blocked.
+  assert.strictEqual(cg.repeatInspectBlock("cat a.ts | grep x"), null, "a pipeline is real shell work");
+  assert.strictEqual(cg.repeatInspectBlock("cat a.ts b.ts"), null, "a multi-target read stays advisory");
+  assert.strictEqual(cg.repeatInspectBlock("cat < file"), null, "a redirect is not a pure read");
+  assert.strictEqual(cg.repeatInspectBlock("cat"), null, "bare cat reads stdin");
+  assert.strictEqual(cg.repeatInspectBlock("ls -R /"), null, "a whole-tree dump is dumpCommand's job");
+  assert.strictEqual(cg.repeatInspectBlock("grep -rn x src/"), null, "grep/find keep the one-shot block");
+  assert.strictEqual(cg.repeatInspectBlock("cd /repo && cat x"), null, "a sequence is not pure");
+  assert.strictEqual(cg.repeatInspectBlock(""), null);
+});
+
+test("[drift-guard] the plugin applies the repeat cat/ls block", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
+  assert.match(src, /const repeat = toolBlocking \? guard\.repeatInspectBlock\(command\) : null/, "the plugin consumes the shared rule");
+  assert.match(src, /if \(repeat\) \{\s*blockMessage = guard\.inspectBlockText\(repeat\)/, "a pure read is blocked without the one-shot guard");
 });
 
 test("context-guard: inspect advisory re-arms after N inspections and on a different head", () => {
@@ -11255,6 +11684,93 @@ test("nightly core: repeat reopen escalates to P1 and unexercised rows are flagg
   const pending = d.actions.find((a) => a.kind === "pending");
   assert.strictEqual(pending.id, "F-002");
   assert.strictEqual(pending.stale, true);
+});
+
+test("nightly core: failureReason names the real failure and ignores the runner's own advisory chatter", () => {
+  // The 2026-10-16 shape: the device phase's recorded reason was the harness's
+  // own `run-detached: --wait …` advisory, and static-unit's was a stack-dump
+  // fragment — both masked the real signal.
+  const device = [
+    'flow pass: mu-lending.yaml',
+    'Mobile E2E progress: 7 passed / 1 failed so far (of 26).',
+    'Failures:',
+    '  - community-hub.yaml: Element not found: Id matching regex: community-member-.*',
+    '! WSL GPU passthrough is present but GL is software (llvmpipe).',
+    'run-detached: --wait blocks this shell until the run finishes.',
+    '  use --wait only headless. Progress every 20s below.',
+  ].join('\n');
+  assert.strictEqual(
+    nightly.failureReason(device),
+    '- community-hub.yaml: Element not found: Id matching regex: community-member-.*',
+    'the flow failure wins over the harness advisory'
+  );
+  assert.ok(!/run-detached|llvmpipe/.test(nightly.failureReason(device)), 'harness noise never becomes the reason');
+
+  const unit = [
+    'not ok 12 - backoff delay respected',
+    '  ---',
+    '    operator: \'==\',',
+    '    diff: \'simple\'',
+    '  }',
+    '  AssertionError: expected 248 to be >= 1400',
+  ].join('\n');
+  assert.match(nightly.failureReason(unit), /^not ok 12 - backoff delay respected$/, 'the failing test line is preferred over the dump tail');
+
+  // A missing tool is the reason even with no test marker.
+  assert.match(nightly.failureReason('some output\n/bin/sh: 1: adb: not found'), /adb: not found/);
+  assert.strictEqual(nightly.failureReason(''), '');
+});
+
+test("nightly core: classifyFailure keeps harness breakage off the product board", () => {
+  // The F-331 churn: a P1 product row reopened every night by the runner's own
+  // environment/invocation text.
+  for (const r of [
+    '/bin/sh: 1: adb: not found',
+    'command not found: maestro',
+    'FAIL — Maestro CLI is not on PATH and not at ~/.maestro/bin/maestro.',
+    'ANDROID_HOME is not set',
+    'capacity envelope: refused heavy start',
+    'run-detached: --wait blocks this shell',
+    'device-up: emulator failed to boot',
+    'Error: timeout after 900000ms',
+  ]) {
+    assert.strictEqual(nightly.classifyFailure(r), 'harness', `harness-side: ${r}`);
+  }
+  for (const r of [
+    'AssertionError: expected 248 to be >= 1400',
+    '- community-hub.yaml: Element not found: Id matching regex: community-member-.*',
+    'Expected element "submit" to be visible',
+  ]) {
+    assert.strictEqual(nightly.classifyFailure(r), 'product', `product-side: ${r}`);
+  }
+});
+
+test("nightly core: a harness-side failure never reopens a product row", () => {
+  const now = "2026-10-16T02:00:00Z";
+  const harness = nightly.decideReconcile({
+    failures: [{ flow: "device-e2e", phase: "device-e2e", signature: "h1", reason: "/bin/sh: 1: adb: not found", side: "harness" }],
+    exercised: ["device-e2e"],
+    rows: [
+      { id: "F-331", section: "archive", task: "[nightly:flow=device-e2e] device-e2e e2e failed", closed: "awaiting nightly validation" },
+    ],
+    state: { flows: { "device-e2e": { reopenCount: 2 } } },
+    now,
+  });
+  assert.strictEqual(harness.actions.filter((a) => a.kind === "reopen").length, 0, "no product row is reopened");
+  assert.strictEqual(harness.actions.filter((a) => a.kind === "add").length, 0, "no product row is created");
+  const a = harness.actions.find((x) => x.kind === "harness");
+  assert.ok(a, "the failure is surfaced as a harness action");
+  assert.strictEqual(a.trackedId, "F-331", "the existing row is reported, not mutated");
+
+  // A product-side failure keeps the original journey-level behaviour.
+  const product = nightly.decideReconcile({
+    failures: [{ flow: "community-hub", phase: "device-e2e", signature: "p1", reason: "Element not found", side: "product" }],
+    exercised: ["community-hub"],
+    rows: [],
+    state: { flows: {} },
+    now,
+  });
+  assert.strictEqual(product.actions.filter((a) => a.kind === "add").length, 1, "a product failure still opens a row");
 });
 
 test("nightly core: signatures are stable and bounded", () => {

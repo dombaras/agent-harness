@@ -275,6 +275,44 @@ function readHost() {
   return { ramMb: ramBytes ? Math.round(ramBytes / 1048576) : null, cpus };
 }
 
+/* Windows-side stray dev listeners (F-13). A dev server / emulator started from a
+ * Windows terminal — or a leftover `npm run dev` on the host — is invisible to the
+ * WSL-side `.serve/` registry yet holds the port the WSL side needs (the "metro is
+ * running from Windows" incident: the WSL session could not bind or silently
+ * talked to the wrong Metro). Best-effort PowerShell; returns the held port numbers
+ * (empty when not WSL, unqueryable, or nothing matches). `AGENT_WINDOWS_STRAYS`
+ * overrides for tests (a space-separated port list). */
+function readWindowsStrays(opts = {}) {
+  const parse = (text) =>
+    [
+      ...new Set(
+        String(text || "")
+          .split(/[\s,]+/)
+          .map((s) => Number(s))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      ),
+    ];
+  if (opts.strays != null) return parse(opts.strays);
+  if (process.env.AGENT_WINDOWS_STRAYS != null) return parse(process.env.AGENT_WINDOWS_STRAYS);
+  if (!isWsl()) return [];
+  const ports = opts.ports || [8081, 3000, 3001, 5037, 5554, 5555];
+  const expr =
+    "$ErrorActionPreference='SilentlyContinue';" +
+    "Get-NetTCPConnection -State Listen |" +
+    ` Where-Object { @(${ports.join(",")}) -contains $_.LocalPort } |` +
+    " Select-Object -ExpandProperty LocalPort -Unique";
+  try {
+    const r = require("child_process").execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-Command", expr],
+      { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] }
+    );
+    return [...new Set(parse(r))];
+  } catch (_) {
+    return [];
+  }
+}
+
 /* Whether the one-time in-WSL tuning (`scripts/wsl-tune.sh apply`) is present:
  * a low swappiness, the user.slice resource ceiling, and the soft init.scope
  * backstop. Doctor reads this to tell the operator the single command that
@@ -855,6 +893,7 @@ module.exports = {
   readPsi,
   readHost,
   readTuning,
+  readWindowsStrays,
   readServes,
   readTmpfs,
   sample,

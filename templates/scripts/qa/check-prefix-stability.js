@@ -42,9 +42,11 @@ const strict = process.env.AGENT_PREFIX_STRICT !== "0";
 
 /* Per-file size ceilings (bytes) for the harness-owned prefix files. Set just
  * above the shipped size so a real growth must be a deliberate bump, not a
- * quiet accumulation. Memory files are project-owned and deliberately absent. */
+ * quiet accumulation. Memory files are project-owned and deliberately absent.
+ * 0.1.164: raised the AGENTS.md ceiling 10 -> 11 KiB for the "prefer the
+ * harness tools over the shell" rule (W4 discoverability). */
 const SIZE_BUDGET = {
-  "AGENTS.md": 10240,
+  "AGENTS.md": 11264,
   ".agents/AGENTS.md": 48128,
   ".agents/rules/00-operating.md": 30720,
 };

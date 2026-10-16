@@ -23,6 +23,11 @@ const DEFAULT_STUCK = Object.freeze({
   same_failure_turns: 3,
   identical_tool_calls: 3,
   no_state_change_turns: 4,
+  // Startup grace (the 2026-10-16 field review): a session's first steps are
+  // orientation (reads/greps/shell), so the no-state nudge fired at turn 5 in
+  // 78/143 sessions before any code existed to change. Do not count a turn
+  // toward `no_state_change_turns` until the session is past this many turns.
+  no_state_grace_turns: 8,
   inspect_rearm_every: 10,
   gate_rerun_turns: 3,
 });
@@ -426,8 +431,15 @@ function noteAssistant(state, message, thresholds) {
     out.turns = state.turns;
 
     if (priorTurns > 0) {
+      // Startup grace: the first steps of every session are orientation
+      // (read/grep/shell) with nothing to mutate yet, so counting them as
+      // "no material change" cried wolf at turn 5 in 78/143 sessions (measured
+      // 2026-10-16). Only a turn PAST the grace may start the streak.
+      const grace = Number.isFinite(thresholds?.stuck?.no_state_grace_turns)
+        ? thresholds.stuck.no_state_grace_turns
+        : 8;
       if (state.materialSeen) state.noStateTurns = 0;
-      else state.noStateTurns += 1;
+      else if (priorTurns > grace) state.noStateTurns += 1;
       state.materialSeen = false;
       const nsThreshold = Number.isFinite(thresholds?.stuck?.no_state_change_turns)
         ? thresholds.stuck.no_state_change_turns
@@ -532,6 +544,36 @@ function noteToolResult(state, tool, args, ok, failureText, stuck) {
  * sqlite dependency. `ts` leads so a plain `sort` works. */
 function formatGuardEvent(event) {
   return JSON.stringify({ ts: new Date().toISOString(), ...event }) + "\n";
+}
+
+/* ---------------------------------------------------------------- location
+ *
+ * V2 loads a plugin instance per *location* (project directory), and the runtime
+ * routes a session's events to the instance that owns that session's location.
+ * A session whose location has no plugins falls back to the service's default
+ * instance, so an instance CAN receive events for a checkout that is not its own
+ * — measured 2026-10-16: a session rooted in `agent-harness` (no plugins) was
+ * leased and guard-logged inside `PublicVirtualLibrary` by LibraryOS's instance.
+ * Every per-session write must therefore confirm ownership first.
+ *
+ * Pure so the decision is unit-testable and can never drift from the plugin. */
+
+/* Slash form, no trailing slash (a lone "/" stays "/"). */
+function normalizeRootPath(p) {
+  const s = String(p == null ? "" : p).replace(/\\/g, "/").replace(/\/+$/, "").replace(/\/\.$/, "");
+  return s === "" ? "" : s;
+}
+
+/* Does an instance rooted at `root` own an event whose location is `eventDir`?
+ * An unknown location (missing/empty) is owned — a real event is never dropped
+ * on a gap in the envelope. Windows paths compare case-insensitively. */
+function ownsLocation(root, eventDir) {
+  if (typeof eventDir !== "string" || eventDir.length === 0) return true;
+  const a = normalizeRootPath(root);
+  const b = normalizeRootPath(eventDir);
+  if (!a || !b) return true;
+  if (a === b) return true;
+  return /^[a-z]:\//i.test(a) && a.toLowerCase() === b.toLowerCase();
 }
 
 // ------------------------------------------------------- branch-switch guard
@@ -858,7 +900,7 @@ function isCodeMutationCommand(command) {
  * checkout. Names the target and the fix (isolate) so recovery is mechanical.
  * When the feature id is known, the exact command is printed — the F-291 recon
  * showed a bare error sends the agent hunting for the right invocation. */
-function mainEditText(kind, target, feature) {
+function mainEditText(kind, target, feature, opts) {
   const what = kind === "bash" ? "a command that mutates this checkout" : `an edit to \`${target}\``;
   const noun = kind === "bash" ? "command" : "edit";
   const cmd = feature
@@ -867,7 +909,14 @@ function mainEditText(kind, target, feature) {
   const idNote = feature
     ? `isolate \`${feature}\` first from the main tree: ${cmd}`
     : `isolate FIRST from the main tree: ${cmd} (a human starting the worktree at a terminal adds \`--open\`)`;
-  return `SESSION GUARD — blocked ${what}: this session is in the shared MAIN checkout, where code + git history are off-limits before isolation (the F-278 shape: work done on main cannot be finalized — \`finalize\` refuses on main and the branch switch is blocked while other sessions share the tree). ${idNote}, then make the change inside that worktree (set \`workdir\` to it). Only board/.agents/docs maintenance is allowed on main. The ${noun} was NOT executed.`;
+  // F-12: a target in ANOTHER project's main checkout (e.g. a project session
+  // editing the harness `templates/`) cannot be fixed by isolating THIS session —
+  // worktree isolation is per-repo. Name the cross-repo route instead of the
+  // misleading "isolate here" advice.
+  const crossRepoNote = opts && opts.crossRepo
+    ? ` This path belongs to a DIFFERENT checkout than this session (a harness-owned file?): worktree isolation cannot cross repos. Fix it from a session rooted in that checkout — for the harness, start opencode in \`~/develop/agent-harness\` and edit \`templates/\` there — then re-deploy with \`agent-harness update <this-project>\`.`
+    : "";
+  return `SESSION GUARD — blocked ${what}: this session is in the shared MAIN checkout, where code + git history are off-limits before isolation (the F-278 shape: work done on main cannot be finalized — \`finalize\` refuses on main and the branch switch is blocked while other sessions share the tree). ${idNote}, then make the change inside that worktree (set \`workdir\` to it). Only board/.agents/docs maintenance is allowed on main.${crossRepoNote} The ${noun} was NOT executed.`;
 }
 
 // ------------------------------------------- tool-choice & read-hygiene guard
@@ -972,6 +1021,28 @@ const INSPECT_TEXT =
  * pure inspection and never blocks. */
 function inspectBlockText(head) {
   return `TOOL BLOCK — \`${head}\` is a read-only shell inspection the dedicated tools already cover; this one is blocked. Retry with \`Read\` (targeted \`offset\`/\`limit\`), \`Grep\`, or \`Glob\` — they honour the project \`.ignore\`, bound the output, and keep the transcript small. Use the shell only for real commands and pipelines. (Disable this block with \`AGENT_GUARD_TOOLBLOCK=0\`.)`;
+}
+
+/* H-23 escalation (2026-10-16): the one-shot block above still left shell
+ * file-inspection flat over 2 weeks, so a PURE, single-path `cat <file>` /
+ * `ls [<dir>]` is blocked on EVERY occurrence — `Read <file>` / `Glob <dir>` is
+ * an exact substitute with no shell semantics to preserve. Deliberately narrow:
+ * the whole command must be that one command (no pipe, redirect, `&&`, or `;`),
+ * cat takes exactly one path, ls at most one, and `ls -R` (a whole-tree dump) is
+ * handled by `dumpCommand` instead. Returns the head ("cat"/"ls") or null. Pure. */
+function repeatInspectBlock(command) {
+  const cmd = String(command || "").trim();
+  if (!cmd) return null;
+  // A pipeline/redirect/sequence is real shell work — never hard-block it.
+  if (/[|><;&\n]/.test(cmd)) return null;
+  const found = commandHead(tokenize(cmd).filter((t) => !isRedirection(t)));
+  if (!found) return null;
+  if (found.head !== "cat" && found.head !== "ls") return null;
+  const positionals = found.args.filter((a) => !a.startsWith("-"));
+  if (positionals.length > 1) return null; // `cat a b` / `ls a b` is a multi-target read
+  if (found.head === "cat" && positionals.length !== 1) return null; // bare `cat` reads stdin
+  if (found.head === "ls" && found.args.some((a) => /^-.*R/.test(a) || a === "--recursive")) return null;
+  return found.head;
 }
 
 const READ_TEXTS = Object.freeze({
@@ -1225,6 +1296,7 @@ module.exports = {
   EDIT_MISS_TEXT,
   GATE_RERUN_TEXT,
   inspectBlockText,
+  repeatInspectBlock,
   pollBlockText,
   toolBlockEnabled,
   pollCommand,
@@ -1245,4 +1317,6 @@ module.exports = {
   noteReadBefore,
   noteReadAfter,
   clearOneShot,
+  normalizeRootPath,
+  ownsLocation,
 };

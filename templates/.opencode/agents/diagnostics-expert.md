@@ -1,8 +1,8 @@
 ---
 description: Use when debugging errors, performance regressions, or API anomalies — log-first investigation, ExternalServiceLog, cold-start profiling, authentic reproduction.
 mode: subagent
-steps: 30
-model: opencode-go/deepseek-v4.1-flash#low
+steps: 40
+model: opencode-go/deepseek-v4.1-flash#high
 permissions:
   - action: edit
     resource: "*"

@@ -1,8 +1,8 @@
 ---
 description: Use when a change touches auth, secrets, input validation, external services, or dependencies — security review + audit.
 mode: subagent
-steps: 30
-model: deepseek/deepseek-v4-pro
+steps: 40
+model: opencode-go/deepseek-v4-pro#high
 permissions:
   - action: edit
     resource: "*"

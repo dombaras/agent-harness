@@ -1,9 +1,9 @@
 ---
 description: Use to plan/decompose a task and emit the Step Zero subagent dispatch plan (personas, models, order, parallel batches) before any file is touched — value-led, product-first.
 mode: subagent
-steps: 15
+steps: 25
 hidden: true
-model: deepseek/deepseek-v4-pro
+model: opencode-go/deepseek-v4-pro#high
 permissions:
   - action: edit
     resource: "*"

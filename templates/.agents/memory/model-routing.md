@@ -24,34 +24,40 @@ plan, so they are priced as architects, not as coders. Debugging and general
 engineering run on a fast frontier coder (cheap, strong on coding benchmarks,
 better cache pricing); UI/docs/features/product content keeps the strong
 generalist. The harness ships a recommended concrete mapping for each lane
-(strongest reasoning → `deepseek/deepseek-v4-pro` on the **direct DeepSeek API
-key**, fast frontier + engineering → `opencode-go/deepseek-v4.1-flash`, content
-→ `opencode-go/gpt-5.6-luna`, mechanical → `opencode-go/glm-5.3-flash`). Change
-it only by editing `.opencode/agents/<name>.md` `model:` — the `model:` label in
-`.agents/skills/*/SKILL.md` is informational only and does NOT route models.
+(strongest reasoning → `opencode-go/deepseek-v4-pro#high` on the **OpenCode Go
+subscription**, with the direct `deepseek/deepseek-v4-pro` key as the announced
+fallback; fast frontier + engineering → `opencode-go/deepseek-v4.1-flash#high`,
+content → `opencode-go/gpt-5.6-luna`, mechanical → `opencode-go/glm-5.3-flash`).
+Change it only by editing `.opencode/agents/<name>.md` `model:` — the `model:`
+label in `.agents/skills/*/SKILL.md` is informational only and does NOT route
+models.
 
-## Provider priority & fallback (Go for flash/default, direct for V4 Pro)
+## Provider priority & fallback (Go first for every tier; direct is the announced fallback)
 
-Flash/default tiers run through the **OpenCode Go subscription first**
-(`opencode-go/*`), then the same family **direct** (`deepseek/*`) as the
-pay-per-token fallback. The **V4 Pro architect tier** (`planner`,
-`qa-architect`, `system-architect`, `security-engineer`) is excluded from Go
-routing: it is pinned to the **direct DeepSeek API key**
-(`deepseek/deepseek-v4-pro`).
+Every tier runs through the **OpenCode Go subscription first** (`opencode-go/*`),
+including the **V4 Pro architect tier** (`planner`, `qa-architect`,
+`system-architect`, `security-engineer`), which pins
+`opencode-go/deepseek-v4-pro#high`. The **DeepSeek direct API key**
+(`deepseek/deepseek-v4-pro`) is the **announced fallback** for the Pro tier when
+Go is unavailable or its usage limit is hit. (This inverted the older "V4 Pro
+always runs direct" rule: the 2026-09-16/17 field log recorded 3 `funds` stops on
+`deepseek/deepseek-v4-pro` direct, so a single pay-per-token key was gating the
+highest-value personas — exactly the failure mode Go-first removes.)
 
 | Priority | Provider | Main-tier example | Role |
 |---|---|---|---|
-| 1 | OpenCode Go (`opencode-go/<model-id>`) | `opencode-go/deepseek-v4.1-flash` | default for the flash/content/mechanical tiers — the $10/mo subscription quota pays for it |
-| 2 | DeepSeek direct (`deepseek/<model-id>`) | `deepseek/deepseek-flash` | fallback when Go is unavailable or its usage limit is hit |
+| 1 | OpenCode Go (`opencode-go/<model-id>`) | `opencode-go/deepseek-v4.1-flash#high`, `opencode-go/deepseek-v4-pro#high` | default for every tier (flash/content/mechanical *and* the Pro architect tier) — the $10/mo subscription quota pays for it |
+| 2 | DeepSeek direct (`deepseek/<model-id>`) | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-flash` | announced fallback when Go is unavailable or its usage limit is hit |
 
 **Zen pay-as-you-go (`opencode/*`) is not part of the policy.** The only two
 providers are the Go subscription and the direct DeepSeek API key — no agent,
 `opencode.json` override, switch alias, or machine-read target may pin a Zen
 model (`explore` included: default `opencode-go/glm-5.3-flash`).
 
-- **V4 Pro always runs direct.** The architect tier uses
-  `deepseek/deepseek-v4-pro` (direct DeepSeek API key); never re-point it at
-  the Go-served Pro model.
+- **V4 Pro runs on Go first.** The architect tier pins
+  `opencode-go/deepseek-v4-pro#high`; the direct `deepseek/deepseek-v4-pro` key is
+  the **announced fallback** (availability/usage-limit only), so no single key
+  gates the Pro personas.
 - **Announce every fallback immediately.** Name the failed provider/model, the
   observed reason, and the provider you are switching to — in chat, before
   continuing. A fallback the user cannot see is a silent process change and is
@@ -145,11 +151,15 @@ frontmatter:
   `diagnostics-expert`) allow `edit` everywhere except governance/harness paths
   — `opencode.json`, `.harness.json`, `.opencode/**`, `.agents/**` are denied —
   so out-of-scope edits are blocked mechanically, not just by prose.
-- **Deterministic/mechanical personas** pin a `#low` **model variant**
-  (`model: <provider/model>#low`) for lower reasoning effort and cost. The
-  architect tier (`planner`, `qa-architect`) keeps full reasoning effort on
-  `deepseek/deepseek-v4-pro` with **no** variant. (V2 ignores the V1
-  `request.body.temperature` pin this replaced.)
+- **Model variants encode reasoning effort** (V2 ignores the V1
+  `request.body.temperature` pin this replaced). The **architect tier**
+  (`planner`, `qa-architect`, `system-architect`, `security-engineer`) pins
+  `#high` on `opencode-go/deepseek-v4-pro`; the **flash engineering/debug tier**
+  (`frontend-engineer`, `mobile-engineer`, `data-engineer`, `devops-engineer`,
+  `diagnostics-expert`) pins `#high` on `opencode-go/deepseek-v4.1-flash` — the
+  field showed those personas exhausting their step budget (`Maximum steps`) at
+  `#low`. Only the mechanical/content personas (`docs`, `features`, `handoff`,
+  `qa-runner`) keep `#low`.
 - **`steps:`** caps iterations per persona (cost ceiling).
 - **`planner` / `handoff`** are `hidden: true` (orchestration-only, not in the
   `@` menu).
@@ -205,7 +215,7 @@ Everything not listed is the standard execution tier.
 ```
 opportunistic_models: opencode-go/glm-5.3-flash
 escalation_models: opencode-go/deepseek-v4-pro, deepseek/deepseek-v4-pro
-fallback_models: deepseek/deepseek-flash, deepseek/deepseek-v4-flash
+fallback_models: deepseek/deepseek-flash
 ```
 
 ## Role-aware context (inject the minimum sufficient context)

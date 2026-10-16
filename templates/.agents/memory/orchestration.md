@@ -84,6 +84,7 @@ Defaults for the stuck-agent and retry-loop heuristics:
 | `same_failure_turns` | 3 | N consecutive turns with the same failure before recovery |
 | `identical_tool_calls` | 3 | N identical tool calls (same tool+args) before it is a loop |
 | `no_state_change_turns` | 4 | N turns with no material file/state change before stuck is declared |
+| `no_state_grace_turns` | 8 | Startup turns (orientation) excluded from the no-state streak, so a normal read/grep prologue does not read as "stuck" |
 | `inspect_rearm_every` | 10 | N further shell inspections before the dedicated-tools advisory re-arms |
 | `gate_rerun_turns` | 3 | N runs of the same gate with no intervening edit before the batching advisory |
 
@@ -115,7 +116,8 @@ session:
 - **loops / stuck** — `identical_tool_calls` arms the recovery nudge on repeated
   tool+args calls (the runtime's own identical-call guard also arms it);
   `no_state_change_turns` arms it when whole turns pass with no material
-  file/state change (a checkpoint with no progress is not progress); and
+  file/state change (a checkpoint with no progress is not progress), counting
+  only past `no_state_grace_turns` so the orientation prologue never cries wolf; and
   `same_failure_turns` arms it when the same failure signature repeats across
   calls (same failure, different arguments).
 - **hygiene advisories** — `inspect_rearm_every` re-arms the dedicated-tools

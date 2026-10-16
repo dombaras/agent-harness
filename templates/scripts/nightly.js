@@ -92,6 +92,63 @@ function shortHash(s) {
   return h.toString(16).padStart(8, "0").slice(0, 8);
 }
 
+/* Lines the nightly itself prints (progress, advisories, teardown hints). They
+ * are never a failure reason: the 2026-10-16 field shape recorded the harness's
+ * own `run-detached: --wait blocks this shell …` advisory as the device-e2e
+ * reason and a stack-dump fragment (`operator: '==', diff: 'simple' }`) as the
+ * static-unit reason, hiding the real failures. Pure. */
+const HARNESS_NOISE = [
+  /^run-detached:/i,
+  /^in an agent session prefer detached/i,
+  /^use --wait only headless/i,
+  /^progress every \d+s below\.?$/i,
+  /^[!…]?\s*wsl gpu passthrough/i,
+  /^enable d3d12 acceleration/i,
+  /^…?\s*invocation \(\d+\/\d+\)/,
+  /^mobile e2e progress:/i,
+  /^continue f-\d+: classify each failure/i,
+  /^flow (pass|fail):/i,
+  /^serve run: .* (started|exited)/i,
+  /^job:\s|^record:\s|^events:\s|^log:\s|^tail:\s|^exit:\s/i,
+];
+
+/* The one line that names the actual failure. Prefers a test/flow marker over
+ * raw tail order, and ignores harness noise so a real failure is never masked by
+ * the runner's own output. */
+function failureReason(output) {
+  const lines = String(output || "")
+    .split(/\r?\n/)
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim() !== "" && !HARNESS_NOISE.some((re) => re.test(l.trim())));
+  const pick = (re) => {
+    for (let i = lines.length - 1; i >= 0; i--) if (re.test(lines[i].trim())) return lines[i].trim();
+    return null;
+  };
+  const reason =
+    pick(/^(✖|×|not ok\b|FAIL\b|FAILED\b)/i) ||
+    pick(/^-\s+[\w.\-]+\.ya?ml:\s+\S/) ||
+    pick(/(assertionerror|error|exception):\s*\S/i) ||
+    pick(/^assertion is false:/i) ||
+    pick(/(command not found|no such file or directory|not found on path|ENOENT|EACCES)/i) ||
+    (lines.length ? lines[lines.length - 1].trim() : "");
+  return reason.slice(0, 240);
+}
+
+/* Harness-side or product-side? A missing tool, an environment gap, a capacity
+ * refusal or a runner queued-but-unfinished is the harness's problem, and must
+ * NOT reopen a product row (the F-331 churn: two harness fixes, still re-opened
+ * P1 every night on its own advisory text). Pure. */
+function classifyFailure(reason) {
+  const r = String(reason || "");
+  if (
+    /\b(command not found|not found on path|no such file or directory|permission denied|ENOENT|EACCES|ANDROID_HOME|JAVA_HOME|maestro|adb)\b/i.test(r) ||
+    /run-detached|--wait blocks|llvmpipe|WSL GPU|capacity|envelope|device-up|emulator|timeout|timed out|signal|killed/i.test(r)
+  ) {
+    return "harness";
+  }
+  return "product";
+}
+
 /* Resolve the configured phases against what this project actually wires.
  * Returns { phases, skipped }: missing `gate` scripts and the device phase (when
  * the tier is absent) are reported as skipped, never run. Pure. */
@@ -193,11 +250,30 @@ function decideReconcile(input) {
   for (const [k, f] of failedFlows) {
     const list = byFlow.get(k) || [];
     const openish = list.find((r) => r.section !== "archive");
+    const archived = list.find((r) => r.section === "archive");
+
+    // A HARNESS-side failure (missing tool, env gap, capacity refusal, runner
+    // timeout) is not evidence about the product. Re-opening a product row on it
+    // is the F-331 churn: a P1 product row re-opened every night by the runner's
+    // own advisory. Surface it as a run-level action instead, and leave the row
+    // alone. A product failure keeps the original journey-level behaviour.
+    if (f.side === "harness") {
+      flows[k] = { ...ensured(k), lastSeen: now, lastSignature: f.signature || null };
+      actions.push({
+        kind: "harness",
+        flow: k,
+        phase: f.phase || null,
+        signature: f.signature || null,
+        reason: f.reason || "",
+        trackedId: (openish || archived || {}).id || null,
+      });
+      continue;
+    }
+
     if (openish) {
       actions.push({ kind: "annotate", id: openish.id, flow: k, reason: "already tracked (open)" });
       continue;
     }
-    const archived = list.find((r) => r.section === "archive");
     if (archived) {
       const st = ensured(k);
       const reopenCount = (st.reopenCount || 0) + 1;
@@ -342,6 +418,23 @@ function runDeviceE2e(root, phase, opts) {
     return r;
   };
 
+  // Assert the external toolchain BEFORE device-up / the matrix. A missing tool
+  // must name itself in seconds, not surface as a bare exit code after the run
+  // (2026-10-16: `device-e2e code 127` after 23 min, on a passing matrix). A
+  // preflight failure is harness-side — it must not reopen a product row.
+  const pre = step("device-preflight", `node ${me}/run-maestro.js --flows all --preflight`, 3);
+  if (pre.code !== 0) {
+    return {
+      name: phase.name,
+      status: "fail",
+      code: pre.code,
+      harness: true,
+      output: tail(pre.output, 20),
+      flows,
+      steps,
+    };
+  }
+
   const up = step("device-up", `bash ${me}/device-up.sh`, phase.timeoutMin);
   if (up.code !== 0) {
     try {
@@ -349,7 +442,7 @@ function runDeviceE2e(root, phase, opts) {
     } catch (_) {
       /* best-effort teardown */
     }
-    return { name: phase.name, status: "fail", code: up.code, output: tail(up.output, 20), flows, steps };
+    return { name: phase.name, status: "fail", code: up.code, harness: true, output: tail(up.output, 20), flows, steps };
   }
 
   const matrix = step("matrix", `bash ${me}/run-detached.sh --flows all --reuse-session --wait`, phase.timeoutMin);
@@ -367,10 +460,14 @@ function runDeviceE2e(root, phase, opts) {
 
   const failed = flows.filter((f) => f.status !== "pass");
   const ok = matrix.code === 0 && failed.length === 0;
+  // A non-zero matrix that produced NO product flow failure is the runner itself
+  // (aborted, tool missing, timeout) — harness-side, so it never reopens a row.
+  const harness = !ok && failed.length === 0;
   return {
     name: phase.name,
     status: ok ? "pass" : "fail",
     code: matrix.code,
+    harness,
     output: tail(matrix.output, 20),
     flows,
     steps,
@@ -467,7 +564,17 @@ function applyReconcile(boardRoot, actions, ctx) {
     `nightly ${ctx.date} flow=${flow} sig=${ctx.signature(flow) || "?"} report=${ctx.reportRel}`;
 
   for (const a of actions) {
-    if (a.kind === "add") {
+    if (a.kind === "harness") {
+      // Not a product signal — no board mutation. Recorded so the operator (and
+      // the report) can see the run failed on harness plumbing, not the product.
+      applied.push({
+        ...a,
+        ok: true,
+        out: a.trackedId
+          ? `${a.trackedId} left untouched (harness-side failure)`
+          : "harness-side failure (no product row)",
+      });
+    } else if (a.kind === "add") {
       const task = `[nightly:flow=${a.flow}] ${a.flow} e2e failed`;
       const r = runNode(
         boardRoot,
@@ -511,11 +618,27 @@ function buildFailureList(phaseResults) {
       for (const f of p.flows) {
         exercised.push(f.name);
         if (f.status !== "pass") {
-          failures.push({ flow: f.name, phase: p.name, signature: shortHash(normalizeSignature(f.reason || f.name)), reason: f.reason || "" });
+          const reason = f.reason || "";
+          failures.push({
+            flow: f.name,
+            phase: p.name,
+            signature: shortHash(normalizeSignature(reason || f.name)),
+            reason,
+            side: classifyFailure(reason),
+          });
         }
       }
     } else if (p.status === "fail") {
-      failures.push({ flow: p.name, phase: p.name, signature: shortHash(normalizeSignature(p.output || p.name)), reason: tail(p.output, 3) });
+      // Prefer a flow-level reason from the failed phase over its raw tail.
+      const fromFlow = (p.flows || []).find((f) => f.status !== "pass" && f.reason);
+      const reason = fromFlow ? fromFlow.reason : failureReason(p.output);
+      failures.push({
+        flow: p.name,
+        phase: p.name,
+        signature: shortHash(normalizeSignature(reason || p.name)),
+        reason,
+        side: p.side || (p.harness ? "harness" : null) || classifyFailure(reason),
+      });
     }
   }
   return { failures, exercised };
@@ -534,9 +657,18 @@ function writeReport(root, report) {
   lines.push(`- wall: ${(report.durationMs / 60000).toFixed(1)} min`);
   lines.push(`- phases: ${report.phases.map((p) => `${p.name}=${p.status}`).join(", ")}`);
   if (report.failures.length) {
-    lines.push("");
-    lines.push("## Failures");
-    for (const f of report.failures) lines.push(`- **${f.flow}** (${f.phase}): ${f.reason || "see report"}`);
+    const product = report.failures.filter((f) => f.side !== "harness");
+    const harness = report.failures.filter((f) => f.side === "harness");
+    if (product.length) {
+      lines.push("");
+      lines.push("## Failures");
+      for (const f of product) lines.push(`- **${f.flow}** (${f.phase}): ${f.reason || "see report"}`);
+    }
+    if (harness.length) {
+      lines.push("");
+      lines.push("## Harness-side (not a product failure — no board row touched)");
+      for (const f of harness) lines.push(`- **${f.flow}** (${f.phase}): ${f.reason || "see report"}`);
+    }
   }
   if (report.reconcile && report.reconcile.length) {
     lines.push("");
@@ -770,6 +902,9 @@ module.exports = {
   isValidated,
   normalizeSignature,
   shortHash,
+  failureReason,
+  classifyFailure,
+  HARNESS_NOISE,
   resolvePhases,
   decideReconcile,
   loadConfig,

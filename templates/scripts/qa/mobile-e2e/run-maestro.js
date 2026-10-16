@@ -234,6 +234,7 @@ function usage() {
     '  --config <file>      Maestro workspace config (default config.yaml — disables animations)',
     '  --reinstall-driver   force Maestro to reinstall its device driver (default: skip)',
     '  --max-same-reason <n> stop after n flows fail for the same reason (default 3; 0 disables)',
+    '  --preflight          assert adb/maestro/SDK prerequisites and exit (no run, no DB)',
     '  --root <dir>         repository root (default: the script\'s repository)',
     '  -h, --help           print this usage and exit 0',
     '',
@@ -280,6 +281,7 @@ function parseArgs(argv) {
     maxSameReason: 3,
     root: REPO_ROOT,
     report: null,
+    preflight: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -304,6 +306,7 @@ function parseArgs(argv) {
     else if (arg === '--config' && argv[i + 1]) options.config = path.resolve(argv[++i]);
     else if (arg.startsWith('--config=')) options.config = path.resolve(arg.slice('--config='.length));
     else if (arg === '--reinstall-driver') options.reinstallDriver = true;
+    else if (arg === '--preflight') options.preflight = true;
     else if (arg === '--no-reinstall-driver') options.reinstallDriver = false;
     else if (arg === '--max-same-reason' && argv[i + 1]) options.maxSameReason = parseMaxSameReason(argv[++i], options.maxSameReason);
     else if (arg.startsWith('--max-same-reason=')) options.maxSameReason = parseMaxSameReason(arg.slice('--max-same-reason='.length), options.maxSameReason);
@@ -437,10 +440,38 @@ function printDeclaredSteps(declared) {
   console.log('');
 }
 
+/** Directories the device tooling lives in but which a headless (systemd timer,
+ * CI) PATH usually omits: the resolved adb's dir, the Maestro bin dir, and the
+ * SDK platform-tools/emulator. Prepended to the step environment so a journey's
+ * own `adb …` setup/teardown resolves. */
+function toolPathDirs() {
+  const dirs = [];
+  const adb = resolveAdb();
+  if (adb && adb !== 'adb' && adb !== 'adb.exe') dirs.push(path.dirname(adb));
+  const maestro = resolveMaestro();
+  if (maestro && maestro !== 'maestro' && maestro !== 'maestro.bat') dirs.push(path.dirname(maestro));
+  for (const sdk of [process.env.ANDROID_HOME, process.env.ANDROID_SDK_ROOT]) {
+    if (sdk) dirs.push(path.join(sdk, 'platform-tools'), path.join(sdk, 'emulator'), path.join(sdk, 'cmdline-tools', 'latest', 'bin'));
+  }
+  return [...new Set(dirs.filter((dir) => dir && fs.existsSync(dir)))];
+}
+
+/** The environment declared steps run under: the tool dirs prepended to PATH. */
+function toolEnv() {
+  const dirs = toolPathDirs();
+  const PATH = [...dirs, process.env.PATH || ''].filter(Boolean).join(path.delimiter);
+  return { ...process.env, PATH };
+}
+
 /**
- * Invoke declared `setup:` (pre-run) or `oracle:` (post-run) commands. A
- * runnable step that exits non-zero aborts the run (fail loud), while a
- * parametric step (unresolved `<id>`) is printed for the operator.
+ * Invoke declared `setup:` (pre-run) or `oracle:` (post-run) commands. A runnable
+ * step that exits non-zero aborts the run (fail loud), while a parametric step
+ * (unresolved `<id>`) is printed for the operator.
+ *
+ * The step runs under `toolEnv()`: a journey's `adb …` step is shell-resolved, and
+ * a headless PATH omits platform-tools — the 2026-10-16 `device-e2e code 127`
+ * (`/bin/sh: 1: adb: not found`, after 23 minutes of a passing run). The harness
+ * resolves the SDK itself, so it must hand that resolution to the step.
  */
 function runDeclaredSteps(steps, phase) {
   steps.forEach((step) => {
@@ -449,7 +480,7 @@ function runDeclaredSteps(steps, phase) {
       return;
     }
     console.log(`Running ${phase} [${step.journey}]: ${step.command}`);
-    const result = spawnSync(step.command, { stdio: 'inherit', shell: true });
+    const result = spawnSync(step.command, { stdio: 'inherit', shell: true, env: toolEnv() });
     if (result.status !== 0) {
       console.error(`FAIL — ${phase} step for journey "${step.journey}" exited ${result.status}.`);
       console.error(`  ${step.command}`);
@@ -510,6 +541,79 @@ function preflightAdb() {
   console.error('  the equivalent is:');
   console.error(`    node scripts/serve.js start --cmd "${adb} -a nodaemon server" --name adb-server --port 5037 --timeout 30000`);
   process.exit(1);
+}
+
+/**
+ * `--preflight`: assert the device tier's EXTERNAL prerequisites and exit without
+ * touching the app, the DB or the emulator. It runs before `device-up` inside the
+ * nightly so a missing tool names itself instead of burning the full run and
+ * failing with a bare exit code (2026-10-16: `device-e2e code 127` after 23 min,
+ * the real cause a journey `adb …` step with platform-tools off the headless
+ * PATH). Returns an exit code: 0 when every FATAL check passes, 1 otherwise.
+ * Advisories (a non-WSL box, no booted device yet) are printed but never fatal.
+ */
+function runPreflight(options) {
+  const checks = [];
+  const add = (name, ok, { detail = '', hint = '', fatal = true } = {}) => {
+    checks.push({ name, ok, detail, hint, fatal });
+  };
+
+  const adb = resolveAdb();
+  const adbProbe = adb ? spawnSync(adb, ['devices'], { encoding: 'utf8', timeout: 10000, env: toolEnv() }) : { status: 1, error: new Error('adb not resolved') };
+  const adbRuns = !adbProbe.error && adbProbe.status === 0;
+  add('adb', adbRuns, {
+    detail: adbRuns ? `${adb} runs` : `${adb || 'adb'} is not runnable${adbProbe.error ? ` (${adbProbe.error.code || adbProbe.error.message})` : ''}`,
+    hint: 'Install Android platform-tools and set ANDROID_HOME/ANDROID_SDK_ROOT (or add platform-tools to PATH).',
+  });
+
+  const maestro = resolveMaestro();
+  add('maestro', Boolean(maestro), {
+    detail: maestro || 'not resolvable',
+    hint: 'curl -Ls "https://get.maestro.mobile.dev" | bash (needs JDK 17+), or set MOBILE_E2E_MAESTRO.',
+  });
+
+  if (options.platform === 'ios') {
+    let udid = '';
+    try {
+      udid = resolveIosUdid(options) || '';
+    } catch (_) {
+      udid = '';
+    }
+    add('ios-udid', Boolean(udid), {
+      detail: udid || 'no booted simulator resolved',
+      hint: 'Boot a simulator (xcrun simctl boot <udid>) or pass --udid / set MOBILE_E2E_IOS_UDID.',
+    });
+  } else {
+    const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || '';
+    add('android-sdk-env', Boolean(sdk), {
+      detail: sdk || 'ANDROID_HOME / ANDROID_SDK_ROOT unset',
+      hint: 'Set ANDROID_HOME so `adb` resolves in a headless (systemd/CI) shell.',
+      fatal: false,
+    });
+    // A booted device is NOT required here (the nightly boots it after this
+    // step); report readiness as an advisory only.
+    const devices = adbRuns ? (`${adbProbe.stdout || ''}`.match(/^\S+\s+device\b/gm) || []).length : 0;
+    add('device-ready', devices > 0, {
+      detail: devices > 0 ? `${devices} device(s) online` : 'none online yet',
+      hint: 'device-up.sh boots the emulator; a run without it will fail at the adb preflight.',
+      fatal: false,
+    });
+  }
+
+  const toolDirs = toolPathDirs();
+  add('step-path', toolDirs.length > 0 || Boolean(adb) || Boolean(maestro), {
+    detail: toolDirs.length ? `platform-tools/maestro added: ${toolDirs.join(', ')}` : 'nothing to add (tools already on PATH)',
+    fatal: false,
+  });
+
+  const failed = checks.filter((c) => c.fatal && !c.ok);
+  for (const c of checks) {
+    const mark = c.ok ? 'ok' : c.fatal ? 'FAIL' : 'warn';
+    console.log(`device-preflight: ${mark.padEnd(4)} ${c.name} — ${c.detail}`);
+    if (!c.ok && c.hint) console.log(`    ${c.hint}`);
+  }
+  console.log(failed.length ? `device-preflight: FAILED (${failed.map((c) => c.name).join(', ')})` : 'device-preflight: OK');
+  return failed.length ? 1 : 0;
 }
 
 /**
@@ -1113,6 +1217,12 @@ async function main() {
     process.exit(2);
   }
 
+  // `--preflight` is a standalone check: it needs no flows and no seeded DB, and
+  // must run before any of that is required.
+  if (options.preflight) {
+    process.exit(runPreflight(options));
+  }
+
   if (!options.flows && !options.failed) {
     console.log(usage());
     process.exit(0);
@@ -1427,4 +1537,7 @@ module.exports = {
   orderFirstLoginFirst,
   orderForSessionReuse,
   planInvocations,
+  toolPathDirs,
+  toolEnv,
+  runPreflight,
 };

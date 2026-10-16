@@ -8,7 +8,6 @@ Valid values:
 - `go` / `go-flash` (default) -> `opencode-go/deepseek-v4.1-flash` (OpenCode Go subscription, V4.1 Flash)
 - `go-pro` -> `opencode-go/deepseek-v4-pro` (OpenCode Go subscription, escalation)
 - `deepseek` / `flash` / `direct` -> `deepseek/deepseek-flash` (direct API key, V4.1 Flash — fallback when Go is unavailable)
-- `deepseek-v4-flash` -> `deepseek/deepseek-v4-flash` (legacy V4 flash pin; kept replaceable for rollback/migration)
 - `deepseek-pro` / `pro` -> `deepseek/deepseek-v4-pro` (direct API key, escalation)
 - `nvidia` / `kimi` / `kimi-k3` -> `nvidia/moonshotai/kimi-k3` (NVIDIA NIM)
 - `nemotron` / `nemotron-ultra` -> `nvidia/nemotron-3-ultra-550b-a55b:free` (NVIDIA NIM, free)
@@ -26,8 +25,9 @@ diagnostics-expert, product-manager, qa-architect). Note: the shipped default is
 tiered per persona (see `.agents/memory/model-routing.md`); this command collapses
 it to one model, so use it as a deliberate override (e.g. `pro` to escalate).
 Switching to the direct `deepseek/*` fallback must be announced immediately
-(provider priority: Go for the flash/content/mechanical tiers; V4 Pro architect
-pins are direct — see `.agents/memory/model-routing.md`).
+(provider priority: Go first for every tier — the V4 Pro architect tier pins
+`opencode-go/deepseek-v4-pro#high`, with direct `deepseek/*` as the announced
+fallback — see `.agents/memory/model-routing.md`).
 
 Report the old model -> new model delta, and remind the user that opencode
 does not hot-reload config, so they must quit and restart for it to take

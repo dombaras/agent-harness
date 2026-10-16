@@ -7,6 +7,7 @@ import guard from "../../scripts/qa/context-guard-core.js"
 import capacity from "../../scripts/qa/capacity-lib.js"
 import leases from "../../scripts/qa/lease-lib.js"
 import toolLib from "../../scripts/qa/tool-lib.js"
+import storeLib from "../../scripts/qa/store-lib.js"
 
 // Mechanical half of the context budget: read the project-owned thresholds from
 // `.agents/memory/orchestration.md` and nudge the PRIMARY orchestrator session as
@@ -58,6 +59,55 @@ export default {
   let thresholds: any = null
   let thresholdsMtime = -1
   const ORCHESTRATION_ABS = path.join(directory, ORCHESTRATION_REL)
+
+  /* Root resolution. `directory` is the location this instance was loaded for;
+   * it is correct for a session in that location but NOT for a session in
+   * another (the V2 event stream is process-wide). `session.created` carries the
+   * session's own location, so it is recorded per session and preferred. */
+  const normDir = (p: unknown) => guard.normalizeRootPath(p)
+  const ourRoot = normDir(directory)
+  const sessionRoots = new Map<string, string>()
+  const rootOf = (sessionID: string) => sessionRoots.get(sessionID) || directory
+  /* Both sides known -> strict (normalized) comparison, with the Windows
+   * case-insensitive rule; `guard.ownsLocation` is the one home for that rule. */
+  const sameRoot = (a: string, b: string) => {
+    const x = normDir(a)
+    const y = normDir(b)
+    return x !== "" && y !== "" && guard.ownsLocation(x, y)
+  }
+  const sameLocation = (event: any) => {
+    // The session's own location (payload) is the most specific; the envelope
+    // carries the location for the other event types.
+    const loc = event?.data?.location?.directory ?? event?.location?.directory
+    return guard.ownsLocation(directory, loc)
+  }
+
+  /* Is this session ours? Tool hooks and the context/prompt hooks carry only a
+   * sessionID (no location), so they use this instead of the event envelope.
+   * Known sessions answer from the recorded root; an unseen session is resolved
+   * from the store once (authoritative), and an undeterminable one is treated as
+   * ours so a guard is never skipped. */
+  const storeDirs = new Map<string, string>()
+  const storeDir = (sessionID: string) => {
+    if (storeDirs.has(sessionID)) return storeDirs.get(sessionID) || ""
+    let dir = ""
+    try {
+      dir = storeLib.sessionDirectory(sessionID) || ""
+    } catch {
+      dir = ""
+    }
+    storeDirs.set(sessionID, dir)
+    return dir
+  }
+  const sessionOurs = (sessionID: unknown): boolean => {
+    const sid = typeof sessionID === "string" ? sessionID : ""
+    if (!sid) return true
+    const known = sessionRoots.get(sid)
+    if (known) return sameRoot(normDir(known), ourRoot)
+    const dir = storeDir(sid)
+    if (dir) return sameRoot(normDir(dir), ourRoot)
+    return true
+  }
 
   const stateFor = (sessionID: string) => {
     let state = sessions.get(sessionID)
@@ -135,9 +185,11 @@ export default {
 
   const logEvent = (event: Record<string, unknown>) => {
     try {
-      const file = path.join(directory, GUARD_LOG_REL)
+      const file = path.join(rootOf(String(event.sessionID || "")), GUARD_LOG_REL)
       fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.appendFileSync(file, guard.formatGuardEvent(event), "utf8")
+      // `root` makes a mis-attributed event self-evident in the log (the guard
+      // root must always be the session's own checkout).
+      fs.appendFileSync(file, guard.formatGuardEvent({ ...event, root: rootOf(String(event.sessionID || "")) }), "utf8")
     } catch (err: any) {
       // Best-effort telemetry, but never silent: a missing guard log left a real
       // detection unattributable once (LibraryOS) — surface the write failure.
@@ -163,21 +215,21 @@ export default {
    * Best-effort (never throws into the hook). */
   const writeLease = (sessionID: string) => {
     try {
-      leases.writeLease(directory, sessionID)
+      leases.writeLease(rootOf(sessionID), sessionID)
     } catch {
       /* lease is best-effort */
     }
   }
   const clearLease = (sessionID: string) => {
     try {
-      leases.clearLease(directory, sessionID)
+      leases.clearLease(rootOf(sessionID), sessionID)
     } catch {
       /* lease is best-effort */
     }
   }
   const touchLease = (sessionID: string) => {
     try {
-      leases.touchLease(directory, sessionID)
+      leases.touchLease(rootOf(sessionID), sessionID)
     } catch {
       /* lease is best-effort */
     }
@@ -200,6 +252,23 @@ export default {
       } catch {
         /* no .git here — keep walking up */
       }
+      const parent = path.dirname(dir)
+      if (parent === dir) return null
+      dir = parent
+    }
+    return null
+  }
+
+  /* The repo root enclosing a path (nearest ancestor holding a `.git`), or null.
+   * Lets the main-checkout refusal tell a SAME-repo edit (isolate here) from a
+   * CROSS-repo one (F-12: a project session editing the harness `templates/`),
+   * which worktree isolation cannot reach. */
+  const repoRootOf = (p: string): string | null => {
+    let dir = path.resolve(p)
+    while (dir !== path.dirname(dir) && !fs.existsSync(dir)) dir = path.dirname(dir)
+    if (fs.existsSync(dir) && !fs.statSync(dir).isDirectory()) dir = path.dirname(dir)
+    for (let i = 0; i < 64; i++) {
+      if (fs.existsSync(path.join(dir, ".git"))) return dir
       const parent = path.dirname(dir)
       if (parent === dir) return null
       dir = parent
@@ -385,9 +454,23 @@ export default {
         const type = event?.type
         const d = event?.data || {}
 
+        /* A plugin instance is loaded per *location*, but V2's event stream is
+         * process-wide: every loaded instance receives EVERY session's events.
+         * Without this filter, a session in project A writes its leases and guard
+         * events into project B's checkout — measured 2026-10-16 on the same box:
+         * an agent-harness session held a lease in LibraryOS AND in the
+         * plugin-loader fixture, and logged guard events into both. That corrupts
+         * the live-session view `test:concurrency` and `worktree-prune` read
+         * ("in use by a live session") and mis-attributes a project's guard
+         * evidence. An event with no location is never dropped. */
+        if (!sameLocation(event)) return
+
         if (type === "session.created") {
           const sid = d.sessionID
           if (typeof sid !== "string" || sid.length === 0) return
+          if (typeof d.location?.directory === "string" && d.location.directory) {
+            sessionRoots.set(sid, d.location.directory)
+          }
           if (d.parentID) {
             // A subagent dispatch. Track it so the guard never treats a persona
             // session as the primary orchestrator (leases, tool blocks, and funds
@@ -437,11 +520,12 @@ export default {
             childParent.delete(id)
             sessionModel.delete(id)
             sessions.delete(id)
+            sessionRoots.delete(id)
             // Auto-close this session's long-lived serves (dev server/emulator):
             // the harness must not leave them orphaned after the session ends.
             // Detached + best-effort; `reap` never touches a live owner's serve.
             try {
-              const serve = path.join(directory, "scripts", "serve.js")
+              const serve = path.join(rootOf(id), "scripts", "serve.js")
               if (fs.existsSync(serve)) {
                 spawn(process.execPath, [serve, "reap"], {
                   cwd: directory,
@@ -680,7 +764,10 @@ export default {
           commandHash:
             mainViolation.kind === "bash" ? guard.shortHash(String(output?.args?.command || "")) : null,
         })
-        const message = guard.mainEditText(mainViolation.kind, mainViolation.target, feature)
+        const targetRepo = repoRootOf(mainViolation.target)
+        const sessionRepo = repoRootOf(directory)
+        const crossRepo = !!targetRepo && !!sessionRepo && targetRepo !== sessionRepo
+        const message = guard.mainEditText(mainViolation.kind, mainViolation.target, feature, { crossRepo })
         await report(message)
         throw new Error(message)
       }
@@ -770,7 +857,13 @@ export default {
               // Structural escalation: block the first pure inspection of this
               // head once, so the 0.1.104 advisory-only attempt cannot be ignored
               // (measured: shell inspection stayed ~33% of bash two weeks later).
-              if (toolBlocking && !state.blockedInspectHeads.has(inspect)) {
+              // A PURE single-path `cat`/`ls` is blocked on EVERY occurrence
+              // (H-23): Read/Glob is an exact substitute and the habit stayed
+              // flat across the re-measure window.
+              const repeat = toolBlocking ? guard.repeatInspectBlock(command) : null
+              if (repeat) {
+                blockMessage = guard.inspectBlockText(repeat)
+              } else if (toolBlocking && !state.blockedInspectHeads.has(inspect)) {
                 state.blockedInspectHeads.add(inspect)
                 blockMessage = guard.inspectBlockText(inspect)
               }
@@ -933,6 +1026,7 @@ export default {
   const onContext = (event: any) => {
     try {
       const sid = event?.sessionID
+      if (!sessionOurs(sid)) return
       if (!isPrimary(sid)) return
       const messages = event?.messages
       if (!Array.isArray(messages)) return
@@ -991,12 +1085,14 @@ export default {
     }
   })()
   await ctx.tool.hook("execute.before", async (event: any) => {
+    if (!sessionOurs(event?.sessionID)) return
     await hooks["tool.execute.before"](
       { tool: event?.tool, sessionID: event?.sessionID },
       { args: event?.input }
     )
   })
   await ctx.tool.hook("execute.after", async (event: any) => {
+    if (!sessionOurs(event?.sessionID)) return
     await hooks["tool.execute.after"](
       { tool: event?.tool, sessionID: event?.sessionID },
       v1Result(event)
@@ -1010,6 +1106,7 @@ export default {
       // role==="user" branch. Synthetic/shell/compaction submissions do not fire
       // this hook, so the stop cannot be cleared by the harness's own traffic.
       const sid = event?.sessionID
+      if (!sessionOurs(sid)) return
       if (!isPrimary(sid)) return
       const state = stateFor(sid as string)
       state.fundsPending = false

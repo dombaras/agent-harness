@@ -18,10 +18,12 @@ run.
    returns the tree/branch/HEAD/dirty, the active feature + checkpoint, board
    rows, owned files, the live serve jobs + capacity verdict, and a bounded
    digest of the session-start memory files (including `dev-loop.md`). Use it
-   instead of re-reading memory files whole.
+   instead of re-reading memory files whole. Find a symbol with the `where` tool
+   (`where <term>`), not a shell `grep`/`find` — it is tree-aware and bounded.
 2. **Pick the cheapest gate that actually exercises your change** — coverage,
-   not the path label. `npm run gates -- --phase=quick` (or the `gates` tool)
-   runs the scoped harness gates; the project test tiers are in
+   not the path label. The `gates` tool (`gates --phase=quick`) runs the scoped
+   harness gates and bounds the output for you (never `npm run test:quick | tail`);
+   the project test tiers are in
    `.agents/memory/dev-loop.md`. A one-file change gets a single test, not the
    full regression.
 3. **Run one test, not a suite, while iterating.** Use the project's single-test
@@ -65,6 +67,11 @@ run.
 - If a launch or a live-tier call is interrupted, verify state
   (`serve.js list`, `.serve/<name>.out.log`, the health URL) — never infer it
   from the abort. Never kill a process on a port you didn't start.
+- **A `Grep` that fails on a very long line** ("Ripgrep JSON record exceeded
+  65536 bytes" / "Invalid ripgrep match output" — generated bundles and i18n
+  dicts) is the tool hitting one enormous line, not a missing match. Don't retry
+  it or fall back to a shell `grep`: `Read` the file with `offset`/`limit`, or
+  narrow the pattern/file set.
 
 ## Where the concrete commands live
 

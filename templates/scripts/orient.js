@@ -354,6 +354,13 @@ function printHuman(o) {
     lines.push("memory digest (session-start reads — open a file only for detail):");
     lines.push(...mem);
   }
+  // The two capabilities the field consistently under-uses (2-week recon: 12
+  // `gates` calls vs 1539 hand-truncated gate invocations; 4 `where` calls vs
+  // 1129 shell greps): name them where the model actually reads, not only in a
+  // buried AGENTS.md bullet.
+  lines.push(
+    "tools:   gates (run a tier: `gates --phase=quick`) · where (find a symbol: `where <term>`) · orient (re-orient) — prefer these over `npm run … | tail` and shell grep/find"
+  );
   return lines.join("\n");
 }
 
@@ -381,6 +388,7 @@ function printBrief(o) {
     lines.push(...mem);
   }
   lines.push("Proceed from the checkpoint/next; do not re-derive git/serve/capacity state by hand.");
+  lines.push("tools: gates (run a tier) · where (find a symbol) · orient — not `npm run … | tail` / shell grep.");
   return lines.join("\n");
 }
 

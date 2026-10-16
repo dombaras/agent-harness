@@ -345,8 +345,15 @@ function mergeOpencodeJson(target, variables) {
  * matches its V2 action (`edit`, `read`, `skill`, a `<server>_*` MCP action) or
  * has no V2 equivalent and would produce a rule that can never match. Shared by
  * `convertV1Permission` (the keyed `permission` map) and `convertV1Tools` (the
- * `tools` enable/disable map) so the two migrations can never drift. */
-const V1_ACTION = { bash: "shell", task: "subagent", write: "edit", patch: "edit" };
+ * `tools` enable/disable map) so the two migrations can never drift.
+ *
+ * `apply_patch` is included even though V1's `tools`/`permission` maps exposed it
+ * as `patch`: V2's runtime maps the `apply_patch` TOOL to the `patch` category and
+ * then to the `edit` permission action (verified against the 2.0.31 binary). So
+ * mapping it to `edit` here is what makes the narrow `edit`-deny grants
+ * (planner/product-manager) actually cover `apply_patch` — otherwise that tool
+ * would leak past a persona whose whole write surface is one artifact. */
+const V1_ACTION = { bash: "shell", task: "subagent", write: "edit", patch: "edit", apply_patch: "edit" };
 
 /* Convert a V1 keyed `permission` map (`{ <action>: { <resource>: effect } }`, or
  * `{ <action>: effect }`) into the V2 ordered rules array, mapping the renamed V1
@@ -439,6 +446,7 @@ const HARNESS_SCRIPTS = {
   "test:prefix": "node scripts/qa/check-prefix-stability.js",
   gates: "node scripts/qa/run-gates.js",
   where: "node scripts/qa/where.js",
+  diff: "node scripts/qa/diff.js",
   "feature:scaffold": "node scripts/qa/feature-scaffold.js",
   report: "node scripts/agent-report.js",
   "report:cost": "node scripts/agent-report.js --cost --since=14d",
@@ -1822,6 +1830,29 @@ function doctor(target) {
     }
   }
 
+  // Session store (W1): the telemetry tooling (`report:cost`, `report:recon`,
+  // `session_info`) reads the local opencode store. V2 moved the tables
+  // (`session_v2`/`session_message`) and removed the `opencode db` subcommand, so
+  // a stale reader silently returned empty aggregates. Assert the store resolves
+  // and its table generation is readable, so the failure is visible here instead
+  // of in a wrong report.
+  try {
+    const storeLib = require(path.join(TEMPLATES_DIR, "scripts", "qa", "store-lib.js"));
+    const dbPath = storeLib.resolveDbPath();
+    if (!fs.existsSync(dbPath)) {
+      add("ok", "session store", "no local store yet (nothing to read)");
+    } else {
+      const store = storeLib.openStore();
+      add("ok", "session store", `${store.flavour} tables readable (${store.dbPath})`);
+    }
+  } catch (err) {
+    add(
+      "warn",
+      "session store",
+      `unreadable — \`report:cost\`/\`report:recon\` would be empty (${err && err.message ? err.message : "unavailable"}); check \`opencode debug paths\``
+    );
+  }
+
   // Nightly E2E cycle: the orchestrator + config, whether a systemd --user
   // timer is installed, and the last verdict (advisory — the day loop still
   // ships on cheap gates; nightly is the full-E2E authority).
@@ -1890,6 +1921,17 @@ function doctor(target) {
       for (const a of capacity.wslConfigAdvice(wsl, host)) add("warn", "wslconfig", a);
     } else if (process.platform === "linux") {
       add("ok", "wslconfig", "no .wslconfig found (not WSL, or Windows user dir unreadable)");
+    }
+    // Windows-side stray dev listeners (F-13): a Metro/emulator/dev server started
+    // from a Windows terminal is invisible to `.serve/` but holds the port the WSL
+    // session needs. Advisory — the operator stops it on the Windows side.
+    const strays = capacity.readWindowsStrays();
+    if (strays.length) {
+      add(
+        "warn",
+        "windows strays",
+        `the Windows host is listening on ${strays.join(", ")} — a dev server/emulator may be running from Windows; stop it there and start it through scripts/serve.js`
+      );
     }
     // One-time in-WSL tuning (scripts/wsl-tune.sh apply). Detect rather than
     // assume so doctor can point at the single command that finishes setup.

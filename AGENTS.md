@@ -67,6 +67,15 @@ a project needs one changed (a gate fix, a QA-script fix), do it in this repo's
 `templates/` — add a drift-guard test when it is a gate/QA script — bump + release,
 then `update` the projects. A hand-edit inside a project is a latent clobber.
 
+This repo is where those fixes are made — a **project** session cannot make them:
+the context-guard's main-checkout rule blocks a code edit aimed at *another*
+checkout (measured F-12, 2026-10-07 — a LibraryOS `mobile-engineer` was blocked
+3× editing `templates/scripts/qa/mobile-e2e/run-maestro.js`), and worktree
+isolation is per-repo, so "isolate first" does not help. The refusal now names
+this route when the target is a different repo. The route: work from a session
+rooted in **this** checkout (as this file's workflow assumes), fix `templates/`,
+release, then `update` the projects.
+
 As of **0.1.100**, `update` **fails closed** on a harness-owned file whose bytes
 differ from the `.harness.json` checksum: it aborts before writing and lists the
 files. `--accept-harness` overwrites deliberately (backing up first); after an

@@ -2,7 +2,7 @@
 description: Use when changing the Prisma schema, data model, multi-tenant boundaries, privacy tiers, or sync protocol.
 mode: subagent
 steps: 40
-model: deepseek/deepseek-v4-pro
+model: opencode-go/deepseek-v4-pro#high
 permissions:
   - action: edit
     resource: "*"

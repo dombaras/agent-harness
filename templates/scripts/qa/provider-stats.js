@@ -5,11 +5,15 @@
  * opencode store (Phase B of the cost-optimization plan).
  *
  * Reads observed provider data for one project root — including every git
- * worktree registered to it — via `opencode db --format json "<SQL>"` (the
- * stable, cross-platform path; no sqlite dependency). Aggregates the primary
- * orchestrator session plus its subagent child sessions into one "feature run"
- * group, so `cost per shipped feature` has a real join key (the root session
- * id recorded in the handoff `session:` metadata).
+ * worktree registered to it — through `store-lib.js`, which resolves the store
+ * and the authoritative table generation. OpenCode V2 removed the
+ * `opencode db` subcommand AND moved sessions to `session_v2` +
+ * `session_message`; the V1 path (`session`/`message`/`part` via `opencode db`)
+ * is kept for a V1 runtime, and both are driven by the same code (see
+ * store-lib.js). Aggregates the primary orchestrator session plus its subagent
+ * child sessions into one "feature run" group, so `cost per shipped feature`
+ * has a real join key (the root session id recorded in the handoff `session:`
+ * metadata).
  *
  * Nothing here is inferred from character counts: every number is the
  * provider's own recorded value. When the store is unreachable, the script
@@ -31,6 +35,7 @@ const os = require("os");
 const path = require("path");
 const { execFileSync, spawnSync } = require("child_process");
 const CG = require("./context-guard-core.js");
+const storeLib = require("./store-lib.js");
 
 const SCHEMA = "provider-stats/1";
 const TURN_UNITS = { h: 3600000, d: 86400000, w: 604800000, m: 2592000000 };
@@ -153,67 +158,34 @@ function sleepSync(ms) {
   }
 }
 
+/* Run one SQL statement against the store, with a bounded retry.
+ *
+ * V1 runtime: `opencode db --format json` (the CLI truncates a large dump to a
+ * PIPE, so store-lib writes to a real fd). V2: the subcommand is gone and the
+ * tables moved — store-lib falls through to `node:sqlite` / the `sqlite3` CLI
+ * against the resolved db file, which is also why this no longer needs the temp
+ * file dance for the common case. A live store mid-checkpoint can still yield a
+ * torn read, so the whole attempt is retried before giving up (never a silent
+ * empty aggregate). */
 function runDbJson(opencode, sql, opts = {}) {
-  // The store is a LIVE SQLite DB (running opencode sessions keep writing it), so
-  // a large `db` dump can occasionally be read torn — `JSON.parse` then fails at a
-  // random offset. Retry the query before giving up; a genuinely malformed result
-  // still surfaces after the bounded attempts (never a silent empty aggregate).
-  // The opencode CLI (a Bun binary) truncates asynchronous stdout when it is a
-  // PIPE: a large `db --format json` dump exits 0 with the JSON cut short at a
-  // non-deterministic offset (observed: 146,176 of 194,958 bytes, repeatedly).
-  // To a real FILE descriptor the write is synchronous and complete, so the
-  // child's stdout is pointed at a temp file and read back. Retries cover a live
-  // store mid-checkpoint.
-  const run = opts.spawnSync || spawnSync;
-  const attempts = Number.isFinite(opts.retries) ? opts.retries : 4;
+  const attempts = Number.isFinite(opts.retries) ? opts.retries : 3;
+  const dbPath = opts.dbPath || storeLib.resolveDbPath({ ...opts, opencodeBin: opencode });
+  const query = opts.query || storeLib.makeQuery(dbPath, {
+    ...opts,
+    opencodeBin: opencode,
+    sqlite3: opts.sqlite3,
+    // An explicit `opencode` (or a discovered one) may still serve `db`; keep
+    // the preference so a V1 runtime behaves exactly as before.
+    opencodeDb: opts.opencodeDb !== false,
+  });
   let lastErr = null;
   for (let i = 0; i <= attempts; i++) {
-    let tmp = null;
-    let fd = null;
-    let text = null;
-    let status = 0;
     try {
-      tmp = path.join(os.tmpdir(), `opencode-db-${process.pid}-${Date.now()}-${i}.json`);
-      fd = fs.openSync(tmp, "w");
-      const r = run(opencode, ["db", "--format", "json", sql], {
-        stdio: ["ignore", fd, "pipe"],
-        encoding: null,
-      });
-      status = r.status == null ? 0 : r.status;
-      if (r.error) {
-        lastErr = r.error;
-      } else if (status !== 0) {
-        lastErr = new Error(`opencode db exited ${status}: ${String((r.stderr || "").toString("utf8")).slice(0, 200)}`);
-      }
-      if (fd != null) {
-        fs.closeSync(fd);
-        fd = null;
-      }
-      text = fs.existsSync(tmp) ? fs.readFileSync(tmp, "utf8").trim() : "";
-      if (status === 0 && !r.error) lastErr = null;
+      return query(sql);
     } catch (e) {
       lastErr = e;
-    } finally {
-      if (fd != null) {
-        try { fs.closeSync(fd); } catch (_) { /* best-effort */ }
-      }
-      if (tmp) {
-        try { fs.rmSync(tmp, { force: true }); } catch (_) { /* best-effort */ }
-      }
+      if (i < attempts) sleepSync(150 * (i + 1));
     }
-    if (text) {
-      try {
-        return JSON.parse(text);
-      } catch (e) {
-        lastErr = e;
-      }
-    } else if (!lastErr) {
-      if (status === 0) return [];
-      lastErr = new Error(`opencode db exited ${status}`);
-    }
-    // A live store mid-checkpoint can return a torn read; a short backoff lets it
-    // settle before the retry (a tight loop just re-reads the same tear).
-    if (i < attempts) sleepSync(150 * (i + 1));
   }
   throw lastErr;
 }
@@ -232,19 +204,28 @@ function projectIdsSql(root) {
   );
 }
 
-function sessionsSql(projectIds, sinceMs) {
+function sessionsSql(projectIds, sinceMs, sessionsTable = "session") {
   const ids = projectIds.map(sqlString).join(", ");
   const since = sinceMs ? ` AND s.time_created >= ${Number(sinceMs)}` : "";
   return (
     "SELECT s.id, s.parent_id, s.title, s.directory, s.agent, s.model, s.cost, " +
     "s.tokens_input, s.tokens_output, s.tokens_reasoning, " +
     "s.tokens_cache_read, s.tokens_cache_write, s.time_created, s.time_updated " +
-    `FROM session s WHERE s.project_id IN (${ids})${since} ORDER BY s.time_created`
+    `FROM ${sessionsTable} s WHERE s.project_id IN (${ids})${since} ORDER BY s.time_created`
   );
 }
 
-function turnsSql(sessionIds) {
+/* Assistant-message count == orchestrator turns.
+ *   v1: one row per message in `message`, role in the JSON payload.
+ *   v2: one row per message in `session_message`, role in a real column. */
+function turnsSql(sessionIds, flavour = "v1") {
   const ids = sessionIds.map(sqlString).join(", ");
+  if (flavour === "v2") {
+    return (
+      "SELECT session_id, COUNT(*) AS turns FROM session_message " +
+      `WHERE session_id IN (${ids}) AND type = 'assistant' GROUP BY session_id`
+    );
+  }
   return (
     "SELECT session_id, COUNT(*) AS turns FROM message " +
     `WHERE session_id IN (${ids}) AND json_valid(data) ` +
@@ -252,8 +233,23 @@ function turnsSql(sessionIds) {
   );
 }
 
-function toolPartsSql(sessionIds) {
+/* Tool-call parts, for the loop detector (tool + its raw input).
+ *   v1: `part` rows, one per part, tool in `$.tool`.
+ *   v2: parts are embedded in `session_message.data.content[]` — walk the array
+ *       and read `$.name` (V2) falling back to `$.tool`. */
+function toolPartsSql(sessionIds, flavour = "v1") {
   const ids = sessionIds.map(sqlString).join(", ");
+  if (flavour === "v2") {
+    return (
+      "SELECT m.session_id AS session_id, " +
+      "COALESCE(json_extract(je.value, '$.name'), json_extract(je.value, '$.tool')) AS tool, " +
+      "json_extract(je.value, '$.state.input') AS input " +
+      "FROM session_message m, json_each(m.data, '$.content') je " +
+      `WHERE m.session_id IN (${ids}) AND m.type = 'assistant' ` +
+      "AND json_type(m.data, '$.content') = 'array' " +
+      "AND json_extract(je.value, '$.type') = 'tool'"
+    );
+  }
   return (
     "SELECT session_id, json_extract(data, '$.tool') AS tool, " +
     "json_extract(data, '$.state.input') AS input FROM part " +
@@ -635,7 +631,13 @@ function collectStats(opts = {}) {
   if (!opts.runDb && !opencode) {
     throw new Error("opencode CLI not found — install it, or set OPENCODE_BIN / pass --opencode <path>");
   }
-  const runDb = opts.runDb || ((sql) => runDbJson(opencode, sql, opts));
+  // Table generation + engine. An injected `runDb` (tests) implies the V1 shape,
+  // so the SQL it asserts against is unchanged; the CLI path detects the real
+  // store (V2: session_v2 + session_message).
+  const store = opts.runDb
+    ? (opts.store || { flavour: "v1", sessions: "session", messages: "message", parts: "part" })
+    : storeLib.openStore({ ...opts, opencodeBin: opencode, query: opts.query });
+  const runDb = opts.runDb || ((sql) => runDbJson(opencode, sql, { ...opts, dbPath: store.dbPath }));
 
   const projectIds = runDb(projectIdsSql(root)).map((r) => r.id).filter(Boolean);
   // `--root` may be a linked feature worktree that no `project`/`project_directory`
@@ -644,7 +646,7 @@ function collectStats(opts = {}) {
   // session id is the global join key: widen the scan to the session's own
   // project id so `--session` works from any linked worktree.
   if (opts.session) {
-    const owner = runDb(`SELECT project_id AS id FROM session WHERE id = ${sqlString(opts.session)}`)
+    const owner = runDb(`SELECT project_id AS id FROM ${store.sessions} WHERE id = ${sqlString(opts.session)}`)
       .map((r) => r.id)
       .filter(Boolean);
     for (const id of owner) if (!projectIds.includes(id)) projectIds.push(id);
@@ -658,11 +660,12 @@ function collectStats(opts = {}) {
     scope: null,
     stuck,
     softTurnBudget,
+    store: { flavour: store.flavour, sessions: store.sessions, db: opts.runDb ? null : store.dbPath },
     modelTiers: readModelTiers(root),
   };
   if (projectIds.length === 0) return { meta: { ...meta, note: "no opencode project matches this root" }, sessions: [] };
 
-  let sessions = runDb(sessionsSql(projectIds, since)).map(mapSessionRow);
+  let sessions = runDb(sessionsSql(projectIds, since, store.sessions)).map(mapSessionRow);
   if (opts.session) {
     const allById = new Map(sessions.map((s) => [s.id, s]));
     const requested = allById.get(opts.session);
@@ -675,8 +678,8 @@ function collectStats(opts = {}) {
   }
 
   const ids = sessions.map((s) => s.id);
-  enrichTurns(sessions, ids.length ? queryChunked(runDb, ids, turnsSql) : []);
-  enrichLoops(sessions, ids.length ? queryChunked(runDb, ids, toolPartsSql) : [], stuck);
+  enrichTurns(sessions, ids.length ? queryChunked(runDb, ids, (chunk) => turnsSql(chunk, store.flavour)) : []);
+  enrichLoops(sessions, ids.length ? queryChunked(runDb, ids, (chunk) => toolPartsSql(chunk, store.flavour)) : [], stuck);
   return { meta, sessions };
 }
 

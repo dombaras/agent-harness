@@ -1,8 +1,8 @@
 ---
 description: Use to design the QA plan for a change — inspects the diff, assesses risk, selects the minimal tier, and authors progression tests (thinker only; does not run suites).
 mode: subagent
-steps: 20
-model: deepseek/deepseek-v4-pro
+steps: 40
+model: opencode-go/deepseek-v4-pro#high
 permissions:
   - action: shell
     resource: "*"

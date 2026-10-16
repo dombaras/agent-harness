@@ -4,7 +4,7 @@
 # and the `model:` frontmatter of the six reasoning-tier agents to one model.
 #
 # Usage: bash scripts/switch-reasoning-model.sh <alias|model-id>
-# Aliases: go|go-flash|go-deepseek, go-pro, deepseek|flash|direct, deepseek-v4-flash,
+# Aliases: go|go-flash|go-deepseek, go-pro, deepseek|flash|direct,
 #          deepseek-pro|pro, nvidia|kimi|kimi-k3, nemotron, openrouter|or|m3, or a
 #          bare model id (auto-prefixed with deepseek/ when it has no provider).
 set -euo pipefail
@@ -22,7 +22,6 @@ case "$target_lc" in
   go|go-flash|go-deepseek) target_model="opencode-go/deepseek-v4.1-flash" ;;
   go-pro)                  target_model="opencode-go/deepseek-v4-pro" ;;
   deepseek|flash|deepseek-flash|direct) target_model="deepseek/deepseek-flash" ;;
-  deepseek-v4-flash)       target_model="deepseek/deepseek-v4-flash" ;;
   deepseek-pro|deepseek-v4-pro|pro) target_model="deepseek/deepseek-v4-pro" ;;
   nvidia|kimi|kimi-k3)     target_model="nvidia/moonshotai/kimi-k3" ;;
   nemotron|nemotron-ultra) target_model="nvidia/nemotron-3-ultra-550b-a55b:free" ;;
@@ -40,7 +39,6 @@ reasoning_models="
 opencode-go/deepseek-v4.1-flash
 opencode-go/deepseek-v4-pro
 deepseek/deepseek-flash
-deepseek/deepseek-v4-flash
 deepseek/deepseek-v4-pro
 nvidia/moonshotai/kimi-k3
 nvidia/nemotron-3-ultra-550b-a55b:free
