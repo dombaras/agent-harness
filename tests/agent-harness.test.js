@@ -5393,6 +5393,53 @@ test("read-missing advisory resolves a checkpoint instead of guessing a filename
   assert.match(missing, /Glob/, "offers the bounded listing fallback");
 });
 
+test("main-checkout mutation guard allows a corpus of read-only commands (F-316 false positives)", () => {
+  // Audited from the LibraryOS session store: these were all blocked as "a
+  // command that mutates this checkout" yet write nothing. The guard must allow
+  // them. Keep this list a regression corpus — add the next false positive here.
+  for (const command of [
+    "git stash list",
+    "git stash show",
+    "git stash show -p",
+    "git --no-pager stash list",
+    "git status --short; echo ---; git stash list",
+    "git worktree list; echo ---; git branch -a; git status --short; git stash list",
+    // The `|` inside a QUOTED regex must not be read as a shell pipeline that
+    // fabricates a `git add` segment.
+    'grep -nE "function |commit|git add|archive|changelog" scripts/finalize.js | head -60',
+    // Read-only git already allowed (pinned so the corpus stays honest).
+    "git status",
+    "git log --oneline -5",
+    "git diff --stat",
+    "git show HEAD",
+    "git branch -a",
+    "git remote -v",
+    "git worktree list",
+    // Non-git read-only work + the board CLI carve-out.
+    "gh run view 36573443171 --json status,conclusion | head -20",
+    "node scripts/backlog.js list | head -20",
+    "ps -ef | grep -i adb",
+  ]) {
+    assert.strictEqual(cg.isCodeMutationCommand(command), false, `must NOT be a mutation: ${command}`);
+  }
+
+  // The boundary: real mutations still block, and a read-only stash subcommand
+  // must not become a blanket allow for the writing ones.
+  for (const command of [
+    "git add src/a.ts",
+    "git commit -m x",
+    "git push origin main",
+    "git stash push -m wip",
+    "git stash pop",
+    "git stash drop",
+    "git stash", // bare = push
+    "git reset --hard origin/main",
+    "sed -i s/a/b/ src/a.ts",
+  ]) {
+    assert.strictEqual(cg.isCodeMutationCommand(command), true, `must block: ${command}`);
+  }
+});
+
 test("main-checkout guard classifies code paths vs board/docs/metadata", () => {
   for (const p of [
     "app/api/admin/backlog/route.ts",

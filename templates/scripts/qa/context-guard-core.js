@@ -775,6 +775,21 @@ const GIT_MUTATIONS = new Set([
   "cherry-pick", "revert", "reset", "clean", "rm", "mv", "stash",
 ]);
 
+/* `GIT_MUTATIONS` subcommands that also have a read-only form. `git stash list`
+ * / `git stash show` only read the stash — `stash` is in the set for push/pop/
+ * drop, but the inspection shape must not read as a main-checkout mutation
+ * (measured: `git stash list` blocked as "a command that mutates this
+ * checkout"). The value is the set of read-only first positionals; a bare
+ * `git stash` (push) or an unknown subcommand stays a mutation (conservative). */
+const GIT_READONLY_FORMS = { stash: new Set(["list", "show"]) };
+
+function isReadOnlyGitForm(subcommand, args) {
+  const ro = GIT_READONLY_FORMS[subcommand];
+  if (!ro) return false;
+  const first = (args || []).find((a) => !a.startsWith("-"));
+  return !!first && ro.has(first);
+}
+
 /* A redirect target that never lands in the working tree: discard/stdio, the
  * OS temp dirs, and the gitignored `.serve/` runtime container. */
 function isAllowedWriteTarget(target) {
@@ -872,14 +887,66 @@ function contentCodeMutation(tokens, cmd) {
  * and every git mutation with its explicit pathspecs + effective repo selector.
  * The plugin refines the pathless git ops (whole-index `commit`/`push`) against
  * the live index; the pure predicate below treats them conservatively. */
+/* Split one shell command into segments on UNQUOTED `;`, `&&`, `||`, `|`, or a
+ * newline. A naive `.split(/[|;]/)` tears a quoted regex apart, so a grep whose
+ * pattern contains `|git add|` fabricates a `git add` mutation (measured:
+ * `grep -nE "function |commit|git add|archive" scripts/finalize.js` was blocked
+ * as "a command that mutates this checkout"). Quote state is tracked so an
+ * operator inside `"…"`/`'…'` is never a separator. */
+function splitSegments(cmd) {
+  const segments = [];
+  let buf = "";
+  let quote = null;
+  const s = String(cmd || "");
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      buf += ch;
+      if (quote === '"' && ch === "\\" && i + 1 < s.length) buf += s[++i];
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      buf += ch;
+      continue;
+    }
+    if (ch === "\n" || ch === "\r") {
+      segments.push(buf);
+      buf = "";
+      continue;
+    }
+    if (ch === ";") {
+      segments.push(buf);
+      buf = "";
+      continue;
+    }
+    if (ch === "|") {
+      segments.push(buf);
+      buf = "";
+      if (s[i + 1] === "|") i += 1;
+      continue;
+    }
+    if (ch === "&" && s[i + 1] === "&") {
+      segments.push(buf);
+      buf = "";
+      i += 1;
+      continue;
+    }
+    buf += ch;
+  }
+  segments.push(buf);
+  return segments;
+}
+
 function classifyCommand(command) {
   const cmd = String(command || "");
   const result = { contentCode: false, gitOps: [] };
   if (!cmd) return result;
-  for (const segment of cmd.split(/\r?\n|&&|\|\||;|\|/)) {
+  for (const segment of splitSegments(cmd)) {
     const tokens = tokenize(segment);
     const found = gitSubcommand(tokens);
-    if (found && GIT_MUTATIONS.has(found.subcommand)) {
+    if (found && GIT_MUTATIONS.has(found.subcommand) && !isReadOnlyGitForm(found.subcommand, found.args)) {
       const paths = gitPathspecs(found.subcommand, found.args);
       result.gitOps.push({
         subcommand: found.subcommand,
