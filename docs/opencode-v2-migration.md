@@ -88,7 +88,7 @@ repo root uses the literal `/home/ronen/develop/**`.
   "model": "opencode-go/deepseek-v4.1-flash",
   "agents": {
     "title":   { "model": "opencode-go/glm-5.3-flash" },   // was small_model
-    "build":   { "model": "opencode-go/deepseek-v4.1-flash#high", "steps": 120 },
+    "build":   { "steps": 120 },                           // NO #variant — see the model-variant rule below
     "explore": { "model": "opencode-go/glm-5.3-flash", "steps": 40 }
   },
   "permissions": [
@@ -102,6 +102,15 @@ repo root uses the literal `/home/ronen/develop/**`.
 ```
 
 Notes:
+- **Model-variant rule (verified on opencode 2.0.31, 2026-10-17).** A `#variant`
+  on the **primary** session's model is inert: neither `model` (root) nor
+  `agents.<primary>.model` (`build`, `plan`) keeps it — the session records
+  `variant:"default"` (probes: root `…#high` and `agents.build.model=…#high` both
+  landed `default`; only an explicit session model — `opencode run -m
+  provider/model#variant` or the TUI picker — preserved `#high`). A `#variant` **does**
+  apply on a `mode: subagent` agent's `model:` (frontmatter), which is where every
+  engineer/architect effort pin lives. So the `build` pin carries **steps only, no
+  variant**; `npm run test:dispatch` fails a `#variant` on a non-subagent agent.
 - `instructions` is dropped: V2 accepts the key but **does not resolve** it (documented
   in the V2 instructions guide). See §7 for where the always-loaded rules went.
 - `bash` action → `shell`. `write`/`patch` fold into the `edit` action.

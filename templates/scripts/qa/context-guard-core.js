@@ -1255,7 +1255,7 @@ function noteEditAfter(state, failed) {
  * `gate_rerun_turns` (default 3) times with zero edits since its previous run.
  * Constant text; one nudge per gate per session. */
 const GATE_RERUN_TEXT =
-  "TOOL GUARD — the same gate is being re-run with no code change in between (`tsc`/`test:quick`/`lint`). Batch a coherent set of edits, THEN run the gate once (`.agents/rules/00-operating.md` §Gate batching). A re-run is warranted only after a real edit, a new failure, an integration/rebase, or when the dispatch requires it.";
+  "TOOL GUARD — the same gate is being re-run with no code change in between (`tsc`/`test:quick`/`lint`). Batch a coherent set of edits, THEN run the gate once (`.agents/rules/00-operating.md` §Gate batching). Prefer the cheapest covering tier (`gates --phase=quick`) over the full battery, and read the failing gate's output instead of re-running it blind. A re-run is warranted only after a real edit, a new failure, an integration/rebase, or when the dispatch requires it.";
 
 const DEFAULT_GATE_RERUN_TURNS = 3;
 

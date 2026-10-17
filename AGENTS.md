@@ -33,7 +33,10 @@ harness changes to the projects.
    `git worktree` (`<repo>/../.worktrees/<repo>/<id>`) that is a *separate*
    checkout with its own (stale) copy of the harness. An unrefreshed worktree
    keeps the old plugins/tools/scripts, so a resumed feature silently misses the
-   fix. After updating a project, bring each linked worktree to the same commit:
+   fix. **As of 0.1.166, `update` fast-forwards every linked worktree itself**
+   (warn-only; a dirty or diverged worktree is named and left to the operator).
+   The manual loop below is the fallback for a worktree the sweep could not
+   refresh:
 
    ```bash
    for wt in $(git -C ~/develop/PublicVirtualLibrary worktree list --porcelain \

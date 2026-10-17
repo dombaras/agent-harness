@@ -36,6 +36,20 @@ const LATEST_PKG = path.join(HARNESS_HOME, "package.json")
 const CLI = path.join(HARNESS_HOME, "bin", "agent-harness.js")
 const DRY = process.env.AGENT_HARNESS_FRESHNESS === "dry"
 
+// When this module is evaluated, the opencode process is (essentially) starting.
+// If the checkout's `.harness.json` was written AFTER this instant, the running
+// process loaded the OLD plugins/config — a deploy that has not yet activated.
+// The version compares "current" but the process is stale (F-19/H-44).
+const PROCESS_START = Date.now()
+
+function writeTime(p: string): number | null {
+  try {
+    return fs.statSync(p).mtimeMs
+  } catch {
+    return null
+  }
+}
+
 type GitResult = { ok: boolean; out: string; err: string }
 
 function git(cwd: string, args: string[], timeout = 10000): GitResult {
@@ -143,6 +157,20 @@ const HarnessFreshness: Plugin = {
       if (!fs.existsSync(cfg)) return // not a harness project
       const have = readVersion(cfg)
       if (have && cmpVer(have, latest) >= 0) {
+        // Version is current, but the RUNNING process may still predate the last
+        // harness write (deploy != activate, F-19/H-44): the plugins/config in
+        // effect are the OLD ones until opencode restarts.
+        const wrote = writeTime(cfg)
+        if (wrote && wrote > PROCESS_START) {
+          writeStatus(tree, { status: "restart-needed", have, latest, wrote, at: new Date().toISOString() })
+          await block(
+            sid,
+            `The harness on disk is current (${have}) but this opencode process started before the last ` +
+              `harness write, so the plugins/config in effect are the OLD ones — a deploy is inert until restart.`,
+            `  restart opencode to load ${have}.`
+          )
+          return
+        }
         notices.delete(sid)
         writeStatus(tree, { status: "current", have, latest, at: new Date().toISOString() })
         return

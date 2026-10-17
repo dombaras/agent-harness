@@ -77,15 +77,41 @@ if (zenLines.length) {
   );
 }
 
-function frontmatterModel(file) {
+function frontmatterModelRaw(file) {
   const src = fs.readFileSync(file, "utf8");
   const m = src.match(/^---\r?\n([\s\S]*?)(?:\r?\n)?---\r?\n/m);
   if (!m) return null;
   const modelLine = m[1].split(/\r?\n/).find((l) => /^model:/i.test(l.trim()));
-  if (!modelLine) return null;
+  return modelLine ? modelLine.replace(/^model:\s*/i, "").trim() : null;
+}
+
+function frontmatterModel(file) {
+  const raw = frontmatterModelRaw(file);
   // Native V2 pins join the variant to the model (`provider/model#variant`); the
   // provider allowlist holds base IDs, so strip any `#variant` before matching.
-  return modelLine.replace(/^model:\s*/i, "").trim().replace(/#.*$/, "");
+  return raw ? raw.replace(/#.*$/, "") : null;
+}
+
+/* The agent's `mode:` frontmatter (primary | subagent | all). A new custom agent
+ * defaults to `primary`; every harness persona is `subagent`. */
+function frontmatterMode(file) {
+  const src = fs.readFileSync(file, "utf8");
+  const m = src.match(/^---\r?\n([\s\S]*?)(?:\r?\n)?---\r?\n/m);
+  if (!m) return null;
+  const line = m[1].split(/\r?\n/).find((l) => /^mode:/i.test(l.trim()));
+  return line ? line.replace(/^mode:\s*/i, "").trim().toLowerCase() : null;
+}
+
+/* Does a `provider/model#variant` pin actually take effect? Only on a
+ * `mode: subagent` agent's `model:` (frontmatter). A `#variant` on the PRIMARY
+ * session — the root `model` or `agents.<primary>.model` (`build`/`plan`) — is
+ * inert (opencode 2.0.31, verified 2026-10-17 by live probe: root `…#high` and
+ * `agents.build.model=…#high` both recorded `variant:"default"`, while an
+ * explicit session model — `-m provider/model#variant`/the TUI picker — and a
+ * subagent's `…#low` were preserved). So a `#variant` on a non-subagent is
+ * inert config that reads like enforcement. */
+function variantApplies(mode) {
+  return mode === "subagent";
 }
 
 /* Parse the agent's native V2 `permissions:` list from the frontmatter into
@@ -147,6 +173,16 @@ for (const f of agentNames) {
   const canBash = frontmatterPermissions(file).some((p) => p.action === "shell" && p.effect === "allow");
   if (canBash && !/git rev-parse --show-toplevel/.test(body))
     fail(`agent ${name}: shell-enabled editor missing the working-tree gate (verify \`git rev-parse --show-toplevel\` + branch before editing)`);
+  // A `#variant` on a NON-subagent (primary) agent is inert in V2: the session
+  // stores its own model and drops the agent variant (verified 2026-10-17).
+  const rawModel = frontmatterModelRaw(file);
+  const mode = frontmatterMode(file);
+  if (rawModel && rawModel.includes("#") && !variantApplies(mode))
+    fail(
+      `agent ${name}: model variant \`${rawModel}\` does NOT apply — mode is \`${mode || "primary"}\`, ` +
+        "and opencode V2 ignores a variant on a primary agent's model (the session model is separate). " +
+        "Pin variants on `mode: subagent` agents only, or drop the variant."
+    );
 }
 
 // 2. bidirectional parity: every skill dir has a matching agent file
@@ -179,6 +215,15 @@ if (fs.existsSync(opencodeJson)) {
     else fail(`opencode.json ${label} \`${v}\` NOT in provider allowlist`);
   };
   checkModel("model", cfg.model);
+  // A `#variant` on the root `model` is inert too: opencode drops it for the
+  // primary session (verified 2026-10-17 — `model: …#high` recorded `default`).
+  // Effort for the main session can only be set per-session (`-m`/the TUI pick).
+  if (String(cfg.model || "").includes("#"))
+    fail(
+      `opencode.json model \`${cfg.model}\` carries a \`#variant\` that does NOT apply — ` +
+        "opencode V2 drops a variant on the root `model` for the primary session. Pin variants on " +
+        "`mode: subagent` agents only, or drop it (the orchestrator effort is a per-session choice)."
+    );
   const cfgAgents = cfg.agents && typeof cfg.agents === "object" ? cfg.agents : {};
   if (!cfgAgents.title || !cfgAgents.title.model)
     warn("opencode.json: no `agents.title.model` (V2 small-model) set");
@@ -186,6 +231,20 @@ if (fs.existsSync(opencodeJson)) {
     const v = agentCfg && typeof agentCfg === "object" ? agentCfg.model : null;
     if (!v) continue;
     checkModel(`agents.${name}.model`, v);
+    // An opencode.json `agents.<name>.model` with `#variant` is inert for a
+    // PRIMARY session: V2 keeps the session model separate and the root `model`
+    // drops the variant (built-ins `build`/`plan` are primary; `title`/`explore`
+    // are hidden/subagent). Express the effort as a subagent frontmatter pin.
+    if (String(v).includes("#")) {
+      const mode = agentCfg && typeof agentCfg === "object" ? agentCfg.mode : null;
+      if (!variantApplies(mode))
+        fail(
+          `opencode.json agents.${name}.model \`${v}\` carries a \`#variant\` that does NOT apply — ` +
+            "opencode V2 ignores a variant on an opencode.json agent model; the primary session model is " +
+            "the root `model` (which drops `#variant`). Move the effort to a `mode: subagent` agent's " +
+            "frontmatter `model:`, or drop the variant."
+        );
+    }
   }
 } else warn("opencode.json not found (skip)");
 

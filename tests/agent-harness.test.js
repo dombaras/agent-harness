@@ -7055,6 +7055,70 @@ test("test:dispatch refuses a Zen pay-as-you-go allowlist entry (Go + direct onl
   assert.match(r.stdout, /Zen pay-as-you-go/);
 });
 
+test("test:dispatch rejects an inert #variant on a primary-session model (H-45)", async () => {
+  // Verified on opencode 2.0.31 (2026-10-17): a `#variant` on the PRIMARY session
+  // — the root `model` or `agents.<primary>.model` — is dropped (the session
+  // records `variant:"default"`). A subagent's frontmatter pin is the working
+  // form. The gate must fail the inert forms and pass the shipped subagent pins.
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const cfgPath = path.join(target, "opencode.json");
+  const runGate = () => spawnSync(process.execPath, ["scripts/qa/check-dispatch-config.js"], { cwd: target, encoding: "utf8" });
+
+  const clean = runGate();
+  assert.strictEqual(clean.status, 0, clean.stdout + clean.stderr);
+  assert.doesNotMatch(clean.stdout, /does NOT apply/, "the shipped config has no inert variant");
+  assert.match(clean.stdout, /agent qa-architect: model `opencode-go\/deepseek-v4-pro` is a real provider model/);
+
+  // Root `model` variant -> inert -> fail.
+  const cfg = JSON.parse(read(cfgPath));
+  cfg.model = "opencode-go/deepseek-v4.1-flash#high";
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+  const rootVariant = runGate();
+  assert.strictEqual(rootVariant.status, 1, "a root-model variant must fail the gate");
+  assert.match(rootVariant.stdout, /opencode\.json model .*carries a \\?`#variant\\?` that does NOT apply/);
+
+  // `agents.build.model` variant -> inert -> fail.
+  cfg.model = "opencode-go/deepseek-v4.1-flash";
+  cfg.agents = cfg.agents || {};
+  cfg.agents.build = { model: "opencode-go/deepseek-v4.1-flash#high", steps: 120 };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+  const agentVariant = runGate();
+  assert.strictEqual(agentVariant.status, 1, "an agents.build.model variant must fail the gate");
+  assert.match(agentVariant.stdout, /agents\.build\.model .*does NOT apply/);
+  assert.match(agentVariant.stdout, /mode: subagent/);
+});
+
+test("the shipped template never pins a variant on a primary-session model (H-45)", () => {
+  const cfg = JSON.parse(read(path.join(h.TEMPLATES_DIR, "opencode.json")));
+  assert.doesNotMatch(String(cfg.model || ""), /#/, "the root model must not carry an inert #variant");
+  assert.ok(!("model" in (cfg.agents.build || {})), "build carries steps only; an agents.build.model #variant is inert");
+  // Defense in depth: no non-subagent agent file may pin a variant.
+  const agentsDir = path.join(h.TEMPLATES_DIR, ".opencode", "agents");
+  for (const f of fs.readdirSync(agentsDir).filter((x) => x.endsWith(".md"))) {
+    const src = read(path.join(agentsDir, f));
+    const mode = /^mode:\s*(\S+)/m.exec(src)?.[1];
+    if (mode !== "subagent") assert.doesNotMatch(src, /^model:.*#/m, `${f} is primary and must not carry a variant`);
+  }
+});
+
+test("update fast-forwards linked worktrees and never fails on a dirty one (H-48)", () => {
+  // Pure parser: the main checkout is excluded, every linked worktree is swept.
+  const text =
+    "worktree /repo/main\nHEAD aaa\n\nworktree /worktrees/f-1\nHEAD bbb\n\nworktree /worktrees/nightly\nHEAD ccc\n";
+  assert.deepStrictEqual(h.parseWorktreeDirs(text, "/repo/main"), ["/worktrees/f-1", "/worktrees/nightly"]);
+  assert.deepStrictEqual(h.parseWorktreeDirs("", "/repo/main"), []);
+  // A non-repo target yields no worktrees and never throws: the sweep must not
+  // fail `update` (warn, never fail).
+  const target = tmpdir();
+  assert.deepStrictEqual(h.linkedWorktrees(target), []);
+  assert.deepStrictEqual(h.refreshLinkedWorktrees(target), []);
+  // `update` calls the sweep after the deploy (and skips it on --dry-run).
+  const src = read(path.join(h.TEMPLATES_DIR, "..", "bin", "agent-harness.js"));
+  assert.match(src, /refreshLinkedWorktrees\(target\)/, "update wires the worktree sweep");
+  assert.match(src, /merge", "--ff-only", "origin\/main"/, "the sweep only fast-forwards");
+});
+
 test("provider-stats classifies model mix by tier and surfaces escalation primary sessions", () => {
   const sessions = [
     fixtureSession({ id: "ses_pro", title: "pro primary", model: "deepseek/deepseek-v4-pro", provider: "deepseek", cost: 2, turns: 30 }),
@@ -7282,6 +7346,84 @@ test("checkpoint writes a deterministic bounded-state block and resume prints it
   // the tool wrapper rejects the sentinel before shelling out (defence in depth)
   const cpTool = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "checkpoint.ts"));
   assert.match(cpTool, /requireFeature/, "checkpoint tool validates the feature id");
+});
+
+test("checkpoint resolves its root from cwd, never the __dirname template tree (H-49)", async () => {
+  // The dogfood symlinks repo `scripts` -> `templates/scripts`; Node realpaths
+  // the script, so `__dirname/..` is `templates/`. A checkpoint MUST land in the
+  // session root (cwd), never in the shipped template tree (F-26/H-49).
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const cp = spawnSync(
+    process.execPath,
+    ["scripts/checkpoint.js", "write", "--feature", "F-777", "--objective", "root", "--next-action", "ship"],
+    { cwd: target, encoding: "utf8" }
+  );
+  assert.strictEqual(cp.status, 0, (cp.stdout || "") + (cp.stderr || ""));
+  assert.ok(exists(path.join(target, ".agents", "handoffs", "F-777.md")), "the checkpoint lands in the cwd/session root");
+  assert.ok(
+    !exists(path.join(h.TEMPLATES_DIR, ".agents", "handoffs", "F-777.md")),
+    "never written into the shipped templates/ tree"
+  );
+
+  // An explicit --root wins over cwd (the plugins can pass it).
+  const other = tmpdir();
+  const explicit = spawnSync(
+    process.execPath,
+    [path.join(h.TEMPLATES_DIR, "scripts", "checkpoint.js"), "write", "--root", other, "--feature", "F-778", "--phase", "x"],
+    { cwd: os.tmpdir(), encoding: "utf8" }
+  );
+  assert.strictEqual(explicit.status, 0, (explicit.stdout || "") + (explicit.stderr || ""));
+  assert.ok(exists(path.join(other, ".agents", "handoffs", "F-778.md")), "--root wins over cwd");
+
+  // Source drift guard: the project root is no longer a bare __dirname/.. constant.
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "checkpoint.js"));
+  assert.match(src, /function resolveRoot/, "checkpoint resolves its root explicitly");
+  assert.doesNotMatch(src, /^const root = path\.resolve\(__dirname/m, "no bare __dirname/.. root constant");
+});
+
+test("update refuses to ship a stray handoff in templates/.agents/handoffs (H-49)", async () => {
+  // A template-tree handoff is the F-14 class: `update` would scaffold it into
+  // every project. The guard fails the deploy and names the file.
+  const stray = path.join(h.TEMPLATES_DIR, ".agents", "handoffs", "F-999-stray.md");
+  fs.writeFileSync(stray, "# stray handoff\n", "utf8");
+  try {
+    const target = tmpdir();
+    await assert.rejects(
+      h.deploy(target, { name: "Demo", yes: true, isUpdate: false }),
+      /stray file\(s\)/,
+      "a stray template handoff must fail the deploy"
+    );
+    assert.ok(!exists(path.join(target, ".agents", "handoffs", "F-999-stray.md")), "the stray was never shipped");
+  } finally {
+    fs.rmSync(stray, { force: true });
+  }
+});
+
+test("runtime activation flags an opencode that predates the harness write (H-44)", () => {
+  const wrote = Date.parse("2026-10-17T10:00:00Z");
+  const procs = [
+    { pid: 111, startedAt: wrote - 60_000 },
+    { pid: 222, startedAt: wrote + 60_000 },
+  ];
+  assert.deepStrictEqual(
+    h.staleProcs(procs, wrote).map((p) => p.pid),
+    [111],
+    "only the process started before the write is stale"
+  );
+  assert.deepStrictEqual(h.staleProcs(procs, null), [], "no recorded write time -> nothing is flagged");
+
+  const msg = h.formatStaleRuntime(h.staleProcs(procs, wrote), wrote, "0.1.166");
+  assert.match(msg, /pid 111/, "names the stale pid");
+  assert.match(msg, /0\.1\.166/, "names the version to load");
+  assert.match(msg, /restart opencode/i, "says restart opencode");
+  assert.strictEqual(h.formatStaleRuntime([], wrote, "0.1.166"), null, "no stale process -> no warning");
+
+  // The global plugin owns the session-start half: version current but the
+  // process predates the write -> block with restart-needed.
+  const plugin = read(path.join(h.GLOBAL_PLUGINS_SRC, "harness-freshness.ts"));
+  assert.match(plugin, /PROCESS_START/, "plugin pins its own start time");
+  assert.match(plugin, /restart-needed/, "plugin reports the deploy-not-activated case");
 });
 
 test("checkpoint writes into the feature worktree when the session root is main", async () => {

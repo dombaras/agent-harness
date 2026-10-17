@@ -101,6 +101,28 @@ function relKey(rel) {
   return rel.split(path.sep).join("/");
 }
 
+/* A session handoff must never live in the shipped template tree: the dogfood
+ * symlinks repo `scripts` -> `templates/scripts`, so an `__dirname`-rooted
+ * checkpoint could drop one there, and `update` would scaffold it into every
+ * project (F-26/H-49). Refuse the deploy and name the stray. README.md is the
+ * shipped placeholder and is allowed. */
+function assertNoTemplateHandoffs() {
+  const dir = path.join(TEMPLATES_DIR, ".agents", "handoffs");
+  if (!fs.existsSync(dir)) return;
+  const strays = fs
+    .readdirSync(dir)
+    .filter((f) => f !== "README.md" && !f.startsWith("."))
+    .sort();
+  if (strays.length) {
+    throw new Error(
+      `templates/.agents/handoffs/ has stray file(s) that \`update\` would ship to every project:\n` +
+        strays.map((f) => `    - templates/.agents/handoffs/${f}`).join("\n") +
+        `\n  A checkpoint handoff belongs in the PROJECT root (cwd), not the template tree. ` +
+        `Delete the stray(s) (F-26/H-49) and re-run.`
+    );
+  }
+}
+
 /* `.agents/memory/*` (session memory), `.agents/features/*` (feature doc tree),
  * `.agents/reviews/*` (durable review/audit deliverables), `.agents/qa-plans/*`
  * (one QA plan file per change), `.agents/qa-runs/*` (one directory of verbatim
@@ -1063,6 +1085,7 @@ async function deploy(target, opts) {
   // repo and on dry-run) so two updates can never interleave their read-modify-
   // write of .harness.json / the harness tree.
   const runDeploy = async () => {
+  assertNoTemplateHandoffs();
   const existing = readConfig(target);
 
   // Refuse to downgrade: the target's deployed harness is newer than this CLI.
@@ -1671,6 +1694,87 @@ function warnOpencodeVersion() {
   }
 }
 
+/* ------------------------------------------------------- runtime activation
+ * `update` writes files, but a running opencode keeps the OLD plugins/config
+ * until it restarts — so a "successful" deploy can be completely inert
+ * (F-19/H-44). These helpers compare the live opencode processes for a target
+ * against the last harness write (`.harness.json` mtime) and name the exact pid
+ * + version to restart into. Never auto-restarts while a session is live. */
+
+/* Pure: which of `procs` ({pid, startedAt}) started before the last harness
+ * write. Exported for a fixture unit test. */
+function staleProcs(procs, wroteAtMs) {
+  if (!wroteAtMs) return [];
+  return (procs || []).filter((p) => Number(p.startedAt) < Number(wroteAtMs));
+}
+
+/* Pure: the fail-loud warning naming the stale pids + the version to load. */
+function formatStaleRuntime(stale, wroteAtMs, version) {
+  if (!stale || !stale.length) return null;
+  const v = version ? `v${version}` : "the deployed harness";
+  return (
+    `opencode (pid ${stale.map((p) => p.pid).join(", ")}) started before the last harness write ` +
+    `${new Date(Number(wroteAtMs)).toISOString()} — restart opencode to load ${v} ` +
+    `(a deploy is inert until then).`
+  );
+}
+
+/* The last time this target's harness was written (the deploy's `.harness.json`). */
+function harnessWriteTime(target) {
+  try {
+    return fs.statSync(path.join(target, CONFIG_FILE)).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/* Live opencode processes whose working tree is `target`. Best-effort via Linux
+ * `/proc`; [] when ps/proc is unavailable (macOS/CI). */
+function opencodeProcsFor(target) {
+  const want = path.resolve(target);
+  let out = "";
+  try {
+    const r = spawnSync("ps", ["-eo", "pid=,etimes=,args="], { encoding: "utf8" });
+    if (r.status !== 0) return [];
+    out = String(r.stdout || "");
+  } catch (_) {
+    return [];
+  }
+  const now = Date.now();
+  const procs = [];
+  for (const line of out.split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const etimes = Number(m[2]);
+    const args = m[3];
+    if (!/(^|[\/\s])opencode(\s|$)/.test(args)) continue;
+    if (/--version|--help/.test(args)) continue;
+    let cwd = null;
+    try {
+      cwd = fs.readlinkSync("/proc/" + pid + "/cwd");
+    } catch (_) {
+      cwd = null;
+    }
+    if (cwd) {
+      if (path.resolve(cwd) !== want) continue;
+    } else if (!args.includes(want)) {
+      continue;
+    }
+    procs.push({ pid, startedAt: now - etimes * 1000, args });
+  }
+  return procs;
+}
+
+/* A warning string when a live opencode for `target` predates the last harness
+ * write, else null. */
+function staleRuntimeWarning(target) {
+  const wrote = harnessWriteTime(target);
+  if (!wrote) return null;
+  const cfg = readConfig(target);
+  return formatStaleRuntime(staleProcs(opencodeProcsFor(target), wrote), wrote, cfg && cfg.version);
+}
+
 /* `doctor` — a deterministic (no-LLM) readiness report for the self-contained
  * agent release cycle. It answers, before a session starts, whether the pieces
  * `ship` depends on actually exist: gh + auth, the CI/deploy workflows, the
@@ -1705,6 +1809,15 @@ function doctor(target) {
     const v = checkOpencodeVersion(opencode.out);
     add(v.level, v.label, v.detail);
   }
+
+  // deploy != activate: a live opencode started before the last harness write
+  // keeps the old plugins/config (F-19/H-44). Name the pid + version to restart.
+  const staleRuntime = staleRuntimeWarning(target);
+  add(
+    staleRuntime ? "warn" : "ok",
+    "runtime activation",
+    staleRuntime || "no live opencode predates the last harness write"
+  );
 
   const remote = runGit(target, ["remote", "get-url", "origin"]);
   add(remote.ok ? "ok" : "warn", "git remote", remote.ok ? remote.out : "no origin remote");
@@ -2246,6 +2359,63 @@ async function init(target, flags) {
   if (!result.dryRun) printNextSteps();
 }
 
+/* ---------------------------------------------------- worktree freshness sweep
+ * `update` writes only the MAIN checkout; each linked `git worktree` is a
+ * separate checkout with its own (stale) harness copy, so a resumed feature
+ * silently misses the fix (F-25/H-48). Fast-forward every linked worktree to
+ * `origin/main` after an update — warn, never fail (a dirty or diverged worktree
+ * is the operator's to resolve). Never `update --target <worktree>`: the harness
+ * rewrites `opencode.json`'s `{{WORKSPACE_ROOT}}`, which for a worktree resolves
+ * to the worktree's parent and narrows the external-directory allowlist. */
+
+/* Pure: the linked worktree dirs in `git worktree list --porcelain` output, the
+ * main checkout excluded. Exported for a fixture test. */
+function parseWorktreeDirs(text, main) {
+  const want = main ? path.resolve(main) : null;
+  const out = [];
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const m = line.match(/^worktree\s+(.+)$/);
+    if (!m) continue;
+    const dir = m[1].trim();
+    if (want && path.resolve(dir) === want) continue;
+    out.push(dir);
+  }
+  return out;
+}
+
+/* The linked worktrees of `target` (the main checkout excluded). Best-effort:
+ * [] when not a repo or git is unavailable. */
+function linkedWorktrees(target) {
+  const r = runGit(target, ["worktree", "list", "--porcelain"]);
+  if (!r.ok) return [];
+  return parseWorktreeDirs(r.out, target);
+}
+
+/* Fast-forward each linked worktree to `origin/main`; never throws. Returns
+ * `[{ dir, ok, branch, reason }]`; `reason` is set only when not refreshed. */
+function refreshLinkedWorktrees(target) {
+  const results = [];
+  for (const wt of linkedWorktrees(target)) {
+    const branch = currentBranch(wt);
+    const dirty = runGit(wt, ["status", "--porcelain"]);
+    if (dirty.ok && dirty.out) {
+      results.push({ dir: wt, ok: false, branch, reason: "uncommitted changes" });
+      continue;
+    }
+    runGit(wt, ["fetch", "--quiet", "origin"]);
+    const r = runGit(wt, ["merge", "--ff-only", "origin/main"]);
+    if (r.ok) results.push({ dir: wt, ok: true, branch });
+    else
+      results.push({
+        dir: wt,
+        ok: false,
+        branch,
+        reason: (r.err || r.out || "").split(/\r?\n/).filter(Boolean).pop() || "not a fast-forward",
+      });
+  }
+  return results;
+}
+
 async function update(target, flags) {
   if (!fs.existsSync(TEMPLATES_DIR)) {
     console.error("templates/ directory not found next to this CLI.");
@@ -2263,6 +2433,22 @@ async function update(target, flags) {
   printSummary(result, true);
   printUnpublishedWarning();
   printCommitResult(result);
+  // deploy != activate: warn when a live opencode for this target predates the
+  // write, so the operator restarts to load the new plugins/config (never
+  // auto-restart while a session is live). F-19/H-44.
+  const staleRuntime = staleRuntimeWarning(target);
+  if (staleRuntime) console.log(`\n  WARNING: ${staleRuntime}`);
+  // `update` writes only the main checkout; fast-forward every linked worktree
+  // so a resumed feature does not run the old harness (F-25/H-48). Warn, never
+  // fail, and never `update --target <worktree>`.
+  if (!flags["--dry-run"]) {
+    const wts = refreshLinkedWorktrees(target);
+    if (wts.length) {
+      const stale = wts.filter((w) => !w.ok);
+      console.log(`\n  worktrees: ${wts.length - stale.length}/${wts.length} fast-forwarded to origin/main`);
+      for (const w of stale) console.log(`    WARNING: ${w.dir} not refreshed (${w.reason}) — merge origin/main by hand`);
+    }
+  }
   maybePrewarm(target);
 }
 
@@ -2735,6 +2921,15 @@ module.exports = {
   convertV1Tools,
   mergeMcp,
   deploy,
+  assertNoTemplateHandoffs,
+  parseWorktreeDirs,
+  linkedWorktrees,
+  refreshLinkedWorktrees,
+  staleProcs,
+  formatStaleRuntime,
+  opencodeProcsFor,
+  harnessWriteTime,
+  staleRuntimeWarning,
   migrateBacklog,
   splitCells,
   parseTableRows,

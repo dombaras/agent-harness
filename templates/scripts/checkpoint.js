@@ -26,7 +26,26 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const root = path.resolve(__dirname, "..");
+/* The project root. Resolve from an explicit `--root <dir>` when given, else
+ * `process.cwd()` when it looks like a project root, and only fall back to
+ * `__dirname/..`. Under the harness dogfood the repo `scripts` dir is symlinked
+ * to `templates/scripts`; Node realpaths the script, so `__dirname/..` is
+ * `templates/` — writing a checkpoint into the tree `update` ships to every
+ * project (F-26/H-49). The tool wrappers spawn this CLI with `cwd` = session
+ * directory (see `scripts/qa/tool-lib.js` sessionRoot()), so cwd is the tree. */
+function looksLikeRoot(dir) {
+  return fs.existsSync(path.join(dir, ".agents")) || fs.existsSync(path.join(dir, ".git"));
+}
+
+function resolveRoot(argv, cwd) {
+  const i = Array.isArray(argv) ? argv.indexOf("--root") : -1;
+  if (i !== -1 && argv[i + 1]) return path.resolve(argv[i + 1]);
+  const c = cwd || process.cwd();
+  if (looksLikeRoot(c)) return c;
+  return path.resolve(__dirname, "..");
+}
+
+let root = resolveRoot(process.argv.slice(2), process.cwd());
 const SCHEMA = "checkpoint/1";
 const HEADING_RE = /^#{1,6}\s*Checkpoint\b.*$/im;
 const MARKER = "<!-- agent-harness checkpoint — machine-written; edit via scripts/checkpoint.js -->";
@@ -55,6 +74,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--feature") out.feature = argv[++i];
+    else if (a === "--root") out.root = argv[++i];
     else if (a === "--json") out.json = true;
     else if (a.startsWith("--") && listFlags.has(a.slice(2))) {
       const key = a.slice(2);
