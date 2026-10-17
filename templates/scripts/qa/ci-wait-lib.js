@@ -18,6 +18,22 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
+/* The billing/infra-block signature, kept inline so this module stays
+ * dependency-light (its contract: the only imports are node builtins). A job
+ * that completed with ZERO steps and no runner_name never provisioned a runner:
+ * GitHub's answer when the account is out of Actions quota with no valid payment
+ * method. `ci-usage-lib.js` owns the full cost model; this is just the detection
+ * the CI waiter needs. */
+function allJobsBlocked(jobs) {
+  if (!Array.isArray(jobs) || jobs.length === 0) return false;
+  return jobs.every((job) => {
+    if (!job) return false;
+    const steps = Array.isArray(job.steps) ? job.steps.length : 0;
+    const runner = job.runner_name == null ? "" : String(job.runner_name).trim();
+    return steps === 0 && runner === "";
+  });
+}
+
 /* The `gh` binary (overridable for tests). */
 function ghBin() {
   return process.env.HARNESS_SHIP_GH_BIN || "gh";
@@ -155,6 +171,29 @@ function waitCi(root, sha, opts) {
       if (["success", "skipped", "neutral"].includes(run.conclusion)) {
         console.log(`[ci] ${name} green on ${sha.slice(0, 7)}${run.url ? " — " + run.url : ""}`);
         return 0;
+      }
+      // A red run is not always a red TEST: a billing/infra block provisions no
+      // runner at all (steps: 0, runner_name empty, ~4-6s). Name that state
+      // explicitly instead of reporting "tests failed", and tell the operator
+      // what to fix — this is the 2026-10 nine-day silent outage.
+      if (run.databaseId) {
+        const jobsRes = ghJson(cwd, [
+          "api",
+          `/repos/{owner}/{repo}/actions/runs/${run.databaseId}/jobs`,
+          "--jq",
+          ".jobs",
+        ]);
+        const jobs = jobsRes.ok ? jobsRes.data : null;
+        if (allJobsBlocked(jobs)) {
+          console.error(
+            `ship: ${name} did NOT RUN on ${sha.slice(0, 7)} — GitHub Actions billing/infra block.\n` +
+              `      The job(s) provisioned no runner (0 steps, no runner_name), so this is NOT a test failure.\n` +
+              "      Fix: add/repair the account payment method or raise the spending limit, then re-dispatch.\n" +
+              `        gh run view ${run.databaseId}\n` +
+              `        gh auth refresh -h github.com -s user   # makes the billing state readable`
+          );
+          return 1;
+        }
       }
       console.error(
         `ship: ${name} concluded "${run.conclusion}" on ${sha.slice(0, 7)}` +
