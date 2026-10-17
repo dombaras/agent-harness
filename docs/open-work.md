@@ -16,6 +16,8 @@ were archived on that project's board and now live here.
 
 ## Open
 
+> Round-3 implementation pickup: [`harness-gaps-round3-plan.md`](harness-gaps-round3-plan.md) (tasks T1–T7, ordered, with anchors + acceptance). Findings: [`harness-field-review-2026-10-16-round3.md`](harness-field-review-2026-10-16-round3.md).
+
 | ID | P | Area | Task | Evidence | Source | Status |
 |---|---|---|---|---|---|---|
 | H-1 | P2 | worktree / deploy | `backlog worktree` → `deploy:uat` fails at the Vercel build: the worktree's `prisma/generated` is a symlink to the main checkout and no `.vercelignore` excludes it, so the remote postinstall `prisma generate` hits `ENOTDIR mkdir '/vercel/path0/prisma/generated'` and the deployment errors (alias `ekedio-uat` unmoved). Add a tracked `.vercelignore` (`prisma/generated`, `node_modules`) or realize the generated client as a real dir in worktrees (extends the F-183 worktree bootstrap), and stop `deploy-env.js` from exiting 0 on a failed Vercel deploy (extends the F-179 false-green). | devops-engineer F-229 session 2026-09-17: worktree f-229 `deploy:uat` → vercel deploy ERROR (ENOTDIR prisma/generated); alias `ekedio-uat` unmoved; `deploy-env.js` still exited 0. Note: `scripts/deploy-env.js` is project-owned; the worktree generated-tree layout is harness `cmdWorktree` / `worktree-setup`. | moved from LibraryOS F-230 (2026-09-17) | open |
