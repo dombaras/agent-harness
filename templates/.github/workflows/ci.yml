@@ -17,8 +17,10 @@ on:
   workflow_dispatch:
 
 concurrency:
+  # Superseded runs are cancelled (a newer commit on the same ref makes an
+  # in-flight run's verdict moot) so a busy push day does not stack billed runs.
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

@@ -38,11 +38,23 @@ contention: the second `git push HEAD:main` is rejected non-fast-forward, and
   `UAT_DEPLOY_CONFIGURED=true` and the required secrets; from then on a missing
   secret is a red failure, not a silent skip.
 - **`uat-health.yml`** — scheduled probe of `$UAT_ALIAS`; set repository variable
-  `UAT_ALIAS`.
-- **`nightly.yml`** — scheduled off-hours E2E (unit/API/routes/browser). The
+  `UAT_ALIAS`. Every **2 hours** (`0 */2 * * *`) — a sub-minute probe on a tight
+  cron is still a *billed* job every run (`*/30` ≈ 1,440 jobs/mo), and
+  `npm run test:ci-policy` fails a workflow that reintroduces a sub-hourly cron.
+- **`nightly.yml`** — scheduled off-hours E2E (unit/API/routes/browser), **Mon/Wed/Fri**
+  (`0 3 * * 1,3,5`), not daily: the push `CI` workflow already runs the same lint +
+  quick tier on every landing. The
   heavy device/Maestro tier runs locally via `agent-harness install-nightly`
   (see `docs/nightly-testing.md`); nightly is also where the board is reconciled
   (`reopen` a fix that is still failing, validate one that now passes).
+
+**Cost control.** `CI` sets `cancel-in-progress: true` so a superseded run on the
+same ref does not stack billed minutes. Before a cost-visible change (a new
+schedule, an expensive runner), run `npm run ci-triage -- --preflight
+.github/workflows/<file>.yml` for the dispatch estimate, and `agent-harness
+doctor` for the 30-day floor (`ciBudget` in `.harness.json`, when present). The
+gate `npm run test:ci-policy` blocks the workflow shapes behind the 2026-10
+billing outage; the model is `scripts/qa/ci-usage-lib.js`.
 
 ## One-time setup (human-gated)
 

@@ -465,7 +465,9 @@ const HARNESS_SCRIPTS = {
   "test:wiring": "node scripts/qa/check-test-wiring.js",
   "test:linger": "node scripts/qa/check-linger.js",
   "test:capacity": "node scripts/qa/check-capacity.js",
+  "test:ci-policy": "node scripts/qa/check-ci-policy.js",
   "test:prefix": "node scripts/qa/check-prefix-stability.js",
+  "ci-triage": "node scripts/qa/ci-triage.js",
   gates: "node scripts/qa/run-gates.js",
   where: "node scripts/qa/where.js",
   diff: "node scripts/qa/diff.js",
@@ -1642,6 +1644,61 @@ function workflowNamesIn(target) {
   return names;
 }
 
+/* CI budget (advisory): estimate this repo's GitHub Actions burn from `gh` and
+ * compare it to the plan's included minutes (or `.harness.json` `ciBudget`). The
+ * estimate is a FLOOR (one Linux minute per completed run) so it never
+ * under-reports; when usage cannot be read the honest state is `unknown`, never
+ * `ok`. Never fails the doctor — the operator acts on it. See ci-usage-lib.js. */
+function ciBudgetLines(target) {
+  const dir = path.join(target, ".github", "workflows");
+  if (!fs.existsSync(dir)) return [];
+  const cfg = safeJson(fs.readFileSync(path.join(target, ".harness.json"), "utf8"), null);
+  const budgetCfg = (cfg && cfg.ciBudget) || {};
+  if (budgetCfg.enabled === false) return [{ level: "ok", label: "ci budget", detail: "disabled in .harness.json" }];
+  const { ghJson, has } = require(path.join(TEMPLATES_DIR, "scripts", "qa", "ci-wait-lib.js"));
+  if (!has("gh")) {
+    return [
+      {
+        level: "ok",
+        label: "ci budget",
+        detail: "unknown — `gh` unavailable, so Actions usage cannot be read (never assumed healthy)",
+      },
+    ];
+  }
+  const res = ghJson(target, ["run", "list", "--limit", "100", "--json", "databaseId,conclusion,createdAt,name"]);
+  if (!res.ok) return [{ level: "ok", label: "ci budget", detail: `unknown — ${res.error}` }];
+  const usage = require(path.join(TEMPLATES_DIR, "scripts", "qa", "ci-usage-lib.js"));
+  const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const runs = (res.data || []).filter((r) => Date.parse(r.createdAt || "") >= since);
+  const est = usage.estimateUsage(runs);
+  const state = usage.budgetState(est, {
+    allowanceMinutes: Number(budgetCfg.includedMinutes) || undefined,
+    warnAtPct: Number(budgetCfg.warnAtPct) || undefined,
+  });
+  const level = state.status === "fail" ? "fail" : state.status === "warn" ? "warn" : "ok";
+  const limit = Number(budgetCfg.spendingLimitUsd);
+  const spendNote = Number.isFinite(limit) && limit > 0 ? ` · spending limit $${limit}` : "";
+  const spentNote = state.status !== "unknown" && state.remainingMinutes === 0 ? " — quota spent: workflows will bill or block" : "";
+  const out = [
+    {
+      level,
+      label: "ci budget",
+      detail:
+        `${state.status} — ~${state.minutes} of ${state.allowanceMinutes} included min (${state.pct}%), ` +
+        `~$${Number(est.usd).toFixed(2)} floor over ${runs.length} run(s)/30d${spendNote}${spentNote}`,
+    },
+  ];
+  if (state.status === "fail") {
+    out.push({
+      level: "warn",
+      label: "ci budget",
+      detail: "over the included allowance — trim scheduled jobs / expensive runners (`npm run test:ci-policy`) and set a spending limit",
+    });
+  }
+  return out;
+}
+
+/* Run a binary and capture its version banner (or other probe output). */
 function whichBin(cmd, args) {
   const r = spawnSync(cmd, args || ["--version"], { encoding: "utf8" });
   return { ok: r.status === 0, out: (r.stdout || "").trim(), err: (r.stderr || "").trim() };
@@ -2088,6 +2145,15 @@ function doctor(target) {
     }
   } catch (err) {
     add("ok", "capacity", `not sampled (${err && err.message ? err.message : "unavailable"})`);
+  }
+
+  // CI budget (advisory): the GitHub Actions burn vs the plan's included
+  // minutes. The 2026-10 outage was a budget nobody could see; the honest state
+  // is `unknown` when it cannot be read, never a silent `ok`.
+  try {
+    for (const line of ciBudgetLines(target)) add(line.level, line.label, line.detail);
+  } catch (err) {
+    add("ok", "ci budget", `not read (${err && err.message ? err.message : "unavailable"})`);
   }
 
   return reportDoctor(results);

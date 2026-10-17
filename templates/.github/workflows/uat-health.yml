@@ -5,9 +5,17 @@ name: UAT health
 # point the probe at it. A failed run notifies the repo watchers by default,
 # which is the alert.
 on:
+  # Every 2 hours, NOT every 30 minutes: a sub-minute probe on a tight cron is
+  # still a BILLED job every run (`*/30` ≈ 1,440 jobs/mo — 72% of the Free-plan
+  # included minutes, the 2026-10 silent-outage root cause). `npm run
+  # test:ci-policy` fails a workflow that reintroduces a sub-hourly cron.
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 */2 * * *"
   workflow_dispatch:
+
+concurrency:
+  group: uat-health
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -15,6 +23,7 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Probe UAT health endpoint
         run: |

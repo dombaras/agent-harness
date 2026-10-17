@@ -95,6 +95,17 @@ Reports free RAM / swap / PSI load / live serves and fails when the envelope
 (`.agents/memory/orchestration.md`) is already exceeded. **Satisfy:** stop idle
 serves (`serve.js stop-all`, `prune`).
 
+## `test:ci-policy` — Actions cost-policy gate
+`node scripts/qa/check-ci-policy.js`
+Fails (or warns) on the workflow *shapes* that quietly leave the GitHub Actions
+free tier: a sub-hourly `cron:` (`scheduled-too-frequent`), a macOS/Windows runner
+on an unfiltered `push` (`expensive-every-push`), a `-large`/`-xlarge` runner
+(`larger-runner`, warn), and two expensive workflows on the same unfiltered push
+(`duplicate-expensive-push`). A project with no `.github/workflows` passes.
+**Satisfy:** path-filter the expensive workflow (`paths:`), widen the cron to
+≥6-hourly, or move it off the push trigger; price a change first with
+`npm run ci-triage -- --preflight .github/workflows/<file>.yml`.
+
 ## `test:prefix` — cache-prefix stability gate
 `node scripts/qa/check-prefix-stability.js`
 No volatile value (clock timestamp, machine path, session id) in an always-loaded
@@ -109,6 +120,7 @@ prefix file (root dispatcher, rulebook, operating rules, session-start memory).
 - `node scripts/qa/where.js` — bounded symbol/owner lookup (`npm run where -- <term>`): index-first `file:line` hits annotated with the backlog row(s) owning each file, plus `--owner <glob>`. Use it instead of shell `grep` for locating a symbol.
 - `node scripts/qa/feature-scaffold.js` — write the per-feature doc-tree skeletons (intent/scope/plan/tests) + the QA-plan stub in one call (`npm run feature:scaffold -- --id <F-n> --slug <slug> [--risk high]`), so the author personas fill a `test:product`-shaped structure instead of a blank page. Write-if-missing; authors no content.
 - `node scripts/qa/session-recon.js` — tool-habit / context-hygiene recon (`npm run report:recon`).
+- `node scripts/qa/ci-triage.js` — name a red Actions run for what it is (`green` / `infra-block` — no runner, a billing artifact — / `failed`, exit 0/1/2) and price a dispatch (`--preflight .github/workflows/<file>.yml`) against the recent-run median + budget (`npm run ci-triage`).
 - `node scripts/wait-for.js` — bounded blocking wait (`--job`/`--ci`/`--health`/`--port`/`--file --grep`); `npm run wait`.
 - `node scripts/checkpoint.js` — deterministic checkpoint (`write`/`resume`).
 - `node scripts/backlog.js` — board read/write (single write path; service backend per ADR 0001).
