@@ -609,6 +609,15 @@ const BRANCH_CHECKOUT_FLAGS = new Set([
   "-",
 ]);
 
+/* `git checkout` flags that select working-tree PATHS/hunks/conflict sides, not a
+ * branch. `--ours`/`--theirs`/`--conflict` resolve a conflict in named files and
+ * `-p`/`--patch` selects hunks, so any of them makes the command a path restore
+ * and can never move HEAD. (`-m`/`--merge` are NOT here: they can accompany a
+ * real branch switch, so they stay conservative.) The F-316 false positive:
+ * `git checkout --ours BACKLOG.md` was blocked as "a branch switch to
+ * `BACKLOG.md`". */
+const PATH_CHECKOUT_FLAGS = new Set(["--ours", "--theirs", "--conflict", "-p", "--patch"]);
+
 const GIT_GLOBAL_WITH_ARG = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
 
 function tokenize(segment) {
@@ -699,6 +708,9 @@ function branchSwitch(command) {
     if (subcommand === "switch") return { ref: firstPositional(args) };
     if (subcommand !== "checkout") continue;
     if (args.includes("--")) continue; // `... -- <path>` is a restore
+    // Conflict resolution / hunk selection always names working-tree paths
+    // (`--conflict=<mode>` too), so it can never move HEAD.
+    if (args.some((a) => PATH_CHECKOUT_FLAGS.has(a) || /^--conflict(=|$)/.test(a))) continue;
     if (args.some((a) => BRANCH_CHECKOUT_FLAGS.has(a))) return { ref: firstPositional(args) };
     const positionals = args.filter((a) => !a.startsWith("-") && !isRedirection(a));
     if (positionals.length !== 1) continue; // 0 args lists status; 2+ is `<tree> <path>`
@@ -718,7 +730,7 @@ function branchSwitchText(ref, others) {
     Array.isArray(others) && others.length
       ? others.map((s) => `\`${s}\``).join(", ")
       : "another primary session";
-  return `SESSION GUARD — blocked a branch switch to ${target}: ${who} is live in the same checkout. Two primary sessions must not share one working tree — the switch would move HEAD under the other session, which could then commit/push on the wrong branch (the 2026-09-18 direct-push-to-main incident). Isolate first: run \`backlog worktree <id> --open\` from the MAIN tree and work in that worktree, or let the other session finish. The switch was NOT executed.`;
+  return `SESSION GUARD — blocked a branch switch to ${target}: ${who} is live in the same checkout. Two primary sessions must not share one working tree — the switch would move HEAD under the other session, which could then commit/push on the wrong branch (the 2026-09-18 direct-push-to-main incident). Fix it one of two ways. (1) To switch branches, isolate first: run \`backlog worktree <feature-id> --open\` from the MAIN tree, then work in that worktree — or let the other session finish. (2) If you only meant to restore a working-tree file (not switch branches), this was a false alarm: re-run it as \`git restore <path>\` or \`git checkout -- <path>\` (the \`--\` form) and it will pass. The switch was NOT executed.`;
 }
 
 // ------------------------------------------------------- main-checkout guard
@@ -1102,7 +1114,7 @@ const READ_TEXTS = Object.freeze({
   whole:
     "TOOL GUARD — a large file was read whole. Search first (`Grep`/`Glob`), then read a targeted `offset`/`limit` range — never read a big file blind (`.agents/AGENTS.md` §5).",
   missing:
-    "TOOL GUARD — that path does not exist (a guessed path). Read `.agents/memory/locations.md` (the canonical locations index) or use `Glob` for the real path before reading again — never re-hunt or guess.",
+    "TOOL GUARD — that path does not exist (a guessed path). If you meant a session checkpoint, do NOT guess a filename: handoffs are `.agents/handoffs/<feature-id>.md` (named for the FEATURE id — never `next.md`/`pending.md`/`auto.md`), and the supported way to load one is the `checkpoint_resume` tool (or `/resume <feature-id>`). Otherwise `Glob` the real path (e.g. `Glob .agents/handoffs/*.md`) or read `.agents/memory/locations.md` (the canonical locations index) before reading again — never re-hunt or guess.",
 });
 
 const DUMP_TEXT =

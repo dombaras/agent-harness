@@ -10,4 +10,5 @@ agent re-hunt).
 - **Logs / telemetry**: 
 - **DB / env**: 
 - **Docs**: 
+- **Session checkpoints / handoffs**: `.agents/handoffs/<feature-id>.md` — one per session/work unit, named for the **BACKLOG feature id** (not `next.md`/`pending.md`). Write with the `checkpoint_write` tool, load with `checkpoint_resume <feature-id>` (or `/resume`). List what exists with `Glob .agents/handoffs/*.md` before assuming a name.
 - **AI session archives**: opencode: <path>; antigravity: <path>; vscode: <path> (record each front-end's session/history path — the docs reconstruction bundle reads these)

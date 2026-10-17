@@ -5346,6 +5346,14 @@ test("branch-switch guard ignores file restores and non-command-position mention
     "git checkout main -- file.txt",
     "git checkout", // lists status
     "git restore --staged .",
+    // F-316 false positive: conflict resolution names working-tree PATHS, so it
+    // is never a HEAD move even though the path reads like a ref.
+    "git checkout --ours BACKLOG.md",
+    "git checkout --theirs .agents/memory/owned-files.md",
+    "git checkout --conflict=merge BACKLOG.md",
+    "git checkout -p",
+    "git checkout -p src/a.ts",
+    "git checkout --ours BACKLOG.md && git status --short BACKLOG.md",
     'echo "git checkout main"',
     'grep -rn "git checkout main" scripts/',
     "npm run test:quick",
@@ -5354,6 +5362,12 @@ test("branch-switch guard ignores file restores and non-command-position mention
   }
   assert.strictEqual(cg.branchSwitch(""), null);
   assert.strictEqual(cg.branchSwitch(null), null);
+  // A benign option must NOT hide a real switch (the boundary of the fix).
+  assert.deepStrictEqual(cg.branchSwitch("git checkout --quiet main"), { ref: "main" });
+  assert.deepStrictEqual(cg.branchSwitch("git checkout --progress f-278"), { ref: "f-278" });
+  // `-m`/`--merge` also accompanies a REAL branch switch, so it stays
+  // conservative (blocked) — the guard deliberately over-blocks here.
+  assert.deepStrictEqual(cg.branchSwitch("git checkout --merge BACKLOG.md"), { ref: "BACKLOG.md" });
 });
 
 test("branch-switch guard message names the ref + live sessions and points at isolation", () => {
@@ -5362,8 +5376,21 @@ test("branch-switch guard message names the ref + live sessions and points at is
   assert.match(text, /ses_A/);
   assert.match(text, /ses_B/);
   assert.match(text, /backlog worktree/);
+  // The message must name the false-alarm recovery so a path restore is not a
+  // dead end (F-316).
+  assert.match(text, /git restore/);
+  assert.match(text, /git checkout -- <path>/);
+  assert.match(text, /<feature-id>/);
   assert.match(cg.branchSwitchText(null, []), /another branch/);
   assert.match(cg.branchSwitchText(null, []), /another primary session/);
+});
+
+test("read-missing advisory resolves a checkpoint instead of guessing a filename", () => {
+  const missing = cg.READ_TEXTS.missing;
+  assert.match(missing, /checkpoint_resume/, "names the supported way to load a handoff");
+  assert.match(missing, /<feature-id>/, "names the handoff path convention");
+  assert.match(missing, /next\.md/, "calls out the guessed generic filenames");
+  assert.match(missing, /Glob/, "offers the bounded listing fallback");
 });
 
 test("main-checkout guard classifies code paths vs board/docs/metadata", () => {
