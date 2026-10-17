@@ -635,8 +635,13 @@ function collectStats(opts = {}) {
   const thresholds = readThresholds(root);
   const stuck = opts.stuck || thresholds.stuck;
   const softTurnBudget = Number.isFinite(opts.softTurnBudget) ? opts.softTurnBudget : thresholds.turns.soft_turn_budget;
-  const opencode = opts.runDb ? opts.opencode || "opencode" : opts.opencode || resolveOpencode();
-  if (!opts.runDb && !opencode) {
+  // The opencode CLI is only needed when the store must be READ through it. A
+  // caller that injects its own `runDb`/`query` (fixtures, unit tests) does not
+  // need opencode installed — demanding it turned a store-only test into a false
+  // CI failure on every runner without the CLI (opencode is not installed in CI).
+  const external = Boolean(opts.runDb || opts.query);
+  const opencode = external ? opts.opencode || null : opts.opencode || resolveOpencode();
+  if (!external && !opencode) {
     throw new Error("opencode CLI not found — install it, or set OPENCODE_BIN / pass --opencode <path>");
   }
   // Table generation + engine. An explicit `store` (fixtures / advanced callers)
@@ -651,7 +656,7 @@ function collectStats(opts = {}) {
     : opts.runDb
       ? storeLib.tableSet(opts.runDb, opts.flavour)
       : storeLib.openStore({ ...opts, opencodeBin: opencode, query: opts.query });
-  const runDb = opts.runDb || ((sql) => runDbJson(opencode, sql, { ...opts, dbPath: store.dbPath }));
+  const runDb = opts.runDb || (opts.query ? (sql) => opts.query(sql) : (sql) => runDbJson(opencode, sql, { ...opts, dbPath: store.dbPath }));
 
   const projectIds = runDb(projectIdsSql(root)).map((r) => r.id).filter(Boolean);
   // `--root` may be a linked feature worktree that no `project`/`project_directory`
