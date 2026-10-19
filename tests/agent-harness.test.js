@@ -5135,6 +5135,70 @@ test("context-guard counts identical tool calls cumulatively and flags the breac
   );
 });
 
+test("context-guard todo guard nudges create, sync, invalid, and close", () => {
+  const thresholds = cg.parseThresholds("| `use_after_calls` | 2 | ... |\n| `stale_after_calls` | 2 | ... |");
+  assert.strictEqual(thresholds.todo.use_after_calls, 2, "todo thresholds are parsed from orchestration.md");
+  assert.strictEqual(thresholds.todo.stale_after_calls, 2);
+
+  const state = cg.createSessionState();
+  const stuck = thresholds.stuck;
+  const edit = (i) => cg.noteToolCall(state, "edit", { filePath: `f${i}.ts`, oldString: "a", newString: "b" }, stuck);
+  const turn = (id) => cg.noteAssistant(state, { id, role: "assistant" }, thresholds);
+
+  // Multi-step work with no list -> "create one".
+  edit(1);
+  edit(2);
+  assert.strictEqual(turn("m1").todoPending, "missing");
+  cg.clearOneShot(state);
+  assert.strictEqual(state.todoPending, null, "the nudge is one-shot after injection");
+
+  // Creating a valid list clears it and marks the list as used.
+  cg.noteTodoWrite(state, {
+    todos: [
+      { content: "step a", status: "completed" },
+      { content: "step b", status: "in_progress" },
+      { content: "step c", status: "pending" },
+    ],
+  });
+  assert.strictEqual(state.todoUsed, true);
+  assert.strictEqual(state.todos.length, 3);
+  assert.strictEqual(turn("m2").todoPending, null);
+
+  // Material work after the last rewrite -> "sync it".
+  edit(3);
+  edit(4);
+  assert.strictEqual(turn("m3").todoPending, "stale");
+  cg.clearOneShot(state);
+
+  // Two in_progress items -> invalid immediately, even with no new material work.
+  cg.noteTodoWrite(state, {
+    todos: [
+      { content: "step a", status: "in_progress" },
+      { content: "step b", status: "in_progress" },
+    ],
+  });
+  assert.strictEqual(turn("m4").todoPending, "invalid");
+  cg.clearOneShot(state);
+
+  // Wrap-up band with open items -> "close it" (once per list revision).
+  cg.noteTodoWrite(state, {
+    todos: [{ content: "step a", status: "in_progress" }],
+  });
+  assert.strictEqual(cg.armTodoNudge(state, thresholds, "checkpoint"), "close");
+  cg.clearOneShot(state);
+  assert.strictEqual(cg.armTodoNudge(state, thresholds, "checkpoint"), null, "close nudges once per revision");
+
+  // A fully completed list arms nothing.
+  cg.noteTodoWrite(state, { todos: [{ content: "step a", status: "completed" }] });
+  assert.strictEqual(cg.armTodoNudge(state, thresholds, "hard"), null);
+
+  // Garbage / empty payloads never invent a list; an empty array is a clear.
+  assert.strictEqual(cg.normalizeTodos("nope"), null);
+  assert.strictEqual(cg.noteTodoWrite(state, { todos: "nope" }).recorded, false);
+  assert.strictEqual(cg.noteTodoWrite(state, { todos: [] }).recorded, true);
+  assert.deepStrictEqual(state.todos, []);
+});
+
 test("context-guard excludes legitimate polling/glue repeats from the loop counter", () => {
   const stuck = cg.parseThresholds("").stuck;
   const state = cg.createSessionState();
@@ -5659,6 +5723,8 @@ test("context-guard plugin source-contract: hooks wired to the core, no hardcode
   assert.match(src, /noteReadBefore/, "tracks in-session re-reads");
   assert.match(src, /noteReadAfter/, "flags guessed whole-file reads");
   assert.match(src, /clearOneShot/, "hygiene notices are one-shot, never nagging");
+  assert.match(src, /noteTodoWrite/, "records every todowrite call so the panel can be kept current");
+  assert.match(src, /kind: "todo"/, "todo-list rewrites are logged as guard events");
   assert.doesNotMatch(src, /identical_tool_calls\s*[:=]\s*\d/, "no hardcoded loop threshold");
   assert.doesNotMatch(src, /(?:===|==|>=|>)\s*(?:50|60|80|100)\b/, "no hardcoded turn band numbers");
 });
@@ -5865,6 +5931,47 @@ test("context-guard injects at the conversation tail and never mutates the cache
   const childMessages = [{ role: "user", content: [] }];
   await g.context("ses_guard_child", childMessages);
   assert.strictEqual(childMessages.length, 1, "subagent sessions get no guard message");
+});
+
+test("context-guard todo guard drives the todowrite panel: create, sync, close", async () => {
+  const g = await loadGuardPlugin();
+  const sid = "ses_guard_todo";
+  await g.emit({ type: "session.created", data: { sessionID: sid } });
+
+  const read = async (messages) => {
+    await g.context(sid, messages);
+    const tail = messages[messages.length - 1];
+    return tail && tail.metadata?.synthetic ? tail.content[0].text : "";
+  };
+
+  // Four material edits with no list -> the next request asks for a todo list.
+  for (let i = 0; i < 4; i++) {
+    await g.toolBefore("edit", sid, { filePath: `src/f${i}.ts`, oldString: "a", newString: "b" });
+  }
+  await g.emit({ type: "session.step.ended", data: { sessionID: sid, assistantMessageID: "m1" } });
+  let txt = await read([{ role: "user", content: [{ type: "text", text: "go" }] }]);
+  assert.match(txt, /TODO GUARD/);
+  assert.match(txt, /no todo list has been written/);
+
+  // A valid `todowrite` clears the nudge and is recorded as a todo guard event.
+  await g.toolAfter("todowrite", sid, {
+    todos: [
+      { content: "step a", status: "completed" },
+      { content: "step b", status: "in_progress" },
+      { content: "step c", status: "pending" },
+    ],
+  });
+  txt = await read([{ role: "user", content: [{ type: "text", text: "go" }] }]);
+  assert.doesNotMatch(txt, /TODO GUARD/, "a correct list clears the nudge");
+
+  // Three further material edits -> the panel is stale.
+  for (let i = 0; i < 3; i++) {
+    await g.toolBefore("edit", sid, { filePath: `src/g${i}.ts`, oldString: "a", newString: "b" });
+  }
+  await g.emit({ type: "session.step.ended", data: { sessionID: sid, assistantMessageID: "m2" } });
+  txt = await read([{ role: "user", content: [{ type: "text", text: "go" }] }]);
+  assert.match(txt, /TODO GUARD/);
+  assert.match(txt, /behind the work/);
 });
 
 test("context-guard keeps a per-message failure signature through the V2 execute.after adapter", async () => {

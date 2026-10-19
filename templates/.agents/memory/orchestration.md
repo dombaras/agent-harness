@@ -88,6 +88,20 @@ Defaults for the stuck-agent and retry-loop heuristics:
 | `inspect_rearm_every` | 10 | N further shell inspections before the dedicated-tools advisory re-arms |
 | `gate_rerun_turns` | 3 | N runs of the same gate with no intervening edit before the batching advisory |
 
+## Todo-list discipline
+
+The opencode right-hand todo panel is driven only by the model's `todowrite`
+calls. The guard nudges when the panel falls behind (material-call counts, so a
+long tool loop between model steps still triggers):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `use_after_calls` | 4 | N material tool calls without any todo list before "create one" |
+| `stale_after_calls` | 3 | N material tool calls since the last `todowrite` before "sync it" |
+
+A list with more than one `in_progress` item is flagged immediately; at the
+checkpoint band and above, open items arm a final "close the list" nudge.
+
 ## Escalation
 
 Escalate (per `.agents/memory/model-routing.md`) only on evidence. Record every
@@ -127,6 +141,11 @@ session:
   between. A failed `edit`/`write`/`apply_patch` (a guessed/stale path) and a
   hand-rolled poll (`sleep N; grep log`, `gh run watch`) each arm a one-shot
   advisory pointing at `.agents/memory/locations.md` / `npm run wait`.
+- **todo list** — `use_after_calls` / `stale_after_calls` drive the "create the
+  list" / "sync the list" nudges; more than one `in_progress` is flagged as
+  invalid, and at the checkpoint band an open list gets a "close it before you
+  report" nudge. The guard never writes the panel itself (the V2 plugin API has
+  no todo store) — the model's `todowrite` call is the single writer.
 
 Two guards BLOCK a tool call instead of nudging:
 

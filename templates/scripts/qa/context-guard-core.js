@@ -39,6 +39,22 @@ const DEFAULT_REQUEST = Object.freeze({
   intervene: 160000,
 });
 
+/* Todo-list discipline. opencode's right-hand panel is driven ONLY by the
+ * built-in `todowrite` tool, so a session that never calls it shows no panel and
+ * one that calls it once shows a stale list. The guard cannot write the panel
+ * itself (the V2 plugin API exposes no todo store), so it nudges the two
+ * mechanical gaps the model leaves:
+ *   - `use_after_calls`: enough material tool calls have run that the work is
+ *     clearly multi-step, yet no todo list has ever been written;
+ *   - `stale_after_calls`: a list exists but N material calls have run since its
+ *     last rewrite (the panel is behind the work).
+ * Thresholds are material-call counts, not turns, so a long tool loop between
+ * two model steps still triggers. */
+const DEFAULT_TODO = Object.freeze({
+  use_after_calls: 4,
+  stale_after_calls: 3,
+});
+
 /* Band order is resolved by threshold VALUE (descending), not by a fixed list,
  * so a project can retune `orchestration.md` without breaking the guard:
  * `turnBand` returns the highest band the turn count has reached. */
@@ -201,18 +217,20 @@ function parseThresholds(text) {
   const turns = { ...DEFAULT_TURNS };
   const stuck = { ...DEFAULT_STUCK };
   const request = { ...DEFAULT_REQUEST };
+  const todo = { ...DEFAULT_TODO };
   for (const line of String(text || "").split(/\r?\n/)) {
     const keyed = line.match(/^\|\s*`?([a-z_]+)`?\s*\|\s*(\d+)\s*\|/);
     if (keyed) {
       const value = Number(keyed[2]);
       if (keyed[1] in turns) turns[keyed[1]] = value;
       else if (keyed[1] in stuck) stuck[keyed[1]] = value;
+      else if (keyed[1] in todo) todo[keyed[1]] = value;
       continue;
     }
     const level = line.match(/^\|\s*(observe|warn|checkpoint|intervene)\s*\|\s*(\d+)\s*K?\+?\s*\|/);
     if (level) request[level[1]] = Number(level[2]) * 1000;
   }
-  return { turns, stuck, request };
+  return { turns, stuck, request, todo };
 }
 
 function turnBand(turn, turns) {
@@ -264,6 +282,7 @@ function guardTexts(state, thresholds) {
   if (state?.dumpPending) texts.push(DUMP_TEXT);
   if (state?.editMissPending) texts.push(EDIT_MISS_TEXT);
   if (state?.gateRerunPending) texts.push(GATE_RERUN_TEXT);
+  if (state?.todoPending && TODO_TEXTS[state.todoPending]) texts.push(TODO_TEXTS[state.todoPending]);
   if (state?.waitPending) texts.push(WAIT_TEXT);
   return texts;
 }
@@ -388,6 +407,18 @@ function createSessionState() {
     // (then cleared) so a resume/claim prologue re-derives nothing by hand.
     orientPending: false,
     orientText: null,
+    // todo-list discipline (opencode's `todowrite` panel). The guard never
+    // writes the panel (no plugin API for it) — it tracks the last list the model
+    // wrote and nudges "create" / "sync" / "close" when the panel falls behind.
+    materialCalls: 0,
+    todos: null, // normalized [{content,status,priority}] or null before the first write
+    todoUpdatedAtCalls: 0,
+    todoUsed: false,
+    todoMissingFlaggedAt: -1,
+    todoStaleFlaggedAt: -1,
+    todoInvalidFlaggedAt: -1,
+    todoCloseFlagged: false,
+    todoPending: null, // "missing" | "stale" | "invalid" | "close"
   };
 }
 
@@ -418,6 +449,7 @@ function noteAssistant(state, message, thresholds) {
     noStateChanged: false,
     noStatePending: state.noStatePending,
     noStateTurns: state.noStateTurns,
+    todoPending: state.todoPending,
   };
   const id = message?.id;
   if (!id) return out;
@@ -472,6 +504,7 @@ function noteAssistant(state, message, thresholds) {
     out.band = band;
     out.bandChanged = true;
   }
+  if (out.newTurn) out.todoPending = armTodoNudge(state, thresholds, state.band);
   return out;
 }
 
@@ -484,6 +517,7 @@ function noteToolCall(state, tool, args, stuck) {
   const material = isMaterial(tool, args);
   if (material) {
     state.materialSeen = true;
+    state.materialCalls = (state.materialCalls || 0) + 1;
     state.noStateTurns = 0;
     state.noStatePending = false;
     state.orientPending = false; // real work began — drop the session-start orient block
@@ -538,6 +572,124 @@ function noteToolResult(state, tool, args, ok, failureText, stuck) {
   }
   state.failurePending = pending;
   return out;
+}
+
+/* ------------------------------------------------------- todo-list discipline
+ *
+ * opencode's right-hand todo panel is rendered exclusively from the model's
+ * `todowrite` calls. The harness cannot write it (no todo API on the V2 plugin
+ * surface), so the only mechanical lever is a cache-safe tail nudge. Four
+ * constant texts, one per failure mode:
+ *   - missing: multi-step work began with no list at all;
+ *   - stale:   material work continued but the list was never rewritten;
+ *   - invalid: more than one item is `in_progress` (the panel can no longer
+ *              show what is actually current);
+ *   - close:   the context is at a wrap-up band but items are still open.
+ * The texts are CONSTANT (never interpolated) so the cached prefix survives. */
+const TODO_USE_TEXT =
+  "TODO GUARD — this is multi-step work but no todo list has been written, so the opencode todo panel is empty. Create it now with the `todowrite` tool: one item per discrete step, exactly ONE item `in_progress` (the step you are doing now), the rest `pending`. Keep the list in step, and mark each item `completed` immediately after its own verification step. Skip this only for genuinely single-step work.";
+const TODO_STALE_TEXT =
+  "TODO GUARD — the todo panel is behind the work: several material steps have run since the list was last written. Rewrite it now with `todowrite`: mark finished items `completed`, exactly ONE current item `in_progress`, and add any newly discovered step as `pending`. A stale list is worse than no list.";
+const TODO_INVALID_TEXT =
+  "TODO GUARD — the todo list has more than one `in_progress` item. Keep exactly ONE item `in_progress` (the step actually being worked now); mark the others `pending` or `completed` in the next `todowrite` call so the panel reflects real progress.";
+const TODO_CLOSE_TEXT =
+  "TODO GUARD — the context is at a wrap-up band but the todo list still has open items. Before you checkpoint/report, close the list with `todowrite`: mark every finished item `completed` and leave only genuinely unfinished work `pending`/`in_progress` (with the blocker named). Do not hand back a task with completed work still shown as open.";
+
+const TODO_TEXTS = Object.freeze({
+  missing: TODO_USE_TEXT,
+  stale: TODO_STALE_TEXT,
+  invalid: TODO_INVALID_TEXT,
+  close: TODO_CLOSE_TEXT,
+});
+
+const TODO_STATUSES = new Set(["pending", "in_progress", "completed", "cancelled"]);
+
+/* Normalize a `todowrite` payload. Returns null for a shape that is not a list
+ * (never inventing a list from garbage); an empty array is a deliberate clear. */
+function normalizeTodos(value) {
+  if (!Array.isArray(value)) return null;
+  return value
+    .filter((t) => t && typeof t === "object")
+    .map((t) => ({
+      content: String(t.content ?? t.text ?? "").trim(),
+      status: TODO_STATUSES.has(String(t.status)) ? String(t.status) : "pending",
+      priority: t.priority ?? null,
+    }))
+    .filter((t) => t.content.length > 0);
+}
+
+/* Record a `todowrite` call. Also called for an intentional empty list (a clear).
+ * Returns counts the plugin logs; nothing here can fail a tool call. */
+function noteTodoWrite(state, args) {
+  const list = normalizeTodos(args?.todos);
+  if (list === null) return { recorded: false, count: 0, inProgress: 0, open: 0 };
+  state.todos = list;
+  state.todoUsed = true;
+  state.todoUpdatedAtCalls = state.materialCalls || 0;
+  state.todoPending = null;
+  state.todoCloseFlagged = false;
+  return {
+    recorded: true,
+    count: list.length,
+    inProgress: list.filter((t) => t.status === "in_progress").length,
+    open: list.filter((t) => t.status === "pending" || t.status === "in_progress").length,
+  };
+}
+
+/* Decide whether a todo nudge should ride the next request. Called once per
+ * orchestrator turn (a new assistant message), after tool calls for the previous
+ * turn have run. Re-arms are bounded so a model that ignores the nudge is
+ * reminded again only after real further work, never on every turn. */
+function armTodoNudge(state, thresholds, band) {
+  const cfg = thresholds?.todo || DEFAULT_TODO;
+  const useAfter = Number.isFinite(cfg.use_after_calls) ? cfg.use_after_calls : DEFAULT_TODO.use_after_calls;
+  const staleAfter = Number.isFinite(cfg.stale_after_calls) ? cfg.stale_after_calls : DEFAULT_TODO.stale_after_calls;
+  const calls = state.materialCalls || 0;
+
+  if (!state.todoUsed) {
+    // Re-arm after another full `useAfter` window of material work, so a model
+    // that skipped the first nudge is reminded again rather than left empty.
+    if (
+      calls >= useAfter &&
+      (state.todoMissingFlaggedAt < 0 || calls - state.todoMissingFlaggedAt >= useAfter)
+    ) {
+      state.todoMissingFlaggedAt = calls;
+      state.todoPending = "missing";
+    }
+    return state.todoPending;
+  }
+
+  const list = Array.isArray(state.todos) ? state.todos : [];
+  const open = list.filter((t) => t.status === "pending" || t.status === "in_progress").length;
+  const inProgress = list.filter((t) => t.status === "in_progress").length;
+
+  // An invalid list (two currents) is the strongest signal: the panel is lying.
+  if (
+    inProgress > 1 &&
+    (state.todoInvalidFlaggedAt < 0 || calls - state.todoInvalidFlaggedAt >= staleAfter)
+  ) {
+    state.todoInvalidFlaggedAt = calls;
+    state.todoPending = "invalid";
+    return state.todoPending;
+  }
+
+  // Wrap-up closure: the model is approaching a checkpoint/report boundary and
+  // still shows open items. Flag once per list revision (any todowrite resets).
+  if (bandRank(band) >= BAND_RANK.checkpoint && open > 0 && !state.todoCloseFlagged) {
+    state.todoCloseFlagged = true;
+    state.todoPending = "close";
+    return state.todoPending;
+  }
+
+  // Staleness: real work ran since the last rewrite. Re-arm per stale window.
+  if (
+    calls - (state.todoUpdatedAtCalls || 0) >= staleAfter &&
+    (state.todoStaleFlaggedAt < 0 || calls - state.todoStaleFlaggedAt >= staleAfter)
+  ) {
+    state.todoStaleFlaggedAt = calls;
+    state.todoPending = "stale";
+  }
+  return state.todoPending;
 }
 
 /* One JSON object per line — the Phase B telemetry substrate, read without a
@@ -1283,6 +1435,7 @@ function clearOneShot(state) {
   state.dumpPending = false;
   state.editMissPending = false;
   state.gateRerunPending = false;
+  state.todoPending = null;
   state.waitPending = false;
 }
 
@@ -1378,6 +1531,12 @@ module.exports = {
   DEFAULT_TURNS,
   DEFAULT_STUCK,
   DEFAULT_REQUEST,
+  DEFAULT_TODO,
+  TODO_TEXTS,
+  TODO_USE_TEXT,
+  TODO_STALE_TEXT,
+  TODO_INVALID_TEXT,
+  TODO_CLOSE_TEXT,
   BAND_TEXT,
   GUARD_PROVENANCE,
   NO_STATE_TEXT,
@@ -1409,6 +1568,9 @@ module.exports = {
   noteAssistant,
   noteToolCall,
   noteToolResult,
+  normalizeTodos,
+  noteTodoWrite,
+  armTodoNudge,
   formatGuardEvent,
   branchSwitch,
   branchSwitchText,

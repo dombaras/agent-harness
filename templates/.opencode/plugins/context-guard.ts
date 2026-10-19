@@ -966,6 +966,22 @@ export default {
           const note = guard.noteReadAfter(stateFor(input.sessionID), output?.args, output)
           if (note.firstFlag) logEvent({ kind: "read", sessionID: input.sessionID, notice: note.notice })
         }
+        // Todo-list discipline: remember the last list the model wrote so the
+        // next request can tell whether the panel is missing, stale, invalid, or
+        // still open at a wrap-up boundary. Recording only; the nudge text rides
+        // the cache-safe tail via composeGuardText.
+        if (String(input?.tool || "").toLowerCase() === "todowrite") {
+          const note = guard.noteTodoWrite(stateFor(input.sessionID), output?.args)
+          if (note.recorded) {
+            logEvent({
+              kind: "todo",
+              sessionID: input.sessionID,
+              count: note.count,
+              inProgress: note.inProgress,
+              open: note.open,
+            })
+          }
+        }
         // Edit-miss advisory (E): a failed edit/write/apply_patch is a guessed or
         // stale path — point at the locations index once per session.
         {
