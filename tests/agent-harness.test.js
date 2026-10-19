@@ -11460,6 +11460,39 @@ test("orient: infers the feature from the branch or the single In-progress row",
   );
 });
 
+test("orient: detects a feature worktree when the session is rooted in the main checkout", () => {
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".git"));
+  const worktree = "/x/.worktrees/PublicVirtualLibrary/f-347";
+  const porcelain = [
+    `worktree ${path.resolve(dir)}`,
+    "HEAD f3cecdf",
+    "branch refs/heads/main",
+    "",
+    `worktree ${worktree}`,
+    "HEAD f3cecdf",
+    "branch refs/heads/f-347",
+    "",
+  ].join("\n");
+  const git = (args) => {
+    const key = args.join(" ");
+    if (key === "rev-parse --abbrev-ref HEAD") return "main";
+    if (key === "rev-parse --short HEAD") return "f3cecdf";
+    if (key === "status --porcelain") return "";
+    if (key === "worktree list --porcelain") return porcelain;
+    return null;
+  };
+  const o = orient.collectOrient({ root: dir, feature: "F-347", git, run: () => null, readCheckpoint: () => null });
+  assert.strictEqual(o.rootMismatch, true);
+  assert.deepStrictEqual(o.featureWorktree, { path: worktree, branch: "f-347" });
+  // A session already inside the linked worktree is not flagged.
+  const linked = tmpdir();
+  fs.writeFileSync(path.join(linked, ".git"), "gitdir: /x/.git/worktrees/f-347\n");
+  const inside = orient.collectOrient({ root: linked, feature: "F-347", git, run: () => null, readCheckpoint: () => null });
+  assert.strictEqual(inside.rootMismatch, false);
+  assert.strictEqual(inside.featureWorktree, null);
+});
+
 test("orient: checkoutKind distinguishes a main tree from a linked worktree", () => {
   const main = tmpdir();
   fs.mkdirSync(path.join(main, ".git"));

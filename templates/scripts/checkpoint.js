@@ -228,11 +228,12 @@ function parseBlock(body) {
 
 function readCheckpoint(args) {
   const feature = assertFeature(args.feature, "resume");
+  const worktree = featureWorktreeRoot(feature);
   const file = handoffPath(feature);
   if (!fs.existsSync(file)) throw new Error(`no handoff found for "${feature}" (${path.relative(root, file)})`);
   const parts = splitCheckpoint(fs.readFileSync(file, "utf8"));
   if (!parts.body) throw new Error(`"${feature}" has no ## Checkpoint block yet — run checkpoint write first`);
-  return { feature, file, body: parts.body.trim(), state: parseBlock(parts.body) };
+  return { feature, file, root, worktree, body: parts.body.trim(), state: parseBlock(parts.body) };
 }
 
 function main() {
@@ -253,8 +254,17 @@ function main() {
   if (cmd === "resume") {
     const r = readCheckpoint(args);
     if (args.json) {
-      console.log(JSON.stringify({ schema: SCHEMA, feature: r.feature, state: r.state }, null, 2));
+      console.log(JSON.stringify({ schema: SCHEMA, feature: r.feature, state: r.state, root: r.root, worktree: r.worktree }, null, 2));
       return;
+    }
+    // The handoff is resolved through the feature's linked worktree, so a session
+    // still rooted in the main checkout would otherwise read the right state and
+    // then run tsc/tests against the wrong tree. Say which root the state belongs to.
+    if (r.worktree && path.resolve(r.worktree) !== path.resolve(r.root)) {
+      console.log(
+        `> ROOT MISMATCH — ${r.feature}'s checkpoint lives in ${r.worktree}, but this session is rooted in ${r.root}.\n` +
+          "> Move the session to that worktree (session_move) before running tsc/tests; this root is a different tree.\n"
+      );
     }
     console.log(r.body);
     return;

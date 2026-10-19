@@ -237,6 +237,38 @@ function inferFeature(explicit, branch, cwd, board) {
   return m ? m[0] : null;
 }
 
+/* Compare a feature id ("F-246") to a branch/dir name ("f-246", "F-246-...")
+ * ignoring case and separators. */
+function normalizeId(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/* The linked worktree a feature actually lives in, when the session root is a
+ * different checkout (the main tree). A /resume started in the main checkout
+ * otherwise reads the main tree's clean status + a green `tsc` and mistakes them
+ * for the feature's state; the work is uncommitted in the worktree. Returns
+ * `{ path, branch }` or null. `git` is injectable for tests. */
+function featureWorktree(feature, root, git) {
+  if (!feature || typeof git !== "function") return null;
+  const want = normalizeId(feature);
+  if (!want) return null;
+  const out = safe(() => git(["worktree", "list", "--porcelain"]), null);
+  if (!out) return null;
+  let cur = null;
+  for (const line of String(out).split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      cur = { path: line.slice("worktree ".length).trim(), branch: "" };
+    } else if (cur && line.startsWith("branch ")) {
+      cur.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "").trim();
+      if (path.resolve(cur.path) === root) continue;
+      if (normalizeId(path.basename(cur.path)) === want || normalizeId(cur.branch) === want) {
+        return cur;
+      }
+    }
+  }
+  return null;
+}
+
 /* The whole orientation as a plain object. `deps` injects git/run for tests. */
 function collectOrient(opts = {}) {
   const root = path.resolve(opts.root || process.cwd());
@@ -252,6 +284,9 @@ function collectOrient(opts = {}) {
   const board = runCmd ? boardSnapshot(root, (argv) => runCmd(argv)) : null;
   const feature = inferFeature(opts.feature, branch, root, board);
   const owned = ownedFor(root, feature);
+  // The feature may live in a linked worktree while this session is rooted in
+  // the main checkout. Surface it — a green main `tsc` is not the feature's.
+  const worktree = feature && checkoutKind(root) !== "linked" ? featureWorktree(feature, root, runGit) : null;
 
   const ck = feature
     ? safe(() => readCheckpoint({ feature }), null)
@@ -290,6 +325,10 @@ function collectOrient(opts = {}) {
       dirty,
     },
     feature,
+    // Non-null when the feature's work is in a linked worktree and this session
+    // is rooted elsewhere (usually the main checkout): move before running tests.
+    featureWorktree: worktree ? { path: worktree.path, branch: worktree.branch } : null,
+    rootMismatch: Boolean(worktree),
     board: board
       ? {
           inprogress: (board.inprogress || []).map((r) => ({ id: r.id, task: r.task, handoff: r.handoff })),
@@ -312,6 +351,14 @@ function fmt(v, label) {
 
 function printHuman(o) {
   const lines = [`Session orientation — ${o.root} (harness ${o.harnessVersion || "?"})`, ""];
+  if (o.rootMismatch) {
+    lines.push(
+      `!! ROOT MISMATCH — ${o.feature} lives in the linked worktree ${o.featureWorktree.path} (branch ${o.featureWorktree.branch || "?"})`,
+      `   This session is rooted in ${o.root}; status/tsc/tests run here describe a DIFFERENT tree.`,
+      "   Move the session there (session_move / `opencode -s <id> <worktree>`) and re-run orient before doing work.",
+      ""
+    );
+  }
   lines.push(`repo:    ${o.repo.kind || "outside-git"} @ ${o.repo.branch || "?"} (HEAD ${o.repo.head || "?"})`);
   lines.push(`dirty:   ${o.repo.dirty == null ? "unavailable" : o.repo.dirty + " file(s)"}`);
   lines.push(`feature: ${o.feature || "(none inferred — pass --feature <id>)"}`);
@@ -373,6 +420,11 @@ function printBrief(o) {
     `SESSION ORIENT — ${o.repo.kind || "outside-git"} @ ${o.repo.branch || "?"} (HEAD ${o.repo.head || "?"}, ${o.repo.dirty == null ? "?" : o.repo.dirty} dirty)`
   );
   lines.push(`harness ${o.harnessVersion || "?"} · root ${o.root}`);
+  if (o.rootMismatch) {
+    lines.push(
+      `!! ROOT MISMATCH — ${o.feature} lives in worktree ${o.featureWorktree.path}; move the session there BEFORE running anything (this root's tsc/status are a different tree).`
+    );
+  }
   if (o.feature) lines.push(`feature ${o.feature}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`);
   if (o.checkpoint) lines.push(`checkpoint ${o.checkpoint.phase || "?"} · next: ${o.checkpoint.nextAction || "?"}`);
   if (o.board) {
@@ -444,6 +496,7 @@ module.exports = {
   MEMORY_FILES,
   collectOrient,
   inferFeature,
+  featureWorktree,
   checkoutKind,
   ownedFor,
   parseFirstTable,
