@@ -8,7 +8,7 @@ name: CI
 # Scope: project-owned gates. The harness-owned process gates (test:governance,
 # test:qa-plan, test:docs, ...) live in the gitignored harness tree; extend the
 # `static` job with them once the harness is CI-installable (run
-# `npx @dombaras/agent-harness update` in a setup step, or commit the tree).
+# `npx opencode-agent-harness update` in a setup step, or commit the tree).
 on:
   pull_request:
     branches: [main]

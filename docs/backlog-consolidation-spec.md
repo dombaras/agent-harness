@@ -7,7 +7,7 @@
 > work**. Current harness open items are tracked in `docs/open-work.md`.
 
 > Author: LibraryOS orchestrator, 2026-08-30. For the agent implementing this in
-> `@dombaras/agent-harness` (repo `C:\develop\agent-harness`). This spec describes a
+> `opencode-agent-harness` (repo `C:\develop\agent-harness`). This spec describes a
 > NEW harness capability; it does not change LibraryOS code paths.
 
 ## 1. Problem (why this exists)
@@ -125,7 +125,7 @@ test:backlog`, and folded into the pre-push chain alongside
 ### 3.5 Migration path (existing deployments)
 
 Add an idempotent migration — either a new command
-`npx @dombaras/agent-harness migrate-backlog` or an `update` sub-step — that:
+`npx opencode-agent-harness migrate-backlog` or an `update` sub-step — that:
 
 1. Reads the project's `.agents/features/INDEX.md` (F-rows), `.agents/memory/todo.md`
    (sprint/follow-up/deferred sections), and any flagged historical "Open" sections.

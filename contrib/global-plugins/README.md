@@ -5,7 +5,7 @@ never deploy these (they live outside `templates/`); install them into opencode'
 global plugin directory with:
 
 ```bash
-npx @dombaras/agent-harness install-global        # or: node bin/agent-harness.js install-global
+npx opencode-agent-harness install-global        # or: node bin/agent-harness.js install-global
 ```
 
 That links each `*.ts`/`*.js` here into `~/.config/opencode/plugins/` (a symlink

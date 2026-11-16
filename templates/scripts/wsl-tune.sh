@@ -79,7 +79,7 @@ target_processors() {
   if [ "$hc" -gt 6 ]; then printf '%s' "$((hc - 4))"; else printf '%s' "$((hc > 2 ? hc - 1 : 2))"; fi
 }
 
-SYSCTL_BODY="# Managed by @dombaras/agent-harness (scripts/wsl-tune.sh). Idempotent; 'wsl-tune.sh down' removes it.
+SYSCTL_BODY="# Managed by opencode-agent-harness (scripts/wsl-tune.sh). Idempotent; 'wsl-tune.sh down' removes it.
 vm.swappiness=10
 vm.vfs_cache_pressure=50
 vm.min_free_kbytes=262144
@@ -88,7 +88,7 @@ vm.dirty_ratio=10"
 
 slice_body() {
   cat <<EOF
-# Managed by @dombaras/agent-harness (scripts/wsl-tune.sh). Idempotent; 'wsl-tune.sh down' removes it.
+# Managed by opencode-agent-harness (scripts/wsl-tune.sh). Idempotent; 'wsl-tune.sh down' removes it.
 [Slice]
 MemoryHigh=8G
 MemoryMax=9G
@@ -105,7 +105,7 @@ EOF
 # serve.js; this backstop covers the agents themselves.
 backstop_body() {
   cat <<EOF
-# Managed by @dombaras/agent-harness (scripts/wsl-tune.sh). Idempotent; 'wsl-tune.sh down' removes it.
+# Managed by opencode-agent-harness (scripts/wsl-tune.sh). Idempotent; 'wsl-tune.sh down' removes it.
 [Unit]
 Description=agent-harness WSL memory backstop (soft MemoryHigh on init.scope)
 After=systemd-user-sessions.service

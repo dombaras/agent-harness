@@ -68,7 +68,7 @@ test("version is bumped whenever harness-owned files change (repo hygiene)", () 
   try {
     const p = spawnSync(
       "npm",
-      ["view", "@dombaras/agent-harness", "version", "--json", "--fetch-timeout=5000", "--fetch-retries=0"],
+      ["view", "opencode-agent-harness", "version", "--json", "--fetch-timeout=5000", "--fetch-retries=0"],
       { encoding: "utf8", timeout: 10000 }
     );
     if (p.status === 0 && p.stdout.trim()) {

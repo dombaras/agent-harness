@@ -129,7 +129,7 @@ function findRoot(startDir) {
 function readBacklog(root) {
   const p = path.join(root, "BACKLOG.md");
   if (!fs.existsSync(p)) {
-    throw new Error("BACKLOG.md not found (repo root) — run `npx @dombaras/agent-harness init` first.");
+    throw new Error("BACKLOG.md not found (repo root) — run `npx opencode-agent-harness init` first.");
   }
   const src = fs.readFileSync(p, "utf8");
   const eol = src.includes("\r\n") ? "\r\n" : "\n";

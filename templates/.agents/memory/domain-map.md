@@ -1,7 +1,7 @@
 # Domain map — {{PROJECT_NAME}}
 
 Project-specific domain facts the persona skills reference. Fill this in during
-`npx @dombaras/agent-harness init`; keep it current as the domain evolves. The skills read
+`npx opencode-agent-harness init`; keep it current as the domain evolves. The skills read
 this instead of hardcoding domain assumptions.
 
 ## Entity model

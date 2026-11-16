@@ -1,5 +1,5 @@
 #!/bin/sh
-# Harness pre-push battery. Created by @dombaras/agent-harness if missing;
+# Harness pre-push battery. Created by opencode-agent-harness if missing;
 # project-owned afterwards — edit freely.
 #
 # Cross-platform npm launcher: on Windows (Git Bash / MSYS / Cygwin) the hook

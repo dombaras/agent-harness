@@ -3,7 +3,7 @@
 **Status:** shipped to `main` and deployed. This document is the review artifact for
 that migration — read it before touching the plugin/tool layer again.
 
-**Goal:** make `@dombaras/agent-harness` work under **OpenCode V2** (verified against
+**Goal:** make `opencode-agent-harness` work under **OpenCode V2** (verified against
 `opencode 2.0.29`). V2 has three intentional breaking changes over V1 — a new
 **plugin API**, a new **server API/clients**, and terminal config moving to
 `cli.json` — and **V1 plugin implementations do not run in V2**. The harness's

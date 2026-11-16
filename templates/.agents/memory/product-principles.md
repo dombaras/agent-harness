@@ -2,7 +2,7 @@
 
 Project-owned product concepts that **lead** planning. The planner reads this
 before emitting a dispatch plan; `product-manager` and `ui-designer` keep it
-current. Fill it in during `npx @dombaras/agent-harness init`; evolve it as the
+current. Fill it in during `npx opencode-agent-harness init`; evolve it as the
 product does. Skills reference this instead of hardcoding product/UX assumptions.
 
 ## Actors

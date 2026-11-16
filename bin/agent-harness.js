@@ -914,7 +914,7 @@ function commitHarnessChanges(target, changedRels, opts) {
   }
   out.staged = staged;
   const prior = opts.priorVersion ? opts.priorVersion + " -> " : "";
-  const message = `chore(harness): @dombaras/agent-harness ${prior}${PKG.version}`;
+  const message = `chore(harness): opencode-agent-harness ${prior}${PKG.version}`;
   const commitR = runGit(target, ["commit", "-m", message, "--", ...changedRels]);
   if (!commitR.ok) {
     out.skipped.push("commit failed: " + firstGitErrorLine(commitR.err));
@@ -1018,6 +1018,21 @@ function backup(target, rel, content) {
  * edited a harness-owned file since the last deploy. Merged files
  * (`.gitattributes`, `.ignore`, `opencode.json`, `package.json`) and
  * create-if-missing project data are excluded: those never clobber. */
+/* First `init` into a repo that already has its own AGENTS.md: overwriting it
+ * would destroy project instructions the harness did not create. Refuse before
+ * writing anything; --accept-harness deliberately overwrites after a backup. */
+function collectInitAgentsConflict(target, variables) {
+  if (fs.existsSync(path.join(target, CONFIG_FILE))) return null;
+  const targetAbs = path.join(target, "AGENTS.md");
+  if (!fs.existsSync(targetAbs)) return null;
+  const tplAbs = path.join(TEMPLATES_DIR, "AGENTS.md");
+  if (!fs.existsSync(tplAbs)) return null;
+  const incoming = substitute(fs.readFileSync(tplAbs, "utf8"), variables);
+  return normalizeEol(fs.readFileSync(targetAbs, "utf8")) === normalizeEol(incoming)
+    ? null
+    : targetAbs;
+}
+
 function collectLocalHarnessDivergences(target, previousFiles, variables) {
   const divergent = [];
   for (const { abs, rel } of listFiles(TEMPLATES_DIR)) {
@@ -1089,6 +1104,20 @@ async function deploy(target, opts) {
   const runDeploy = async () => {
   assertNoTemplateHandoffs();
   const existing = readConfig(target);
+
+  // First-run guard: never clobber a project's own AGENTS.md on `init`.
+  if (!isUpdate && !acceptHarness) {
+    const conflict = collectInitAgentsConflict(target, VARIABLES);
+    if (conflict) {
+      throw new Error(
+        `"${projectName}" already has an AGENTS.md that this harness did not create:\n` +
+          `  ${conflict}\n` +
+          `  Refusing to run \`init\` and overwrite it. Move or merge that file, run in a\n` +
+          `  clean directory, or re-run with --accept-harness (the existing file is\n` +
+          `  backed up under ${BACKUP_DIR}/ first).`
+      );
+    }
+  }
 
   // Refuse to downgrade: the target's deployed harness is newer than this CLI.
   // This is how the "I updated from a local checkout that I never published"
@@ -1290,8 +1319,13 @@ async function deploy(target, opts) {
       if (normalizeEol(current) !== normalizeEol(content)) {
         const deployedHash = previousFiles[key];
         const locallyModified = !!deployedHash && deployedHash !== sha256(current);
-        actions.push({ rel: key, kind: locallyModified ? "overwrite (backup)" : "overwrite" });
-        if (locallyModified && !dryRun) backup(target, rel, current);
+        // An untracked pre-existing harness-owned file (a first `init` into a
+        // repo that already has one, or a copy without .harness.json) is backed
+        // up too: an overwrite must never be the only copy of project content.
+        const untrackedExisting = !deployedHash;
+        const backupFirst = locallyModified || untrackedExisting;
+        actions.push({ rel: key, kind: backupFirst ? "overwrite (backup)" : "overwrite" });
+        if (backupFirst && !dryRun) backup(target, rel, current);
       } else {
         actions.push({ rel: key, kind: "unchanged" });
         harnessOwnedPresent.push(key);
@@ -1517,14 +1551,15 @@ function printUsage() {
   console.log(
     `agent-harness v${PKG.version}\n\n` +
       `Usage:\n` +
-      `  agent-harness init   [--target <dir>] [--name <project>] [--domain <desc>] [--yes] [--dry-run] [--no-commit] [--no-push]\n` +
+      `  agent-harness init   [--target <dir>] [--name <project>] [--domain <desc>] [--yes] [--dry-run] [--commit] [--push]\n` +
       `  agent-harness update [--target <dir>] [--dry-run] [--no-commit] [--no-push] [--accept-harness]\n` +
       `  agent-harness migrate-backlog [--target <dir>]\n` +
       `\n` +
-      `  init and update auto-commit only the harness files they create/change\n` +
-      `  (chore(harness): ...) and push to origin by default. Use --no-commit to\n` +
-      `  skip commit+push, or --no-push to commit but not push. Your unrelated\n` +
-      `  uncommitted work is never staged. The target must be on its canonical\n` +
+      `  init writes files but does NOT commit or push by default: pass --commit to\n` +
+      `  commit the harness files it creates/changes, and --push to also push. update\n` +
+      `  auto-commits (chore(harness): ...) and pushes by default; use --no-commit or\n` +
+      `  --no-push to opt out. Your unrelated uncommitted work is never staged. The\n` +
+      `  target must be on its canonical\n` +
       `  branch (origin/HEAD, else main/master) or the commit is refused, so a\n` +
       `  harness update can never be stranded off main — pass --allow-branch to\n` +
       `  override deliberately. A locally-modified harness-owned file makes\n` +
@@ -2415,8 +2450,11 @@ async function init(target, flags) {
     yes: !!flags["--yes"],
     dryRun: !!flags["--dry-run"],
     isUpdate: false,
-    commit: !flags["--no-commit"],
-    push: !flags["--no-commit"] && !flags["--no-push"],
+    // First-run safety: an `init` in someone's existing repo never commits or
+    // pushes unless asked. `update` (a harness-owned maintenance step) keeps its
+    // auto-commit default. --push implies --commit.
+    commit: !!flags["--commit"] || !!flags["--push"],
+    push: !!flags["--push"],
     allowBranch: !!flags["--allow-branch"],
     acceptHarness: !!flags["--accept-harness"],
   });
@@ -2647,7 +2685,7 @@ function parseArgs(argv) {
     if (valueFlags.has(a)) flags[a] = argv[++i];
     else if (a === "--dry-run" || a === "--yes" || a === "-y" || a === "--force") flags[a] = true;
     else if (a === "--remove") flags[a] = true;
-    else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch" || a === "--accept-harness")
+    else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch" || a === "--accept-harness" || a === "--commit" || a === "--push")
       flags[a] = true;
   }
   return flags;

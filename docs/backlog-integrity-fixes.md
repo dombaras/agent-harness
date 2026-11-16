@@ -205,7 +205,7 @@ session's half-finished work.
 During the `0.1.64` WSL-hardening deploy to LibraryOS, the run changed only two
 root files (`scripts/qa/check-prefix-stability.js` overwritten, `.gitattributes`
 merged), yet its auto-commit `c323a2d`
-(`chore(harness): @dombaras/agent-harness 0.1.63 -> 0.1.64`) contained **17
+(`chore(harness): opencode-agent-harness 0.1.63 -> 0.1.64`) contained **17
 files**, including a concurrent F-213 session's **pre-staged** `mobile/*`
 deletions. That unrelated work was carried into a harness commit and pushed to
 `origin/main`. Evidence: the 0.1.64 session; `git show --stat c323a2d` vs the

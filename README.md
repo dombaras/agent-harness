@@ -1,4 +1,4 @@
-# @dombaras/agent-harness
+# opencode-agent-harness
 
 A reusable multi-agent harness for AI-assisted development. Ships a persona
 fleet (planner, engine engineer, mobile, QA architect/runner, security,
@@ -7,7 +7,7 @@ and QA gates — then deploys them into any project.
 
 > Extracted from a production project so the "agents / subagents / guardrails /
 > personas" layer is **not** an inherent part of the app codebase. It lives in its
-> own repo and is installed via `npx @dombaras/agent-harness init`.
+> own repo and is installed via `npx opencode-agent-harness init`.
 
 > **OpenCode V2 (2.0.29+), V2-native.** The harness ships the V2 plugin API
 > (`@opencode/plugin`; plugins default-export `{ id, setup }` and register tools
@@ -23,19 +23,19 @@ and QA gates — then deploys them into any project.
   npm package — you deploy it with `init`/`update` rather than hand-copying it
   into every repo.
 - One canonical, versioned source of truth for personas/rules/QA tiers, deployed
-  on demand and updatable via `npx @dombaras/agent-harness update`.
+  on demand and updatable via `npx opencode-agent-harness update`.
 
 ## Install & initialize
 
 ```bash
 # from anywhere (uses a target dir or defaults to cwd)
-npx @dombaras/agent-harness init --target /path/to/project --name "MyApp" --domain "a widget catalog"
+npx opencode-agent-harness init --target /path/to/project --name "MyApp" --domain "a widget catalog"
 
 # non-interactive
-npx @dombaras/agent-harness init --target . --yes
+npx opencode-agent-harness init --target . --yes
 
 # preview what would change, without writing anything
-npx @dombaras/agent-harness init --target . --dry-run
+npx opencode-agent-harness init --target . --dry-run
 ```
 
 `init` writes:
@@ -222,7 +222,7 @@ plan.
   - all personas → a `steps:` cap (cost ceiling)
   - `planner`, `handoff` → `hidden: true`
 - `.agents/skills/*/SKILL.md` carries a `model:` label only (informational).
-- `npx @dombaras/agent-harness list` prints the persona → model mapping.
+- `npx opencode-agent-harness list` prints the persona → model mapping.
 - `npm run test:dispatch` mechanically verifies model pins against
   `scripts/qa/models.allowlist.txt` and that `model-routing.md` does not name a
   stale model no longer pinned anywhere (doc↔config drift). Concrete IDs on the
@@ -447,7 +447,7 @@ scripts are **project-provided** — the rulebook references them, and
 ## Update
 
 ```bash
-npx @dombaras/agent-harness update --target /path/to/project
+npx opencode-agent-harness update --target /path/to/project
 ```
 
 - Overwrites harness-owned files, preserves `.agents/memory/*`, `.agents/reviews/*`, `.agents/handoffs/*`, `.agents/qa-plans/*`, and `BACKLOG.md`.
@@ -463,16 +463,18 @@ npx @dombaras/agent-harness update --target /path/to/project
   `test:wiring`, `test:linger`, `test:prefix`) plus the `report`,
   `report:cost`, `checkpoint`, and `serve` helpers into the target's `package.json`
   (merged, add-only).
-- **Auto-commits** the harness files it changed (`chore(harness): @dombaras/agent-harness
+- **Auto-commits** the harness files it changed (`chore(harness): opencode-agent-harness
   <old> -> <new>`) and **pushes** to origin, so the next session never sees unexplained
   modified harness files. Your unrelated uncommitted work is never staged. The push
   uses `--no-verify` — a `chore(harness)` maintenance commit must not be stranded by a
   project pre-push gate that legitimately refuses a direct main push.
   - `--no-commit` to skip commit+push, `--no-push` to commit but not push,
     `--accept-harness` to overwrite a locally-modified harness-owned file.
-  - `init` auto-commits + pushes by default too: it commits everything it scaffolds
-    (including `.agents/memory/*`, `.agents/reviews/*`, `.agents/features/*`, `.agents/handoffs/*`, and `BACKLOG.md`) so a fresh
-    project starts fully tracked and no harness file is left untracked.
+  - `init` does **not** commit or push by default: pass `--commit` to commit the
+    files it scaffolds and `--push` to also push. A first run in an existing repo
+    is always reviewable before anything enters git. A pre-existing `AGENTS.md`
+    the harness did not create is refused (nothing is written); `--accept-harness`
+    overwrites it deliberately after backing it up under `.harness-backup/`.
   - Harness-owned paths are **force-added**, so a project that gitignores deployment
     artifacts (an inherited `.agents/` `.opencode/` `AGENTS.md` pattern) still gets the
     harness commit instead of a raw `git add` failure that silently skips it — force-added
@@ -524,7 +526,7 @@ landing), and **waits for CI to go green on the landed SHA** — the deploy runs
 only after CI succeeds. Check readiness at any time with the deterministic report:
 
 ```bash
-npx @dombaras/agent-harness doctor --target /path/to/project
+npx opencode-agent-harness doctor --target /path/to/project
 ```
 
 It reports git/remote/branch, `gh` + auth, the CI/deploy workflows, the pre-push
@@ -534,7 +536,7 @@ warning; a missing prerequisite for the cycle the harness promises is a failure.
 ### Backlog migration (`migrate-backlog`)
 
 ```bash
-npx @dombaras/agent-harness migrate-backlog --target /path/to/project
+npx opencode-agent-harness migrate-backlog --target /path/to/project
 ```
 
 Consolidates any live `.agents/features/INDEX.md` F-rows and
