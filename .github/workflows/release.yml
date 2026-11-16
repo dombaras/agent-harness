@@ -1,0 +1,48 @@
+name: Release
+
+# Tag-driven publish. `git tag v0.2.0 && git push origin v0.2.0` runs the full
+# gate on the tagged commit and publishes that exact tree to npm.
+#
+# Auth: add an npm automation token as the repository secret `NPM_TOKEN`
+# (npmjs.com → Access Tokens → Granular/Automation, publish permission for
+# `opencode-agent-harness`). To use npm **trusted publishing** (OIDC, no stored
+# token) instead, configure the publisher on npmjs.com and remove the
+# `NODE_AUTH_TOKEN` env line below.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write # provenance / trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify the tag matches package.json
+        run: |
+          node -e '
+            const pkg = require("./package.json");
+            const tag = process.env.GITHUB_REF_NAME.replace(/^v/, "");
+            if (pkg.version !== tag) {
+              console.error(`tag v${tag} != package.json ${pkg.version}`);
+              process.exit(1);
+            }
+          '
+
+      - run: npm run lint
+      - run: npm test
+      - run: npm run test:pack
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
