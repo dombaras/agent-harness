@@ -11858,6 +11858,14 @@ test("run-detached.sh --stop writes matrix_aborted and --list renders the job", 
   assert.match(list.stdout, /job/, "the list shows the job id");
 });
 
+test("[release-profile] a profile.json narrows the wired npm scripts", () => {
+  assert.strictEqual(h.filterHarnessScripts(null), h.HARNESS_SCRIPTS, "no profile.json keeps the full map");
+  assert.strictEqual(h.filterHarnessScripts({}), h.HARNESS_SCRIPTS, "a profile with no scripts list is ignored");
+  const narrowed = h.filterHarnessScripts({ scripts: ["backlog", "gates", "not:a:script"] });
+  assert.deepStrictEqual(Object.keys(narrowed).sort(), ["backlog", "gates"], "only named, real scripts are wired");
+  assert.ok(!("ship" in narrowed), "a dropped script is not wired into the target");
+});
+
 test("[drift-guard] wait-for is wired into npm scripts and the wait tool", () => {
   assert.strictEqual(h.HARNESS_SCRIPTS.wait, "node scripts/wait-for.js", "wait wired into HARNESS_SCRIPTS");
   assert.ok(exists(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "wait.ts")), "wait tool wrapper deployed");

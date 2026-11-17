@@ -488,6 +488,27 @@ const HARNESS_SCRIPTS = {
   gpu: "bash scripts/wsl-gpu.sh",
 };
 
+/* Release profiles. A handover archive may carry `profile.json` next to
+ * package.json; when it does, `init` wires only the scripts it names so a
+ * process-only build has no dead `ship`/`nightly` entries pointing at files it
+ * does not ship. Absent file = the full harness (unchanged behaviour). */
+function activeHarnessProfile() {
+  try {
+    const p = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "profile.json"), "utf8"));
+    return p && typeof p === "object" ? p : null;
+  } catch {
+    return null;
+  }
+}
+function harnessScripts() {
+  return filterHarnessScripts(activeHarnessProfile());
+}
+function filterHarnessScripts(profile) {
+  if (!profile || !Array.isArray(profile.scripts)) return HARNESS_SCRIPTS;
+  const allowed = new Set(profile.scripts);
+  return Object.fromEntries(Object.entries(HARNESS_SCRIPTS).filter(([k]) => allowed.has(k)));
+}
+
 /* Detect a project's own indentation so a merge never reformats package.json
  * (a deploy that only normalizes whitespace still counts as a change and would
  * be swept into the `chore(harness)` auto-commit). */
@@ -506,7 +527,7 @@ function mergePackageJson(target) {
   const p = path.join(target, "package.json");
   const hadPkg = fs.existsSync(p);
   if (!hadPkg) {
-    return { text: JSON.stringify({ scripts: { ...HARNESS_SCRIPTS } }, null, 2) + "\n", hadPkg, changed: true };
+    return { text: JSON.stringify({ scripts: { ...harnessScripts() } }, null, 2) + "\n", hadPkg, changed: true };
   }
   const current = fs.readFileSync(p, "utf8");
   const existing = safeJson(current, null);
@@ -516,7 +537,7 @@ function mergePackageJson(target) {
   }
   const scripts = Object.assign({}, existing.scripts || {});
   let added = false;
-  for (const [name, cmd] of Object.entries(HARNESS_SCRIPTS)) {
+  for (const [name, cmd] of Object.entries(harnessScripts())) {
     if (!(name in scripts)) {
       scripts[name] = cmd;
       added = true;
@@ -3051,6 +3072,7 @@ module.exports = {
   opencodeGlobalPluginsDir,
   GLOBAL_PLUGINS_SRC,
   HARNESS_SCRIPTS,
+  filterHarnessScripts,
   runCommand,
   TEMPLATES_DIR,
   CONFIG_FILE,

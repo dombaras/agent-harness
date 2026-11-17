@@ -107,6 +107,7 @@ once on a connected machine and carry them in:
 ```bash
 npm run bundle                    # full harness -> dist/
 npm run bundle -- --profile core  # scan-reduced (no host-tuning / mobile-E2E / global plugin)
+npm run bundle -- --profile sdlc  # process/quality only (no deploy, CI, host tuning, mobile-E2E)
 ```
 
 Each bundle directory contains a source zip, a git bundle, `MANIFEST.json`
@@ -121,8 +122,12 @@ node agent-harness/bin/agent-harness.js init --target . --yes
 ```
 
 The `core` profile's bundle is a single-commit snapshot, so excluded files are
-not in its history either. Nothing is installed globally and no lifecycle script
-runs; `tools/` is repo tooling and is not part of the published package.
+not in its history either. The `sdlc` profile (personas, rules, skills, backlog,
+and the process gates, without the deploy/CI/host machinery) is a snapshot too,
+and it carries a `profile.json` so `init` wires only the scripts it actually
+ships — no dead `ship`/`nightly` entries in the target. Nothing is installed
+globally and no lifecycle script runs; `tools/` is repo tooling and is not part
+of the published package.
 
 ## Placeholders
 

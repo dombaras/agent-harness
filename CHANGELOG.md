@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1 — 2026-11-17
+
+- Added an `sdlc` bundle profile: the process/quality harness only (personas,
+  rules, skills, memory, backlog, context/token discipline, and the process
+  gates) without deploy, CI, host-tuning, mobile-E2E, or the board service.
+  Like `core`, its bundle is a single-commit snapshot.
+- The `sdlc` archive carries a `profile.json`; `init`/`update` read it and wire
+  only the npm scripts whose files actually ship, so a process-only checkout has
+  no dead `ship`/`nightly`/`serve` entries. No `profile.json` still means the
+  full harness.
+- Kept the shared libraries that the retained features import
+  (`capacity-lib.js` for the context guard/`orient`, `merge-backlog.js` for the
+  board merge driver) in the `sdlc` archive.
+
 ## 0.3.0 — 2026-11-17
 
 - Added `npm run bundle` (`tools/make-release-bundle.mjs`) for closed /
