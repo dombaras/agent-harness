@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 — 2026-11-17
+
+- Added `npm run bundle` (`tools/make-release-bundle.mjs`) for closed /
+  air-gapped handovers: a source zip, a git bundle, `MANIFEST.json`
+  (commit + per-file SHA-256), `REVIEW-NOTES.md`, and `SHA256SUMS`.
+- Added a `core` bundle profile that drops the host-tuning installers
+  (WSL sysctls, tmpfs, GPU, nightly timer), the mobile-E2E tier, and the global
+  freshness plugin; its bundle is a single-commit snapshot so excluded files are
+  not carried in history.
+- `tools/` is repo tooling only — not shipped in the npm package and not
+  deployed by `init`.
+
 ## 0.2.0 — 2026-11-16
 
 First public release under the `opencode-agent-harness` name.

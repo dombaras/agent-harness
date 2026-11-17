@@ -16,3 +16,6 @@ node_modules/
 # own guard/tools via symlinks into templates/ — machine-local, never committed.
 /scripts
 /.harness-dogfood
+
+# offline release artifacts (`npm run bundle`): versioned, not source.
+/dist/
