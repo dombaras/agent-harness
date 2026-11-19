@@ -41,6 +41,12 @@ Replace `BACKLOG.md` with a **standalone, shared, project-scoped board service**
 - **Shape B — its own small Next.js app** (reuse Next.js + Prisma + Postgres +
   the existing SSE pattern). Not embedded in any project app.
 - **Shared across all harness projects**, isolated by a tenant `project` key.
+- **Project-scoped, never checkout-scoped**: a board read/write from any
+  checkout — including a linked feature worktree — resolves to the project's
+  service (or, in legacy `BACKLOG_BACKEND=file` mode, to the MAIN checkout's
+  board). A worktree never carries a private mutable board. A project that
+  declares `board.url` treats the service as mandatory: a missing token fails
+  loudly rather than silently writing a checkout-local `BACKLOG.md`.
 - **Standalone database/schema** on the same Postgres server (logical
   separation, shared infrastructure).
 - **Online-only for v1** — no offline cache or write queue.

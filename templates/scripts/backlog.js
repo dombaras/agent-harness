@@ -52,9 +52,11 @@
  * the working board against `origin/main` row-aware (an archived-upstream row
  * wins over a stale local take; local-only rows survive), apply the change, then
  * commit + fast-forward push it. Main never carries an uncommitted board copy,
- * so it cannot resurrect a shipped row. A linked feature worktree writes its own
- * snapshot and ships it with the branch. `--no-fetch` skips the network step for
- * offline use; an offline edit is committed locally and published by `sync`.
+ * so it cannot resurrect a shipped row. A linked feature worktree is CODE
+ * isolation only: every board read/write resolves to the MAIN checkout's board
+ * (or the shared service), so a row filed mid-feature can never land in a
+ * private worktree copy. `--no-fetch` skips the network step for offline use; an
+ * offline edit is committed locally and published by `sync`.
  * `--defer` (used by the superadmin API) commits the board locally but skips the
  * network push entirely, so a request path never blocks on fetch/push; a later
  * `sync` (the API schedules it in the background) converges and publishes.
@@ -124,6 +126,29 @@ function findRoot(startDir) {
   });
   if (top.status === 0 && (top.stdout || "").trim()) return (top.stdout || "").trim();
   return null;
+}
+
+/* The canonical board root. ADR 0001 gives the board ONE home per project: the
+ * shared service when declared, else the MAIN checkout's BACKLOG.md. A linked
+ * feature worktree isolates CODE, not the board — resolving board reads and
+ * writes to the main checkout means a row filed mid-feature (e.g. a security
+ * finding) can never land in a private worktree copy that main's board never
+ * sees.
+ *
+ * `archive` is the deliberate exception in legacy file mode: `finalize` archives
+ * from inside the feature worktree BEFORE the branch lands, and the archive must
+ * travel with that branch so a failed ship does not mark unlanded work done on
+ * main. The branch commit (and `ship`) carries it. In service mode there is no
+ * checkout-local board, so the service is used either way.
+ *
+ * An explicit `--root` names a local checkout for migration/tests and is left
+ * untouched (F-333/F-338). */
+function resolveBoardRoot(root, opts) {
+  if (!root || (opts && opts.explicitRoot)) return root;
+  if (opts && opts.cmd === "archive") return root;
+  const main = boardSync.mainWorktreeRoot(root);
+  if (main && path.resolve(main) !== path.resolve(root) && fs.existsSync(main)) return path.resolve(main);
+  return root;
 }
 
 function readBacklog(root) {
@@ -1159,8 +1184,9 @@ function cmdOwns(state, argv) {
  * later local/auto-commit on that base diverges from origin. The shared
  * board-sync module owns the git-facing logic (classify dirty files, row-aware
  * reconcile, converge, publish); these thin wrappers root it in backlog.js.
- * Only the MAIN checkout is authoritative — a linked feature worktree carries a
- * snapshot that ship's rebase converges, so syncing is a no-op there. */
+ * Only the MAIN checkout is authoritative. `resolveBoardRoot` reroutes a linked
+ * feature worktree's board commands there before this code runs, so a worktree
+ * never carries a mutable board snapshot. */
 function gitCmd(root, args, opts) {
   return boardSync.gitCmd(root, args, opts);
 }
@@ -1678,12 +1704,15 @@ function main() {
   const args = parseArgs(raw.slice(1));
 
   const explicitRoot = Boolean(args.root);
-  const root = explicitRoot ? path.resolve(args.root) : findRoot(process.cwd());
-  if (!root) {
-    console.error("backlog: BACKLOG.md not found (repo root).");
+  const foundRoot = explicitRoot ? path.resolve(args.root) : findRoot(process.cwd());
+  if (!foundRoot) {
+    console.error("backlog: no board root found (no BACKLOG.md/.harness.json up the tree).");
     process.exitCode = 1;
     return;
   }
+  // Board ops from a linked worktree always act on the project's canonical board
+  // (the shared service or the main checkout), never the worktree's own copy.
+  const root = resolveBoardRoot(foundRoot, { explicitRoot, cmd });
 
   // Service backend (ADR 0001): the board lives in the external service, so
   // every read/write goes over HTTP. Git-side effects (worktree add/remove) stay

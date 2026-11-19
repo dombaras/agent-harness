@@ -1560,6 +1560,109 @@ test("backlog CLI auto NEVER selects the service from ambient env alone (F-339 f
   }
 });
 
+test("a declared board service fails loudly instead of writing a checkout-local board", () => {
+  const t = scaffoldBacklogCliTarget();
+  fs.writeFileSync(
+    path.join(t, ".harness.json"),
+    JSON.stringify({ projectName: "TESTPROJ", board: { url: "http://127.0.0.1:1", project: "TESTPROJ" } }, null, 2)
+  );
+  const before = read(path.join(t, "BACKLOG.md"));
+  const configHome = tmpdir();
+  const env = {
+    BACKLOG_BACKEND: "",
+    BACKLOG_API_URL: "",
+    BACKLOG_API_TOKEN: "",
+    BACKLOG_PROJECT: "",
+    XDG_CONFIG_HOME: configHome,
+  };
+
+  const res = runBacklogCliEnv(t, ["add", "must not go local", "--p", "P2"], env);
+  assert.strictEqual(res.status, 1, res.out);
+  assert.match(res.out, /board service token missing/i, "the failure names the missing service token");
+  assert.strictEqual(read(path.join(t, "BACKLOG.md")), before, "no checkout-local row was written");
+
+  // The legacy board stays available only as an explicit opt-out.
+  const optOut = runBacklogCliEnv(t, ["add", "legacy opt-in", "--p", "P3"], {
+    BACKLOG_BACKEND: "file",
+    XDG_CONFIG_HOME: configHome,
+  });
+  assert.strictEqual(optOut.status, 0, optOut.out);
+  assert.match(read(path.join(t, "BACKLOG.md")), /legacy opt-in/, "BACKLOG_BACKEND=file still writes the local board");
+});
+
+test("board client reads the installed board.env when the shell hook was not sourced", async () => {
+  const t = scaffoldBacklogCliTarget();
+  const { child, port } = await startMockBoardService();
+  fs.writeFileSync(
+    path.join(t, ".harness.json"),
+    JSON.stringify(
+      { projectName: "TESTPROJ", board: { url: `http://127.0.0.1:${port}`, project: "TESTPROJ" } },
+      null,
+      2
+    )
+  );
+  const configHome = tmpdir();
+  fs.mkdirSync(path.join(configHome, "agent-harness"), { recursive: true });
+  fs.writeFileSync(
+    path.join(configHome, "agent-harness", "board.env"),
+    `export BACKLOG_API_TOKEN="test-token"\nexport BACKLOG_PROJECT="TESTPROJ"\n`
+  );
+  const env = {
+    BACKLOG_BACKEND: "",
+    BACKLOG_API_URL: "",
+    BACKLOG_API_TOKEN: "",
+    BACKLOG_PROJECT: "",
+    XDG_CONFIG_HOME: configHome,
+  };
+  try {
+    const res = runBacklogCliEnv(t, ["add", "env-file task", "--p", "P2"], env);
+    assert.strictEqual(res.status, 0, res.out);
+    assert.match(res.out, /added F-001 \[P2\] env-file task/);
+    assert.doesNotMatch(read(path.join(t, "BACKLOG.md")), /env-file task/, "the file board is untouched");
+  } finally {
+    child.kill("SIGKILL");
+  }
+});
+
+function initRepoWithWorktree(seed) {
+  const main = scaffoldBacklogCliTarget();
+  if (seed) seed(main);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: main });
+  execFileSync("git", ["config", "user.email", "harness@test.invalid"], { cwd: main });
+  execFileSync("git", ["config", "user.name", "Harness Test"], { cwd: main });
+  execFileSync("git", ["add", "BACKLOG.md", "scripts"], { cwd: main });
+  execFileSync("git", ["commit", "-qm", "init"], { cwd: main });
+  const wt = path.join(tmpdir(), "f-777");
+  execFileSync("git", ["worktree", "add", "-q", "-b", "f-777", wt, "HEAD"], { cwd: main });
+  return { main, wt };
+}
+
+test("a linked worktree's board reads/writes resolve to the MAIN checkout (no private board)", () => {
+  const { main, wt } = initRepoWithWorktree();
+  const before = read(path.join(wt, "BACKLOG.md"));
+
+  const add = runBacklogCli(wt, ["add", "security: bump next", "--p", "P1", "--evidence", "worktree finding"]);
+  assert.strictEqual(add.status, 0, add.out);
+  assert.match(read(path.join(main, "BACKLOG.md")), /security: bump next/, "the row lands on the main board");
+  assert.strictEqual(read(path.join(wt, "BACKLOG.md")), before, "the worktree board copy is never written");
+
+  const list = runBacklogCli(wt, ["list"]);
+  assert.strictEqual(list.status, 0, list.out);
+  assert.match(list.out, /security: bump next/, "reads from the worktree also come from the main board");
+});
+
+test("archive from a linked worktree rides the branch (finalize), so main is not marked done before landing", () => {
+  const { main, wt } = initRepoWithWorktree((t) => {
+    runBacklogCli(t, ["add", "ship me", "--p", "P2", "--evidence", "seed"]);
+  });
+  assert.match(read(path.join(main, "BACKLOG.md")), /ship me/, "the row is on the committed main board");
+
+  const res = runBacklogCli(wt, ["archive", "F-001", "--closed", "ready to land"]);
+  assert.strictEqual(res.status, 0, res.out);
+  assert.match(read(path.join(wt, "BACKLOG.md")), /ready to land/, "the worktree carries the archive with its branch");
+  assert.match(read(path.join(main, "BACKLOG.md")), /ship me/, "main still shows the row until the branch lands");
+});
+
 test("[drift-guard] the harness test suite is hermetic against the board shell hook (F-339)", () => {
   const src = read(path.join(__dirname, "agent-harness.test.js"));
   assert.match(src, /process\.env\.BACKLOG_BACKEND = "file"/, "the suite forces the file backend");

@@ -41,6 +41,35 @@ function projectBoardConfig(root) {
   return { url: "", token: "", project: "" };
 }
 
+/* Machine-level client config. `board-service.sh install` writes
+ * `~/.config/agent-harness/board.env` and sources it from `~/.bashrc`; an
+ * opencode server launched outside that shell (systemd, a desktop launcher, a
+ * resumed session) never inherits those exports. Read the file directly so a
+ * board-configured project still reaches its service instead of silently
+ * falling back to a checkout-local file. */
+function boardEnvFile() {
+  const base = process.env.XDG_CONFIG_HOME || path.join(require("os").homedir(), ".config");
+  try {
+    const src = fs.readFileSync(path.join(base, "agent-harness", "board.env"), "utf8");
+    const out = {};
+    for (const raw of src.split(/\r?\n/)) {
+      const m = /^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(raw);
+      if (!m) continue;
+      let value = m[2];
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      out[m[1]] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /* Machine-level token store: `~/.config/agent-harness/tokens.json` maps a
  * project key to its service token (never committed). */
 function tokenStore(project) {
@@ -56,9 +85,20 @@ function tokenStore(project) {
 
 function config(root) {
   const file = root ? projectBoardConfig(root) : { url: "", token: "", project: "" };
-  const project = process.env.BACKLOG_PROJECT || file.project || "";
-  const url = (process.env.BACKLOG_API_URL || file.url || "").replace(/\/+$/, "");
-  const token = process.env.BACKLOG_API_TOKEN || file.token || tokenStore(project) || "";
+  const machine = boardEnvFile();
+  const project = process.env.BACKLOG_PROJECT || file.project || machine.BACKLOG_PROJECT || "";
+  const url = (
+    process.env.BACKLOG_API_URL ||
+    file.url ||
+    machine.BACKLOG_API_URL ||
+    ""
+  ).replace(/\/+$/, "");
+  const token =
+    process.env.BACKLOG_API_TOKEN ||
+    file.token ||
+    machine.BACKLOG_API_TOKEN ||
+    tokenStore(project) ||
+    "";
   return { url, token, project };
 }
 
@@ -79,14 +119,21 @@ function config(root) {
  * board-configured shell (e.g. `npm test` in the harness) writes its local
  * fixtures into the live shared board — the F-339 fixture-row leak. An
  * env-only setup opts in explicitly with `BACKLOG_BACKEND=service`.
+ *
+ * A declared board is MANDATORY: once the project itself declares `board.url`,
+ * the service backend wins even when the token is not configured yet. The
+ * request then fails loudly in `httpSync` ("token missing") instead of quietly
+ * writing the checkout's local `BACKLOG.md` — the split-board defect where a
+ * feature worktree filed a row that never reached the main board. The legacy
+ * file backend remains available only through an explicit opt-out
+ * (`BACKLOG_BACKEND=file` or an explicit `--root`).
  */
 function enabled(root, opts) {
   if (opts && opts.forceFile) return false;
   if (process.env.BACKLOG_BACKEND === "file") return false;
   if (process.env.BACKLOG_BACKEND === "service") return true;
   if (!projectBoardConfig(root).url) return false;
-  const c = config(root);
-  return Boolean(c.url && c.token);
+  return Boolean(config(root).url);
 }
 
 function projectKey(root) {
@@ -109,7 +156,16 @@ function projectKey(root) {
 function httpSync(root, method, endpoint, body) {
   const c = config(root);
   if (!c.url) throw new Error("board service not configured: set BACKLOG_API_URL");
-  if (!c.token) throw new Error("board service token missing: set BACKLOG_API_TOKEN");
+  if (!c.token) {
+    const base = process.env.XDG_CONFIG_HOME || path.join(require("os").homedir(), ".config");
+    throw new Error(
+      `board service token missing for project "${projectKey(root)}": set BACKLOG_API_TOKEN, ` +
+        `add it to ${path.join(base, "agent-harness", "tokens.json")} or ` +
+        `${path.join(base, "agent-harness", "board.env")}.\n` +
+        "This project declares a board service, so the CLI will not fall back to a checkout-local " +
+        "BACKLOG.md (set BACKLOG_BACKEND=file only to opt into the legacy board deliberately)."
+    );
+  }
 
   const payload = JSON.stringify({
     url: `${c.url}${endpoint}`,

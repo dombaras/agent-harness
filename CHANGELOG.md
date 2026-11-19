@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.2 — 2026-11-20
+
+- Board capture/claim/read commands are project-scoped, never checkout-scoped.
+  A `backlog` run inside a linked feature worktree now resolves to the shared
+  board service — or, in legacy file mode, to the MAIN checkout's board — so a
+  row captured mid-feature (the LibraryOS Next.js security finding filed in an
+  f-002 worktree) reaches the main board immediately instead of a private
+  worktree copy. `archive` in legacy file mode is the deliberate exception: it
+  rides the feature branch, so a failed `ship` cannot mark unlanded work done on
+  main.
+- A project that declares `board.url` in `.harness.json` now treats the service
+  as mandatory: a missing token fails loudly with an actionable message instead
+  of silently falling back to a checkout-local `BACKLOG.md`. The legacy file
+  board remains available only through explicit `BACKLOG_BACKEND=file` or
+  `--root`.
+- The board client also reads the installed
+  `~/.config/agent-harness/board.env`, so an opencode server launched outside the
+  shell hook (systemd/desktop/resumed session) still reaches the service.
+- Tests: a linked worktree mutation/read targets main and leaves the worktree
+  copy untouched; a declared-service/no-token project writes no local row; the
+  `board.env` token fallback is covered.
+
 ## 0.3.1 — 2026-11-17
 
 - Added an `sdlc` bundle profile: the process/quality harness only (personas,
