@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3 — 2026-11-20
+
+- Refined worktree archive routing: a row already in the worktree's board
+  snapshot still archives there and rides the feature branch (finalize
+  semantics), while a row captured after the branch was cut exists only on main
+  and now archives on main instead of failing with "no row in BACKLOG.md".
+
 ## 0.3.2 — 2026-11-20
 
 - Board capture/claim/read commands are project-scoped, never checkout-scoped.
@@ -7,9 +14,11 @@
   board service — or, in legacy file mode, to the MAIN checkout's board — so a
   row captured mid-feature (the LibraryOS Next.js security finding filed in an
   f-002 worktree) reaches the main board immediately instead of a private
-  worktree copy. `archive` in legacy file mode is the deliberate exception: it
-  rides the feature branch, so a failed `ship` cannot mark unlanded work done on
-  main.
+  worktree copy. In legacy file mode, `archive` of a row already in the
+  worktree's snapshot rides the feature branch, so a failed `ship` cannot mark
+  unlanded work done on main; a row captured after the branch was cut has no
+  local copy, so its archive resolves to main (finalize no longer fails with
+  "no row").
 - A project that declares `board.url` in `.harness.json` now treats the service
   as mandatory: a missing token fails loudly with an actionable message instead
   of silently falling back to a checkout-local `BACKLOG.md`. The legacy file

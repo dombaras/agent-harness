@@ -135,17 +135,26 @@ function findRoot(startDir) {
  * finding) can never land in a private worktree copy that main's board never
  * sees.
  *
- * `archive` is the deliberate exception in legacy file mode: `finalize` archives
- * from inside the feature worktree BEFORE the branch lands, and the archive must
- * travel with that branch so a failed ship does not mark unlanded work done on
- * main. The branch commit (and `ship`) carries it. In service mode there is no
+ * `archive` is the deliberate exception in legacy file mode when the row is
+ * already in this checkout's board snapshot: `finalize` archives from inside the
+ * feature worktree BEFORE the branch lands, and that archive must travel with
+ * the branch so a failed ship does not mark unlanded work done on main. The row
+ * is NOT in the local snapshot when it was captured mid-branch (a worktree `add`
+ * now writes main), so that archive resolves to main instead — otherwise
+ * finalize would fail with "no row in BACKLOG.md". In service mode there is no
  * checkout-local board, so the service is used either way.
  *
  * An explicit `--root` names a local checkout for migration/tests and is left
  * untouched (F-333/F-338). */
 function resolveBoardRoot(root, opts) {
   if (!root || (opts && opts.explicitRoot)) return root;
-  if (opts && opts.cmd === "archive") return root;
+  if (opts && opts.cmd === "archive" && opts.id) {
+    try {
+      if (findRow(readBacklog(root).lines, opts.id)) return root;
+    } catch {
+      /* no local board (service-backed) — resolve the canonical root below */
+    }
+  }
   const main = boardSync.mainWorktreeRoot(root);
   if (main && path.resolve(main) !== path.resolve(root) && fs.existsSync(main)) return path.resolve(main);
   return root;
@@ -1712,7 +1721,7 @@ function main() {
   }
   // Board ops from a linked worktree always act on the project's canonical board
   // (the shared service or the main checkout), never the worktree's own copy.
-  const root = resolveBoardRoot(foundRoot, { explicitRoot, cmd });
+  const root = resolveBoardRoot(foundRoot, { explicitRoot, cmd, id: args._[0] });
 
   // Service backend (ADR 0001): the board lives in the external service, so
   // every read/write goes over HTTP. Git-side effects (worktree add/remove) stay

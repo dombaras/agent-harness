@@ -1663,6 +1663,19 @@ test("archive from a linked worktree rides the branch (finalize), so main is not
   assert.match(read(path.join(main, "BACKLOG.md")), /ship me/, "main still shows the row until the branch lands");
 });
 
+test("archive from a worktree archives a mid-branch capture on main (no local row to carry)", () => {
+  const { main, wt } = initRepoWithWorktree();
+  const add = runBacklogCli(wt, ["add", "captured after branching", "--p", "P2", "--evidence", "field"]);
+  assert.strictEqual(add.status, 0, add.out);
+  assert.match(read(path.join(main, "BACKLOG.md")), /captured after branching/);
+
+  const res = runBacklogCli(wt, ["archive", "F-001", "--closed", "fixed in this branch"]);
+  assert.strictEqual(res.status, 0, res.out);
+  const mainBoard = read(path.join(main, "BACKLOG.md"));
+  assert.match(mainBoard.split("## Archive")[1], /\| F-001 \| \? \| captured after branching \| fixed in this branch \|/);
+  assert.doesNotMatch(read(path.join(wt, "BACKLOG.md")), /captured after branching/, "the worktree never gains a private row");
+});
+
 test("[drift-guard] the harness test suite is hermetic against the board shell hook (F-339)", () => {
   const src = read(path.join(__dirname, "agent-harness.test.js"));
   assert.match(src, /process\.env\.BACKLOG_BACKEND = "file"/, "the suite forces the file backend");

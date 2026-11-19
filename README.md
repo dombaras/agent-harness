@@ -360,9 +360,10 @@ so agents see complete descriptions.
 - **One project board, never a worktree copy**: board reads and writes are project-scoped.
   A `backlog_*`/`backlog` command run inside a linked feature worktree resolves to the
   shared board service, or — in legacy file mode — to the MAIN checkout's board, so a row
-  captured mid-feature (e.g. a security finding) is on the main board immediately. The one
-  file-mode exception is `archive`: it rides the feature branch (so a failed `ship` cannot
-  mark unlanded work done on main). A
+  captured mid-feature (e.g. a security finding) is on the main board immediately. In
+  file mode, `archive` of a row already in the worktree's snapshot rides the feature branch
+  (so a failed `ship` cannot mark unlanded work done on main); a row captured after the
+  branch was cut has no local copy, so its archive resolves to main. A
   project whose `.harness.json` declares `board.url` treats the service as mandatory: a
   missing token fails loudly instead of silently falling back to a checkout-local
   `BACKLOG.md` (the split-board defect); `BACKLOG_BACKEND=file` or an explicit `--root` is
