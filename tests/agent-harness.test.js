@@ -1590,6 +1590,27 @@ test("a declared board service fails loudly instead of writing a checkout-local 
   assert.match(read(path.join(t, "BACKLOG.md")), /legacy opt-in/, "BACKLOG_BACKEND=file still writes the local board");
 });
 
+test(".harness.json can pin the legacy file backend without a shell export", () => {
+  const t = scaffoldBacklogCliTarget();
+  fs.writeFileSync(
+    path.join(t, ".harness.json"),
+    JSON.stringify(
+      { projectName: "TESTPROJ", board: { url: "http://127.0.0.1:1", project: "TESTPROJ", backend: "file" } },
+      null,
+      2
+    )
+  );
+  const res = runBacklogCliEnv(t, ["add", "durable legacy row", "--p", "P2"], {
+    BACKLOG_BACKEND: "",
+    BACKLOG_API_URL: "",
+    BACKLOG_API_TOKEN: "",
+    BACKLOG_PROJECT: "",
+    XDG_CONFIG_HOME: tmpdir(),
+  });
+  assert.strictEqual(res.status, 0, res.out);
+  assert.match(read(path.join(t, "BACKLOG.md")), /durable legacy row/);
+});
+
 test("board client reads the installed board.env when the shell hook was not sourced", async () => {
   const t = scaffoldBacklogCliTarget();
   const { child, port } = await startMockBoardService();
@@ -1682,7 +1703,8 @@ test("[drift-guard] the harness test suite is hermetic against the board shell h
   assert.match(src, /delete process\.env\.BACKLOG_API_TOKEN/, "the suite drops the shell-hook token");
   assert.match(src, /delete process\.env\.BACKLOG_PROJECT/, "the suite drops the shell-hook project");
   const client = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-client.js"));
-  assert.match(client, /projectBoardConfig\(root\)\.url/, "auto mode requires the project's own board block");
+  assert.match(client, /projectBoardConfig\(root\)/, "auto mode requires the project's own board block");
+  assert.match(client, /if \(!declared\.url\) return false;/, "ambient env alone never selects the service");
 });
 
 test("backlog CLI resolves a service root from .harness.json when no BACKLOG.md exists [ADR 0001]", async () => {

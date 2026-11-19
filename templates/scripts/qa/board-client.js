@@ -12,8 +12,10 @@
  *
  * Config is resolved from the project's `.harness.json` `board` block first
  * (per project, survives harness updates), then the environment:
- *   .harness.json -> { "board": { "url", "token", "project" } }
+ *   .harness.json -> { "board": { "url", "token", "project", "backend" } }
  *   BACKLOG_API_URL / BACKLOG_API_TOKEN / BACKLOG_PROJECT (env override)
+ * `board.backend` pins `"file"` (deliberate legacy board) or `"service"`
+ * without relying on a shell export.
  *
  * The functions mirror `backlog.js` command results so `formatResult` prints the
  * same text for either backend.
@@ -33,12 +35,13 @@ function projectBoardConfig(root) {
         url: typeof b.url === "string" ? b.url : "",
         token: typeof b.token === "string" ? b.token : "",
         project: typeof b.project === "string" ? b.project : "",
+        backend: typeof b.backend === "string" ? b.backend.trim().toLowerCase() : "",
       };
     }
   } catch {
     /* no .harness.json / no board block */
   }
-  return { url: "", token: "", project: "" };
+  return { url: "", token: "", project: "", backend: "" };
 }
 
 /* Machine-level client config. `board-service.sh install` writes
@@ -126,13 +129,17 @@ function config(root) {
  * writing the checkout's local `BACKLOG.md` — the split-board defect where a
  * feature worktree filed a row that never reached the main board. The legacy
  * file backend remains available only through an explicit opt-out
- * (`BACKLOG_BACKEND=file` or an explicit `--root`).
+ * (`BACKLOG_BACKEND=file`, `--root`, or the durable `.harness.json`
+ * `board.backend: "file"` — a project choice that also beats ambient env).
  */
 function enabled(root, opts) {
   if (opts && opts.forceFile) return false;
+  const declared = projectBoardConfig(root);
+  if (declared.backend === "file") return false;
   if (process.env.BACKLOG_BACKEND === "file") return false;
   if (process.env.BACKLOG_BACKEND === "service") return true;
-  if (!projectBoardConfig(root).url) return false;
+  if (declared.backend === "service") return true;
+  if (!declared.url) return false;
   return Boolean(config(root).url);
 }
 

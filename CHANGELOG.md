@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4 — 2026-11-20
+
+- Added a durable per-project backend pin: `.harness.json`
+  `"board": { ..., "backend": "file" }` keeps a project on the legacy file board
+  without relying on a shell export (useful when the service is not provisioned
+  on that machine). `backend: "service"` pins the service; `BACKLOG_BACKEND`
+  remains the per-environment override, and `--root` still forces file mode for
+  migration/tests. The pin survives `update` because `.harness.json` merges
+  project fields.
+
 ## 0.3.3 — 2026-11-20
 
 - Refined worktree archive routing: a row already in the worktree's board

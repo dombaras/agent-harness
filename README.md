@@ -366,8 +366,9 @@ so agents see complete descriptions.
   branch was cut has no local copy, so its archive resolves to main. A
   project whose `.harness.json` declares `board.url` treats the service as mandatory: a
   missing token fails loudly instead of silently falling back to a checkout-local
-  `BACKLOG.md` (the split-board defect); `BACKLOG_BACKEND=file` or an explicit `--root` is
-  the deliberate legacy opt-out. The client also reads the installed
+  `BACKLOG.md` (the split-board defect); `board.backend: "file"` in `.harness.json` (durable),
+  `BACKLOG_BACKEND=file` (per shell), or an explicit `--root` is the deliberate legacy
+  opt-out. The client also reads the installed
   `~/.config/agent-harness/board.env`, so an opencode server started outside the shell
   hook still reaches the service.
 - **Single-authority board (main-checkout freshness)**: because a feature's commits reach

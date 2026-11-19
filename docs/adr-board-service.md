@@ -46,7 +46,10 @@ Replace `BACKLOG.md` with a **standalone, shared, project-scoped board service**
   service (or, in legacy `BACKLOG_BACKEND=file` mode, to the MAIN checkout's
   board). A worktree never carries a private mutable board. A project that
   declares `board.url` treats the service as mandatory: a missing token fails
-  loudly rather than silently writing a checkout-local `BACKLOG.md`.
+  loudly rather than silently writing a checkout-local `BACKLOG.md`. A project
+  that deliberately stays on the legacy file board pins
+  `board.backend: "file"` in `.harness.json` (durable, survives updates);
+  `BACKLOG_BACKEND=file` remains the per-environment override.
 - **Standalone database/schema** on the same Postgres server (logical
   separation, shared infrastructure).
 - **Online-only for v1** — no offline cache or write queue.
