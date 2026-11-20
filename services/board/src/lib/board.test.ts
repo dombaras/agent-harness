@@ -1,3 +1,4 @@
+// test-wiring-waived: services/board/package.json runs `tsx --test src/lib/*.test.ts`
 import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { prisma } from "@/lib/db";

@@ -242,7 +242,7 @@ V2 adapters registered in `setup`:
 - `ctx.tool.hook("execute.before", e => hooks["tool.execute.before"]({ tool: e.tool, sessionID: e.sessionID }, { args: e.input }))`
   — mutating `e.input` (the tool args) still reroots `workdir`/`command`; a thrown
   error still aborts the call.
-- `ctx.tool.hook("execute.after", e => hooks["tool.execute.after"]({…}, v1Result(e)))`
+- `ctx.tool.hook("execute.after", e => hooks["tool.execute.after"]({...}, v1Result(e)))`
   where `v1Result` maps `{status,result|error}` → the V1 `{args,status,error,output,metadata}`.
 - `ctx.session.hook("context", onContext)` replaces
   `experimental.chat.messages.transform`: `onContext` reads `event.sessionID` directly
@@ -381,7 +381,7 @@ guidance changed from the V1 `"tools": { "<server>*": false }` disable to a
 - The context-guard simulation tests were rewritten around a new
   **`loadGuardPlugin()`** helper (a fake `ctx` that records the registered V2 hooks and
   exposes `emit`/`toolBefore`/`toolAfter`/`context` drivers), replacing direct V1
-  `plugin["tool.execute.before"](…)` calls. All guard scenarios (tail injection, orient,
+  `plugin["tool.execute.before"](...)` calls. All guard scenarios (tail injection, orient,
   tool-block, branch-switch, main-checkout, reroute, hygiene) still asserted.
 
 ---

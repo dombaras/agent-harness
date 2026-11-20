@@ -131,6 +131,137 @@ function dirtyEntries() {
     .filter((l) => l && !l.startsWith("!!"));
 }
 
+/* Generated / machine-local paths that must never ride into a feature commit.
+ * `git add -A` used to sweep these up (a worktree's `prisma/generated` symlink
+ * broke CI on a fresh checkout), so they are blocked explicitly. */
+const BLOCKED_PATTERNS = [
+  /(^|\/)node_modules(\/|$)/,
+  /(^|\/)\.next(\/|$)/,
+  /(^|\/)\.turbo(\/|$)/,
+  /(^|\/)dist(\/|$)/,
+  /(^|\/)build(\/|$)/,
+  /(^|\/)coverage(\/|$)/,
+  /(^|\/)prisma\/generated(\/|$)/,
+  /(^|\/)\.env(\..*)?$/,
+  /\.(log|tsbuildinfo)$/,
+];
+
+function isBlockedPath(rel) {
+  return BLOCKED_PATTERNS.some((re) => re.test(rel.replace(/\\/g, "/")));
+}
+
+/* `git ls-files --others --exclude-standard` -> repo-relative untracked paths. */
+function untrackedFiles() {
+  return out("git", ["ls-files", "--others", "--exclude-standard"], { cwd: root })
+    .split(/\r?\n/)
+    .filter(Boolean);
+}
+
+function isSymlink(rel) {
+  try {
+    return fs.lstatSync(path.join(root, rel)).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/* Stage the finalization tail without `git add -A`.
+ *
+ * - tracked changes (`git add -u`) are the feature's own edits;
+ * - untracked tail files (handoff, feature docs, QA plan, memory, docs) are added;
+ * - untracked generated/symlinked/machine-local paths are refused, never staged;
+ * - a stray `BACKLOG.md` diff is refused when the board service owns the board
+ *   (a worktree-local row is a duplicate that would collide on merge).
+ *
+ * Returns { ok, blocked } — blocked lists the paths that need a human decision.
+ */
+function stageTail(feature, opts = {}) {
+  const includeBlocked = Boolean(opts.includeBlocked);
+  if (!run("git", ["add", "-u"], { cwd: root })) return { ok: false, blocked: [] };
+
+  const blocked = [];
+  const boardService = boardServiceEnabled();
+  for (const rel of untrackedFiles()) {
+    if (rel === "BACKLOG.md" && boardService) {
+      blocked.push(`${rel} (board service owns the board — worktree copy is a duplicate)`);
+      continue;
+    }
+    if (isBlockedPath(rel) || isSymlink(rel)) {
+      blocked.push(rel);
+      continue;
+    }
+    // Another feature's handoff is never part of this landing; it is either a
+    // stale copy from a shared checkout or work that belongs to that session.
+    if (rel.startsWith(".agents/handoffs/") && rel !== `.agents/handoffs/${feature}.md`) {
+      blocked.push(`${rel} (another feature's handoff)`);
+      continue;
+    }
+    if (!run("git", ["add", "--", rel], { cwd: root })) return { ok: false, blocked };
+  }
+
+  // A tracked BACKLOG.md diff with the board service enabled is the same
+  // duplicate row, just already tracked. Never let it into the landing commit.
+  if (boardService) {
+    const blockedBoard = dirtyEntries().filter((l) => /(^|\s)BACKLOG\.md$/.test(l) || l.endsWith(" BACKLOG.md"));
+    if (blockedBoard.length) {
+      blocked.push("BACKLOG.md (board service owns the board — restore or move the row to the service)");
+    }
+  }
+
+  if (blocked.length && !includeBlocked) {
+    console.error(
+      "\n[finalize] refusing to commit these non-tail paths:\n" +
+        [...new Set(blocked)].map((l) => `      ${l}`).join("\n") +
+        "\n      Move/commit/delete them first, or re-run with --include-blocked to stage them deliberately."
+    );
+    return { ok: false, blocked };
+  }
+  if (blocked.length && includeBlocked) {
+    console.log("\n[finalize] --include-blocked: staging the paths above.");
+    if (!run("git", ["add", "-A"], { cwd: root })) return { ok: false, blocked };
+  }
+  return { ok: true, blocked: [] };
+}
+
+function boardServiceEnabled() {
+  try {
+    return require(path.join(root, "scripts", "qa", "board-client.js")).enabled(root);
+  } catch {
+    return false;
+  }
+}
+
+/* After a landing: converge the main checkout (ff-only, only when clean) and
+ * print the close-out steps that used to appear as a session-ending remark. */
+function closeOut(base, feature) {
+  let hygiene;
+  try {
+    hygiene = require(path.join(root, "scripts", "qa", "worktree-hygiene.js"));
+  } catch {
+    return;
+  }
+  spawnSync("git", ["fetch", "--quiet", "origin"], { cwd: root, stdio: "ignore", timeout: 10000 });
+  const h = hygiene.hygiene(root, base, process.cwd());
+  if (!h) return;
+  console.log(`\n[finalize] close-out: ${hygiene.describe(h)}`);
+
+  if (h.main.behind > 0 && h.main.dirty === 0) {
+    console.log(`[finalize] converging the main checkout: git -C ${h.main.path} merge --ff-only ${h.baseRef}`);
+    const merged = spawnSync("git", ["-C", h.main.path, "merge", "--ff-only", h.baseRef], { encoding: "utf8" });
+    if (merged.status === 0) console.log(`[finalize] main checkout is now up to date.`);
+    else console.log(`[finalize] could not fast-forward the main checkout:\n${String(merged.stderr || merged.stdout || "").trim()}`);
+  }
+
+  const advice = hygiene.closeOutAdvice(hygiene.hygiene(root, base, process.cwd()));
+  if (advice.length) {
+    console.log("[finalize] close-out actions still open:");
+    for (const a of advice) console.log(`      - ${a}`);
+    console.log(`      (the next session's orient auto-prunes merged, clean worktrees; ${feature} cannot be removed from inside it)`);
+  } else {
+    console.log("[finalize] no leftovers: main is in sync and no merged worktree remains.");
+  }
+}
+
 function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -143,6 +274,7 @@ function parseArgs(argv) {
     else if (a === "--no-rebase") args["no-rebase"] = true;
     else if (a === "--no-gate") args["no-gate"] = true;
     else if (a === "--no-ci-wait") args["no-ci-wait"] = true;
+    else if (a === "--include-blocked") args["include-blocked"] = true;
     else if (a === "--help" || a === "-h") args.help = true;
     else args._.push(a);
   }
@@ -239,14 +371,17 @@ function main() {
     console.log(`[finalize] ${feature} is already archived — skipping the board write.`);
   }
 
-  // 2. Commit the tail (board + CHANGELOG + handoff + any remaining change) so
-  //    `ship`'s dirty-tree guard cannot abort the documented one-command close.
+  // 2. Commit the tail (board + CHANGELOG + handoff + remaining feature work)
+  //    so `ship`'s dirty-tree guard cannot abort the documented one-command
+  //    close. Staging is scoped: generated artifacts, symlinks and a stray
+  //    worktree BACKLOG.md are refused instead of being swept in by `-A`.
   const dirty = dirtyEntries();
   if (dirty.length) {
     console.log(
       `\n[finalize] committing the finalization tail:\n` + dirty.map((l) => `      ${l}`).join("\n")
     );
-    if (!run("git", ["add", "-A"], { cwd: root })) return fail("finalize: `git add -A` failed.");
+    const staged = stageTail(feature, { includeBlocked: args["include-blocked"] });
+    if (!staged.ok) return fail("finalize: the finalization tail is not safe to stage — see above.");
     if (!run("git", ["commit", "-m", `chore(${feature}): finalize — board + changelog`], { cwd: root })) {
       return fail("finalize: the finalization commit failed.");
     }
@@ -261,6 +396,10 @@ function main() {
         `      npm run finalize -- --feature ${feature}`
     );
   }
+
+  // 4. Close the loop that used to be a session-ending remark: converge the
+  //    main checkout and name every leftover worktree explicitly.
+  closeOut(base, feature);
 
   console.log(`\n[finalize] ${feature} landed + CI green.`);
 }

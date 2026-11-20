@@ -37,6 +37,7 @@ const PHASES = {
     ["test:governance"],
     ["test:concurrency"],
     ["test:capacity"],
+    ["test:worktrees"],
     ["test:ci-policy"],
     ["test:backlog"],
     ["test:wiring"],

@@ -2,6 +2,16 @@
 
 ## 0.3.6 — 2026-11-20
 
+- Finalization now closes the loop instead of reporting drift. `finalize` stages
+  its tail with `git add -u` + explicit untracked adds, refusing generated paths,
+  symlinks, other features' handoffs, and a stray worktree `BACKLOG.md` when the
+  board service owns the board (the `git add -A` sweep had committed a
+  `prisma/generated` symlink and could commit another session's work); after
+  landing it fast-forwards a clean main checkout and prints the remaining
+  close-out actions. NEW `scripts/qa/worktree-hygiene.js` reports main-checkout
+  drift + merged/clean leftover worktrees, and `test:worktrees`
+  (`scripts/qa/check-worktrees.js`, wired into the `process` gate phase and
+  skipped on CI) fails when a landing left either behind.
 - `update` no longer fails closed on the root `AGENTS.md` because `next dev`
   appended its `<!-- BEGIN:nextjs-agent-rules -->` block: the drift check and the
   deploy write now compare the harness-owned content with that tool-owned block
@@ -11,6 +21,7 @@
 
 ## 0.3.5 — 2026-11-20
 
+- Shipped the `.agents/reviews/` scaffolding for review deliverables (ebe9dd8).
 - Trimmed the canonical rulebook (`templates/.agents/AGENTS.md`) from ~47 KB to
   ~27 KB by removing the operating mechanics that duplicate the always-on root
   `AGENTS.md` and `.agents/rules/00-operating.md` (dispatch economics, retry/gate
