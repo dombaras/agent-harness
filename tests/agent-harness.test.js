@@ -307,6 +307,44 @@ test("update treats a CRLF *.ps1 (checked out per .gitattributes) as unchanged, 
   );
 });
 
+test("update ignores the `next dev` marker block appended to AGENTS.md (F-349)", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+
+  const rootAgents = path.join(target, "AGENTS.md");
+  const deployed = read(rootAgents);
+  const nextDevBlock = [
+    "",
+    "<!-- BEGIN:nextjs-agent-rules -->",
+    "",
+    "# This is NOT the Next.js you know",
+    "",
+    "This block is written and re-added by `next dev`.",
+    "",
+    "<!-- END:nextjs-agent-rules -->",
+    "",
+  ].join("\n");
+  fs.writeFileSync(rootAgents, deployed + nextDevBlock, "utf8");
+
+  // A block-only difference is tool-owned, not a hand-edit: update must neither
+  // fail closed nor rewrite the file (next dev would just re-append the block).
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(rootAgents), deployed + nextDevBlock, "the next-dev block is left in place");
+
+  // The same update twice is still idempotent (the manifest records the
+  // harness-owned content, not the block the tool owns).
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  assert.strictEqual(read(rootAgents), deployed + nextDevBlock, "a second update is a no-op");
+
+  // A real edit to the harness-owned part is still refused.
+  fs.writeFileSync(rootAgents, deployed.replace("Operating Rules", "Operating Rulez") + nextDevBlock, "utf8");
+  await assert.rejects(
+    () => h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true }),
+    /locally-modified harness-owned file/,
+    "a real edit to AGENTS.md is still refused"
+  );
+});
+
 test("update fails closed on a modified QA script and points upstream (F-289 shape)", async () => {
   const target = tmpdir();
   git(target, ["init", "-q", "-b", "main"]);

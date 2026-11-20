@@ -200,6 +200,26 @@ function sha256(str) {
   return crypto.createHash("sha256").update(normalizeEol(str), "utf8").digest("hex");
 }
 
+/* `next dev` appends this marker block to the project's root AGENTS.md on every
+ * run (and re-adds it when removed). It is tool-owned content, never a
+ * hand-edit of the harness file: comparing raw bytes made `update` fail closed
+ * on AGENTS.md, and rewriting the file just made `next dev` re-add the block
+ * (F-349). Strip the block and its trailing separator before comparing. */
+function stripNextDevMarker(text) {
+  const lf = normalizeEol(text);
+  if (!lf.includes("<!-- BEGIN:nextjs-agent-rules -->")) return lf;
+  return lf.replace(
+    /\n*<!-- BEGIN:nextjs-agent-rules -->[\s\S]*?<!-- END:nextjs-agent-rules -->[ \t]*\n?/g,
+    ""
+  );
+}
+
+/* Comparable form of the root AGENTS.md: the harness-owned content, ignoring
+ * the `next dev` marker block and the trailing newline it may leave behind. */
+function harnessAgentsComparable(text) {
+  return stripNextDevMarker(text).replace(/\s+$/, "");
+}
+
 function safeJson(text, fallback) {
   if (text == null) return fallback;
   try {
@@ -1068,6 +1088,9 @@ function collectLocalHarnessDivergences(target, previousFiles, variables) {
     if (deployedHash === sha256(prev)) continue; // unmodified since last deploy
     const content = substitute(fs.readFileSync(abs, "utf8"), variables);
     if (prev === content) continue; // matches the incoming template: no clobber
+    // The root AGENTS.md carries a `next dev` block that the tool re-appends:
+    // a block-only difference is not a project hand-edit (F-349).
+    if (key === "AGENTS.md" && harnessAgentsComparable(prev) === harnessAgentsComparable(content)) continue;
     divergent.push({ rel: key, targetAbs, prev });
   }
   return divergent;
@@ -1337,7 +1360,12 @@ async function deploy(target, opts) {
       // Compare canonically so a line-ending-only difference (a CRLF `*.ps1`
       // that git checked out per `.gitattributes`) is not mistaken for a change
       // and rewritten to LF — which would leave the working tree dirty.
-      if (normalizeEol(current) !== normalizeEol(content)) {
+      // The root AGENTS.md also ignores its `next dev` marker block: rewriting
+      // the file only makes `next dev` re-append it (F-349).
+      const nextDevOnly =
+        key === "AGENTS.md" &&
+        harnessAgentsComparable(current) === harnessAgentsComparable(content);
+      if (normalizeEol(current) !== normalizeEol(content) && !nextDevOnly) {
         const deployedHash = previousFiles[key];
         const locallyModified = !!deployedHash && deployedHash !== sha256(current);
         // An untracked pre-existing harness-owned file (a first `init` into a

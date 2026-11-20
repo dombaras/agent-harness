@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.6 — 2026-11-20
+
+- `update` no longer fails closed on the root `AGENTS.md` because `next dev`
+  appended its `<!-- BEGIN:nextjs-agent-rules -->` block: the drift check and the
+  deploy write now compare the harness-owned content with that tool-owned block
+  stripped, so a marker-only difference is neither a hand-edit nor a rewrite
+  (which previously made `next dev` re-append the block on the next run). A real
+  edit to the harness-owned part is still refused. (F-349)
+
 ## 0.3.5 — 2026-11-20
 
 - Trimmed the canonical rulebook (`templates/.agents/AGENTS.md`) from ~47 KB to
