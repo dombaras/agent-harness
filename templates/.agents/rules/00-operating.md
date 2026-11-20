@@ -1,6 +1,6 @@
 # {{PROJECT_NAME}} Operating Rules (summary)
 
-Always in effect. Full detail lives in `.agents/AGENTS.md`; read it before non-trivial work.
+Always in effect. Operating mechanics live here; the durable standards — and the detail of record for the rules below — live in `.agents/AGENTS.md`. Read it before non-trivial work.
 
 ## Step Zero — subagent dispatch gate (non-negotiable)
 

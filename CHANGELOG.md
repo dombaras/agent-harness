@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.5 — 2026-11-20
+
+- Trimmed the canonical rulebook (`templates/.agents/AGENTS.md`) from ~47 KB to
+  ~27 KB by removing the operating mechanics that duplicate the always-on root
+  `AGENTS.md` and `.agents/rules/00-operating.md` (dispatch economics, retry/gate
+  discipline, context budget, capacity guards, finalize/reporting). The rulebook
+  now carries the durable standards and points at the summary for mechanics;
+  test-pinned rules and every section number are preserved.
+- Lowered the `test:prefix` size budget for the rulebook (48 -> 28 KiB) and the
+  combined harness-owned ceiling (87 -> 69 KiB), so the dedupe is locked in and
+  the prefix cannot silently regrow.
+
 ## 0.3.4 — 2026-11-20
 
 - Added a durable per-project backend pin: `.harness.json`

@@ -44,14 +44,18 @@ const strict = process.env.AGENT_PREFIX_STRICT !== "0";
  * above the shipped size so a real growth must be a deliberate bump, not a
  * quiet accumulation. Memory files are project-owned and deliberately absent.
  * 0.1.164: raised the AGENTS.md ceiling 10 -> 11 KiB for the "prefer the
- * harness tools over the shell" rule (W4 discoverability). */
+ * harness tools over the shell" rule (W4 discoverability).
+ * 0.3.5: trimmed the rulebook to standards-only (47 -> 27 KiB) by replacing
+ * duplicated operating mechanics with pointers; lowered its ceiling to match so
+ * the dedupe cannot silently regrow. */
 const SIZE_BUDGET = {
   "AGENTS.md": 11264,
-  ".agents/AGENTS.md": 48128,
+  ".agents/AGENTS.md": 28672,
   ".agents/rules/00-operating.md": 30720,
 };
-/* Combined harness-owned ceiling; `AGENT_PREFIX_MAX_BYTES` overrides. */
-const DEFAULT_TOTAL_BUDGET = 89088; // ≈ 87 KB
+/* Combined harness-owned ceiling (the sum of the per-file ceilings);
+ * `AGENT_PREFIX_MAX_BYTES` overrides. */
+const DEFAULT_TOTAL_BUDGET = 70656; // ≈ 69 KB
 const totalBudget = (() => {
   const n = Number(process.env.AGENT_PREFIX_MAX_BYTES);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_TOTAL_BUDGET;
