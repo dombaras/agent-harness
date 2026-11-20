@@ -1,0 +1,83 @@
+name: Nightly E2E
+
+# Off-hours verification of the day's landed code, in the cloud. This covers the
+# host-independent tiers (unit, DB/API, route, browser E2E) so a regression is
+# found before the next working day even if the local WSL box is off. The heavy
+# Android device/Maestro matrix is deliberately NOT here — it needs the local
+# emulator + GPU and runs via the local `agent-harness install-nightly` timer
+# (docs/nightly-testing.md). The two halves are complementary.
+#
+# A failed run notifies the repo watchers by default, which is the alert. Set
+# repository variable CI_RUNTIME=false to skip the DB-backed job while onboarding.
+on:
+  schedule:
+    # Mon/Wed/Fri 03:00 UTC — not daily. The `static` job was removed because the
+    # push `CI` workflow already runs the same lint+unit tier on every landing;
+    # repeating it here only doubles the bill on the days it is free to skip.
+    - cron: "0 3 * * 1,3,5"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: DB / API / routes
+    if: ${{ vars.CI_RUNTIME != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ci?schema=public
+      AUTH_SECRET: nightly-runtime-gate-not-a-real-secret-000000000000000000000000000000
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Apply migrations
+        run: |
+          if [ -f prisma/schema.prisma ]; then npx prisma migrate deploy; fi
+      - name: API / ORM tier
+        run: npm run test:api --if-present
+      - name: Route tier
+        run: npm run test:routes --if-present
+
+  web-e2e:
+    name: Browser E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+        if: ${{ hashFiles('playwright.config.*') != '' }}
+      - name: Browser E2E
+        run: npm run test:e2e --if-present
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"

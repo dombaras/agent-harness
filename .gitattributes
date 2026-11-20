@@ -5,3 +5,8 @@
 *.js text eol=lf
 *.ts text eol=lf
 *.ps1 text eol=crlf
+
+# agent-harness (managed below)
+*.sh text eol=lf
+*.ps1 text eol=crlf
+# agent-harness (managed end)

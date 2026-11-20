@@ -1,0 +1,23 @@
+#!/bin/sh
+# Harness pre-push battery. Created by opencode-agent-harness if missing;
+# project-owned afterwards — edit freely.
+#
+# Cross-platform npm launcher: on Windows (Git Bash / MSYS / Cygwin) the hook
+# must call `npm.cmd`; plain `npm` there resolves to a bash-shebang shim. On
+# POSIX (WSL/Linux/macOS) it must call `npm`.
+#
+# `set -e` makes EVERY gate fatal: without it a trailing success could mask an
+# earlier failure.
+set -e
+
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) NPM=npm.cmd ;;
+  *)                    NPM=npm ;;
+esac
+
+# One owner for the gate list: `scripts/qa/run-gates.js`. It runs the harness
+# process gates then the project stack gates, stops at the first failure, and
+# skips a gate the project has not wired (`--if-present` semantics). `--phase`
+# here must stay the pre-push battery; edit the list in run-gates.js, not here,
+# so the hook and the `gates` tool can never drift.
+$NPM run --if-present gates -- --phase=pre-push

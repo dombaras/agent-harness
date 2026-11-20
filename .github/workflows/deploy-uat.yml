@@ -1,0 +1,95 @@
+name: Deploy UAT
+
+# The single app-deploy path for UAT. Triggered by the CI workflow completing
+# successfully on `main` (a direct landing pushes straight to main; CI gates the
+# landed SHA; this deploy then runs only once CI is green), and by manual dispatch
+# of an exact ref for rollback. The runner builds once and ships a prebuilt
+# artifact, so the deployed artifact is provably the checked-out commit — never a
+# developer working tree.
+#
+# Onboarding vs. configured (fail-closed):
+#   - Before the deploy secrets exist, set repository variable
+#     UAT_DEPLOY_CONFIGURED to unset/false: the job skips cleanly (a success with
+#     a notice) so a landing never shows red just for being unconfigured.
+#   - Once UAT_DEPLOY_CONFIGURED=true, a missing secret is a HARD FAILURE, not a
+#     silent skip — otherwise every deploy would show green while UAT stays stale.
+#
+# Required repository secrets once configured:
+#   VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID, DATABASE_URL_UAT
+# Optional:
+#   DATABASE_URL_UAT_DIRECT (direct/unpooled URL for migrations)
+# Runtime secrets live on the Vercel project and are injected at runtime.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit SHA or ref to deploy (defaults to the triggering SHA)
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-uat
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy:
+    name: Artifact deploy to UAT
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEPLOY_CI: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      DATABASE_URL_UAT: ${{ secrets.DATABASE_URL_UAT }}
+      DATABASE_URL_UAT_DIRECT: ${{ secrets.DATABASE_URL_UAT_DIRECT }}
+      VERCEL_UAT_ALIAS: ${{ vars.UAT_ALIAS }}
+    steps:
+      - name: Check deploy credentials
+        id: guard
+        env:
+          CONFIGURED: ${{ vars.UAT_DEPLOY_CONFIGURED }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          DATABASE_URL_UAT: ${{ secrets.DATABASE_URL_UAT }}
+        run: |
+          if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ] && [ -n "$DATABASE_URL_UAT" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Deploy credentials present — deploying UAT."
+          elif [ "$CONFIGURED" = "true" ]; then
+            echo "::error title=UAT deploy misconfigured::UAT_DEPLOY_CONFIGURED=true but a required secret is missing (VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID, DATABASE_URL_UAT). Refusing to report a green skip for a configured deploy."
+            exit 1
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=UAT deploy skipped::Set the 4 required repository secrets and UAT_DEPLOY_CONFIGURED=true — see docs/ci-cd-pipeline.md. Until then this landing is not deployed."
+          fi
+      - if: steps.guard.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+      - if: steps.guard.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - if: steps.guard.outputs.enabled == 'true'
+        name: Install (postinstall runs prisma generate)
+        run: npm ci
+      - if: steps.guard.outputs.enabled == 'true'
+        name: Install Vercel CLI
+        run: npm i -g vercel@latest
+      - if: steps.guard.outputs.enabled == 'true'
+        name: Deploy UAT (prebuilt artifact -> migrate -> alias -> verify -> hygiene)
+        run: npm run deploy:uat

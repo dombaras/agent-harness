@@ -1,0 +1,18 @@
+# F-291 performance — Maestro workspace config.
+#
+# `disableAnimations: true` makes Maestro set the device's window/transition/
+# animator animation scales to 0 for the run (and restores them afterwards).
+# Every command's `waitForAnimationToEnd` settle then returns almost
+# immediately, which is the single biggest per-command cost on the
+# software-rendered WSL2 emulator (run4 measured ~2.5 s/command, ~3.6 s/tap).
+# Assertions, selectors, and coverage are unchanged — only the dead wait time.
+#
+# run-maestro.js passes this file explicitly with `maestro test --config`.
+# Both platforms get `disableAnimations: true`; Maestro applies only the entry
+# for the target device's platform, so keeping the Android block does not affect
+# an iOS run (and vice versa).
+platform:
+  android:
+    disableAnimations: true
+  ios:
+    disableAnimations: true
