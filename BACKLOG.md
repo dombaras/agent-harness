@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-018 | ? | Make the always-loaded AGENTS.md budget a pre-landing gate: wire test:prefix into ship/pre-push, give the file deliberate headroom, and document the trim-or-ask escalation path | .agents/handoffs/F-018.md (worktree: ../.worktrees/agent-harness/f-018; branch: f-018) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -66,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-018 | P2 | ? | Make the always-loaded AGENTS.md budget a pre-landing gate: wire test:prefix into ship/pre-push, give the file deliberate headroom, and document the trim-or-ask escalation path | F-013 landed at 3204fbb with AGENTS.md at 11,271 > 11,264; local ship ran no prefix gate and the quick phase was silently empty (test:quick/test:schema/lint:hooks undefined). | ? |
 | F-014 | P3 | ? | Align guard/session tool classifiers with the OpenCode 2.3.2 built-in tool set (`todo`, `skill`, `question`, `webfetch`, `websearch`, `patch`, `artifact`, `automation`, `image-generate`): `EXEMPT_TOOLS` has `todowrite` but not `todo`, `MATERIAL_TOOLS` has no `skill`/`artifact`. Verify effective tool names first, then update classifiers + the drift-guard test. | docs/opencode-v2.3-compat-scan.md §G2; /api/plugin builtin list on opencode 2.3.2 | ? |
 | F-015 | P3 | ? | Decide worktree alignment with OpenCode 2.3.2 native support: `worktree.directory` config, `ctx.worktree` (transform/add/list/create/remove), and `opencode run --worktree [=name]` now exist while the harness shells out to `git worktree` under `../.worktrees/<repo>/<id>`. Adopt the native surface or document the deliberate divergence. | docs/opencode-v2.3-compat-scan.md §G3; @opencode/plugin@2.3.2 worktree domain; `opencode run --help` | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
