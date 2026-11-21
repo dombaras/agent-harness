@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-005 | ? | Enable OpenCode V2 todowrite end-to-end: ship `experimental.todo: true` in `templates/opencode.json`; deep-merge `experimental` in `mergeOpencodeJson` so a project's other experimental keys survive; tighten the todo guard (require a `todowrite` update after every completed step, exactly ONE `in_progress`, suppress nudges when the flag is off); add `test:opencode-compat` (V2 version + config + deprecated-V1-key + plugin-hook check) wired into gates/doctor/update. | .agents/handoffs/F-005.md |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -66,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-005 | P2 | ? | Enable OpenCode V2 todowrite end-to-end: ship `experimental.todo: true` in `templates/opencode.json`; deep-merge `experimental` in `mergeOpencodeJson` so a project's other experimental keys survive; tighten the todo guard (require a `todowrite` update after every completed step, exactly ONE `in_progress`, suppress nudges when the flag is off); add `test:opencode-compat` (V2 version + config + deprecated-V1-key + plugin-hook check) wired into gates/doctor/update. | opencode v2.3.2; V2 config docs `experimental.todo` defaults false; AGENTS.md:8; scripts/qa/context-guard-core.js:42-52,580-596; templates/opencode.json lacks the flag; main + f-004 worktree sessions had no `todowrite` in the catalog | ? |
 | F-006 | P2 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | docs/opencode-v2-migration.md; https://opencode.ai/docs/; opencode v2.3.2; F-005 fixes the first gap | F-005 |
 | F-003 | P3 | ? | green the local process gates on main: test:docs flags a `...` link inside inline code (docs/opencode-v2-migration.md:245 `]({...}, ...)`) and a missing CHANGELOG entry for b68e1bc (fix(harness): commit root worktree-hygiene scripts); test:backlog flags templates/BACKLOG.md as a stray board (the template scaffold shipped to targets). Decide per item: teach the checker to ignore code spans / exempt templates, or fix the content. | main @ 3e46feb (CI + Deploy UAT green): `npm run test:docs` → 2 failures (dangling link `...` → docs/...; CHANGELOG missing entry for b68e1bc); `npm run test:backlog` → 1 failure (no stray BACKLOG.md boards: found templates/BACKLOG.md). Neither is wired into CI, so both are silent locally. | ? |
 
