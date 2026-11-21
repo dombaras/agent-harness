@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.15 — 2026-11-21
+
+- The Release workflow pins npm 11 instead of `npm@latest`: npm 12 changed
+  `npm pack --json` output (an empty array) and broke `test:pack` before the
+  publish step, so auto-releases failed before npm trusted publishing could
+  run. npm 11 keeps OIDC publishing while the pack gate passes. (F-011)
+
 ## 0.3.14 — 2026-11-21
 
 - Version bumps now reach npm automatically: after a green `main` CI run,

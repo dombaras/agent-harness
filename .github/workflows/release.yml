@@ -30,8 +30,10 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - name: Use an npm with trusted-publishing support
-        run: npm install -g npm@latest
+      - name: Use an npm with trusted-publishing support (pin major 11)
+        # npm 12 changes `npm pack --json` output (empty array), breaking
+        # test:pack below; npm 11 keeps OIDC publishing and the pack gate green.
+        run: npm install -g npm@11
 
       - name: Verify the run is for a tag
         run: |
