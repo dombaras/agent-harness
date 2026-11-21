@@ -67,6 +67,7 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
+| F-009 | P1 | ? | Auto-deploy the harness to LibraryOS on every green CI run on main (deploy key + workflow) and fast-forward the local LibraryOS clone | LibraryOS stuck at v0.3.8 while harness was v0.3.12; no push->deploy automation existed (manual chore(harness) commits only); docs/open-work.md says npm publish is optional and local update is authoritative | ? |
 | F-006 | P2 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | docs/opencode-v2-migration.md; https://opencode.ai/docs/; opencode v2.3.2; F-005 fixes the first gap | F-005 |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
