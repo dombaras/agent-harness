@@ -47,7 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-015 | ? | Decide worktree alignment with OpenCode 2.3.2 native support: `worktree.directory` config, `ctx.worktree` (transform/add/list/create/remove), and `opencode run --worktree [=name]` now exist while the harness shells out to `git worktree` under `../.worktrees/<repo>/<id>`. Adopt the native surface or document the deliberate divergence. | .agents/handoffs/F-015.md |
+| F-015 | ? | Decide worktree alignment with OpenCode 2.3.2 native support: `worktree.directory` config, `ctx.worktree` (transform/add/list/create/remove), and `opencode run --worktree [=name]` now exist while the harness shells out to `git worktree` under `../.worktrees/<repo>/<id>`. Adopt the native surface or document the deliberate divergence. | .agents/handoffs/F-015.md (worktree: ../.worktrees/agent-harness/f-015; branch: f-015) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
