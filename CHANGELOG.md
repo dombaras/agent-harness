@@ -9,6 +9,10 @@
   `doctor` warn about existing servers that remain denied; `test:opencode-compat`
   detects drift in the managed credential/MCP denies. (F-013)
 
+- Trimmed the managed-MCP bullet in `AGENTS.md` back inside the always-loaded
+  `test:prefix` size budget after the F-013 wording pushed it over (both
+  clean-deploy prefix tests were red on CI). (F-013)
+
 - The OpenCode todo panel works end-to-end again: `templates/opencode.json`
   enables `experimental.todo: true` (V2 gates the built-in `todowrite` behind it,
   default false), and `mergeOpencodeJson` deep-merges the `experimental` block so
