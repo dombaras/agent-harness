@@ -14,6 +14,16 @@
   3/2 material calls, flags a list with open items but no `in_progress`
   (`nocurrent`), and stays silent when the project disables the capability.
   (F-005)
+
+- OpenCode 2.3.2 compatibility scan: `docs/opencode-v2.3-compat-scan.md` audits
+  every harness surface against the installed `2.3.2` binary and the published
+  `@opencode/*@2.3.2` types. Verified live: all 11 harness plugins load, the
+  pinned tool/session hooks and event payloads still match, `experimental.todo`
+  still exists, and `session_v2` + `session_message` are still in the store.
+  Filed the deltas as rows: managed `policies` hard-denies (P2), guard
+  classifiers for the 2.3.2 built-in tool set (P3), native worktree alignment
+  (P3), and the new `plugin`/`stats` CLI + stats-oracle follow-ups (P4). (F-006)
+
 ## 0.3.16 — 2026-11-21
 
 - A harness-provisioned repo now shows its deployed harness version as a
