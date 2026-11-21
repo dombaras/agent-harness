@@ -37,7 +37,9 @@ const EDIT_TOOLS = new Set(["edit", "write", "patch", "multiedit", "apply_patch"
  * first edit/write or dispatch marks the end of the orientation prologue. A
  * resume/claim session otherwise re-derives git/serve/capacity state by hand.
  * Both the V1 names and their V2 aliases (`task`->`subagent`) — the guard core
- * does the same, and a drift-guard test enforces it. */
+ * does the same, and a drift-guard test enforces it. 2.3.2's output-producing
+ * tools (`artifact`, `image-generate`) and `automation` also end the prologue: a
+ * turn that creates a durable output or launches work is no longer orienting. */
 const WORK_TOOLS = new Set([
   "edit",
   "write",
@@ -46,6 +48,9 @@ const WORK_TOOLS = new Set([
   "apply_patch",
   "task",
   "subagent",
+  "artifact",
+  "automation",
+  "image-generate",
 ]);
 
 // ---------------------------------------------------------------- pure core

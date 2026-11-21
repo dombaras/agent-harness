@@ -5839,6 +5839,44 @@ test("context-guard classifies material vs read-only tool calls", () => {
   assert.strictEqual(cg.isMaterial("bash", { command: "npm run test:quick" }), false);
   assert.strictEqual(cg.isMaterial("read", { filePath: "x" }), false);
   assert.strictEqual(cg.isMaterial("grep", { pattern: "x" }), false);
+  // 2.3.2's output-producing tools are material; instruction/web reads are not.
+  assert.strictEqual(cg.isMaterial("subagent", { prompt: "do" }), true);
+  assert.strictEqual(cg.isMaterial("shell", { command: "git commit -m x" }), true);
+  assert.strictEqual(cg.isMaterial("artifact", {}), true);
+  assert.strictEqual(cg.isMaterial("automation", {}), true);
+  assert.strictEqual(cg.isMaterial("image-generate", {}), true);
+  assert.strictEqual(cg.isMaterial("skill", {}), false);
+  assert.strictEqual(cg.isMaterial("webfetch", {}), false);
+  assert.strictEqual(cg.isMaterial("websearch", {}), false);
+});
+
+test("[drift-guard] every OpenCode 2.3.2 built-in tool has a deliberate guard intent", () => {
+  // Effective names verified against the 2.3.2 runtime's tool parts: it emits
+  // `shell`/`subagent`/`todowrite` (never the V1 aliases or the `todo` plugin
+  // id, which is kept as an accepted alias). A new built-in must land in one of
+  // the three intents — material, repeat-exempt, or read-only — so a rename
+  // cannot silently fall through as an anonymous read.
+  const BUILTINS = [
+    "shell", "subagent", "read", "edit", "write", "glob", "grep", "question",
+    "todo", "todowrite", "skill", "patch", "webfetch", "websearch",
+    "image-generate", "artifact", "automation",
+  ];
+  const READ_ONLY = new Set(["read", "grep", "glob", "webfetch", "websearch"]);
+  for (const name of BUILTINS) {
+    const material = cg.isMaterial(name, {});
+    const exempt = cg.isLoopExempt(name, {});
+    assert.ok(
+      material || exempt || READ_ONLY.has(name) || name === "shell",
+      `${name} is unclassified — add it to MATERIAL_TOOLS, EXEMPT_TOOLS, or the read-only set`
+    );
+  }
+  // The scan's G2 call-outs, pinned as behaviour: `todo` is an accepted alias,
+  // `skill`/`webfetch`/`websearch` are reads, and the output tools are material.
+  assert.strictEqual(cg.isLoopExempt("todo", {}), true, "the 2.3.2 plugin id `todo` is an alias of `todowrite`");
+  assert.strictEqual(cg.isLoopExempt("todowrite", {}), true);
+  assert.strictEqual(cg.isLoopExempt("skill", {}), true);
+  assert.strictEqual(cg.isLoopExempt("webfetch", {}), false);
+  assert.strictEqual(cg.isLoopExempt("websearch", {}), false);
 });
 
 test("context-guard does not arm the no-state nudge during the startup grace window", () => {
@@ -7604,7 +7642,7 @@ test("[drift-guard] tool-name classifiers accept the V2 alias, never the V1 name
     path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"),
     path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"),
   ];
-  const ALIAS = { bash: "shell", task: "subagent" };
+  const ALIAS = { bash: "shell", task: "subagent", todo: "todowrite" };
   // A tool-name comparison: `tool === "bash"`, `String(tool || "") === "bash"`,
   // `name === "task"`, `n === "bash"` — the identifier names the classifier uses.
   const cmp = /(?:String\(\s*(?:tool|name|n)\b[^)]*\)|\b(?:tool|name|n)\b)\s*(?:===?|!==?)\s*"(bash|task)"/g;

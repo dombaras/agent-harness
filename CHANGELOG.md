@@ -2,6 +2,12 @@
 
 ## 0.4.1 — 2026-11-21
 
+- Guard/session tool classifiers now cover the OpenCode 2.3.2 built-in set:
+  `todowrite`/`todo` and `skill` repeats are loop-exempt, while `artifact`,
+  `automation`, and `image-generate` count as material work and end the recon
+  orientation prologue. A drift-guard test pins a deliberate intent for every
+  effective built-in name. (F-014)
+
 - The always-loaded `AGENTS.md` budget now fails before landing instead of only
   in CI: `test:prefix` runs in the ship/pre-push process battery, the ceiling has
   ~550 bytes of deliberate headroom (12 KiB, up from 11 KiB), and the file
