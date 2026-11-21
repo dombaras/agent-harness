@@ -8081,6 +8081,12 @@ test("test:prefix enforces a size budget on the harness-owned prefix files", asy
   assert.strictEqual(clean.status, 0, clean.stdout + clean.stderr);
   assert.match(clean.stdout, /within size budget/);
 
+  // Deliberate headroom: an ordinary sentence must not trip the ceiling.
+  const agentsLine = clean.stdout.split("\n").find((l) => l.includes("\u2713 AGENTS.md ("));
+  assert.ok(agentsLine, "the deployed AGENTS.md reports its budget");
+  const budget = agentsLine.match(/\((\d+) \/ (\d+) budget/);
+  assert.ok(Number(budget[2]) - Number(budget[1]) >= 256, `AGENTS.md keeps deliberate headroom (${budget[1]}/${budget[2]})`);
+
   // Inflating a harness-owned prefix file past its budget fails the gate.
   const agents = path.join(target, ".agents", "AGENTS.md");
   fs.writeFileSync(agents, fs.readFileSync(agents, "utf8") + "\n" + "x".repeat(60 * 1024), "utf8");
@@ -12361,6 +12367,7 @@ test("run-gates: phase resolution, skip-unwired, stop-at-first-failure", () => {
   const pre = gatesMod.resolveGates("pre-push", "origin/main");
   assert.ok(pre.some((g) => g[0] === "test:dispatch"), "process gates present");
   assert.ok(pre.some((g) => g[0] === "test:opencode-compat"), "the V2 compat gate runs in the process phase");
+  assert.ok(pre.some((g) => g[0] === "test:prefix"), "the always-loaded prefix gate runs before landing");
   assert.ok(pre.some((g) => g[0] === "test:quick"), "quick gates present");
   assert.deepStrictEqual(
     pre.find((g) => g[0] === "test:qa-plan"),
@@ -12407,6 +12414,15 @@ test("[drift-guard] gates is wired into npm scripts, the tool, and the pre-push 
   assert.match(read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "gates.ts")), /scripts\/qa\/run-gates\.js/);
   const hook = read(path.join(h.TEMPLATES_DIR, ".husky", "pre-push"));
   assert.match(hook, /gates -- --phase=pre-push/, "the hook delegates to the one gate list");
+
+  // The always-loaded budget must fail before landing, not only in CI, and the
+  // repo's quick tier must exist so the quick phase is never silently empty.
+  const runGates = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "run-gates.js"));
+  assert.match(runGates, /\["test:prefix"\]/, "the gates runner includes the prefix gate");
+  const ship = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
+  assert.match(ship, /"test:prefix"/, "ship runs the prefix gate even without a pre-push hook");
+  const pkg = JSON.parse(read(path.join(__dirname, "..", "package.json")));
+  assert.ok(pkg.scripts["test:quick"], "the repo defines the quick tier the battery expects");
 });
 
 test("where: parses owners, matches globs, bounds results, and annotates hits", () => {

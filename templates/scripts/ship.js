@@ -334,6 +334,7 @@ const PROCESS_GATES = [
   "test:wiring",
   "test:product",
   "test:docs",
+  "test:prefix",
   "test:quality",
 ];
 

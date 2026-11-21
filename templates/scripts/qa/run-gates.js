@@ -46,6 +46,7 @@ const PHASES = {
     ["test:qa-plan", "--base={base}"],
     ["test:product"],
     ["test:docs"],
+    ["test:prefix"],
     ["test:quality"],
   ],
   quick: [["lint:hooks"], ["test:schema"], ["test:quick"]],

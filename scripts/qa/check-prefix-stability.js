@@ -47,15 +47,18 @@ const strict = process.env.AGENT_PREFIX_STRICT !== "0";
  * harness tools over the shell" rule (W4 discoverability).
  * 0.3.5: trimmed the rulebook to standards-only (47 -> 27 KiB) by replacing
  * duplicated operating mechanics with pointers; lowered its ceiling to match so
- * the dedupe cannot silently regrow. */
+ * the dedupe cannot silently regrow.
+ * 0.4.1: raised the AGENTS.md ceiling 11 -> 12 KiB so an ordinary sentence no
+ * longer trips it, and wired the gate into the ship/pre-push battery so a
+ * breach fails before landing; AGENTS.md documents the trim-or-ask path. */
 const SIZE_BUDGET = {
-  "AGENTS.md": 11264,
+  "AGENTS.md": 12288,
   ".agents/AGENTS.md": 28672,
   ".agents/rules/00-operating.md": 30720,
 };
 /* Combined harness-owned ceiling (the sum of the per-file ceilings);
  * `AGENT_PREFIX_MAX_BYTES` overrides. */
-const DEFAULT_TOTAL_BUDGET = 70656; // ≈ 69 KB
+const DEFAULT_TOTAL_BUDGET = 71680; // = 12 + 28 + 30 KiB
 const totalBudget = (() => {
   const n = Number(process.env.AGENT_PREFIX_MAX_BYTES);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_TOTAL_BUDGET;

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 — 2026-11-21
+
+- The always-loaded `AGENTS.md` budget now fails before landing instead of only
+  in CI: `test:prefix` runs in the ship/pre-push process battery, the ceiling has
+  ~550 bytes of deliberate headroom (12 KiB, up from 11 KiB), and the file
+  documents the trim-first / ask-the-user-before-raising path. The repo's own
+  `test:quick` is defined so the quick phase is never silently empty. (F-018)
+
 ## 0.4.0 — 2026-11-21
 
 - Added a hard-deny policy layer for credential paths, harness config/store

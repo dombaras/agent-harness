@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-018 | ? | Make the always-loaded AGENTS.md budget a pre-landing gate: wire test:prefix into ship/pre-push, give the file deliberate headroom, and document the trim-or-ask escalation path | .agents/handoffs/F-018.md (worktree: ../.worktrees/agent-harness/f-018; branch: f-018) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -101,6 +100,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-005 | ? | Enable OpenCode V2 todowrite end-to-end: ship `experimental.todo: true` in `templates/opencode.json`; deep-merge `experimental` in `mergeOpencodeJson` so a project's other experimental keys survive; tighten the todo guard (require a `todowrite` update after every completed step, exactly ONE `in_progress`, suppress nudges when the flag is off); add `test:opencode-compat` (V2 version + config + deprecated-V1-key + plugin-hook check) wired into gates/doctor/update. | shipped |
 | F-006 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | shipped |
 | F-013 | ? | Adopt managed `policies` hard-denies for credential paths and MCP gating: OpenCode 2.3.2 ships a real top-level `policies` key (hard allow/deny over provider.use/tool.use/mcp.use/skill.use/plugin.use/websearch.use); the harness still relies on overridable `permissions`, so a project allow can shadow a harness credential/MCP deny. | shipped 0.4.0 — 5e597ee, CI green (run 44923107044); 3204fbb landed CI-red and was fixed forward |
+| F-018 | ? | Make the always-loaded AGENTS.md budget a pre-landing gate: wire test:prefix into ship/pre-push, give the file deliberate headroom, and document the trim-or-ask escalation path | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

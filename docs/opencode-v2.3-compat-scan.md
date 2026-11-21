@@ -9,7 +9,7 @@ packages, and the V2 docs.
 
 **Baseline in the repo:** the V2 port and its follow-ups were verified against
 `opencode 2.0.29` / `2.0.31` and `@opencode/*@2.0.29` (see
-[`opencode-v2-migration.md`](opencode-v2-migration.md)). The harness is 0.4.0.
+[`opencode-v2-migration.md`](opencode-v2-migration.md)). The harness is 0.4.1.
 This scan asks a different question: **what does 2.3.2 expose that the harness
 pins, misses, or now gets wrong?**
 
