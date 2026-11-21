@@ -19,7 +19,7 @@
   "permissions": [
     {
       "action": "external_directory",
-      "resource": "/home/ronen/develop/.worktrees/agent-harness/**",
+      "resource": "/home/ronen/develop/**",
       "effect": "allow"
     },
     {
@@ -189,7 +189,7 @@
     },
     {
       "action": "external_directory",
-      "resource": "/home/ronen/develop/**",
+      "resource": "/home/ronen/develop/.worktrees/agent-harness/**",
       "effect": "allow"
     }
   ],
@@ -449,5 +449,11 @@
       "resource": "*",
       "effect": "deny"
     }
+  ],
+  "worktree": {
+    "directory": "../.worktrees/agent-harness"
+  },
+  "plugins": [
+    "./.opencode/plugins/harness-version"
   ]
 }
