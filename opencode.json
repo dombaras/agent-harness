@@ -16,7 +16,7 @@
   "permissions": [
     {
       "action": "external_directory",
-      "resource": "/home/ronen/develop/**",
+      "resource": "/home/ronen/develop/.worktrees/agent-harness/**",
       "effect": "allow"
     },
     {
@@ -182,6 +182,11 @@
     {
       "action": "shell",
       "resource": "rm -rf /tmp/*",
+      "effect": "allow"
+    },
+    {
+      "action": "external_directory",
+      "resource": "/home/ronen/develop/**",
       "effect": "allow"
     }
   ]

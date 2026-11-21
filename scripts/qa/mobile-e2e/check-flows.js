@@ -12,7 +12,9 @@
  *      (excluding `matrix.yaml`) is referenced by some journey (no orphan);
  *   c. every flow is structurally well-formed: starts with `appId:`, contains at
  *      least one `tapOn`/`assertVisible` command, and uses only known Maestro
- *      command verbs at the top level;
+ *      command verbs at the top level; every `runFlow: file:` include resolves
+ *      (relative to the including file, recursively) with no missing path, no
+ *      escape outside `flows/`, and no cycle;
  *   d. every referenced screen resolves to a file under `mobile/`, and every
  *      referenced testID resolves to a static `testID=` occurrence, an allowed
  *      dynamic template literal (`testID={`prefix-${expr}`}`) in `mobile/`, or a
@@ -246,6 +248,10 @@ function walkFiles(dir, predicate, out) {
  * Collect the testIDs declared in `mobile/` source:
  *
  *   - static: `testID="x"`, `testID={'x'}`, `testID={`x`}` → exact ids;
+ *   - forwarded props: `phoneTestID="x"` / `submitTestID="x"` — this codebase
+ *     passes the id into a shared field/button component as a `*TestID` prop,
+ *     which lands on the element as `testID` at runtime (F-348; the shared
+ *     session/subflow selectors live on these);
  *   - dynamic: `testID={`prefix-${expr}`}` → the static prefix up to the first
  *     interpolation (`prefix-`), so a flow may reference it either literally
  *     (`prefix-…`) or with an `{id}` placeholder (`prefix-{id}`).
@@ -259,7 +265,7 @@ function collectMobileTestIds(mobileDir) {
   const dynamicPrefixes = new Set();
   const sources = [];
   walkFiles(mobileDir, (file) => /\.(ts|tsx)$/.test(file), sources);
-  const staticPattern = /testID=\{?["'`]([^"'`${}]+)["'`]/g;
+  const staticPattern = /(?:testID|[A-Za-z]+TestID)=\{?["'`]([^"'`${}]+)["'`]/g;
   const dynamicPattern = /testID=\{\s*`([^`]*?)\$\{/g;
   sources.forEach((file) => {
     const content = readText(file);
@@ -359,6 +365,67 @@ function extractFlowTestIds(content) {
   return ids;
 }
 
+function stripInlineComment(value) {
+  const text = String(value).trim();
+  const commentAt = text.search(/\s+#/);
+  return (commentAt === -1 ? text : text.slice(0, commentAt)).trim();
+}
+
+function unquote(value) {
+  return value.replace(/^["']|["']$/g, '');
+}
+
+/**
+ * Extract every `runFlow: file:` reference from a flow (F-348).
+ *
+ * Supports both Maestro shapes:
+ *
+ *   - runFlow: _shared/session.yaml
+ *   - runFlow:
+ *       file: _shared/session.yaml
+ *
+ * Only the `file:` key that is a DIRECT child of `runFlow:` counts; a `file:`
+ * inside a `when:`/inline `commands:` block is a different command property and
+ * is ignored. A `runFlow:` with inline `commands:` (no `file:`) is not an
+ * include and yields nothing.
+ */
+function extractRunFlowIncludes(content) {
+  const lines = content.split(/\r?\n/);
+  const includes = [];
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) return;
+    const match = line.match(/^(\s*)-\s+runFlow:\s*(.*)$/);
+    if (!match) return;
+    const baseIndent = match[1].length;
+    const inlineValue = stripInlineComment(match[2]);
+    if (inlineValue && !inlineValue.startsWith('{') && !inlineValue.startsWith('|')) {
+      includes.push({ file: unquote(inlineValue), line: index + 1 });
+      return;
+    }
+
+    // Block form: the `file:` key is a direct child (first indentation level
+    // below the command), never a property of a nested `when:`/`commands:` map.
+    let childIndent = null;
+    for (let i = index + 1; i < lines.length; i += 1) {
+      const candidate = lines[i];
+      const candidateTrimmed = candidate.trim();
+      if (candidateTrimmed === '' || candidateTrimmed.startsWith('#')) continue;
+      const indent = candidate.match(/^(\s*)/)[1].length;
+      if (indent <= baseIndent) return;
+      if (childIndent === null) childIndent = indent;
+      if (indent !== childIndent) continue;
+      const fileMatch = candidate.match(/^\s*file:\s*(.*)$/);
+      if (fileMatch) {
+        const value = unquote(stripInlineComment(fileMatch[1]));
+        if (value) includes.push({ file: value, line: i + 1 });
+        return;
+      }
+    }
+  });
+  return includes;
+}
+
 function validate() {
   const root = parseRootArg(process.argv.slice(2));
   const flowsDir = path.join(root, FLOWS_SUBPATH);
@@ -385,6 +452,54 @@ function validate() {
   const referencedFlows = new Set();
   const mobileTestIds = collectMobileTestIds(mobileDir);
 
+  // F-348 — `runFlow: file:` includes are part of the flow graph: their paths
+  // must resolve (relative to the including file, as Maestro does), they may
+  // nest, and their selectors are real coverage. Resolve the whole include graph
+  // once; a missing path, an escape outside `flows/`, a cycle, or a dangling
+  // testID inside a shared subflow is a violation, never a silent skip.
+  const flowTestIdsCache = new Map();
+  const includeStack = [];
+
+  function resolveFlowTestIds(flowAbs, displayName) {
+    if (flowTestIdsCache.has(flowAbs)) return flowTestIdsCache.get(flowAbs);
+    if (includeStack.includes(flowAbs)) {
+      const cycle = [...includeStack.slice(includeStack.indexOf(flowAbs)), flowAbs]
+        .map((entry) => path.relative(flowsDir, entry))
+        .join(' -> ');
+      violations.push(`flow "${displayName}": runFlow include cycle ${cycle}`);
+      return new Set();
+    }
+    const content = readText(flowAbs);
+    if (content === null) return new Set();
+
+    includeStack.push(flowAbs);
+    const ids = extractFlowTestIds(content);
+    extractRunFlowIncludes(content).forEach((include) => {
+      const label = `flow "${displayName}":${include.line}`;
+      const includeAbs = path.resolve(path.dirname(flowAbs), include.file);
+      if (includeAbs !== flowsDir && !includeAbs.startsWith(`${flowsDir}${path.sep}`)) {
+        violations.push(`${label}: runFlow file "${include.file}" escapes the flows directory`);
+        return;
+      }
+      if (!fs.existsSync(includeAbs)) {
+        violations.push(
+          `${label}: runFlow file "${include.file}" is missing (resolved to ${path.relative(root, includeAbs)})`
+        );
+        return;
+      }
+      const nested = readText(includeAbs);
+      if (nested === null || nested.trim() === '') {
+        violations.push(`${label}: runFlow file "${include.file}" is empty`);
+        return;
+      }
+      resolveFlowTestIds(includeAbs, path.relative(flowsDir, includeAbs)).forEach((id) => ids.add(id));
+    });
+    includeStack.pop();
+
+    flowTestIdsCache.set(flowAbs, ids);
+    return ids;
+  }
+
   parsed.journeys.forEach((journey) => {
     if (!journey.flow) return;
     referencedFlows.add(journey.flow);
@@ -401,7 +516,7 @@ function validate() {
 
     violations.push(...validateFlowStructure(journey.flow, content));
 
-    const flowTestIds = extractFlowTestIds(content);
+    const flowTestIds = resolveFlowTestIds(flowFile, journey.flow);
     const declaredTestIds = new Set([...journey.testids, ...flowTestIds]);
     declaredTestIds.forEach((testId) => {
       if (!resolveMobileTestId(testId, mobileTestIds)) {
@@ -450,4 +565,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { parseInlineList, parseMatrix, validate };
+module.exports = { parseInlineList, parseMatrix, extractRunFlowIncludes, validate };
