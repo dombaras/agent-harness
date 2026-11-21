@@ -1,19 +1,8 @@
 # Owned files per active row
 
-Project-owned (like all `.agents/memory/*`). Maps each **in-progress** backlog row
-to the files/globs it owns, so the cross-session collision check is precise instead
-of coarse.
+One row per in-progress feature: the files/globs it owns. Drives the
+cross-session overlap check in `test:concurrency` (two In-progress rows must
+not own the same file). Format: `- <ID>: <glob>[, <glob>...]`.
 
-`npm run test:concurrency` reads this file: when the working tree is dirty and 2+
-rows are In progress, it attributes each dirty file to the row(s) whose globs match
-it — and fails *exactly* when a file is owned by two sessions (or a tree mixes two
-sessions' WIP), instead of failing on every "2+ In progress + dirty" tree.
-
-Keep it current: record a row's owned files the moment you pick it up
-(`backlog owns <id> --files "glob, glob"`), and clear it when it ships
-(`backlog owns <id> --files "?"`). A row not listed here is simply unattributed.
-
-Format — one line per row, comma-separated globs/paths (`*` = within a segment,
-`**` = any depth, `?` = one char):
-
+- F-005: templates/opencode.json, templates/AGENTS.md, templates/.agents/memory/orchestration.md, templates/.agents/rules/00-operating.md, templates/scripts/qa/context-guard-core.js, templates/.opencode/plugins/context-guard.ts, templates/scripts/qa/run-gates.js, templates/scripts/qa/check-opencode-compat.js, templates/scripts/qa/check-test-wiring.js, bin/agent-harness.js, tests/agent-harness.test.js, package.json, README.md, CHANGELOG.md, docs/**, opencode.json
 - F-041: lib/wikidata.ts, scripts/qa/tests/wikidata-genres.test.ts
