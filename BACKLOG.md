@@ -68,6 +68,7 @@ Sorted by priority (P1 → P4).
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
 | F-006 | P2 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | docs/opencode-v2-migration.md; https://opencode.ai/docs/; opencode v2.3.2; F-005 fixes the first gap | F-005 |
+| F-010 | P2 | ? | Auto-tag version bumps on green main CI and dispatch the npm Release workflow (trusted publishing) | npm latest 0.2.0; no tags after v0.3.1 (33 commits); Release is tag-driven and its v0.3.1 run was cancelled. npm CLI is unauthenticated locally, so OIDC trusted publishing is the no-secret path. | ? |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
