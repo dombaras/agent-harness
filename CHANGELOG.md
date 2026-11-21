@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.8 — 2026-11-21
+
+- `check-flows.js` no longer rejects a valid journey matrix: a `*TestID` prop
+  that is forwarded resolves to the element's `testID` at runtime, so only a
+  literal-free or unknown target is a violation; `runFlow: file:` includes are
+  validated recursively — a missing file, an escape outside `flows/`, or an
+  include cycle is reported against the journey instead of failing later as a
+  Maestro timeout. Ported byte-for-byte from LibraryOS's project-proven copy so
+  it has an upstream release identity. (03f3013)
+
 ## 0.3.7 — 2026-11-21
 
 - `update` refuses to deploy from an uncommitted `templates/` tree and refuses
