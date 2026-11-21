@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.12 — 2026-11-21
+
+- `backlog sync` no longer refuses a behind-only checkout just because an
+  unrelated tracked file is dirty. It attempts the fast-forward and lets git
+  protect the dirty file: unrelated edits are carried across, and only a file
+  the landing would overwrite fails closed (with git's own error line). This
+  previously stranded `main` one commit behind on an uncommitted config toggle
+  the landing never touched. (F-008)
+
 ## 0.3.11 — 2026-11-21
 
 - Archiving a row from a linked feature worktree no longer writes that

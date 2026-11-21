@@ -9594,6 +9594,36 @@ test("board-sync rebases an unpublished local harness commit onto upstream and s
   assert.strictEqual(headAfter, headBefore, "a second converge is a no-op (no churn commit)");
 });
 
+test("board-sync fast-forwards main past unrelated tracked dirt (F-008)", () => {
+  const bs = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-sync.js"));
+  const origin = tmpdir();
+  execFileSync("git", ["init", "--bare", "-q", "-b", "main"], { cwd: origin });
+  const target = tmpdir();
+  execFileSync("git", ["clone", "-q", origin, target]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  fs.writeFileSync(path.join(target, "BACKLOG.md"), VALID_BACKLOG, "utf8");
+  fs.writeFileSync(path.join(target, "local.cfg"), "base\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "init"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  const other = tmpdir();
+  execFileSync("git", ["clone", "-q", origin, other]);
+  git(other, ["config", "user.email", "o@o.o"]);
+  git(other, ["config", "user.name", "o"]);
+  fs.writeFileSync(path.join(other, "feature.txt"), "f\n", "utf8");
+  git(other, ["add", "-A"]);
+  git(other, ["commit", "-q", "-m", "feat: landing"]);
+  git(other, ["push", "-q", "origin", "main"]);
+
+  fs.writeFileSync(path.join(target, "local.cfg"), "local-only\n", "utf8");
+  const res = bs.convergeCanonical(target, "origin/main");
+  assert.strictEqual(res.ok, true, JSON.stringify(res.notes));
+  assert.strictEqual(read(path.join(target, "local.cfg")), "local-only\n", "unrelated dirt is preserved");
+  assert.ok(exists(path.join(target, "feature.txt")), "main fast-forwarded onto the landing");
+});
+
 test("[drift-guard] ship runs the process gates itself; CI is the post-land gate", () => {
   const src = read(path.join(h.TEMPLATES_DIR, "scripts", "ship.js"));
   assert.match(src, /PROCESS_GATES/, "process gates are owned by ship, not only the git hook");

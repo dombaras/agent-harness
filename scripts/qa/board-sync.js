@@ -363,13 +363,6 @@ function convergeCanonical(root, upstream, opts) {
   }
 
   const dirty = classifyDirty(root, upstream);
-  if (dirty.genuine.length) {
-    notes.push(
-      `main is ${behind} behind ${upstream} but has local changes to ${dirty.genuine.join(", ")} — ` +
-        `commit or discard them, then run: node scripts/backlog.js sync`
-    );
-    return { ok: false, behind, ahead: 0, blockedBy: dirty.genuine, notes, board: readWorkingBoard(root) };
-  }
   const rec = reconcileWorkingBoard(root, upstream);
   if (!rec.ok) {
     notes.push(`main checkout board has conflicting rows (${(rec.conflicts || []).join(", ") || "unknown"}) — resolve manually`);
@@ -381,8 +374,17 @@ function convergeCanonical(root, upstream, opts) {
   const ff = gitCmd(root, ["merge", "--ff-only", upstream]);
   if (ff.status !== 0) {
     fs.writeFileSync(path.join(root, "BACKLOG.md"), saved, "utf8");
-    notes.push(`main is ${behind} behind ${upstream} — could not fast-forward: ${(ff.stderr || ff.stdout || "").trim()}`);
-    return { ok: false, behind, ahead: 0, blockedBy: [], notes, board: saved };
+    // Unrelated dirt is carried across a fast-forward (git preserves files the
+    // landing does not touch); only a file the landing WOULD overwrite makes git
+    // refuse. Pre-refusing every behind checkout with unrelated dirt stranded
+    // main 1 behind on an uncommitted config toggle the landing never touched
+    // (F-008). Attempt the merge and report the real blocker.
+    notes.push(
+      dirty.genuine.length
+        ? `main is ${behind} behind ${upstream} but has local changes to ${dirty.genuine.join(", ")} that the fast-forward would overwrite — commit or discard them, then run: node scripts/backlog.js sync (git: ${firstLine(ff)})`
+        : `main is ${behind} behind ${upstream} — could not fast-forward: ${(ff.stderr || ff.stdout || "").trim()}`
+    );
+    return { ok: false, behind, ahead: 0, blockedBy: dirty.genuine, notes, board: saved };
   }
   fs.writeFileSync(path.join(root, "BACKLOG.md"), rec.board, "utf8");
   notes.push(`fast-forwarded main to ${upstream} (${behind} commit(s))`);
