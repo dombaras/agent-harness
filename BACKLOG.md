@@ -68,7 +68,6 @@ Sorted by priority (P1 → P4).
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
 | F-006 | P2 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | docs/opencode-v2-migration.md; https://opencode.ai/docs/; opencode v2.3.2; F-005 fixes the first gap | F-005 |
-| F-008 | P2 | ? | board sync: a behind-only fast-forward must proceed past unrelated tracked dirt; drop the accidentally tracked node_modules symlink | F-008: main was stranded 1 behind by an uncommitted config toggle the landing never touched; the manual fix commit also swept a worktree node_modules symlink into the release bundle (CI red on 4e69b58). | ? |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
@@ -91,6 +90,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-004 | ? | fix the completion pipeline: publishBoard aborts on the gitignored tracked `.agents/memory/owned-files.md` (git add without -f), backlog.js masks every publish failure as 'remote unreachable', worktree-prune treats finished sessions' pointers as live, and test:docs/test:backlog are not wired into CI | shipped |
 | F-003 | ? | green the local process gates on main: test:docs flags a `...` link inside inline code (docs/opencode-v2-migration.md:245 `]({...}, ...)`) and a missing CHANGELOG entry for b68e1bc (fix(harness): commit root worktree-hygiene scripts); test:backlog flags templates/BACKLOG.md as a stray board (the template scaffold shipped to targets). Decide per item: teach the checker to ignore code spans / exempt templates, or fix the content. | subsumed by F-004 (landed 894bc3b): docs/backlog gate findings fixed + gates green |
 | F-007 | ? | board: archive from a linked worktree must route an inherited OPEN row to main, never the worktree's snapshot | shipped |
+| F-008 | ? | board sync: a behind-only fast-forward must proceed past unrelated tracked dirt; drop the accidentally tracked node_modules symlink | shipped 0.3.12 — 7049179, CI green: behind-only converge fast-forwards past unrelated tracked dirt; dropped the accidentally tracked node_modules symlink |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
