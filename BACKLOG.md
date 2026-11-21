@@ -67,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-002 | P2 | ? | update: absorb or report pre-existing target modifications to harness-owned files whose content already matches the release (currently left uncommitted AND recorded in .harness.json, so the drift becomes invisible) | LibraryOS 0.3.8 deploy: update committed .harness.json + 2 new files but left scripts/board-service.sh, finalize.js, qa/run-gates.js, wsl-tune.sh modified-uncommitted; manual commit dabe5d5 was required; manifest now matches the worktree hashes so the next update will not flag them | ? |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
@@ -86,6 +85,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | ID | Epic | Task | Closed |
 |---|---|---|---|
 | F-001 | ? | Port LibraryOS's project-proven check-flows.js upstream: forwarded *TestID resolves at runtime; runFlow file: includes validated recursively | shipped 0.3.8 — 5d07aec, CI green (03f3013) |
+| F-002 | ? | update: absorb or report pre-existing target modifications to harness-owned files whose content already matches the release (currently left uncommitted AND recorded in .harness.json, so the drift becomes invisible) | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

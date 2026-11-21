@@ -1457,6 +1457,30 @@ async function deploy(target, opts) {
         actions.push({ rel, kind: "add-untracked" });
       }
     }
+
+    // Tracked harness files whose working bytes already equal the release but are
+    // still uncommitted against HEAD. A prior deploy can write them and skip them
+    // in its commit (or a restore re-applies them), after which `.harness.json`
+    // records the worktree hash and the drift is invisible to every later update —
+    // the LibraryOS 0.3.8 case (board-service.sh, finalize.js, run-gates.js,
+    // wsl-tune.sh needed a manual commit). They are "unchanged" here, so they never
+    // enter changedRels on their own; absorb the ones ONLY the working tree
+    // modified. A path with staged bytes of its own ("MM" — another session's
+    // work) is left in the index, exactly like the untracked sweep above.
+    const hasHead = runGit(target, ["rev-parse", "--verify", "--quiet", "HEAD"]).ok;
+    const unstaged = runGit(target, ["diff", "--name-only", "--", ...harnessOwnedPresent]);
+    if (unstaged.ok) {
+      const stagedSet = new Set(
+        (hasHead ? runGit(target, ["diff", "--cached", "--name-only", "--", ...harnessOwnedPresent]).out : "")
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map(relKey)
+      );
+      for (const rel of (unstaged.out || "").split(/\r?\n/).filter(Boolean).map(relKey)) {
+        if (stagedSet.has(rel)) continue; // staged bytes belong to someone else's index state
+        actions.push({ rel, kind: "adopt" });
+      }
+    }
   }
 
   // Nothing-to-update detection: an update that made no effective change to any
@@ -1464,7 +1488,7 @@ async function deploy(target, opts) {
   // report it clearly instead of printing a zero-delta "Updated", and leave the
   // target byte-for-byte untouched (no .harness.json timestamp churn, no commit).
   const changedRelsAll = actions
-    .filter((a) => ["create", "overwrite", "overwrite (backup)", "merge", "add-untracked", "remove-obsolete"].includes(a.kind))
+    .filter((a) => ["create", "overwrite", "overwrite (backup)", "merge", "add-untracked", "adopt", "remove-obsolete"].includes(a.kind))
     .map((a) => a.rel);
   const nothingToUpdate =
     !!isUpdate && changedRelsAll.length === 0 && compareVersions(existing.version || "0", PKG.version) === 0;
@@ -1565,7 +1589,8 @@ function printSummary(result, isUpdate) {
   console.log(
     `\n  ${counts.create || 0} created, ${counts.overwrite || 0} overwritten, ` +
       `${counts["overwrite (backup)"] || 0} backed up (locally modified), ` +
-      `${counts.merge || 0} merged, ${counts["remove-obsolete"] || 0} removed (obsolete), ` +
+      `${counts.merge || 0} merged, ${counts.adopt || 0} adopted (uncommitted drift), ` +
+      `${counts["remove-obsolete"] || 0} removed (obsolete), ` +
       `${counts.preserve || 0} preserved, ${counts.unchanged || 0} unchanged.`
   );
 }

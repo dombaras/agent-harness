@@ -2588,6 +2588,67 @@ test("update re-adds a present-but-untracked harness file (worktree/cache safety
   assert.ok(git(target, ["ls-files", "--", rel]).includes(rel), "the harness file is tracked again");
 });
 
+test("update adopts tracked harness files whose local bytes already match the release", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true, push: false });
+
+  // Field shape (LibraryOS 0.3.8): the working tree already carries the release
+  // bytes for a harness-owned file, but HEAD has different content — a prior
+  // deploy wrote the file and its commit skipped it. `.harness.json` records the
+  // worktree hash, so a later update sees "unchanged" and the drift is invisible
+  // forever (a manual commit was required).
+  const rel = "scripts/qa/run-gates.js";
+  const release = read(path.join(target, rel));
+  fs.writeFileSync(path.join(target, rel), "// drift HEAD never shipped\n", "utf8");
+  git(target, ["commit", "-q", "-am", "drift base"]);
+  fs.writeFileSync(path.join(target, rel), release, "utf8");
+
+  assert.match(
+    git(target, ["status", "--porcelain", "--", rel]),
+    /^M\s+scripts\/qa\/run-gates\.js$/,
+    "the file is modified in the working tree only"
+  );
+
+  const result = await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true, push: false });
+  assert.strictEqual(result.nothingToUpdate, false, "uncommitted drift makes the update non-trivial");
+  assert.ok(result.actions.some((a) => a.rel === rel && a.kind === "adopt"), "the drift is reported as adopted");
+  assert.ok(result.commitResult && result.commitResult.committed, "the drift was committed");
+  assert.ok(result.commitResult.staged.includes(rel), "the adopted file is in the harness commit");
+  assert.strictEqual(git(target, ["status", "--porcelain", "--", rel]), "", "no uncommitted drift remains");
+  assert.strictEqual(git(target, ["show", "HEAD:" + rel]), release.trim(), "HEAD now carries the release bytes");
+});
+
+test("update leaves a harness file alone when another session staged its own bytes", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true, push: false });
+
+  const rel = "scripts/qa/run-gates.js";
+  const release = read(path.join(target, rel));
+  // Another session staged a harness-file edit; the working tree then matches the
+  // release again ("MM"). Absorbing it would sweep that session's staged work in.
+  fs.writeFileSync(path.join(target, rel), "// another session's staged edit\n", "utf8");
+  git(target, ["add", rel]);
+  fs.writeFileSync(path.join(target, rel), release, "utf8");
+
+  const result = await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, commit: true, push: false });
+  assert.ok(!result.actions.some((a) => a.rel === rel && a.kind === "adopt"), "the staged path is not adopted");
+  assert.ok(
+    !(result.commitResult && result.commitResult.staged.includes(rel)),
+    "the staged path is not swept into the harness commit"
+  );
+  assert.match(git(target, ["status", "--porcelain", "--", rel]), /^MM\s+scripts/, "the staged edit is left in the index");
+});
+
 test("update auto-commit never sweeps a path another session already staged", async () => {
   const target = tmpdir();
   git(target, ["init", "-q"]);

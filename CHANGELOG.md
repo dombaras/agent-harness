@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.9 — 2026-11-21
+
+- `update` adopts harness-owned files whose working bytes already match the
+  release but are still uncommitted against HEAD. A deploy that wrote a file
+  but skipped it in its `chore(harness)` commit no longer leaves invisible
+  drift: `.harness.json` records the worktree hash, so every later update saw
+  "unchanged" and nothing was ever committed (the LibraryOS 0.3.8 case —
+  `scripts/board-service.sh`, `finalize.js`, `qa/run-gates.js`, `wsl-tune.sh`
+  needed a manual commit). The adopted files join the harness commit; a path
+  whose staged bytes belong to another session is left in the index untouched.
+
 ## 0.3.8 — 2026-11-21
 
 - `check-flows.js` no longer rejects a valid journey matrix: a `*TestID` prop
