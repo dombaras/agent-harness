@@ -46,6 +46,17 @@ const GLOBAL_PLUGINS_SRC = path.resolve(__dirname, "..", "contrib", "global-plug
 const CONFIG_FILE = ".harness.json";
 const BACKUP_DIR = ".harness-backup";
 
+/* A real `update` must ship a COMMITTED template tree. `update` reads
+ * `templates/` from THIS checkout, not from a published package: an uncommitted
+ * template is deployed downstream but never appears in a `chore(harness)` commit,
+ * so the target sees it as project WIP and the next update can silently revert
+ * it (the 2026-11-20 LibraryOS 0.3.6 incident). Returns the dirty status lines. */
+function dirtyTemplateEntries(root) {
+  const r = runGit(root || path.resolve(__dirname, ".."), ["status", "--porcelain", "--", "templates"]);
+  if (!r.ok || !r.out) return [];
+  return r.out.split(/\r?\n/).filter(Boolean);
+}
+
 // ---------------------------------------------------------------- helpers
 
 /* Numeric semver compare (major.minor.patch; prerelease tags ignored).
@@ -1142,6 +1153,25 @@ async function deploy(target, opts) {
     WORKSPACE_ROOT: workspaceRootFor(target),
   };
 
+  // Fail closed before writing when this checkout's own templates/ is dirty: the
+  // deploy would ship unreleased work and the target could never attribute it to
+  // a harness release. `--dry-run` previews, `--allow-dirty-templates` overrides
+  // deliberately for harness development.
+  if (isUpdate && opts.requireCleanTemplates && !dryRun) {
+    const dirty =
+      opts.dirtyTemplates !== undefined ? opts.dirtyTemplates : dirtyTemplateEntries();
+    if (dirty.length && !opts.allowDirtyTemplates) {
+      throw new Error(
+        `refusing to deploy from an uncommitted templates/ tree (${dirty.length} path(s)):\n` +
+          dirty.map((l) => `    ${l}`).join("\n") +
+          `\n  Commit + release the harness first, then re-run update. An uncommitted template is` +
+          ` deployed but never recorded in the target's \`chore(harness)\` commit, so it lands as` +
+          ` project WIP and the next update can silently revert it.\n` +
+          `  Override deliberately with --allow-dirty-templates.`
+      );
+    }
+  }
+
   // All writes/commits run under a per-target deploy lock (a no-op outside a git
   // repo and on dry-run) so two updates can never interleave their read-modify-
   // write of .harness.json / the harness tree.
@@ -1601,13 +1631,16 @@ function printUsage() {
     `agent-harness v${PKG.version}\n\n` +
       `Usage:\n` +
       `  agent-harness init   [--target <dir>] [--name <project>] [--domain <desc>] [--yes] [--dry-run] [--commit] [--push]\n` +
-      `  agent-harness update [--target <dir>] [--dry-run] [--no-commit] [--no-push] [--accept-harness]\n` +
+      `  agent-harness update [--target <dir>] [--dry-run] [--allow-dirty-templates] [--no-push] [--accept-harness]\n` +
       `  agent-harness migrate-backlog [--target <dir>]\n` +
       `\n` +
       `  init writes files but does NOT commit or push by default: pass --commit to\n` +
       `  commit the harness files it creates/changes, and --push to also push. update\n` +
-      `  auto-commits (chore(harness): ...) and pushes by default; use --no-commit or\n` +
-      `  --no-push to opt out. Your unrelated uncommitted work is never staged. The\n` +
+      `  auto-commits (chore(harness): ...) and pushes by default. A real deploy\n` +
+      `  refuses --no-commit (preview with --dry-run) and an uncommitted templates/\n` +
+      `  tree (--allow-dirty-templates for harness development only), so a release\n` +
+      `  can never land downstream as untracked project WIP. Your unrelated\n` +
+      `  uncommitted work is never staged. The\n` +
       `  target must be on its canonical\n` +
       `  branch (origin/HEAD, else main/master) or the commit is refused, so a\n` +
       `  harness update can never be stranded off main — pass --allow-branch to\n` +
@@ -2574,6 +2607,18 @@ async function update(target, flags) {
     console.error("templates/ directory not found next to this CLI.");
     process.exit(1);
   }
+  // A real deploy must be atomic: the deployed files and their `chore(harness)`
+  // commit are one unit. `--no-commit` split them once (2026-11-20: 0.3.6 landed
+  // in LibraryOS as untracked WIP and the updater later reverted two fixes), so
+  // it is now preview-only; use --dry-run to inspect without writing.
+  if (flags["--no-commit"] && !flags["--dry-run"]) {
+    console.error(
+      "update: refusing --no-commit for a real deploy — the harness files would sit uncommitted in the target.\n" +
+        "  They would look like project WIP and the next update could revert them (a release must be atomic).\n" +
+        "  Use --dry-run to preview the writes, or drop --no-commit to land one chore(harness) commit."
+    );
+    process.exit(1);
+  }
   const result = await deploy(target, {
     yes: true,
     dryRun: !!flags["--dry-run"],
@@ -2582,6 +2627,8 @@ async function update(target, flags) {
     push: !flags["--no-commit"] && !flags["--no-push"],
     allowBranch: !!flags["--allow-branch"],
     acceptHarness: !!flags["--accept-harness"],
+    requireCleanTemplates: true,
+    allowDirtyTemplates: !!flags["--allow-dirty-templates"],
   });
   printSummary(result, true);
   printUnpublishedWarning();
@@ -2734,7 +2781,7 @@ function parseArgs(argv) {
     if (valueFlags.has(a)) flags[a] = argv[++i];
     else if (a === "--dry-run" || a === "--yes" || a === "-y" || a === "--force") flags[a] = true;
     else if (a === "--remove") flags[a] = true;
-    else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch" || a === "--accept-harness" || a === "--commit" || a === "--push")
+    else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch" || a === "--accept-harness" || a === "--commit" || a === "--push" || a === "--allow-dirty-templates")
       flags[a] = true;
   }
   return flags;
@@ -3066,6 +3113,7 @@ module.exports = {
   isIgnoreFile,
   withDeployLock,
   sha256,
+  dirtyTemplateEntries,
   readConfig,
   resolveVars,
   workspaceRootFor,

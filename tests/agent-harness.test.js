@@ -2777,6 +2777,54 @@ test("update --no-commit skips git", async () => {
   assert.ok(!log.some((l) => /chore\(harness\)/.test(l)), "no harness commit was created");
 });
 
+test("update refuses to deploy an uncommitted templates tree", async () => {
+  const target = tmpdir();
+  git(target, ["init", "-q"]);
+  git(target, ["config", "user.email", "t@t.t"]);
+  git(target, ["config", "user.name", "t"]);
+  git(target, ["commit", "--allow-empty", "-q", "-m", "seed"]);
+
+  await assert.rejects(
+    h.deploy(target, {
+      name: "Demo",
+      yes: true,
+      isUpdate: true,
+      commit: true,
+      push: false,
+      requireCleanTemplates: true,
+      dirtyTemplates: [" M templates/scripts/wsl-tune.sh"],
+    }),
+    /uncommitted templates\/ tree/
+  );
+});
+
+test("update CLI refuses --no-commit for a real deploy", () => {
+  const cli = path.resolve(__dirname, "..", "bin", "agent-harness.js");
+  const r = spawnSync(process.execPath, [cli, "update", "--target", tmpdir(), "--no-commit"], {
+    encoding: "utf8",
+  });
+  assert.notStrictEqual(r.status, 0, "a non-dry-run --no-commit deploy must fail");
+  assert.match(`${r.stdout}${r.stderr}`, /refusing --no-commit/);
+});
+
+test("dirtyTemplateEntries reports templates/ changes and nothing on a clean tree", () => {
+  const t = tmpdir();
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  fs.mkdirSync(path.join(t, "templates", "scripts"), { recursive: true });
+  const f = path.join(t, "templates", "scripts", "demo.sh");
+  fs.writeFileSync(f, "echo one\n");
+  git(t, ["add", "."]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+
+  assert.deepStrictEqual(h.dirtyTemplateEntries(t), [], "a clean templates tree has no entries");
+  fs.writeFileSync(f, "echo two\n");
+  const dirty = h.dirtyTemplateEntries(t);
+  assert.strictEqual(dirty.length, 1, dirty.join("\n"));
+  assert.match(dirty[0], /templates\/scripts\/demo\.sh/, "the modified path is reported");
+});
+
 test("init auto-commits everything it deploys (scaffolds + BACKLOG.md tracked)", async () => {
   const target = tmpdir();
   git(target, ["init", "-q"]);
