@@ -48,7 +48,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-005 | ? | Enable OpenCode V2 todowrite end-to-end: ship `experimental.todo: true` in `templates/opencode.json`; deep-merge `experimental` in `mergeOpencodeJson` so a project's other experimental keys survive; tighten the todo guard (require a `todowrite` update after every completed step, exactly ONE `in_progress`, suppress nudges when the flag is off); add `test:opencode-compat` (V2 version + config + deprecated-V1-key + plugin-hook check) wired into gates/doctor/update. | .agents/handoffs/F-005.md (worktree: ../.worktrees/agent-harness/f-005; branch: f-005) |
-| F-009 | ? | Auto-deploy the harness to LibraryOS on every green CI run on main (deploy key + workflow) and fast-forward the local LibraryOS clone | ? (worktree: ../.worktrees/agent-harness/f-009; branch: f-009) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -92,6 +91,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-003 | ? | green the local process gates on main: test:docs flags a `...` link inside inline code (docs/opencode-v2-migration.md:245 `]({...}, ...)`) and a missing CHANGELOG entry for b68e1bc (fix(harness): commit root worktree-hygiene scripts); test:backlog flags templates/BACKLOG.md as a stray board (the template scaffold shipped to targets). Decide per item: teach the checker to ignore code spans / exempt templates, or fix the content. | subsumed by F-004 (landed 894bc3b): docs/backlog gate findings fixed + gates green |
 | F-007 | ? | board: archive from a linked worktree must route an inherited OPEN row to main, never the worktree's snapshot | shipped |
 | F-008 | ? | board sync: a behind-only fast-forward must proceed past unrelated tracked dirt; drop the accidentally tracked node_modules symlink | shipped 0.3.12 — 7049179, CI green: behind-only converge fast-forwards past unrelated tracked dirt; dropped the accidentally tracked node_modules symlink |
+| F-009 | ? | Auto-deploy the harness to LibraryOS on every green CI run on main (deploy key + workflow) and fast-forward the local LibraryOS clone | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

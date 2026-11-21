@@ -1,0 +1,58 @@
+name: Deploy LibraryOS
+
+# Every green CI run on `main` redeploys the harness into LibraryOS, so a
+# landed harness fix cannot sit unpublished (the 2026-11-21 v0.3.8 case).
+# `agent-harness update` is idempotent: when LibraryOS already matches the
+# release it prints Nothing-to-Update and commits nothing, so board-only
+# landings that change no harness file are a cheap no-op.
+#
+# Auth: `LIBRARYOS_DEPLOY_KEY` is a write-scoped SSH deploy key on
+# dombaras/LibraryOS. It can push only that repository and is revocable from
+# its Settings -> Deploy keys page.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-libraryos
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy:
+    name: Update LibraryOS from the CI-tested commit
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the harness at the CI-tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Check out LibraryOS
+        uses: actions/checkout@v4
+        with:
+          repository: dombaras/LibraryOS
+          path: .libraryos
+          ref: main
+          ssh-key: ${{ secrets.LIBRARYOS_DEPLOY_KEY }}
+
+      - name: Deploy the harness
+        working-directory: .libraryos
+        env:
+          HARNESS_ROOT: ${{ github.workspace }}
+        run: |
+          git config user.name "agent-harness-deploy"
+          git config user.email "agent-harness-deploy@users.noreply.github.com"
+          node "$HARNESS_ROOT/bin/agent-harness.js" update --target "$PWD"

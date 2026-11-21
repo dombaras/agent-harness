@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.13 — 2026-11-21
+
+- Every green `CI` run on `main` now redeploys the harness into LibraryOS
+  (`.github/workflows/deploy-libraryos.yml`): it checks out the CI-tested
+  commit plus `dombaras/LibraryOS`, runs `agent-harness update` against it, and
+  lets the updater commit/push the `chore(harness)` release. A write-scoped
+  deploy key is stored as `LIBRARYOS_DEPLOY_KEY`; `update` is idempotent, so a
+  landing that changes no harness file commits nothing. This closes the gap
+  that left LibraryOS at v0.3.8 while the harness was v0.3.12. (F-009)
+
 ## 0.3.12 — 2026-11-21
 
 - `backlog sync` no longer refuses a behind-only checkout just because an
@@ -8,6 +18,8 @@
   the landing would overwrite fails closed (with git's own error line). This
   previously stranded `main` one commit behind on an uncommitted config toggle
   the landing never touched. (F-008)
+- Removed the accidentally tracked `node_modules` symlink from the release
+  tree. (`7049179`)
 
 ## 0.3.11 — 2026-11-21
 
