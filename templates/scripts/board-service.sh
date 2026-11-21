@@ -135,6 +135,13 @@ write_unit() {
     echo "WorkingDirectory=$dir"
     [ -f "$SERVICE_ENV_FILE" ] && echo "EnvironmentFile=$SERVICE_ENV_FILE"
     echo "Environment=NODE_ENV=production"
+    # `next`'s shebang is `#!/usr/bin/env node`, and systemd --user's default
+    # PATH omits user-level Node installs (nvm/volta/~/.local/bin), so the unit
+    # restart-loops with `env: 'node': No such file or directory` (exit 127).
+    # Pin the directory of the node that generated this unit.
+    local node_dir
+    node_dir="$(dirname "$(command -v node 2>/dev/null || printf '%s' /usr/bin/node)")"
+    echo "Environment=PATH=$node_dir:/usr/local/bin:/usr/bin:/bin"
     # Best-effort gate: wait (bounded, ~60s) for the DB port before the app
     # boots. Uses bash (the `/dev/tcp` redirect is a bash feature).
     echo "ExecStartPre=-/bin/bash -c 'for i in \$(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && exit 0; sleep 2; done; exit 0'"

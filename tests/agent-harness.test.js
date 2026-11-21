@@ -1853,6 +1853,18 @@ test("[drift-guard] the harness CI ships the board-service job + its smoke scrip
   assert.ok(exists(path.join(root, "services", "board", "scripts", "ci-board.md")), "the CI fixture board ships");
 });
 
+test("[drift-guard] the board-service unit pins a PATH that can find node", () => {
+  // `next`'s shebang is `#!/usr/bin/env node`, and systemd --user's default PATH
+  // omits user-level Node installs, so the unit restart-looped with exit 127.
+  const script = read(path.join(h.TEMPLATES_DIR, "scripts", "board-service.sh"));
+  assert.match(script, /command -v node/, "the unit resolves the node that generated it");
+  assert.match(
+    script,
+    /Environment=PATH=\$node_dir:\/usr\/local\/bin:\/usr\/bin:\/bin/,
+    "the unit pins node's directory ahead of the systemd --user default PATH"
+  );
+});
+
 test("backlog list is bounded by default and --limit controls the cap", () => {
   const t = scaffoldBacklogCliTarget();
   const p = path.join(t, "BACKLOG.md");
