@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.7 — 2026-11-21
+
+- `update` refuses to deploy from an uncommitted `templates/` tree and refuses
+  `--no-commit` for a real deploy, so a release can never land downstream as
+  untracked project WIP (the 2026-11-20 LibraryOS 0.3.6 incident). `--dry-run`
+  previews; `--allow-dirty-templates` is the deliberate harness-development
+  override. (0b97dc3)
+- `wsl-tune` resolves the node binary instead of assuming PATH, because sudo
+  resets it to the secure_path: a user-local node (nvm/volta/fnm/~/.local/bin)
+  no longer makes the `.wslconfig` merge die with a bare
+  `node: command not found` after the root tunables landed; under sudo the
+  merge runs as the invoking user, and a failed merge is reported as one.
+  (aa22740)
+- The board-service systemd unit pins the generating node's directory in
+  `PATH`: systemd --user's default PATH omits user-level Node installs, so
+  `next`'s `#!/usr/bin/env node` shebang made the service restart-loop with
+  exit 127. (5c4516b)
+
 ## 0.3.6 — 2026-11-20
 
 - Finalization now closes the loop instead of reporting drift. `finalize` stages
