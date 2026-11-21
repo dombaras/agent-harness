@@ -231,6 +231,15 @@ function harnessAgentsComparable(text) {
   return stripNextDevMarker(text).replace(/\s+$/, "");
 }
 
+/* The harness-owned root AGENTS.md in template shape: the tool-owned `next dev`
+ * block and its separator removed, exactly one trailing newline. `next dev` may
+ * append the block after any deploy, so hashing raw bytes made a later template
+ * change look like a project hand-edit and failed `update` closed (the 0.4.1
+ * LibraryOS deploy stall). */
+function harnessAgentsOwned(text) {
+  return stripNextDevMarker(text).replace(/\s+$/, "") + "\n";
+}
+
 function safeJson(text, fallback) {
   if (text == null) return fallback;
   try {
@@ -1205,7 +1214,8 @@ function collectLocalHarnessDivergences(target, previousFiles, variables) {
     const targetAbs = path.join(target, rel);
     if (!fs.existsSync(targetAbs)) continue;
     const prev = fs.readFileSync(targetAbs, "utf8");
-    if (deployedHash === sha256(prev)) continue; // unmodified since last deploy
+    const prevHash = key === "AGENTS.md" ? sha256(harnessAgentsOwned(prev)) : sha256(prev);
+    if (deployedHash === prevHash) continue; // unmodified since last deploy
     const content = substitute(fs.readFileSync(abs, "utf8"), variables);
     if (prev === content) continue; // matches the incoming template: no clobber
     // The root AGENTS.md carries a `next dev` block that the tool re-appends:
@@ -1521,7 +1531,8 @@ async function deploy(target, opts) {
         harnessAgentsComparable(current) === harnessAgentsComparable(content);
       if (normalizeEol(current) !== normalizeEol(content) && !nextDevOnly) {
         const deployedHash = previousFiles[key];
-        const locallyModified = !!deployedHash && deployedHash !== sha256(current);
+        const currentHash = key === "AGENTS.md" ? sha256(harnessAgentsOwned(current)) : sha256(current);
+        const locallyModified = !!deployedHash && deployedHash !== currentHash;
         // An untracked pre-existing harness-owned file (a first `init` into a
         // repo that already has one, or a copy without .harness.json) is backed
         // up too: an overwrite must never be the only copy of project content.
@@ -1536,13 +1547,13 @@ async function deploy(target, opts) {
         // prior deploy: an F-289-style local restore can have left .harness.json
         // pointing at an older template, which would falsely flag the file as
         // locally-modified on the NEXT update.
-        manifest[key] = sha256(content);
+        manifest[key] = key === "AGENTS.md" ? sha256(harnessAgentsOwned(content)) : sha256(content);
         continue;
       }
     } else {
       actions.push({ rel: key, kind: "create" });
     }
-    manifest[key] = sha256(content);
+    manifest[key] = key === "AGENTS.md" ? sha256(harnessAgentsOwned(content)) : sha256(content);
     if (!dryRun) {
       fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
       fs.writeFileSync(targetAbs, content, "utf8");
@@ -3299,6 +3310,7 @@ module.exports = {
   isIgnoreFile,
   withDeployLock,
   sha256,
+  harnessAgentsOwned,
   dirtyTemplateEntries,
   readConfig,
   resolveVars,

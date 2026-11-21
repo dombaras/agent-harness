@@ -362,6 +362,47 @@ test("update ignores the `next dev` marker block appended to AGENTS.md (F-349)",
   );
 });
 
+test("update accepts a released AGENTS.md template after `next dev` appended its block (F-349)", async () => {
+  // Exercise a real release bump without touching the repo's own templates: a
+  // copy of bin/ + templates/ resolves TEMPLATES_DIR next to itself.
+  const harness = tmpdir();
+  fs.cpSync(path.join(__dirname, "..", "bin"), path.join(harness, "bin"), { recursive: true });
+  fs.cpSync(path.join(__dirname, "..", "templates"), path.join(harness, "templates"), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, "..", "package.json"), path.join(harness, "package.json"));
+  const copy = require(path.join(harness, "bin", "agent-harness.js"));
+
+  const target = tmpdir();
+  await copy.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const rootAgents = path.join(target, "AGENTS.md");
+  const deployed = read(rootAgents);
+  const block = [
+    "",
+    "<!-- BEGIN:nextjs-agent-rules -->",
+    "",
+    "This block is written and re-added by `next dev`.",
+    "",
+    "<!-- END:nextjs-agent-rules -->",
+    "",
+  ].join("\n");
+  fs.writeFileSync(rootAgents, deployed + block, "utf8");
+
+  // The recorded checksum still identifies the deployed harness-owned content,
+  // so the next release updates the file instead of calling it a hand-edit.
+  const manifest = JSON.parse(read(path.join(target, ".harness.json")));
+  assert.strictEqual(
+    manifest.files["AGENTS.md"],
+    copy.sha256(copy.harnessAgentsOwned(deployed + block)),
+    "the manifest hashes the deployed content, not the tool-owned block"
+  );
+
+  const tpl = path.join(harness, "templates", "AGENTS.md");
+  fs.writeFileSync(tpl, read(tpl).replace("Agent Operating Rules", "Agent Operating Rules v2"), "utf8");
+  await copy.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  const after = read(rootAgents);
+  assert.ok(after.includes("Agent Operating Rules v2"), "the new template is written over the previous release");
+});
+
+
 test("update fails closed on a modified QA script and points upstream (F-289 shape)", async () => {
   const target = tmpdir();
   git(target, ["init", "-q", "-b", "main"]);

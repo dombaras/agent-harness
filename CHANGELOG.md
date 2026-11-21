@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3 — 2026-11-21
+
+- `update` now recognises an unmodified previous-release root `AGENTS.md` that
+  carries the tool-owned `next dev` marker block: the preflight compares the
+  manifest checksum against the harness-owned content (block and trailing
+  newline normalised), not raw bytes, so a release that changes `AGENTS.md` no
+  longer fails closed as a project hand-edit. This blocked every automatic
+  deploy to LibraryOS after 0.4.0. (F-022)
+
 ## 0.4.2 — 2026-11-21
 
 - Native OpenCode worktrees now share the harness's sibling container: the
