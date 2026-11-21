@@ -66,8 +66,7 @@ _Rows: `| F-005 | P2 | epic-key | short desc | pointer, never a re-derivation | 
 Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
-|----|---|------|------|----------|------------|
-| | | | | | |
+|---|---|---|---|---|---|
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
@@ -84,8 +83,8 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 ## Archive (shipped · done)
 
 | ID | Epic | Task | Closed |
-|----|------|------|--------|
-| | | | |
+|---|---|---|---|
+| F-001 | ? | Port LibraryOS's project-proven check-flows.js upstream: forwarded *TestID resolves at runtime; runFlow file: includes validated recursively | shipped 0.3.8 — 5d07aec, CI green (03f3013) |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
