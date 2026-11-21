@@ -80,6 +80,7 @@ were archived on that project's board and now live here.
 
 ## Not tracked here
 
-- **npm publish** — `AGENTS.md` states publishing is optional and done on the
-  user's side; the local-checkout `update`/deploy is the authoritative path, so
-  the registry being behind local `package.json` is not harness open work.
+- **npm publish** — automatic on a green `main` CI run: `auto-tag.yml` creates
+  the missing `v<package.json version>` tag and dispatches `release.yml`, which
+  publishes via npm trusted publishing (OIDC; no stored token). The local-checkout
+  `update` remains authoritative for downstream projects.

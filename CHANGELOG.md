@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.14 — 2026-11-21
+
+- Version bumps now reach npm automatically: after a green `main` CI run,
+  `.github/workflows/auto-tag.yml` creates the missing `v<package.json version>`
+  tag and dispatches `release.yml` (which gains `workflow_dispatch`). The release
+  publishes with npm trusted publishing (OIDC), so no long-lived `NPM_TOKEN` is
+  stored. A tag pushed with the workflow token cannot trigger another workflow,
+  hence the explicit dispatch. (F-010)
+
 ## 0.3.13 — 2026-11-21
 
 - Every green `CI` run on `main` now redeploys the harness into LibraryOS
