@@ -67,6 +67,7 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
+| F-002 | P2 | ? | update: absorb or report pre-existing target modifications to harness-owned files whose content already matches the release (currently left uncommitted AND recorded in .harness.json, so the drift becomes invisible) | LibraryOS 0.3.8 deploy: update committed .harness.json + 2 new files but left scripts/board-service.sh, finalize.js, qa/run-gates.js, wsl-tune.sh modified-uncommitted; manual commit dabe5d5 was required; manifest now matches the worktree hashes so the next update will not flag them | ? |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
