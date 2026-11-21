@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-022 | ? | agent-harness update fails closed on an unmodified previous-release AGENTS.md once next dev appends its block (blocks 0.4.1+ deploy to LibraryOS) | .agents/handoffs/F-022.md |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -66,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-022 | P2 | ? | agent-harness update fails closed on an unmodified previous-release AGENTS.md once next dev appends its block (blocks 0.4.1+ deploy to LibraryOS) | ? | ? |
 | F-019 | P3 | ? | Session-end guard: an untracked `.agents/handoffs/*.md` in a project's shared main checkout is silently orphaned — `finalize` stages only the current feature's handoff and refuses every other one, while main-checkout commits are guard-blocked. Add a gate (or a handoff sync into the landing worktree) so no session handoff can be left behind unnoticed. | LibraryOS F-357 (2026-11-21): F-349 shipped in this harness repo and F-356 landed from a worktree, yet both handoffs lingered untracked in the project's main checkout; `templates/scripts/finalize.js` stageTail | ? |
 | F-020 | P3 | ? | Fix `archive` worktree cleanup when the board write runs from inside the feature worktree: cleanupWorktree resolves the recorded worktree path against the worktree root instead of the main checkout, so `git worktree remove` targets `<worktree>/../.worktrees/...` and fails, leaving the shipped worktree behind with a misleading fatal. | F-015 finalize (2026-11-21, landed 6cd40a3): `archived F-015 (shipped) — worktree ../.worktrees/agent-harness/f-015 left in place (fatal: '/home/ronen/develop/.worktrees/agent-harness/.worktrees/agent-harness/f-015' is not a working tree)`; templates/scripts/backlog.js cleanupWorktree + parseWorktree | ? |
 | F-021 | P3 | ? | Migrate or retire a session's `.serve/sessions/<id>.json` lease when `session_move` relocates the session to the main checkout: the lease file stays inside the old worktree, `liveLeases(main)` surfaces it, and `worktree-prune` then reports every merged worktree as 'this session is rooted in it' and refuses to prune (observed for f-014/f-015/f-018 after moving F-015 to main). | 2026-11-21 F-015 close-out: `node scripts/backlog.js worktree-prune` kept all three; probe showed liveLeases(main) = f-015/.serve/sessions/ses_e002d42a3ffefgYsdJLDVzFHX1.json (pid 754) while liveLeases(<each worktree>) = []; templates/scripts/qa/lease-lib.js + templates/scripts/backlog.js leaseAncestorIn | ? |
