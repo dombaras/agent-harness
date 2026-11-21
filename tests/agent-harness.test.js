@@ -1713,6 +1713,10 @@ test("a linked worktree's board reads/writes resolve to the MAIN checkout (no pr
 test("archive from a linked worktree rides the branch (finalize), so main is not marked done before landing", () => {
   const { main, wt } = initRepoWithWorktree((t) => {
     runBacklogCli(t, ["add", "ship me", "--p", "P2", "--evidence", "seed"]);
+    // finalize archives the row THIS branch claimed. `worktree` publishes the
+    // take before branching, so the snapshot starts with the row In progress.
+    const take = runBacklogCli(t, ["take", "F-001", "--handoff", ".agents/handoffs/F-001.md"]);
+    assert.strictEqual(take.status, 0, take.out);
   });
   assert.match(read(path.join(main, "BACKLOG.md")), /ship me/, "the row is on the committed main board");
 
@@ -1733,6 +1737,21 @@ test("archive from a worktree archives a mid-branch capture on main (no local ro
   const mainBoard = read(path.join(main, "BACKLOG.md"));
   assert.match(mainBoard.split("## Archive")[1], /\| F-001 \| \? \| captured after branching \| fixed in this branch \|/);
   assert.doesNotMatch(read(path.join(wt, "BACKLOG.md")), /captured after branching/, "the worktree never gains a private row");
+});
+
+test("archive from a worktree routes an inherited OPEN row to main (no stranded private archive)", () => {
+  const { main, wt } = initRepoWithWorktree((t) => {
+    runBacklogCli(t, ["add", "subsumed by a sibling", "--p", "P2", "--evidence", "seed"]);
+  });
+  assert.match(read(path.join(wt, "BACKLOG.md")), /subsumed by a sibling/, "the row is an inherited snapshot");
+  const before = read(path.join(wt, "BACKLOG.md"));
+
+  const res = runBacklogCli(wt, ["archive", "F-001", "--closed", "subsumed by F-777"]);
+  assert.strictEqual(res.status, 0, res.out);
+  assert.strictEqual(read(path.join(wt, "BACKLOG.md")), before, "the worktree snapshot is never written");
+  const mainBoard = read(path.join(main, "BACKLOG.md"));
+  assert.match(mainBoard.split("## Archive")[1], /\| F-001 \| \? \| subsumed by a sibling \| subsumed by F-777 \|/);
+  assert.doesNotMatch(mainBoard.split("## Open")[1].split("## Frozen")[0], /subsumed by a sibling/);
 });
 
 test("[drift-guard] the harness test suite is hermetic against the board shell hook (F-339)", () => {

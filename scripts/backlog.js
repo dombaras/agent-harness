@@ -136,13 +136,17 @@ function findRoot(startDir) {
  * sees.
  *
  * `archive` is the deliberate exception in legacy file mode when the row is
- * already in this checkout's board snapshot: `finalize` archives from inside the
- * feature worktree BEFORE the branch lands, and that archive must travel with
- * the branch so a failed ship does not mark unlanded work done on main. The row
- * is NOT in the local snapshot when it was captured mid-branch (a worktree `add`
- * now writes main), so that archive resolves to main instead — otherwise
- * finalize would fail with "no row in BACKLOG.md". In service mode there is no
- * checkout-local board, so the service is used either way.
+ * CLAIMED in this checkout (In progress): `finalize` archives its own taken row
+ * from inside the feature worktree BEFORE the branch lands, and that archive
+ * must travel with the branch so a failed ship does not mark unlanded work done
+ * on main. A row that is merely inherited from main's snapshot (Open/Queued/
+ * Frozen) was never claimed here, so archiving it locally would strand the
+ * archive in a private copy the branch may never ship — that archive resolves to
+ * main instead (F-007: archiving the subsumed F-003 Open row from a finished
+ * feature worktree wrote that worktree's copy and had to be redone by hand). A
+ * row absent from the local snapshot is likewise a mid-branch capture, so it
+ * also resolves to main. In service mode there is no checkout-local board, so
+ * the service is used either way.
  *
  * An explicit `--root` names a local checkout for migration/tests and is left
  * untouched (F-333/F-338). */
@@ -150,7 +154,8 @@ function resolveBoardRoot(root, opts) {
   if (!root || (opts && opts.explicitRoot)) return root;
   if (opts && opts.cmd === "archive" && opts.id) {
     try {
-      if (findRow(readBacklog(root).lines, opts.id)) return root;
+      const found = findRow(readBacklog(root).lines, opts.id);
+      if (found && found.key === "inprogress") return root;
     } catch {
       /* no local board (service-backed) — resolve the canonical root below */
     }

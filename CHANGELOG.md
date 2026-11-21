@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.11 — 2026-11-21
+
+- Archiving a row from a linked feature worktree no longer writes that
+  worktree's inherited board snapshot. The archive exception now applies only to
+  a row the branch itself claimed (In progress), so a subsumed Open row is
+  archived on the canonical board. Previously such an archive stranded in the
+  feature checkout after its branch had already landed and had to be redone by
+  hand from main. (F-007)
+
 ## 0.3.10 — 2026-11-21
 
 - Board publishing no longer aborts on the gitignored (but tracked)
