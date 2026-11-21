@@ -67,6 +67,7 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
+| F-011 | P1 | ? | Pin the Release workflow to npm 11 (or move the upgrade after test:pack): npm@latest 12.x breaks test:pack with an empty `npm pack --json` array, failing auto-releases before publish | Release run 44912244065 failed at `npm run test:pack` (tests/pack.e2e.js:24, TypeError reading 'filename'); runner installed npm@latest=12.2.3 while local npm 11.19.1 passes; fix is `.github/workflows/release.yml` npm install -g npm@11. | ? |
 | F-006 | P2 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | docs/opencode-v2-migration.md; https://opencode.ai/docs/; opencode v2.3.2; F-005 fixes the first gap | F-005 |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
