@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-006 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | .agents/handoffs/F-006.md |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -66,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-006 | P2 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | docs/opencode-v2-migration.md; https://opencode.ai/docs/; opencode v2.3.2; F-005 fixes the first gap | F-005 |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
