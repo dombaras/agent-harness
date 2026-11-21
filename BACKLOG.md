@@ -48,6 +48,7 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-005 | ? | Enable OpenCode V2 todowrite end-to-end: ship `experimental.todo: true` in `templates/opencode.json`; deep-merge `experimental` in `mergeOpencodeJson` so a project's other experimental keys survive; tighten the todo guard (require a `todowrite` update after every completed step, exactly ONE `in_progress`, suppress nudges when the flag is off); add `test:opencode-compat` (V2 version + config + deprecated-V1-key + plugin-hook check) wired into gates/doctor/update. | .agents/handoffs/F-005.md (worktree: ../.worktrees/agent-harness/f-005; branch: f-005) |
+| F-007 | ? | board: archive from a linked worktree must route an inherited OPEN row to main, never the worktree's snapshot | .agents/handoffs/F-007.md (worktree: ../.worktrees/agent-harness/f-007; branch: f-007) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -68,7 +69,6 @@ Sorted by priority (P1 → P4).
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
 | F-006 | P2 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | docs/opencode-v2-migration.md; https://opencode.ai/docs/; opencode v2.3.2; F-005 fixes the first gap | F-005 |
-| F-007 | P2 | ? | board: archive from a linked worktree must route an inherited OPEN row to main, never the worktree's snapshot | F-003 close-out: `backlog archive F-003` run from the f-004 worktree wrote that worktree's BACKLOG.md (resolveBoardRoot keeps cmd=archive local whenever the row exists there), so the archive never reached main and had to be reverted + redone from the main checkout. | ? |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
