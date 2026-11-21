@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.16 — 2026-11-21
+
+- A harness-provisioned repo now shows its deployed harness version as a
+  constant TUI badge (`harness v0.3.16`): in the home footer beside opencode's
+  own version, and in the session prompt footer beside the model indicator. It
+  reads the version from `.harness.json`, so it tracks `agent-harness update`,
+  and renders nothing in repos that are not harness-provisioned. (F-012)
+
 ## 0.3.15 — 2026-11-21
 
 - The Release workflow pins npm 11 instead of `npm@latest`: npm 12 changed

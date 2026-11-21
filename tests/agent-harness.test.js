@@ -236,6 +236,23 @@ test("update prunes the V1 obsolete layout (.opencode/tools + legacy command/)",
   );
 });
 
+test("deploy ships the harness-version TUI plugin and checksums every entrypoint", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const pluginDir = path.join(target, ".opencode", "plugins", "harness-version");
+  for (const rel of ["index.ts", "tui.tsx", "version.mjs"]) {
+    assert.ok(exists(path.join(pluginDir, rel)), `${rel} deployed`);
+  }
+  const cfg = JSON.parse(read(path.join(target, ".harness.json")));
+  for (const rel of [
+    ".opencode/plugins/harness-version/index.ts",
+    ".opencode/plugins/harness-version/tui.tsx",
+    ".opencode/plugins/harness-version/version.mjs",
+  ]) {
+    assert.ok(cfg.files[rel], `${rel} checksummed`);
+  }
+});
+
 test("deploy preserves project-owned handoff files on re-deploy", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });

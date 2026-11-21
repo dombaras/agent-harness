@@ -184,5 +184,8 @@
       "resource": "rm -rf /tmp/*",
       "effect": "allow"
     }
+  ],
+  "plugins": [
+    "./.opencode/plugins/harness-version"
   ]
 }
