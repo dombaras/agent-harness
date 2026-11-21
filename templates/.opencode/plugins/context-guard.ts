@@ -179,6 +179,17 @@ export default {
       /* missing/unreadable -> documented defaults from the core */
     }
     thresholds = guard.parseThresholds(text)
+    /* Todo capability: `todowrite` exists only while the active config enables
+     * `experimental.todo` (default false). A project that turns it off explicitly
+     * opts out; nudging into an absent tool is noise the model cannot satisfy. */
+    let todoFlag: unknown = undefined
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(directory, "opencode.json"), "utf8"))
+      todoFlag = cfg?.experimental?.todo
+    } catch {
+      /* no/parse-failed config -> leave the core default (enabled) */
+    }
+    if (todoFlag === false) thresholds.todo = { ...(thresholds.todo || {}), enabled: false }
     thresholdsMtime = mtime
     return thresholds
   }

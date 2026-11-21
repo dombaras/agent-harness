@@ -96,11 +96,14 @@ long tool loop between model steps still triggers):
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `use_after_calls` | 4 | N material tool calls without any todo list before "create one" |
-| `stale_after_calls` | 3 | N material tool calls since the last `todowrite` before "sync it" |
+| `use_after_calls` | 3 | N material tool calls without any todo list before "create one" |
+| `stale_after_calls` | 2 | N material tool calls since the last `todowrite` before "sync it" |
 
-A list with more than one `in_progress` item is flagged immediately; at the
-checkpoint band and above, open items arm a final "close the list" nudge.
+A list with more than one `in_progress` item is flagged immediately; a list with
+open items but **zero** `in_progress` is flagged as `nocurrent`; at the checkpoint
+band and above, open items arm a final "close the list" nudge. All todo nudges are
+suppressed when the project's `opencode.json` sets `experimental.todo: false` —
+without that flag the runtime exposes no `todowrite` tool.
 
 ## Escalation
 
@@ -143,9 +146,12 @@ session:
   advisory pointing at `.agents/memory/locations.md` / `npm run wait`.
 - **todo list** — `use_after_calls` / `stale_after_calls` drive the "create the
   list" / "sync the list" nudges; more than one `in_progress` is flagged as
-  invalid, and at the checkpoint band an open list gets a "close it before you
-  report" nudge. The guard never writes the panel itself (the V2 plugin API has
-  no todo store) — the model's `todowrite` call is the single writer.
+  invalid, zero `in_progress` with open items is flagged as `nocurrent`, and at
+  the checkpoint band an open list gets a "close it before you report" nudge.
+  Every todo nudge is suppressed when `experimental.todo` is explicitly false
+  (no `todowrite` tool exists then). The guard never writes the panel itself (the
+  V2 plugin API has no todo store) — the model's `todowrite` call is the single
+  writer.
 
 Two guards BLOCK a tool call instead of nudging:
 

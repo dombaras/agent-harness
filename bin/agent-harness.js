@@ -390,6 +390,10 @@ function mergeOpencodeJson(target, variables) {
   if (harness.mcp && typeof harness.mcp === "object" && !Array.isArray(harness.mcp)) {
     merged.mcp = mergeMcp(harness.mcp, existing.mcp);
   }
+  // `experimental.todo` is harness-managed (the todo-list discipline depends on
+  // the `todowrite` tool, which V2 gates behind it); every other experimental
+  // key belongs to the project and survives a re-deploy.
+  merged.experimental = mergeExperimental(harness.experimental, existing.experimental);
   return JSON.stringify(merged, null, 2) + "\n";
 }
 
@@ -477,6 +481,26 @@ function mergeMcp(harnessMcp, priorMcp) {
   return out;
 }
 
+/* Merge the harness `experimental` block with the project's. `todo` is
+ * harness-managed: the todo-list discipline depends on the `todowrite` tool,
+ * which V2 gates behind this flag (default false). Every other experimental
+ * key belongs to the project and wins on a collision. */
+function mergeExperimental(harnessExperimental, priorExperimental) {
+  const harness =
+    harnessExperimental && typeof harnessExperimental === "object" && !Array.isArray(harnessExperimental)
+      ? harnessExperimental
+      : {};
+  const prior =
+    priorExperimental && typeof priorExperimental === "object" && !Array.isArray(priorExperimental)
+      ? priorExperimental
+      : {};
+  const out = { ...prior, ...harness };
+  for (const key of Object.keys(harness)) {
+    if (key !== "todo" && Object.prototype.hasOwnProperty.call(prior, key)) out[key] = prior[key];
+  }
+  return out;
+}
+
 // Harness-shipped npm scripts auto-wired into the target project's package.json
 // scripts (merged, not clobbered). Every other script the project has is preserved.
 // These gates ship with the harness, so a deploy wires them up like opencode.json.
@@ -497,6 +521,7 @@ const HARNESS_SCRIPTS = {
   "test:linger": "node scripts/qa/check-linger.js",
   "test:capacity": "node scripts/qa/check-capacity.js",
   "test:ci-policy": "node scripts/qa/check-ci-policy.js",
+  "test:opencode-compat": "node scripts/qa/check-opencode-compat.js",
   "test:prefix": "node scripts/qa/check-prefix-stability.js",
   "ci-triage": "node scripts/qa/ci-triage.js",
   gates: "node scripts/qa/run-gates.js",
@@ -2142,8 +2167,27 @@ function doctor(target) {
           `V1 \`tools\` map is ignored by V2 (${parts.join("; ")}) — run \`agent-harness update\` to migrate to \`permissions\``
         );
       }
+      // `experimental.todo` is the V2 capability flag for the built-in
+      // `todowrite` tool. The harness todo discipline depends on it, so a
+      // deployed config missing it shows no panel and the guard nudges into a
+      // tool that does not exist.
+      const todoFlag = doc.experimental && typeof doc.experimental === "object" ? doc.experimental.todo : undefined;
+      add(
+        todoFlag === true ? "ok" : "warn",
+        "todo panel",
+        todoFlag === true
+          ? "`experimental.todo` enabled (`todowrite` available)"
+          : "`experimental.todo` is not enabled — the todo panel stays empty; run `agent-harness update`"
+      );
     }
   }
+  add(
+    fs.existsSync(path.join(target, "scripts", "qa", "check-opencode-compat.js")) ? "ok" : "warn",
+    "opencode compat gate",
+    fs.existsSync(path.join(target, "scripts", "qa", "check-opencode-compat.js"))
+      ? "`npm run test:opencode-compat` available (V2 config + plugin surface)"
+      : "missing — re-run `agent-harness update` to deploy the compatibility gate"
+  );
 
   // Session store (W1): the telemetry tooling (`report:cost`, `report:recon`,
   // `session_info`) reads the local opencode store. V2 moved the tables
@@ -3146,6 +3190,7 @@ module.exports = {
   convertV1Permission,
   convertV1Tools,
   mergeMcp,
+  mergeExperimental,
   deploy,
   assertNoTemplateHandoffs,
   parseWorktreeDirs,

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 — 2026-11-21
+
+- The OpenCode todo panel works end-to-end again: `templates/opencode.json`
+  enables `experimental.todo: true` (V2 gates the built-in `todowrite` behind it,
+  default false), and `mergeOpencodeJson` deep-merges the `experimental` block so
+  a project keeps its own flags while `todo` stays harness-managed. A new
+  `test:opencode-compat` gate (wired into the process gates + `doctor`) fails a
+  deploy that drifts to V1 — wrong runtime major, a missing/disabled
+  `experimental.todo`, a leftover V1 config key (`small_model`/`agent`/
+  `permission`/`tools`), a V1 plugin package/envelope, or the legacy
+  `.opencode/tools`/`opencode/command` layout. The todo guard tightens to
+  3/2 material calls, flags a list with open items but no `in_progress`
+  (`nocurrent`), and stays silent when the project disables the capability.
+  (F-005)
 ## 0.3.16 — 2026-11-21
 
 - A harness-provisioned repo now shows its deployed harness version as a

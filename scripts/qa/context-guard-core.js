@@ -51,8 +51,8 @@ const DEFAULT_REQUEST = Object.freeze({
  * Thresholds are material-call counts, not turns, so a long tool loop between
  * two model steps still triggers. */
 const DEFAULT_TODO = Object.freeze({
-  use_after_calls: 4,
-  stale_after_calls: 3,
+  use_after_calls: 3,
+  stale_after_calls: 2,
 });
 
 /* Band order is resolved by threshold VALUE (descending), not by a fixed list,
@@ -417,8 +417,9 @@ function createSessionState() {
     todoMissingFlaggedAt: -1,
     todoStaleFlaggedAt: -1,
     todoInvalidFlaggedAt: -1,
+    todoNoCurrentFlaggedAt: -1,
     todoCloseFlagged: false,
-    todoPending: null, // "missing" | "stale" | "invalid" | "close"
+    todoPending: null, // "missing" | "stale" | "invalid" | "nocurrent" | "close"
   };
 }
 
@@ -592,6 +593,8 @@ const TODO_STALE_TEXT =
   "TODO GUARD — the todo panel is behind the work: several material steps have run since the list was last written. Rewrite it now with `todowrite`: mark finished items `completed`, exactly ONE current item `in_progress`, and add any newly discovered step as `pending`. A stale list is worse than no list.";
 const TODO_INVALID_TEXT =
   "TODO GUARD — the todo list has more than one `in_progress` item. Keep exactly ONE item `in_progress` (the step actually being worked now); mark the others `pending` or `completed` in the next `todowrite` call so the panel reflects real progress.";
+const TODO_NOCURRENT_TEXT =
+  "TODO GUARD — the todo list has open items but NO `in_progress` item, so the panel cannot show what is being worked now. Rewrite it with `todowrite`: mark the step you are actually on `in_progress`, keep the rest `pending` (or `completed`), and never leave the list with zero currents while work remains.";
 const TODO_CLOSE_TEXT =
   "TODO GUARD — the context is at a wrap-up band but the todo list still has open items. Before you checkpoint/report, close the list with `todowrite`: mark every finished item `completed` and leave only genuinely unfinished work `pending`/`in_progress` (with the blocker named). Do not hand back a task with completed work still shown as open.";
 
@@ -599,6 +602,7 @@ const TODO_TEXTS = Object.freeze({
   missing: TODO_USE_TEXT,
   stale: TODO_STALE_TEXT,
   invalid: TODO_INVALID_TEXT,
+  nocurrent: TODO_NOCURRENT_TEXT,
   close: TODO_CLOSE_TEXT,
 });
 
@@ -646,6 +650,14 @@ function armTodoNudge(state, thresholds, band) {
   const staleAfter = Number.isFinite(cfg.stale_after_calls) ? cfg.stale_after_calls : DEFAULT_TODO.stale_after_calls;
   const calls = state.materialCalls || 0;
 
+  // Nudges only ride when the runtime exposes the tool they name. A project
+  // that explicitly disables `experimental.todo` has no `todowrite`; nudging
+  // into it would be noise the model cannot satisfy.
+  if (thresholds?.todo && thresholds.todo.enabled === false) {
+    state.todoPending = null;
+    return null;
+  }
+
   if (!state.todoUsed) {
     // Re-arm after another full `useAfter` window of material work, so a model
     // that skipped the first nudge is reminded again rather than left empty.
@@ -670,6 +682,20 @@ function armTodoNudge(state, thresholds, band) {
   ) {
     state.todoInvalidFlaggedAt = calls;
     state.todoPending = "invalid";
+    return state.todoPending;
+  }
+
+  // A list with work left but no current step is the mirror of the invalid
+  // case: the panel shows activity that is not happening. Flag it just as hard,
+  // re-armed per stale window so a model that ignores it is reminded only after
+  // real further work.
+  if (
+    inProgress === 0 &&
+    open > 0 &&
+    (state.todoNoCurrentFlaggedAt < 0 || calls - state.todoNoCurrentFlaggedAt >= staleAfter)
+  ) {
+    state.todoNoCurrentFlaggedAt = calls;
+    state.todoPending = "nocurrent";
     return state.todoPending;
   }
 

@@ -39,6 +39,7 @@ const PHASES = {
     ["test:capacity"],
     ["test:worktrees"],
     ["test:ci-policy"],
+    ["test:opencode-compat"],
     ["test:backlog"],
     ["test:wiring"],
     ["test:integrate"],

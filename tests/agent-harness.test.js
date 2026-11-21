@@ -626,6 +626,23 @@ test("opencode.json mcp is project-owned and deep-merged by server name (D prere
   assert.ok(out.servers.other, "harness-only server added");
 });
 
+test("opencode.json experimental block is harness-managed for todo, project-owned otherwise", () => {
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify({ experimental: { todo: false, projectFlag: true } }, null, 2) + "\n",
+    "utf8"
+  );
+  const merged = JSON.parse(h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" }));
+  assert.strictEqual(merged.experimental.todo, true, "the harness forces the todowrite capability on");
+  assert.strictEqual(merged.experimental.projectFlag, true, "a project's other experimental keys survive");
+
+  // mergeExperimental: `todo` is harness-managed; every other key is project-owned
+  // (project wins a collision, harness-only keys are added).
+  const out = h.mergeExperimental({ todo: true, shared: false, harnessOnly: 1 }, { shared: true });
+  assert.deepStrictEqual(out, { todo: true, shared: true, harnessOnly: 1 });
+});
+
 test("opencode.json merge converges a V1 deploy to native V2 (no stale small_model/agent/permission)", () => {
   const target = tmpdir();
   // Simulate an opencode.json written by a V1 harness (harness-managed V1 keys).
@@ -2508,6 +2525,7 @@ test("deploy auto-wires harness gate scripts into package.json, preserving other
   assert.strictEqual(pkg.scripts["test:backlog"], "node scripts/qa/check-backlog.js");
   assert.strictEqual(pkg.scripts["test:product"], "node scripts/qa/check-product.js");
   assert.strictEqual(pkg.scripts["test:quality"], "node scripts/qa/check-quality.js");
+  assert.strictEqual(pkg.scripts["test:opencode-compat"], "node scripts/qa/check-opencode-compat.js");
   assert.strictEqual(pkg.scripts["test:prefix"], "node scripts/qa/check-prefix-stability.js");
   assert.strictEqual(pkg.scripts["report:cost"], "node scripts/agent-report.js --cost --since=14d");
   assert.strictEqual(pkg.scripts["checkpoint"], "node scripts/checkpoint.js");
@@ -5549,6 +5567,16 @@ test("context-guard todo guard nudges create, sync, invalid, and close", () => {
   assert.strictEqual(turn("m4").todoPending, "invalid");
   cg.clearOneShot(state);
 
+  // Open items with ZERO in_progress -> "nocurrent" (the panel shows no current step).
+  cg.noteTodoWrite(state, {
+    todos: [
+      { content: "step a", status: "pending" },
+      { content: "step b", status: "pending" },
+    ],
+  });
+  assert.strictEqual(turn("m5").todoPending, "nocurrent");
+  cg.clearOneShot(state);
+
   // Wrap-up band with open items -> "close it" (once per list revision).
   cg.noteTodoWrite(state, {
     todos: [{ content: "step a", status: "in_progress" }],
@@ -5566,6 +5594,16 @@ test("context-guard todo guard nudges create, sync, invalid, and close", () => {
   assert.strictEqual(cg.noteTodoWrite(state, { todos: "nope" }).recorded, false);
   assert.strictEqual(cg.noteTodoWrite(state, { todos: [] }).recorded, true);
   assert.deepStrictEqual(state.todos, []);
+
+  // Capability gate: an explicit `experimental.todo: false` disables every todo
+  // nudge (the runtime exposes no `todowrite` to satisfy it).
+  const off = cg.createSessionState();
+  for (let i = 0; i < 5; i++) {
+    cg.noteToolCall(off, "edit", { filePath: `off${i}.ts`, oldString: "a", newString: "b" }, stuck);
+  }
+  const disabled = { ...thresholds, todo: { ...thresholds.todo, enabled: false } };
+  assert.strictEqual(cg.armTodoNudge(off, disabled, "warning"), null, "no nudge when the tool is unavailable");
+  assert.strictEqual(cg.armTodoNudge(off, thresholds, "warning"), "missing", "the same state nudges when enabled");
 });
 
 test("context-guard excludes legitimate polling/glue repeats from the loop counter", () => {
@@ -6343,6 +6381,27 @@ test("context-guard todo guard drives the todowrite panel: create, sync, close",
   assert.match(txt, /behind the work/);
 });
 
+test("context-guard suppresses todo nudges when the project disables experimental.todo", async () => {
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify({ experimental: { todo: false } }, null, 2) + "\n",
+    "utf8"
+  );
+  const g = await loadGuardPlugin({ directory: target });
+  const sid = "ses_guard_todo_off";
+  await g.emit({ type: "session.created", data: { sessionID: sid } });
+
+  for (let i = 0; i < 5; i++) {
+    await g.toolBefore("edit", sid, { filePath: `src/off${i}.ts`, oldString: "a", newString: "b" });
+  }
+  await g.emit({ type: "session.step.ended", data: { sessionID: sid, assistantMessageID: "m1" } });
+  const messages = [{ role: "user", content: [{ type: "text", text: "go" }] }];
+  await g.context(sid, messages);
+  const tail = messages[messages.length - 1];
+  assert.doesNotMatch(tail?.metadata?.synthetic ? tail.content[0].text : "", /TODO GUARD/, "no nudge without the tool");
+});
+
 test("context-guard keeps a per-message failure signature through the V2 execute.after adapter", async () => {
   // The V2 `execute.after` event carries `{status:"error", error}` where `error`
   // is a Tool.Error (an Error subclass). The adapter (`v1Result`) maps it to the
@@ -6525,8 +6584,15 @@ test("branch-switch plugin guard aborts a HEAD move only while another live sess
   );
 
   // File restores and non-git commands are never blocked.
-  for (const command of ["git checkout -- BACKLOG.md", "git restore --staged .", "npm run test:quick"]) {
-    await g.toolBefore("shell", "ses_me", { command });
+  // AGENT_CAPACITY_DISABLE keeps the host-RAM capacity gate out of this unit test
+  // (the command is heavy-classified, but nothing is executed here).
+  process.env.AGENT_CAPACITY_DISABLE = "1";
+  try {
+    for (const command of ["git checkout -- BACKLOG.md", "git restore --staged .", "npm run test:quick"]) {
+      await g.toolBefore("shell", "ses_me", { command });
+    }
+  } finally {
+    delete process.env.AGENT_CAPACITY_DISABLE;
   }
 
   // Solo checkout: the same switch is allowed.
@@ -6695,8 +6761,15 @@ test("bash reroot lifts `cd <tree> &&` into workdir and defaults to the session 
   await g.emit({ type: "session.created", data: { sessionID: "ses_r" } });
 
   // An explicit `cd <abs> && ...` is lifted into the shell workdir argument.
+  // The command is heavy-classified; disable the host-RAM capacity gate (it is
+  // never executed here) so the unit test does not depend on machine load.
   const a = { command: `cd ${wt} && npm run test:quick` };
-  await g.toolBefore("shell", "ses_r", a);
+  process.env.AGENT_CAPACITY_DISABLE = "1";
+  try {
+    await g.toolBefore("shell", "ses_r", a);
+  } finally {
+    delete process.env.AGENT_CAPACITY_DISABLE;
+  }
   assert.strictEqual(a.workdir, wt);
   assert.strictEqual(a.command, "npm run test:quick");
 
@@ -7790,6 +7863,67 @@ test("test:prefix passes a clean deploy and fails a volatile value in an always-
   fs.writeFileSync(path.join(target, "AGENTS.md"), "# Demo\n\nAs of 2026-09-12 this is fine.\n", "utf8");
   const dateOk = gate();
   assert.strictEqual(dateOk.status, 0, dateOk.stdout + dateOk.stderr);
+});
+
+test("test:opencode-compat passes a clean deploy and fails each V2 drift", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const gate = () =>
+    spawnSync(process.execPath, ["scripts/qa/check-opencode-compat.js"], {
+      cwd: target,
+      encoding: "utf8",
+      env: { ...process.env, AGENT_OPENCODE_COMPAT_SKIP_RUNTIME: "1" },
+    });
+
+  const clean = gate();
+  assert.strictEqual(clean.status, 0, clean.stdout + clean.stderr);
+  assert.match(clean.stdout, /0 incompatible surfaces/);
+
+  const cfgPath = path.join(target, "opencode.json");
+  const original = fs.readFileSync(cfgPath, "utf8");
+  const cfg = JSON.parse(original);
+
+  // A missing/disabled todowrite capability fails (the guard would nudge into an
+  // absent tool and the panel stays empty).
+  cfg.experimental = { ...(cfg.experimental || {}), todo: false };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+  let res = gate();
+  assert.strictEqual(res.status, 1, "a disabled experimental.todo fails the gate");
+  assert.match(res.stdout, /experimental\.todo/);
+
+  // A leftover V1 config key fails.
+  cfg.experimental.todo = true;
+  cfg.small_model = "opencode-go/glm-5.3-flash";
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+  res = gate();
+  assert.strictEqual(res.status, 1, "a V1 config key fails the gate");
+  assert.match(res.stdout, /V1 config keys/);
+  fs.writeFileSync(cfgPath, original, "utf8");
+
+  // A V1 plugin event envelope fails.
+  const plugin = path.join(target, ".opencode", "plugins", "v1-shaped.ts");
+  fs.writeFileSync(
+    plugin,
+    'export default { id: "v1-shaped", async setup() { const event = {}; return event.properties } }\n',
+    "utf8"
+  );
+  res = gate();
+  assert.strictEqual(res.status, 1, "a V1 event envelope fails the gate");
+  assert.match(res.stdout, /event\.properties/);
+  fs.unlinkSync(plugin);
+
+  // The legacy singular command dir fails (V2 still discovers it and it shadows `commands/`).
+  const legacy = path.join(target, ".opencode", "command");
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(path.join(legacy, "old.md"), "# old\n", "utf8");
+  res = gate();
+  assert.strictEqual(res.status, 1, "a V1 command layout fails the gate");
+  assert.match(res.stdout, /V1 layout/);
+
+  fs.unlinkSync(path.join(legacy, "old.md"));
+  fs.rmdirSync(legacy);
+
+  assert.strictEqual(gate().status, 0, "restoring the native layout passes again");
 });
 
 test("test:prefix enforces a size budget on the harness-owned prefix files", async () => {
@@ -12085,6 +12219,7 @@ test("run-gates: phase resolution, skip-unwired, stop-at-first-failure", () => {
   const gatesMod = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "run-gates.js"));
   const pre = gatesMod.resolveGates("pre-push", "origin/main");
   assert.ok(pre.some((g) => g[0] === "test:dispatch"), "process gates present");
+  assert.ok(pre.some((g) => g[0] === "test:opencode-compat"), "the V2 compat gate runs in the process phase");
   assert.ok(pre.some((g) => g[0] === "test:quick"), "quick gates present");
   assert.deepStrictEqual(
     pre.find((g) => g[0] === "test:qa-plan"),

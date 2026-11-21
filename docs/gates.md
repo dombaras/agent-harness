@@ -106,6 +106,19 @@ on an unfiltered `push` (`expensive-every-push`), a `-large`/`-xlarge` runner
 ≥6-hourly, or move it off the push trigger; price a change first with
 `npm run ci-triage -- --preflight .github/workflows/<file>.yml`.
 
+## `test:opencode-compat` — OpenCode V2 surface gate
+`node scripts/qa/check-opencode-compat.js [--root <dir>] [--json]`
+The harness is OpenCode V2-only, so a surface that drifted to V1 is silently
+inert. Fails on: a runtime whose major version is not 2 (when `opencode` is on
+PATH); `opencode.json` missing/parse-failing or without `experimental.todo:
+true`; a leftover V1 config key (`small_model`, `agent`, `permission`, `tools`);
+a plugin that imports `@opencode-ai/plugin`, reads `event.properties` (V2 uses
+`event.data`), or lacks `export default`; and the V1 layouts `.opencode/tools/*`
+or legacy `.opencode/command/`. **Satisfy:** `agent-harness update` (the merge
+migrates config, the prune removes the V1 layout) — this is the gate that would
+have caught the missing `todowrite` capability. **Waive:** none; a V2-only deploy
+is the contract.
+
 ## `test:prefix` — cache-prefix stability gate
 `node scripts/qa/check-prefix-stability.js`
 No volatile value (clock timestamp, machine path, session id) in an always-loaded
