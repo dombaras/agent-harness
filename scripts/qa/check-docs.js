@@ -91,11 +91,15 @@ for (const { abs, rel } of docFiles) {
 }
 
 // ---- 2. no dangling relative links ------------------------------------------
+// Links are a prose construct: a `plugin["tool.execute.before"](...)` example
+// inside a code span is API notation, not a markdown link (the F-004 false
+// positive). Strip fenced blocks + inline code spans before scanning.
 function relativeLinks(src) {
   const links = [];
   const re = /(?<!\!)\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  const prose = stripCode(src);
   let m;
-  while ((m = re.exec(src)) !== null) links.push(m[1]);
+  while ((m = re.exec(prose)) !== null) links.push(m[1]);
   return links;
 }
 function isExternal(target) {

@@ -128,7 +128,12 @@ if (useService) {
   // The service enforces uniqueness/priority/evidence/cycles on write; the gate
   // still re-verifies structure so a corrupt row can never slip through.
   check(true, "board service reachable (BACKLOG_BACKEND=service)");
-  const strays = insideGitRepo() ? gitLsFiles("*BACKLOG.md").filter((f) => f !== "BACKLOG.md") : [];
+  // The stray scan must not count the harness's own template board: every
+  // project repo ships `templates/BACKLOG.md` as a scaffold source, never as a
+  // live board. Only a stray *project* board is a defect.
+  const strays = insideGitRepo()
+    ? gitLsFiles("*BACKLOG.md").filter((f) => f !== "BACKLOG.md" && !f.startsWith("templates/"))
+    : [];
   check(strays.length === 0, `no stray BACKLOG.md boards (found: ${strays.join(", ") || "none"})`);
   lines = serviceBoardToLines(snapshot);
 } else {
@@ -142,7 +147,9 @@ if (useService) {
 
   // No stray/secondary boards: the root file is the ONLY canonical board.
   if (insideGitRepo()) {
-    const strays = gitLsFiles("*BACKLOG.md").filter((f) => f !== "BACKLOG.md");
+    const strays = gitLsFiles("*BACKLOG.md").filter(
+      (f) => f !== "BACKLOG.md" && !f.startsWith("templates/")
+    );
     check(strays.length === 0, `no stray BACKLOG.md boards (found: ${strays.join(", ") || "none"})`);
   } else {
     check(true, "not a git repo \u2014 skipping stray BACKLOG.md check");

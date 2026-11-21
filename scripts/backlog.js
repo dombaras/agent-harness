@@ -1703,6 +1703,29 @@ function runService(root, cmd, argv) {
   return true;
 }
 
+/* One honest note for a publish that did not land. The old fixed "remote is
+ * unreachable" wording hid local git failures for weeks: a `git add` rejected on
+ * a gitignored tracked path read as a network problem (F-004). Name the git
+ * operation, carry its first error line, and say whether the change is committed
+ * (durable, just unpublished) or only in the working tree. */
+function publishFailureNote(pub) {
+  const detail = pub.detail ? `: ${pub.detail}` : "";
+  switch (pub.reason) {
+    case "deferred":
+      return "committed locally; a background sync will publish it";
+    case "add-failed":
+      return `not committed \u2014 git add failed${detail}`;
+    case "commit-failed":
+      return `not committed \u2014 git commit failed${detail}`;
+    case "replay-conflict":
+      return `committed locally but the board replay conflicted${detail} \u2014 run git pull --rebase, then \`node scripts/backlog.js sync\``;
+    default:
+      return pub.committed
+        ? `committed locally; push failed (${pub.reason})${detail} \u2014 run \`node scripts/backlog.js sync\` when the remote is reachable`
+        : `not published (${pub.reason})${detail} \u2014 run \`node scripts/backlog.js sync\``;
+  }
+}
+
 function main() {
   const raw = process.argv.slice(2);
   const cmd = raw[0];
@@ -1790,7 +1813,7 @@ function main() {
         } else {
           const pub = boardSync.publishBoard(root, upstream, "chore(board): sync local rows");
           if (pub.published && pub.committed) notes.push(`published board to ${upstream}`);
-          else if (!pub.published) notes.push("committed locally; run `node scripts/backlog.js sync` when the remote is reachable");
+          else if (!pub.published) notes.push(publishFailureNote(pub));
         }
         for (const note of notes) console.log(`board: ${note}`);
         return;
@@ -1839,13 +1862,7 @@ function main() {
       if (canonical && upstream && publishMessage && canPublish) {
         const pub = boardSync.publishBoard(root, upstream, publishMessage, { deferPush: defer });
         if (pub.published && pub.committed) notes.push(`published board to ${upstream}`);
-        else if (!pub.published) {
-          notes.push(
-            defer
-              ? "committed locally; a background sync will publish it"
-              : "committed locally; run `node scripts/backlog.js sync` when the remote is reachable"
-          );
-        }
+        else if (!pub.published) notes.push(publishFailureNote(pub));
       } else if (canonical && upstream && publishMessage && !canPublish) {
         notes.push(`not published (main is diverged) — resolve with git pull --rebase, then \`node scripts/backlog.js sync\``);
       }

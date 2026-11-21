@@ -63,6 +63,16 @@ function gitCmd(root, args, opts) {
   });
 }
 
+/* First non-empty line of a git command's error output, for the publish
+ * failure note. A bare `reason` code ("add-failed") hid the real cause for
+ * weeks (F-004): the operator saw "remote unreachable" for a local `git add`
+ * rejection. */
+function firstLine(r) {
+  return String((r && (r.stderr || r.stdout)) || "")
+    .split(/\r?\n/)
+    .find((l) => l.trim()) || "";
+}
+
 function gitOut(root, args, opts) {
   const r = gitCmd(root, args, opts);
   return r.status === 0 ? String(r.stdout || "").trim() : "";
@@ -391,20 +401,31 @@ function trackedPath(root, rel) {
 
 /* Commit the board (and any changed owned-files registry) and fast-forward push
  * it, re-fetching + rebasing after a concurrent landing. Returns
- * `{ published, committed, reason }`: `published:true` with reason "no change"
- * when nothing needed committing; `published:false` when the commit/push could
- * not complete (the commit may still exist locally — durable, just unpublished).
- * `opts.deferPush` commits locally but skips the network push (reason
- * "deferred"): the request path stays fast and a later `sync` publishes. */
+ * `{ published, committed, reason, detail }`: `published:true` with reason "no
+ * change" when nothing needed committing; `published:false` when the commit/push
+ * could not complete (the commit may still exist locally — durable, just
+ * unpublished). `detail` is git's own first error line, so a caller can name the
+ * real cause instead of guessing "remote unreachable". `opts.deferPush` commits
+ * locally but skips the network push (reason "deferred"): the request path stays
+ * fast and a later `sync` publishes. */
 function publishBoard(root, upstream, message, opts) {
   const rels = ["BACKLOG.md", ...PUBLISH_EXTRA_PATHS.filter((p) => trackedPath(root, p))];
-  const add = gitCmd(root, ["add", "--", ...rels]);
-  if (add.status !== 0) return { published: false, committed: false, reason: "add-failed" };
+  // `-f`: the extras are tracked-only (filtered by trackedPath above), but a
+  // tracked path can still be ignored by .gitignore (`.agents/memory/`), and a
+  // plain `git add` then aborts the whole publish with "paths are ignored" —
+  // aborting every board mutation until the operator hit `sync` from a terminal
+  // (F-004). -f cannot stage unrelated ignored files: only these paths ride along.
+  const add = gitCmd(root, ["add", "-f", "--", ...rels]);
+  if (add.status !== 0) {
+    return { published: false, committed: false, reason: "add-failed", detail: firstLine(add) };
+  }
   const staged = gitCmd(root, ["diff", "--cached", "--quiet", "--", ...rels]);
   let committed = false;
   if (staged.status !== 0) {
     const commit = gitCmd(root, ["commit", "-q", "-m", message, "--", ...rels]);
-    if (commit.status !== 0) return { published: false, committed: false, reason: "commit-failed" };
+    if (commit.status !== 0) {
+      return { published: false, committed: false, reason: "commit-failed", detail: firstLine(commit) };
+    }
     committed = true;
   }
   // Push whenever HEAD carries anything upstream does not — a rebase in
@@ -426,12 +447,19 @@ function publishBoard(root, upstream, message, opts) {
     ) {
       gitCmd(root, ["fetch", "--quiet", "origin"], { timeout: 10000 });
       const replay = aheadOnlyBoard(root, upstream) ? replayBoardOnly(root, upstream) : { ok: false };
-      if (!replay.ok) return { published: false, committed, reason: "replay-conflict" };
+      if (!replay.ok) {
+        return {
+          published: false,
+          committed,
+          reason: "replay-conflict",
+          detail: (replay.conflicts || []).join(", ") || firstLine(push),
+        };
+      }
       continue;
     }
-    return { published: false, committed, reason: "push-failed" };
+    return { published: false, committed, reason: "push-failed", detail: firstLine(push) };
   }
-  return { published: false, committed, reason: "retries-exhausted" };
+  return { published: false, committed, reason: "retries-exhausted", detail: "push rejected after retries" };
 }
 
 /* Read-only view for `list` / `next`: the working board reconciled against the

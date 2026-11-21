@@ -2303,6 +2303,24 @@ test("test:docs fails on placeholder, dangling link, and malformed ADR", () => {
   assert.match(r.out, /missing .* Context/);
 });
 
+test("test:docs ignores link-shaped code spans (F-004)", () => {
+  // `plugin["tool.execute.before"](...)` is API notation in a code span, not a
+  // markdown link. The gate scanned raw markdown and failed the whole docs tier
+  // on its own documentation.
+  const t = scaffoldDocsTarget();
+  fs.writeFileSync(
+    path.join(t, "README.md"),
+    '# Demo\n\nCall `plugin["tool.execute.before"](...)` and see [the docs](docs/real.md).\n',
+    "utf8"
+  );
+  fs.mkdirSync(path.join(t, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(t, "docs", "real.md"), "# real\n", "utf8");
+  const r = runDocsGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /green/);
+  assert.doesNotMatch(r.out, /dangling link `/, "a code span is not a link");
+});
+
 test("test:docs ignores a placeholder quoted inside a code span (F-305 false positive)", () => {
   const t = scaffoldDocsTarget();
   fs.writeFileSync(
@@ -3358,6 +3376,24 @@ test("test:backlog fails on a stray (non-root) BACKLOG.md board", () => {
   assert.strictEqual(r.status, 1, r.out);
   assert.match(r.out, /no stray BACKLOG\.md boards/);
   assert.match(r.out, /mobile\/BACKLOG\.md/);
+});
+
+test("test:backlog exempts the harness template board from the stray scan (F-004)", () => {
+  // Every project repo ships templates/BACKLOG.md as the scaffold source; it is
+  // not a live second board. The stray scan counted it and failed the gate on
+  // every checkout that kept the template.
+  const t = scaffoldBacklogTarget(VALID_BACKLOG);
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  fs.mkdirSync(path.join(t, "templates"), { recursive: true });
+  fs.writeFileSync(path.join(t, "templates", "BACKLOG.md"), "# template board\n", "utf8");
+  git(t, ["add", "."]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  const r = runBacklogGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /no stray BACKLOG\.md boards \(found: none\)/);
+  assert.match(r.out, /RESULT: backlog green/);
 });
 
 test("test:backlog reports an over-wide row honestly instead of a shifted-cell error", () => {
@@ -9326,6 +9362,72 @@ test("[drift-guard] board-sync replay is a guarded reset --hard with a hermetic 
   // timestamp) on every mutation/sync.
   assert.match(bsSrc, /const upstreamSha = gitOut\(root, \["rev-parse", upstream\]\)/, "replay computes the upstream sha for the idempotency check");
   assert.match(bsSrc, /return \{ ok: true, changed: false \}/, "replay short-circuits when the board is already replayed");
+});
+
+test("board-sync publishBoard force-stages a tracked-but-gitignored owned-files registry (F-004)", () => {
+  const bs = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-sync.js"));
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q", "-b", "main"]);
+  const t = tmpdir();
+  git(t, ["init", "-q", "-b", "main"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  fs.writeFileSync(path.join(t, ".gitignore"), ".agents/\n", "utf8");
+  fs.writeFileSync(path.join(t, "BACKLOG.md"), VALID_BACKLOG, "utf8");
+  fs.mkdirSync(path.join(t, ".agents", "memory"), { recursive: true });
+  fs.writeFileSync(path.join(t, ".agents", "memory", "owned-files.md"), "- F-001: app/a.ts\n", "utf8");
+  git(t, ["add", "BACKLOG.md", ".gitignore"]);
+  git(t, ["add", "-f", ".agents/memory/owned-files.md"]);
+  git(t, ["commit", "-q", "-m", "init"]);
+  git(t, ["remote", "add", "origin", origin]);
+  git(t, ["push", "-q", "-u", "origin", "main"]);
+
+  // A plain `git add` rejects the pathspec because `.agents/` is ignored, even
+  // though the file is tracked — the publish aborted on every mutation.
+  fs.appendFileSync(path.join(t, "BACKLOG.md"), "\n<!-- changed -->\n");
+  fs.writeFileSync(path.join(t, ".agents", "memory", "owned-files.md"), "- F-001: app/b.ts\n", "utf8");
+  const pub = bs.publishBoard(t, "origin/main", "chore(board): test publish");
+  assert.strictEqual(pub.published, true, JSON.stringify(pub));
+  assert.strictEqual(pub.reason, "pushed");
+  assert.strictEqual(git(t, ["status", "--porcelain", "--untracked-files=no"]), "", "nothing left dirty");
+  assert.match(
+    execFileSync("git", ["-C", origin, "show", "main:.agents/memory/owned-files.md"], { encoding: "utf8" }),
+    /app\/b\.ts/,
+    "the ignored-but-tracked registry is committed and pushed"
+  );
+  const src = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-sync.js"));
+  assert.match(src, /\["add", "-f", "--", \.\.\.rels\]/, "publishBoard force-stages its explicit tracked extras");
+});
+
+test("a board publish failure names the git operation and its real error (F-004)", () => {
+  const bs = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "board-sync.js"));
+  const origin = tmpdir();
+  git(origin, ["init", "--bare", "-q", "-b", "main"]);
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q", "-b", "main"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "init"]);
+  git(t, ["remote", "add", "origin", origin]);
+  git(t, ["push", "-q", "-u", "origin", "main"]);
+
+  // A held index lock is a LOCAL git failure. The old caller printed a fixed
+  // "remote is unreachable" note, which hid exactly this class of bug.
+  fs.appendFileSync(path.join(t, "BACKLOG.md"), "\n<!-- changed -->\n");
+  fs.writeFileSync(path.join(t, ".git", "index.lock"), "", "utf8");
+  const pub = bs.publishBoard(t, "origin/main", "chore(board): test publish");
+  fs.unlinkSync(path.join(t, ".git", "index.lock"));
+  assert.strictEqual(pub.published, false);
+  assert.strictEqual(pub.reason, "add-failed");
+  assert.match(pub.detail, /index\.lock/, "git's first error line rides along");
+
+  fs.appendFileSync(path.join(t, "BACKLOG.md"), "\n<!-- changed twice -->\n");
+  fs.writeFileSync(path.join(t, ".git", "index.lock"), "", "utf8");
+  const res = runBacklogCli(t, ["add", "lock-failure row", "--p", "P2"]);
+  fs.unlinkSync(path.join(t, ".git", "index.lock"));
+  assert.match(res.out, /board: not committed .* git add failed: .*index\.lock/, res.out);
+  assert.doesNotMatch(res.out, /when the remote is reachable/, "no fixed offline note");
 });
 
 test("ship reconciles a dirty main board and fast-forwards after landing", () => {

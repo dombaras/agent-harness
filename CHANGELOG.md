@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.10 — 2026-11-21
+
+- Board publishing no longer aborts on the gitignored (but tracked)
+  `.agents/memory/owned-files.md`: `publishBoard` force-stages its explicit
+  tracked extras, and every add/commit/push failure carries git's first error
+  line. `backlog.js` prints that detail and whether the change is committed or
+  only in the working tree, instead of a fixed "remote unreachable" note that
+  masked local git failures for weeks. (F-004)
+- `test:docs` skips link-shaped inline code spans (an API example such as
+  ``plugin["tool.execute.before"](...)`` is not a markdown link), and
+  `test:backlog` no longer counts `templates/BACKLOG.md` as a stray board, so
+  both gates run green and can be enforced instead of rotting. (F-004)
+
 ## 0.3.9 — 2026-11-21
 
 - `update` adopts harness-owned files whose working bytes already match the
@@ -57,6 +70,10 @@
   stripped, so a marker-only difference is neither a hand-edit nor a rewrite
   (which previously made `next dev` re-append the block on the next run). A real
   edit to the harness-owned part is still refused. (F-349)
+- The worktree-hygiene guard scripts (`scripts/qa/worktree-hygiene.js`,
+  `scripts/qa/check-worktrees.js`) are committed at the repo root even though
+  `/scripts` is gitignored, so a fresh clone gets `test:worktrees` instead of
+  silently running nothing. (b68e1bc)
 
 ## 0.3.5 — 2026-11-20
 
