@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-013 | ? | Adopt managed `policies` hard-denies for credential paths and MCP gating: OpenCode 2.3.2 ships a real top-level `policies` key (hard allow/deny over provider.use/tool.use/mcp.use/skill.use/plugin.use/websearch.use); the harness still relies on overridable `permissions`, so a project allow can shadow a harness credential/MCP deny. | .agents/handoffs/F-013.md (worktree: ../.worktrees/agent-harness/f-013; branch: f-013) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -100,6 +99,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-012 | ? | Harness version badge in the opencode TUI: ship a template TUI plugin (templates/.opencode/plugins/harness-version/) that renders the deployed `.harness.json` version in the home footer + session prompt footer status slots (beside opencode's own version / the model indicator), only in harness-provisioned repos. | shipped |
 | F-005 | ? | Enable OpenCode V2 todowrite end-to-end: ship `experimental.todo: true` in `templates/opencode.json`; deep-merge `experimental` in `mergeOpencodeJson` so a project's other experimental keys survive; tighten the todo guard (require a `todowrite` update after every completed step, exactly ONE `in_progress`, suppress nudges when the flag is off); add `test:opencode-compat` (V2 version + config + deprecated-V1-key + plugin-hook check) wired into gates/doctor/update. | shipped |
 | F-006 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | shipped |
+| F-013 | ? | Adopt managed `policies` hard-denies for credential paths and MCP gating: OpenCode 2.3.2 ships a real top-level `policies` key (hard allow/deny over provider.use/tool.use/mcp.use/skill.use/plugin.use/websearch.use); the harness still relies on overridable `permissions`, so a project allow can shadow a harness credential/MCP deny. | in-progress |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

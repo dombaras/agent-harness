@@ -2,6 +2,13 @@
 
 ## 0.4.0 — 2026-11-21
 
+- Added a hard-deny policy layer for credential paths, harness config/store
+  self-modification, and MCP availability; MCP now requires explicit per-server
+  opt-in. Policy merging is managed-first/project-appended with duplicate
+  removal and legacy `experimental.policies` migration, while `update` and
+  `doctor` warn about existing servers that remain denied; `test:opencode-compat`
+  detects drift in the managed credential/MCP denies. (F-013)
+
 - The OpenCode todo panel works end-to-end again: `templates/opencode.json`
   enables `experimental.todo: true` (V2 gates the built-in `todowrite` behind it,
   default false), and `mergeOpencodeJson` deep-merges the `experimental` block so

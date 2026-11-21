@@ -104,6 +104,34 @@ function checkConfig(doc) {
   if (todo === true) ok("experimental.todo", "enabled — the built-in `todowrite` tool is available");
   else fail("experimental.todo", "missing or not `true` — the todo panel stays empty; run `agent-harness update`");
 
+  // Managed `policies` are the unshadowable layer: a project permission allow,
+  // agent rule or saved approval cannot widen them. A config without them (or
+  // with the managed denies hand-removed) silently downgrades credential/MCP
+  // protection to overridable `permissions`, so treat it as drift and point at
+  // `update`.
+  const policies = Array.isArray(doc.policies) ? doc.policies : [];
+  const hasDeny = (action, resource) =>
+    policies.some((p) => p && p.action === action && p.resource === resource && p.effect === "deny");
+  const required = [
+    ["tool.use", "external_directory:*/.ssh/*"],
+    ["tool.use", "edit:*/.ssh/*"],
+    ["tool.use", "read:*/.ssh/*"],
+    ["tool.use", "read:*/.config/opencode/auth.json"],
+    ["mcp.use", "*"],
+  ];
+  const missing = required.filter(([a, r]) => !hasDeny(a, r)).map(([a, r]) => `${a}:${r}`);
+  if (missing.length) {
+    fail(
+      "policies",
+      `managed hard-denies missing (${missing.join(", ")}) — credential paths and MCP are only permission-gated; run \`agent-harness update\``
+    );
+  } else {
+    ok("policies", "managed credential hard-denies + MCP default deny present");
+  }
+  if (policies.some((p) => p && p.action === "tool.use" && p.resource === "*" && p.effect === "deny")) {
+    fail("policies", "a blanket `tool.use: *` deny would block every tool — remove it");
+  }
+
   const v1 = ["small_model", "agent", "permission", "tools"].filter((k) => k in doc);
   if (v1.length) {
     fail("V1 config keys", `${v1.join(", ")} — V2 ignores these; run \`agent-harness update\` to migrate to \`agents\`/\`permissions\``);

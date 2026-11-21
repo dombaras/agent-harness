@@ -380,6 +380,32 @@ function mergeOpencodeJson(target, variables) {
   } else if (priorPermissions.length) {
     merged.permissions = priorPermissions;
   }
+  // `policies` is also an ordered array (hard allow/deny, last match wins within
+  // one file), so union it the same way: harness statements first, the project's
+  // own appended after so its explicit opt-in (e.g. an `mcp.use` allow that lifts
+  // the default deny) is the last word, exact duplicates dropped. A pre-2.3
+  // project may carry them under `experimental.policies`; migrate those too so
+  // the two locations cannot disagree (docs: `experimental.policies` merges into
+  // `policies`).
+  const priorPolicies = [
+    ...(Array.isArray(existing.policies) ? existing.policies : []),
+    ...(existing.experimental &&
+    typeof existing.experimental === "object" &&
+    Array.isArray(existing.experimental.policies)
+      ? existing.experimental.policies
+      : []),
+  ];
+  if (Array.isArray(harness.policies) || priorPolicies.length) {
+    const seenPolicies = new Set();
+    const policies = [];
+    for (const statement of [...(Array.isArray(harness.policies) ? harness.policies : []), ...priorPolicies]) {
+      const key = JSON.stringify(statement);
+      if (seenPolicies.has(key)) continue;
+      seenPolicies.add(key);
+      policies.push(statement);
+    }
+    merged.policies = policies;
+  }
   // MCP servers live under `mcp.servers` in V2. A project owns its own `mcp`
   // block (servers are project-side, e.g. a dev-DB server), so if the harness
   // ever ships a default server the top-level spread would replace the WHOLE
@@ -394,6 +420,11 @@ function mergeOpencodeJson(target, variables) {
   // the `todowrite` tool, which V2 gates behind it); every other experimental
   // key belongs to the project and survives a re-deploy.
   merged.experimental = mergeExperimental(harness.experimental, existing.experimental);
+  // `experimental.policies` (pre-2.3 location) was folded into the top-level
+  // union above; drop the duplicate so the two cannot disagree on a re-merge.
+  if (merged.experimental && typeof merged.experimental === "object" && "policies" in merged.experimental) {
+    delete merged.experimental.policies;
+  }
   return JSON.stringify(merged, null, 2) + "\n";
 }
 
@@ -499,6 +530,41 @@ function mergeExperimental(harnessExperimental, priorExperimental) {
     if (key !== "todo" && Object.prototype.hasOwnProperty.call(prior, key)) out[key] = prior[key];
   }
   return out;
+}
+
+/* Evaluate a `policies` list for one (action, resource) pair the way OpenCode
+ * does: statements are ordered, the last matching one wins, and no match means
+ * allowed. Resources use whole-value wildcards (`*` any run, `?` one char). This
+ * is the deterministic oracle behind the update/doctor MCP warning — never
+ * infer from a file having an `allow` somewhere, because order decides. Pure. */
+function policyEffect(policies, action, resource) {
+  let effect = "allow";
+  const escape = (s) => s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const glob = (s) => "^" + escape(s).replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+  for (const statement of Array.isArray(policies) ? policies : []) {
+    if (!statement || statement.action !== action || typeof statement.resource !== "string") continue;
+    // OpenCode: a pattern ending in " *" also matches the value without
+    // arguments (`shell:git push *` covers `git push`), so try both forms.
+    const patterns = [statement.resource];
+    if (statement.resource.endsWith(" *")) patterns.push(statement.resource.slice(0, -2));
+    if (!patterns.some((p) => new RegExp(glob(p)).test(resource))) continue;
+    effect = statement.effect === "deny" ? "deny" : "allow";
+  }
+  return effect;
+}
+
+/* MCP servers a project configured under `mcp.servers` but whose *final* policy
+ * effect is deny. The harness ships `mcp.use: *` deny; a project opts a server
+ * in by appending a matching allow (last wins). After `update`, a pre-existing
+ * server is therefore denied until that one-line opt-in exists, so update and
+ * doctor must name it instead of letting the server vanish silently. */
+function deniedMcpServers(doc) {
+  if (!doc || typeof doc !== "object") return [];
+  const servers =
+    doc.mcp && typeof doc.mcp === "object" && doc.mcp.servers && typeof doc.mcp.servers === "object"
+      ? Object.keys(doc.mcp.servers)
+      : [];
+  return servers.filter((name) => policyEffect(doc.policies, "mcp.use", name) === "deny");
 }
 
 // Harness-shipped npm scripts auto-wired into the target project's package.json
@@ -1384,6 +1450,20 @@ async function deploy(target, opts) {
         fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
         fs.writeFileSync(targetAbs, merged, "utf8");
       }
+      // The managed `mcp.use: "*"` hard-deny removes any configured server that
+      // has no later allow. Warn here as well as in `doctor`, with the exact
+      // opt-in, so an update cannot silently disable a project's MCP servers.
+      {
+        const denied = deniedMcpServers(safeJson(merged, null));
+        if (denied.length) {
+          console.warn(
+            `  WARNING: MCP server(s) ${denied.join(", ")} are hard-denied by the managed \`policies\`.\n` +
+              `           Append ${denied
+                .map((name) => `{ "action": "mcp.use", "resource": "${name}", "effect": "allow" }`)
+                .join(", ")} to opencode.json to opt in.`
+          );
+        }
+      }
       continue;
     }
 
@@ -2165,6 +2245,21 @@ function doctor(target) {
           "warn",
           "MCP gating",
           `V1 \`tools\` map is ignored by V2 (${parts.join("; ")}) — run \`agent-harness update\` to migrate to \`permissions\``
+        );
+      }
+      // A configured MCP server that the managed `policies` still deny is
+      // invisible at runtime (a denied server is removed, not prompted). The
+      // harness ships `mcp.use: "*"` deny as the default, so an existing project
+      // needs an explicit allow appended after it; name every affected server
+      // with the exact statement rather than letting it disappear silently.
+      const denied = deniedMcpServers(doc);
+      if (denied.length) {
+        add(
+          "warn",
+          "MCP policies",
+          `hard-denied by \`policies\` (${denied.join(", ")}) — append ${denied
+            .map((name) => `{ "action": "mcp.use", "resource": "${name}", "effect": "allow" }`)
+            .join(", ")} to \`opencode.json\` to opt in`
         );
       }
       // `experimental.todo` is the V2 capability flag for the built-in
@@ -3191,6 +3286,8 @@ module.exports = {
   convertV1Tools,
   mergeMcp,
   mergeExperimental,
+  policyEffect,
+  deniedMcpServers,
   deploy,
   assertNoTemplateHandoffs,
   parseWorktreeDirs,

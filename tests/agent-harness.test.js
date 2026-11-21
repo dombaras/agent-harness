@@ -579,6 +579,147 @@ test("opencode.json permission union keeps a project's own rules", () => {
   );
 });
 
+test("opencode.json ships managed `policies` hard-denies for credential paths and MCP", () => {
+  const target = tmpdir();
+  const merged = JSON.parse(
+    h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x", WORKSPACE_ROOT: "/w" })
+  );
+  const has = (action, resource) =>
+    merged.policies.some((p) => p.action === action && p.resource === resource && p.effect === "deny");
+  for (const a of ["external_directory", "edit", "read"]) {
+    assert.ok(has("tool.use", `${a}:*/.ssh/*`), `${a}: ssh material is hard-denied`);
+    assert.ok(has("tool.use", `${a}:*/.aws/*`), `${a}: AWS material is hard-denied`);
+    assert.ok(has("tool.use", `${a}:*/.config/opencode/auth.json`), `${a}: opencode auth is hard-denied`);
+    assert.ok(has("tool.use", `${a}:*/.local/share/opencode/auth.json`), `${a}: opencode auth (data) is hard-denied`);
+  }
+  assert.ok(has("tool.use", "edit:*/.config/opencode/*"), "the agent cannot rewrite its own config");
+  assert.ok(has("mcp.use", "*"), "MCP is default-denied until a project opts in");
+  assert.ok(
+    !merged.policies.some((p) => p.action === "tool.use" && p.resource === "read:*"),
+    "no blanket read deny — only the credential paths are blocked"
+  );
+});
+
+test("policyEffect replays ordered statements with whole-value wildcards", () => {
+  const policies = [
+    { action: "mcp.use", resource: "*", effect: "deny" },
+    { action: "mcp.use", resource: "pg", effect: "allow" },
+    { action: "tool.use", resource: "read:*/.ssh/*", effect: "deny" },
+    { action: "tool.use", resource: "shell:git status *", effect: "deny" },
+  ];
+  assert.strictEqual(h.policyEffect(policies, "mcp.use", "pg"), "allow", "a later allow lifts the deny");
+  assert.strictEqual(h.policyEffect(policies, "mcp.use", "playwright"), "deny");
+  assert.strictEqual(h.policyEffect(policies, "tool.use", "read:/home/u/.ssh/id_rsa"), "deny", "absolute path");
+  assert.strictEqual(h.policyEffect(policies, "tool.use", "read:~/.ssh/id_rsa"), "deny", "tilde path");
+  assert.strictEqual(h.policyEffect(policies, "tool.use", "read:/home/u/src/a.js"), "allow", "unmatched is allowed");
+  assert.strictEqual(h.policyEffect(policies, "tool.use", "shell:git status"), "deny", "trailing ` *` covers no-arg form");
+  assert.strictEqual(h.policyEffect(null, "mcp.use", "pg"), "allow", "no policies means allowed");
+});
+
+test("policies union keeps a project opt-in last, migrates experimental.policies, and is idempotent", () => {
+  const variables = { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x", WORKSPACE_ROOT: "/w" };
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify(
+      {
+        policies: [{ action: "mcp.use", resource: "pg", effect: "allow" }],
+        experimental: { policies: [{ action: "skill.use", resource: "team:review", effect: "deny" }] },
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+  const first = JSON.parse(h.mergeOpencodeJson(target, variables));
+  const idx = (action, resource) =>
+    first.policies.findIndex((p) => p.action === action && p.resource === resource);
+  assert.ok(idx("mcp.use", "*") !== -1 && idx("mcp.use", "pg") !== -1, "both statements present");
+  assert.ok(idx("mcp.use", "*") < idx("mcp.use", "pg"), "the project allow is appended after the managed deny");
+  assert.strictEqual(h.policyEffect(first.policies, "mcp.use", "pg"), "allow", "the explicit opt-in wins");
+  assert.strictEqual(h.policyEffect(first.policies, "mcp.use", "other"), "deny");
+  assert.strictEqual(
+    h.policyEffect(first.policies, "skill.use", "team:review"),
+    "deny",
+    "experimental.policies migrates into the top-level array"
+  );
+  assert.ok(!("policies" in first.experimental), "the legacy experimental location is dropped");
+
+  fs.writeFileSync(path.join(target, "opencode.json"), JSON.stringify(first, null, 2) + "\n", "utf8");
+  const second = JSON.parse(h.mergeOpencodeJson(target, variables));
+  assert.deepStrictEqual(second.policies, first.policies, "a second update does not grow the array");
+});
+
+test("deniedMcpServers names only servers whose final policy effect is deny", () => {
+  const doc = {
+    policies: [
+      { action: "mcp.use", resource: "*", effect: "deny" },
+      { action: "mcp.use", resource: "pg", effect: "allow" },
+    ],
+    mcp: { servers: { pg: {}, playwright: {}, "gh_*": {} } },
+  };
+  assert.deepStrictEqual(h.deniedMcpServers(doc), ["playwright", "gh_*"]);
+  assert.deepStrictEqual(h.deniedMcpServers({ mcp: { servers: { pg: {} } } }), [], "no policies means no denial");
+});
+
+test("doctor warns when managed policies hard-deny a configured MCP server", () => {
+  const target = tmpdir();
+  spawnSync("git", ["init", "-q"], { cwd: target });
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify(
+      {
+        policies: [
+          { action: "mcp.use", resource: "*", effect: "deny" },
+          { action: "mcp.use", resource: "pg", effect: "allow" },
+        ],
+        mcp: { servers: { pg: { type: "local", command: ["x"] }, playwright: { type: "local", command: ["y"] } } },
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+  const out = [];
+  const orig = console.log;
+  const prevExit = process.exitCode;
+  console.log = (...a) => out.push(a.join(" "));
+  try {
+    h.doctor(target);
+  } finally {
+    console.log = orig;
+    process.exitCode = prevExit;
+  }
+  const text = out.join("\n");
+  assert.match(text, /MCP policies: .*playwright/, "the denied server is named");
+  assert.doesNotMatch(text, /MCP policies: .*pg\b/, "an opted-in server is not flagged");
+  assert.match(text, /mcp\.use.*playwright.*allow/, "the exact opt-in statement is printed");
+});
+
+test("update warns when managed policies hard-deny a configured MCP server", async () => {
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify(
+      { mcp: { servers: { pg: { type: "local", command: ["npx", "-y", "prisma", "mcp"] } } } },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+  const out = [];
+  const orig = console.warn;
+  console.warn = (...a) => out.push(a.join(" "));
+  try {
+    await h.deploy(target, { name: "Demo", yes: true, isUpdate: true });
+  } finally {
+    console.warn = orig;
+  }
+  const text = out.join("\n");
+  assert.match(text, /MCP server\(s\) pg are hard-denied by the managed `policies`/, "update names the server");
+  assert.match(text, /"resource": "pg", "effect": "allow"/, "update prints the opt-in");
+});
+
 test("opencode.json mcp is project-owned and deep-merged by server name (D prerequisite)", () => {
   // MCP is wired project-side under `mcp.servers` (V2). A project's `mcp` block
   // must survive a re-merge untouched, and a V1 `tools` gating map must be

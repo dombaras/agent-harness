@@ -195,7 +195,7 @@ part table beside `session_message`).
 
 | # | Surface | Gap | Priority |
 |---|---|---|---|
-| G1 | Permissions/policies | The harness has no managed `policies` defaults. 2.3.2 ships a real top-level `policies` key (hard `allow|deny` over `provider.use`, `tool.use`, `mcp.use`, `skill.use`, `plugin.use`, `websearch.use`). A project `permissions` allow can still shadow a harness credential/MCP deny — the exact remaining item from migration-doc §19 G12. | P2 |
+| G1 | Permissions/policies | Shipped in F-013: managed top-level `policies` now hard-deny credential paths, config/store self-modification, and MCP by default; project opt-in is explicit. See `README.md` and `docs/mcp-integrations.md`. | P2 |
 | G2 | Built-in tools | The guard/session classifiers predate the 2.3.2 tool set (`todo`, `skill`, `question`, `webfetch`, `websearch`, `patch`, `artifact`, `automation`, `image-generate`). `EXEMPT_TOOLS` has `todowrite` but not `todo`; `MATERIAL_TOOLS` has no `skill`/`artifact`. Verify the effective names, then align the classifiers + drift guard. | P3 |
 | G3 | Worktrees | 2.3.2 adds `worktree.directory`, `ctx.worktree` (`transform`/`add`/`list`/`create`/`remove`) and `opencode run --worktree [=name]`. The harness still shells out to `git worktree` under its own `../.worktrees/<repo>/<id>` convention. Decide whether to adopt the native config/CLI or document the deliberate divergence. | P3 |
 | G4 | CLI/docs | `opencode plugin` (`list/add/check/update/remove`) and `opencode stats` (`--tools/--cost/--json`) are first-class in 2.3.2 and absent from the harness docs; config also gained `plugins` and MCP servers gained `protocol`. | P4 |

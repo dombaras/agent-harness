@@ -9,8 +9,9 @@ dev-only**. Read this before adding or changing an MCP server.
 
 ## The two rules (non-negotiable)
 
-1. **Per agent, never global.** Disable every MCP tool at the top level, then
-   re-enable the server's tools only for the persona that genuinely needs them.
+1. **Per agent, never global.** The managed `mcp.use: "*"` policy default-denies
+   every MCP server. Append an explicit allow for only the server and agents
+   that genuinely need it; re-enable its tools only for that persona.
    An MCP tool the orchestrator never uses is pure context tax.
 2. **Development data only.** An MCP server that reaches a database must point at
    the `development` database (`DATABASE_URL`). Never uat/prod — the forward
@@ -32,7 +33,9 @@ dev-only**. Read this before adding or changing an MCP server.
       }
     }
   },
-  // Deny ALL of the server's tools globally (the action prefix is the server
+  // Managed policy denies MCP availability; append this project opt-in.
+  "policies": [{ "action": "mcp.use", "resource": "pg", "effect": "allow" }],
+  // Deny the server's tools globally (the action prefix is the server
   // name + "_"; V2 permissions replace the V1 top-level `tools` disable).
   "permissions": [{ "action": "pg_*", "resource": "*", "effect": "deny" }],
   "agents": {
@@ -79,10 +82,12 @@ opencode mcp debug <name>  # connection/auth diagnostics
 
 ## Deploy safety
 
-`agent-harness update` deep-merges `opencode.json` by key: it preserves this
-project's `mcp` servers and its `permissions`. If the harness ever ships a default
-`mcp` block it merges **by server name** (project wins), so a project's server is
-never clobbered. Sources: `mergeOpencodeJson` / `mergeMcp` in
+`agent-harness update` unions managed-first and project-appended `policies`
+(duplicate entries are dropped and legacy `experimental.policies` are migrated).
+Existing configured servers remain hard-denied after update until the project
+appends an `mcp.use` allow; this deliberate breaking behavior is not auto-allowed.
+`update` prints a warning naming affected servers, and `doctor` reports each
+server with the exact snippet. Sources: `mergeOpencodeJson` / `mergeMcp` in
 `bin/agent-harness.js`.
 
 **V1 `tools` gating is migrated, not preserved.** V2 has no top-level or
