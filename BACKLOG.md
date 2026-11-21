@@ -46,8 +46,7 @@ session's handoff), and move it to `Archive (shipped · done)` when it ships —
 back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
-|----|------|------|---------|
-| | | | |
+|---|---|---|---|
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -67,6 +66,7 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
+| F-003 | P3 | ? | green the local process gates on main: test:docs flags a `...` link inside inline code (docs/opencode-v2-migration.md:245 `]({...}, ...)`) and a missing CHANGELOG entry for b68e1bc (fix(harness): commit root worktree-hygiene scripts); test:backlog flags templates/BACKLOG.md as a stray board (the template scaffold shipped to targets). Decide per item: teach the checker to ignore code spans / exempt templates, or fix the content. | main @ 3e46feb (CI + Deploy UAT green): `npm run test:docs` → 2 failures (dangling link `...` → docs/...; CHANGELOG missing entry for b68e1bc); `npm run test:backlog` → 1 failure (no stray BACKLOG.md boards: found templates/BACKLOG.md). Neither is wired into CI, so both are silent locally. | ? |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
@@ -86,6 +86,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 |---|---|---|---|
 | F-001 | ? | Port LibraryOS's project-proven check-flows.js upstream: forwarded *TestID resolves at runtime; runFlow file: includes validated recursively | shipped 0.3.8 — 5d07aec, CI green (03f3013) |
 | F-002 | ? | update: absorb or report pre-existing target modifications to harness-owned files whose content already matches the release (currently left uncommitted AND recorded in .harness.json, so the drift becomes invisible) | shipped |
+| F-004 | ? | fix the completion pipeline: publishBoard aborts on the gitignored tracked `.agents/memory/owned-files.md` (git add without -f), backlog.js masks every publish failure as 'remote unreachable', worktree-prune treats finished sessions' pointers as live, and test:docs/test:backlog are not wired into CI | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
