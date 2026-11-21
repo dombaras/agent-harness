@@ -279,6 +279,7 @@ function resolveVars(target, args) {
     VARIABLES: {
       PROJECT_NAME: projectName,
       PROJECT_DOMAIN: projectDomain,
+      PROJECT_DIR: path.basename(path.resolve(target)),
       WORKSPACE_ROOT: workspaceRootFor(target),
     },
   };
@@ -294,8 +295,12 @@ function templateOpencodeJson() {
 // Merge harness-managed keys into the project's existing opencode.json,
 // preserving every other key the project has added.
 function mergeOpencodeJson(target, variables) {
+  // `{{PROJECT_DIR}}` is the checkout directory name, which is also the per-repo
+  // segment of the worktree container. Derive it from `target` so every caller
+  // (install, update, tests) renders a valid worktree path without repeating it.
+  const vars = { PROJECT_DIR: path.basename(path.resolve(target)), ...(variables || {}) };
   const harness = safeJson(
-    substitute(fs.readFileSync(path.join(TEMPLATES_DIR, "opencode.json"), "utf8"), variables),
+    substitute(fs.readFileSync(path.join(TEMPLATES_DIR, "opencode.json"), "utf8"), vars),
     {}
   );
   const p = path.join(target, "opencode.json");
@@ -361,6 +366,19 @@ function mergeOpencodeJson(target, variables) {
     merged.agents = agents;
   } else if (Object.keys(priorAgents).length) {
     merged.agents = priorAgents;
+  }
+
+  // Native worktree destination: a harness default, add-only. A project that
+  // already chose a `worktree.directory` keeps it (project wins), same contract
+  // as the agent defaults above.
+  if (harness.worktree && typeof harness.worktree === "object" && !Array.isArray(harness.worktree)) {
+    const prior =
+      existing.worktree && typeof existing.worktree === "object" && !Array.isArray(existing.worktree)
+        ? existing.worktree
+        : {};
+    merged.worktree = { ...harness.worktree, ...prior };
+  } else if (existing.worktree) {
+    merged.worktree = existing.worktree;
   }
 
   // The `permissions` baseline is an ordered array (V2: the last matching rule
@@ -1241,6 +1259,7 @@ async function deploy(target, opts) {
   const VARIABLES = {
     PROJECT_NAME: projectName,
     PROJECT_DOMAIN: projectDomain,
+    PROJECT_DIR: path.basename(path.resolve(target)),
     WORKSPACE_ROOT: workspaceRootFor(target),
   };
 
@@ -3148,7 +3167,10 @@ function dogfood(target, flags) {
     return;
   }
   const tpl = fs.readFileSync(path.join(src, "opencode.json"), "utf8");
-  const conf = substitute(tpl, { WORKSPACE_ROOT: workspaceRootFor(root) });
+  const conf = substitute(tpl, {
+    PROJECT_DIR: path.basename(path.resolve(root)),
+    WORKSPACE_ROOT: workspaceRootFor(root),
+  });
   if (dryRun) {
     console.log(`  [write]   opencode.json (template, WORKSPACE_ROOT=${workspaceRootFor(root)})`);
     console.log("  [write]   .harness-dogfood");

@@ -357,6 +357,13 @@ so agents see complete descriptions.
   follow the session into the worktree, and `archive` clears the pointer. `backlog archive
   <id>` removes the shipped feature's worktree + merged branch, so a session cleans up
   after itself on close.
+- **Native OpenCode worktrees share the same container**: the managed `opencode.json`
+  sets `worktree.directory` to `../.worktrees/<repo>`, so a checkout created from the
+  TUI or `opencode run --worktree` lands beside the harness's own instead of under
+  OpenCode's data directory (which the managed edit policy denies). Feature isolation
+  still goes through `backlog worktree`: a native checkout is detached and carries no
+  branch, board row, bootstrap, or cleanup. See ADR 0002
+  (`docs/adr/0002-worktree-strategy.md`).
 - **One project board, never a worktree copy**: board reads and writes are project-scoped.
   A `backlog_*`/`backlog` command run inside a linked feature worktree resolves to the
   shared board service, or — in legacy file mode — to the MAIN checkout's board, so a row

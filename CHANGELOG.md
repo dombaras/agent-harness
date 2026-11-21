@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2 — 2026-11-21
+
+- Native OpenCode worktrees now share the harness's sibling container: the
+  managed `opencode.json` sets `worktree.directory` to `../.worktrees/<repo>`
+  (add-only; a project's own destination wins), so a TUI or
+  `opencode run --worktree` checkout no longer lands under the data directory
+  the edit policy denies. Feature isolation stays on `git worktree` (named
+  branch + board/handoff bookkeeping); the deliberate divergence is recorded in
+  ADR 0002. (F-015)
+
 ## 0.4.1 — 2026-11-21
 
 - Guard/session tool classifiers now cover the OpenCode 2.3.2 built-in set:

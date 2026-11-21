@@ -4,6 +4,9 @@
   "experimental": {
     "todo": true
   },
+  "worktree": {
+    "directory": "../.worktrees/{{PROJECT_DIR}}"
+  },
   "agents": {
     "title": {
       "model": "opencode-go/glm-5.3-flash"

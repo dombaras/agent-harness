@@ -499,6 +499,36 @@ test("opencode.json merge ships agents.build.steps as an ADD-ONLY default", () =
   assert.strictEqual(merged.agents.explore.model, "custom/explore");
 });
 
+test("opencode.json ships a native-worktree directory beside the harness container (add-only)", () => {
+  // Fresh project: native OpenCode worktrees land in the repo's sibling
+  // container, not the server data dir that the edit policy denies.
+  const fresh = tmpdir();
+  const defaults = JSON.parse(
+    h.mergeOpencodeJson(fresh, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" })
+  );
+  assert.strictEqual(
+    defaults.worktree.directory,
+    `../.worktrees/${path.basename(fresh)}`,
+    "native worktrees default to the per-repo sibling container"
+  );
+  assert.ok(
+    !defaults.worktree.directory.includes("{{"),
+    "the PROJECT_DIR placeholder is rendered, never shipped literally"
+  );
+
+  // A project that already chose its own destination keeps it.
+  const target = tmpdir();
+  fs.writeFileSync(
+    path.join(target, "opencode.json"),
+    JSON.stringify({ worktree: { directory: "/custom/trees" } }, null, 2) + "\n",
+    "utf8"
+  );
+  const merged = JSON.parse(
+    h.mergeOpencodeJson(target, { PROJECT_NAME: "Demo", PROJECT_DOMAIN: "x" })
+  );
+  assert.strictEqual(merged.worktree.directory, "/custom/trees", "project worktree destination wins");
+});
+
 test("opencode.json ships a least-privilege external-directory policy", () => {
   const target = tmpdir();
   const workspaceRoot = h.workspaceRootFor(target);

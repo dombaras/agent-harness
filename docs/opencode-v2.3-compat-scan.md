@@ -9,7 +9,7 @@ packages, and the V2 docs.
 
 **Baseline in the repo:** the V2 port and its follow-ups were verified against
 `opencode 2.0.29` / `2.0.31` and `@opencode/*@2.0.29` (see
-[`opencode-v2-migration.md`](opencode-v2-migration.md)). The harness is 0.4.1.
+[`opencode-v2-migration.md`](opencode-v2-migration.md)). The harness is 0.4.2.
 This scan asks a different question: **what does 2.3.2 expose that the harness
 pins, misses, or now gets wrong?**
 
@@ -197,7 +197,7 @@ part table beside `session_message`).
 |---|---|---|---|
 | G1 | Permissions/policies | Shipped in F-013: managed top-level `policies` now hard-deny credential paths, config/store self-modification, and MCP by default; project opt-in is explicit. See `README.md` and `docs/mcp-integrations.md`. | P2 |
 | G2 | Built-in tools | Shipped in F-014: verified the effective names against 2.3.2 tool parts (`shell`, `subagent`, `todowrite`; `todo` is only the plugin id) and aligned `EXEMPT_TOOLS`/`MATERIAL_TOOLS` plus the recon `WORK_TOOLS`; a drift-guard test now pins a deliberate intent for every built-in. | P3 |
-| G3 | Worktrees | 2.3.2 adds `worktree.directory`, `ctx.worktree` (`transform`/`add`/`list`/`create`/`remove`) and `opencode run --worktree [=name]`. The harness still shells out to `git worktree` under its own `../.worktrees/<repo>/<id>` convention. Decide whether to adopt the native config/CLI or document the deliberate divergence. | P3 |
+| G3 | Worktrees | Shipped in F-015: the harness keeps `git worktree` as the feature-isolation primitive (named branch + board/handoff/lease bookkeeping) and adopted only `worktree.directory`, set to `../.worktrees/<repo>` so native worktrees land beside harness worktrees instead of under the denied data directory. Divergence recorded in `docs/adr/0002-worktree-strategy.md`. | P3 |
 | G4 | CLI/docs | `opencode plugin` (`list/add/check/update/remove`) and `opencode stats` (`--tools/--cost/--json`) are first-class in 2.3.2 and absent from the harness docs; config also gained `plugins` and MCP servers gained `protocol`. | P4 |
 | G5 | Telemetry | `opencode stats --json` is a new independent oracle for agent-report/store-lib. The harness reads the DB directly; adopting the CLI output as a cross-check would catch store-shape drift. | P4 |
 
