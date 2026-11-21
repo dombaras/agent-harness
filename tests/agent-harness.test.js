@@ -10638,6 +10638,40 @@ test("wsl-tune wslconfig merges the host keys into .wslconfig", () => {
   assert.match(after, /sparseVhd=true/);
 });
 
+test("wsl-tune never assumes node is on sudo's secure_path", () => {
+  // `sudo bash scripts/wsl-tune.sh apply` resets PATH to the secure_path; a
+  // user-local node (~/.local/bin, nvm) disappears and the .wslconfig merge used
+  // to die with a bare `node: command not found` after the root tunables landed.
+  const dir = tmpdir();
+  const cfg = path.join(dir, ".wslconfig");
+  fs.writeFileSync(cfg, "[wsl2]\nmemory=10GB\n");
+  const env = {
+    AGENT_WSL_TUNE_FORCE: "1",
+    AGENT_WSL_CONFIG: cfg,
+    AGENT_WSL_TUNE_PROCESSORS: "8",
+    AGENT_WSL_TUNE_SWAP: "4GB",
+    AGENT_WSL_TUNE_IDLE_MS: "7200000",
+    PATH: "/usr/bin:/bin", // the sudo secure_path: no node here
+    HOME: dir,
+  };
+
+  const missing = spawnSync("bash", [WSL_TUNE, "wslconfig"], {
+    encoding: "utf8",
+    env: Object.assign({}, env, { AGENT_WSL_TUNE_NODE: path.join(dir, "no-node") }),
+  });
+  assert.strictEqual(missing.status, 1, missing.stdout + missing.stderr);
+  assert.match(missing.stderr, /AGENT_WSL_TUNE_NODE=.* is not executable/);
+  assert.match(missing.stderr, /npm run wsl-tune -- wslconfig/, "names the recovery command");
+  assert.doesNotMatch(missing.stderr, /command not found/, "no bare PATH abort");
+
+  const ok = spawnSync("bash", [WSL_TUNE, "wslconfig"], {
+    encoding: "utf8",
+    env: Object.assign({}, env, { AGENT_WSL_TUNE_NODE: process.execPath }),
+  });
+  assert.strictEqual(ok.status, 0, ok.stdout + ok.stderr);
+  assert.match(read(cfg), /processors=8/);
+});
+
 test("[drift-guard] serve caps + wsl-tune are wired end to end", () => {
   const serve = read(path.join(h.TEMPLATES_DIR, "scripts", "serve.js"));
   assert.match(serve, /--mem-max/, "serve.js exposes --mem-max");
@@ -10647,6 +10681,12 @@ test("[drift-guard] serve caps + wsl-tune are wired end to end", () => {
   assert.match(tune, /wslconfig-merge\.js/, "wsl-tune uses the safe merge helper");
   assert.match(tune, /MemoryMax=9G/, "wsl-tune caps user.slice memory");
   assert.match(tune, /vm\.swappiness=10/, "wsl-tune lowers swappiness");
+  assert.match(tune, /node_bin\(\)/, "wsl-tune resolves node instead of assuming PATH");
+  assert.doesNotMatch(
+    tune,
+    /^\s*node "\$MERGERS"/m,
+    "wsl-tune never calls a bare `node` (sudo resets PATH)"
+  );
   const bin = read(path.join(__dirname, "..", "bin", "agent-harness.js"));
   assert.match(bin, /wsl-tune/, "the wsl-tune script is wired into the deploy");
 });

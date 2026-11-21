@@ -26,7 +26,7 @@
 # No-op outside WSL (override with AGENT_WSL_TUNE_FORCE=1). Env overrides:
 #   AGENT_WSL_TUNE_SYSCTL, AGENT_WSL_TUNE_SLICE_DIR, AGENT_WSL_CONFIG,
 #   AGENT_WSL_TUNE_DRY_RUN, AGENT_WSL_TUNE_PROCESSORS, AGENT_WSL_TUNE_SWAP,
-#   AGENT_WSL_TUNE_IDLE_MS
+#   AGENT_WSL_TUNE_IDLE_MS, AGENT_WSL_TUNE_NODE (node binary for the merge)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -120,8 +120,50 @@ WantedBy=multi-user.target
 EOF
 }
 
+# `sudo` resets PATH to the secure_path, so a user-local node (nvm, volta,
+# fnm, ~/.local/bin) is invisible to `sudo bash scripts/wsl-tune.sh apply`.
+# Resolve it from the invoking user's installs instead of assuming PATH.
+node_bin() {
+  if [ -n "${AGENT_WSL_TUNE_NODE:-}" ]; then
+    if [ -x "$AGENT_WSL_TUNE_NODE" ]; then printf '%s' "$AGENT_WSL_TUNE_NODE"; return 0; fi
+    warn "wsl-tune: AGENT_WSL_TUNE_NODE=$AGENT_WSL_TUNE_NODE is not executable"
+    return 1
+  fi
+  if command -v node >/dev/null 2>&1; then command -v node; return 0; fi
+  local home="" cand
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    home="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+  fi
+  [ -n "$home" ] || home="${HOME:-}"
+  for cand in \
+    "$home/.local/bin/node" \
+    "$home/.volta/bin/node" \
+    "$home/.asdf/shims/node" \
+    /usr/local/bin/node /usr/bin/node /snap/bin/node; do
+    [ -x "$cand" ] && { printf '%s' "$cand"; return 0; }
+  done
+  # nvm/fnm keep versioned installs; take the newest.
+  cand="$(ls -1d "$home"/.nvm/versions/node/*/bin/node \
+    "$home"/.fnm/node-versions/*/installation/bin/node 2>/dev/null | sort -V | tail -n1 || true)"
+  [ -n "$cand" ] && [ -x "$cand" ] && { printf '%s' "$cand"; return 0; }
+  return 1
+}
+
+# The merge only touches the Windows-side .wslconfig, so under sudo run it as
+# the invoking user: that is whose node we resolved, and the backup keeps the
+# user's ownership on the drvfs mount.
+run_merger() {
+  local nb="$1"; shift
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] \
+    && command -v sudo >/dev/null 2>&1; then
+    sudo -u "$SUDO_USER" -H "$nb" "$MERGERS" "$@"
+  else
+    "$nb" "$MERGERS" "$@"
+  fi
+}
+
 apply_wslconfig() {
-  local cfg sets=()
+  local cfg sets=() nb
   cfg="$(find_config)"
   if [ -z "$cfg" ]; then
     warn "wsl-tune: no .wslconfig found (set AGENT_WSL_CONFIG to target one) — skipping host tuning"
@@ -137,12 +179,19 @@ apply_wslconfig() {
   sets+=("--set" "experimental.autoMemoryReclaim=gradual")
   sets+=("--set" "experimental.sparseVhd=true")
 
+  if ! nb="$(node_bin)"; then
+    warn "wsl-tune: node not found (sudo resets PATH, so a user-local node is invisible)."
+    warn "           merge .wslconfig as your user:  npm run wsl-tune -- wslconfig"
+    warn "           (or pass AGENT_WSL_TUNE_NODE=/path/to/node)"
+    return 1
+  fi
+
   if [ "$DRY_RUN" = "1" ]; then
     log "wsl-tune: would merge into $cfg:"
-    node "$MERGERS" --file "$cfg" "${sets[@]}" | sed 's/^/    /'
+    run_merger "$nb" --file "$cfg" "${sets[@]}" | sed 's/^/    /'
     return 0
   fi
-  node "$MERGERS" --file "$cfg" --write --backup "${sets[@]}"
+  run_merger "$nb" --file "$cfg" --write --backup "${sets[@]}"
 }
 
 do_status() {
@@ -191,8 +240,9 @@ do_apply() {
       exec sudo -E bash "$0" apply "$@"
     fi
     warn "wsl-tune: in-WSL tunables need root — re-run: sudo bash scripts/wsl-tune.sh apply"
-    apply_wslconfig
-    return 0
+    local rc=0
+    apply_wslconfig || rc=$?
+    return "$rc"
   fi
   printf '%s\n' "$SYSCTL_BODY" > "$SYSCTL_FILE"
   log "wsl-tune: wrote $SYSCTL_FILE"
@@ -217,10 +267,18 @@ do_apply() {
       warn "           systemctl set-property init.scope MemoryHigh=$BACKSTOP"
     fi
   fi
-  apply_wslconfig
+  local merge_rc=0
+  apply_wslconfig || merge_rc=$?
   log ""
-  log "wsl-tune: done. MANUAL STEP — from Windows PowerShell run:  wsl --shutdown"
-  log "  (only needed for the .wslconfig changes: processors/swap/vmIdleTimeout.)"
+  if [ "$merge_rc" -eq 0 ]; then
+    log "wsl-tune: in-WSL tunables applied; .wslconfig merged."
+    log "wsl-tune: done. MANUAL STEP — from Windows PowerShell run:  wsl --shutdown"
+    log "  (only needed for the .wslconfig changes: processors/swap/vmIdleTimeout.)"
+  else
+    warn "wsl-tune: in-WSL tunables applied, but the .wslconfig merge did not complete (see above)."
+    warn "           Finish it as your user:  npm run wsl-tune -- wslconfig"
+  fi
+  return "$merge_rc"
 }
 
 do_down() {
