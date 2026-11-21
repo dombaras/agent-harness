@@ -47,7 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-006 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | .agents/handoffs/F-006.md |
+| F-006 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | .agents/handoffs/F-006.md (worktree: ../.worktrees/agent-harness/f-006; branch: f-006) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
