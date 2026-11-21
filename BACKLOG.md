@@ -68,6 +68,7 @@ Sorted by priority (P1 → P4).
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
 | F-006 | P2 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | docs/opencode-v2-migration.md; https://opencode.ai/docs/; opencode v2.3.2; F-005 fixes the first gap | F-005 |
+| F-007 | P2 | ? | board: archive from a linked worktree must route an inherited OPEN row to main, never the worktree's snapshot | F-003 close-out: `backlog archive F-003` run from the f-004 worktree wrote that worktree's BACKLOG.md (resolveBoardRoot keeps cmd=archive local whenever the row exists there), so the archive never reached main and had to be reverted + redone from the main checkout. | ? |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
