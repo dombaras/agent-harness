@@ -68,6 +68,7 @@ Sorted by priority (P1 → P4).
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
 | F-006 | P2 | ? | OpenCode V2 compatibility scan: audit every harness surface (plugin hooks/API, config keys, built-in tool names, CLI commands, store/telemetry, permissions/policies, MCP, skills/commands, worktrees, child-session behavior) against the OpenCode V2 docs + installed binary; produce a gap report and file each gap as a row. The `todowrite` miss is a known symptom. | docs/opencode-v2-migration.md; https://opencode.ai/docs/; opencode v2.3.2; F-005 fixes the first gap | F-005 |
+| F-012 | P3 | ? | Harness version badge in the opencode TUI: ship a template TUI plugin (templates/.opencode/plugins/harness-version/) that renders the deployed `.harness.json` version in the home footer + session prompt footer status slots (beside opencode's own version / the model indicator), only in harness-provisioned repos. | Runtime probe on opencode v2.3.2: `.opencode/plugins/<dir>/tui.tsx` + index.ts rendered HARNESS-PROBE via `home.footer.status`; docs https://opencode.ai/docs/build/plugins/cli; this repo .harness.json is v0.3.7 vs package v0.3.15. | ? |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
