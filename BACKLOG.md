@@ -69,6 +69,7 @@ Sorted by priority (P1 → P4).
 |---|---|---|---|---|---|
 | F-013 | P2 | ? | Adopt managed `policies` hard-denies for credential paths and MCP gating: OpenCode 2.3.2 ships a real top-level `policies` key (hard allow/deny over provider.use/tool.use/mcp.use/skill.use/plugin.use/websearch.use); the harness still relies on overridable `permissions`, so a project allow can shadow a harness credential/MCP deny. | docs/opencode-v2.3-compat-scan.md §G1; @opencode/schema@2.3.2 config.policies; docs/opencode-v2-migration.md §19 G12 | ? |
 | F-014 | P3 | ? | Align guard/session tool classifiers with the OpenCode 2.3.2 built-in tool set (`todo`, `skill`, `question`, `webfetch`, `websearch`, `patch`, `artifact`, `automation`, `image-generate`): `EXEMPT_TOOLS` has `todowrite` but not `todo`, `MATERIAL_TOOLS` has no `skill`/`artifact`. Verify effective tool names first, then update classifiers + the drift-guard test. | docs/opencode-v2.3-compat-scan.md §G2; /api/plugin builtin list on opencode 2.3.2 | ? |
+| F-015 | P3 | ? | Decide worktree alignment with OpenCode 2.3.2 native support: `worktree.directory` config, `ctx.worktree` (transform/add/list/create/remove), and `opencode run --worktree [=name]` now exist while the harness shells out to `git worktree` under `../.worktrees/<repo>/<id>`. Adopt the native surface or document the deliberate divergence. | docs/opencode-v2.3-compat-scan.md §G3; @opencode/plugin@2.3.2 worktree domain; `opencode run --help` | ? |
 
 _Rows: `| F-001 | P3 | epic-key | short desc; open questions with \`?\` | pointer | ? |`_
 
