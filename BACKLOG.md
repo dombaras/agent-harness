@@ -47,7 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-021 | ? | Migrate or retire a session's `.serve/sessions/<id>.json` lease when `session_move` relocates the session to the main checkout: the lease file stays inside the old worktree, `liveLeases(main)` surfaces it, and `worktree-prune` then reports every merged worktree as 'this session is rooted in it' and refuses to prune (observed for f-014/f-015/f-018 after moving F-015 to main). | ? |
+| F-021 | ? | Migrate or retire a session's `.serve/sessions/<id>.json` lease when `session_move` relocates the session to the main checkout: the lease file stays inside the old worktree, `liveLeases(main)` surfaces it, and `worktree-prune` then reports every merged worktree as 'this session is rooted in it' and refuses to prune (observed for f-014/f-015/f-018 after moving F-015 to main). | ? (worktree: ../.worktrees/agent-harness/f-021; branch: f-021) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
