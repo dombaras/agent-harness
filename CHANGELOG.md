@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.6 — 2026-11-23
+
+- Archiving a shipped feature from inside its own worktree now resolves the
+  recorded worktree path against the main checkout instead of the feature
+  checkout. `finalize` no longer leaves the worktree behind with a misleading
+  `fatal: .../.worktrees/<repo>/.worktrees/<repo>/<id> is not a working tree`,
+  and the live session pointer stays put until the landing session prunes it.
+  (F-020)
+
 ## 0.4.5 — 2026-11-23
 
 - A session moved with `session_move` no longer leaves a GHOST lease in the

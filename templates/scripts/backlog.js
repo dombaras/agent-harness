@@ -1064,10 +1064,20 @@ function cmdArchive(state, argv) {
   let cleanup = [];
   if (wt) {
     const cur = path.dirname(state.p);
-    const wtAbs = path.resolve(cur, wt.rel);
+    // The Handoff cell records the worktree path RELATIVE TO THE MAIN CHECKOUT
+    // (cmdWorktreePlan), and the board root can be a linked feature worktree —
+    // a claimed row archives locally so the archive rides its branch. Resolve
+    // against the main worktree root, never the board's checkout: resolving a
+    // relative `../.worktrees/<repo>/<id>` against that worktree produced
+    // `<worktree>/../.worktrees/...`, so `git worktree remove` failed with a
+    // bogus "not a working tree" and the live session pointer was cleared
+    // while the session still stood in the checkout (F-020, F-252).
+    const main = mainWorktreeRoot(cur);
+    const base = main || cur;
+    const wtAbs = path.resolve(base, wt.rel);
     const cwd = process.cwd();
     const inside = cwd === wtAbs || cwd.startsWith(wtAbs + path.sep);
-    cleanup = cleanupWorktree(cur, wt.rel, wt.branch, { skipRemove: inside });
+    cleanup = cleanupWorktree(base, wt.rel, wt.branch, { skipRemove: inside });
     // Drop the session pointer ONLY once we are no longer standing in the
     // worktree. `finalize` archives from inside the feature checkout and only
     // THEN runs `ship` (which watches CI from it); clearing the pointer here

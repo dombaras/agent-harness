@@ -1,6 +1,6 @@
 {
   "name": "opencode-agent-harness",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Reusable multi-agent harness for OpenCode: personas, skills, operating rules, model routing, and QA gates. Deploy into any project with `npx opencode-agent-harness init`.",
   "bin": {
     "agent-harness": "bin/agent-harness.js"

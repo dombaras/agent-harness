@@ -9316,6 +9316,48 @@ test("archive keeps the session worktree pointer while standing inside the check
   assert.ok(exists(pointer), "pointer kept while the session still owns the checkout (finalize runs ship next)");
 });
 
+test("archive from inside the default .worktrees layout resolves the worktree against main (F-020)", () => {
+  const t = scaffoldBacklogCliTarget();
+  git(t, ["init", "-q"]);
+  git(t, ["config", "user.email", "t@t.t"]);
+  git(t, ["config", "user.name", "t"]);
+  git(t, ["add", "-A"]);
+  git(t, ["commit", "-q", "-m", "seed"]);
+  assert.strictEqual(runBacklogCli(t, ["add", "isolate me", "--p", "P2"]).status, 0);
+
+  const env = { ...process.env, HARNESS_SESSION_ID: "ses_f020" };
+  const mk = spawnSync(process.execPath, ["scripts/backlog.js", "worktree", "F-001"], {
+    cwd: t,
+    encoding: "utf8",
+    env,
+  });
+  assert.strictEqual(mk.status, 0, mk.stdout + mk.stderr);
+
+  // The default container is NOT a sibling: `<repo>/../.worktrees/<repo>/<id>`,
+  // so resolving its recorded relative path against the worktree itself doubles
+  // the suffix (`<wt>/../.worktrees/...`), which is the F-020 failure.
+  const wt = path.join(path.dirname(t), ".worktrees", path.basename(t), "f-001");
+  const pointer = path.join(t, ".serve", "sessions", "ses_f020.worktree");
+  assert.ok(exists(pointer), "worktree records the session pointer");
+
+  // The worktree checkout is a committed snapshot; carry the taken row in, as a
+  // real session's board does.
+  fs.copyFileSync(path.join(t, "BACKLOG.md"), path.join(wt, "BACKLOG.md"));
+
+  const arc = spawnSync(process.execPath, ["scripts/backlog.js", "archive", "F-001"], {
+    cwd: wt,
+    encoding: "utf8",
+    env,
+  });
+  const out = (arc.stdout || "") + (arc.stderr || "");
+  assert.strictEqual(arc.status, 0, out);
+  assert.match(out, /archived F-001/);
+  assert.match(out, /left in place \(in use by this session\)/);
+  assert.doesNotMatch(out, /is not a working tree/, "the path must resolve against the main checkout, not the worktree");
+  assert.ok(exists(wt), "worktree left in place (archive ran inside it)");
+  assert.ok(exists(pointer), "pointer kept while the session still owns the checkout");
+});
+
 test("backlog-notify summarizes the worktree/depends/owns tools too", () => {
   const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "backlog-notify.ts"));
   assert.match(src, /backlog_worktree/);
