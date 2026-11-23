@@ -87,16 +87,22 @@ export default {
    * Known sessions answer from the recorded root; an unseen session is resolved
    * from the store once (authoritative), and an undeterminable one is treated as
    * ours so a guard is never skipped. */
-  const storeDirs = new Map<string, string>()
+  /* `session_move` re-homes a session in the store, so this answer has a TTL:
+   * a forever-cached directory would keep the old plugin instance treating the
+   * session as its own (heartbeating a GHOST lease) and the new instance
+   * filtering it out — F-021. */
+  const STORE_DIR_TTL_MS = 60_000
+  const storeDirs = new Map<string, { dir: string; at: number }>()
   const storeDir = (sessionID: string) => {
-    if (storeDirs.has(sessionID)) return storeDirs.get(sessionID) || ""
+    const hit = storeDirs.get(sessionID)
+    if (hit && Date.now() - hit.at < STORE_DIR_TTL_MS) return hit.dir
     let dir = ""
     try {
       dir = storeLib.sessionDirectory(sessionID) || ""
     } catch {
       dir = ""
     }
-    storeDirs.set(sessionID, dir)
+    storeDirs.set(sessionID, { dir, at: Date.now() })
     return dir
   }
   const sessionOurs = (sessionID: unknown): boolean => {
@@ -231,16 +237,34 @@ export default {
       /* lease is best-effort */
     }
   }
-  const clearLease = (sessionID: string) => {
+  const clearLeaseAt = (root: string, sessionID: string) => {
+    if (!root || !sessionID) return
     try {
-      leases.clearLease(rootOf(sessionID), sessionID)
+      leases.clearLease(root, sessionID)
     } catch {
       /* lease is best-effort */
     }
   }
-  const touchLease = (sessionID: string) => {
+  const clearLease = (sessionID: string) => clearLeaseAt(rootOf(sessionID), sessionID)
+  const touchLeaseAt = (root: string, sessionID: string) => {
+    if (!root || !sessionID) return
     try {
-      leases.touchLease(rootOf(sessionID), sessionID)
+      leases.touchLease(root, sessionID)
+    } catch {
+      /* lease is best-effort */
+    }
+  }
+  /* Keep exactly ONE lease for a session: the one in the tree the store says it
+   * lives in. A tool/step heartbeat from any instance first resolves that
+   * directory; if this instance's tree is no longer the session's home, its
+   * GHOST lease (and `.worktree` pointer) is retired here instead of heartbeated
+   * forever. This is the writer-side half of F-021; the backlog reader also
+   * filters by the store so a quiet moved session cannot block a prune. */
+  const reconcileLease = (sessionID: string) => {
+    try {
+      const root = storeDir(sessionID) || rootOf(sessionID)
+      if (sameRoot(root, directory)) touchLeaseAt(directory, sessionID)
+      else clearLeaseAt(directory, sessionID)
     } catch {
       /* lease is best-effort */
     }
@@ -474,6 +498,13 @@ export default {
          * the live-session view `test:concurrency` and `worktree-prune` read
          * ("in use by a live session") and mis-attributes a project's guard
          * evidence. An event with no location is never dropped. */
+        /* Retire THIS tree's lease even when the session has moved elsewhere:
+         * the location filter below would skip the tree it left, leaving a GHOST
+         * lease until its heartbeat goes stale (F-021). Session IDs are unique,
+         * so clearing this id from this tree can never hit another session. */
+        if (type === "session.deleted" && typeof d.sessionID === "string" && d.sessionID) {
+          clearLeaseAt(directory, d.sessionID)
+        }
         if (!sameLocation(event)) return
 
         if (type === "session.created") {
@@ -532,6 +563,7 @@ export default {
             sessionModel.delete(id)
             sessions.delete(id)
             sessionRoots.delete(id)
+            storeDirs.delete(id)
             // Auto-close this session's long-lived serves (dev server/emulator):
             // the harness must not leave them orphaned after the session ends.
             // Detached + best-effort; `reap` never touches a live owner's serve.
@@ -558,7 +590,7 @@ export default {
           const sid = d.sessionID
           if (typeof sid !== "string" || sid.length === 0) return
           if (!isPrimary(sid)) return
-          touchLease(sid)
+          reconcileLease(sid)
           const note = guard.noteAssistant(
             stateFor(sid),
             {
@@ -945,7 +977,7 @@ export default {
       }
       try {
         if (!isPrimary(input?.sessionID)) return
-        touchLease(input.sessionID)
+        reconcileLease(input.sessionID)
         const note = guard.noteToolCall(
           stateFor(input.sessionID),
           input?.tool,
@@ -970,7 +1002,7 @@ export default {
     "tool.execute.after": async (input: any, output: any) => {
       try {
         if (!isPrimary(input?.sessionID)) return
-        touchLease(input.sessionID)
+        reconcileLease(input.sessionID)
         // Read-hygiene notice: a guessed (failed) read or a large whole-file read
         // arms a one-shot nudge (whole-file re-reads are handled in `before`).
         if (String(input?.tool || "").toLowerCase() === "read") {

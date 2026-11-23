@@ -901,6 +901,26 @@ function parentPid(pid) {
   }
 }
 
+/* Where a session lives NOW, from the opencode store — the one record
+ * `session_move` updates (`session_v2.directory`). Lazy and fail-open: a
+ * checkout without a readable store (CI fixture, older runtime) returns "" and
+ * callers keep the pre-store lease behavior. F-021. */
+let storeLib;
+function sessionStoreDirectory(sessionID) {
+  try {
+    if (!storeLib) storeLib = require("./qa/store-lib.js");
+    return storeLib.sessionDirectory(sessionID) || "";
+  } catch {
+    return "";
+  }
+}
+
+/* Every lease read in this CLI uses the store as the authority when it can, so
+ * a session that moved away leaves no GHOST that blocks its old checkout. */
+function leaseOpts() {
+  return { resolveDir: sessionStoreDirectory };
+}
+
 /* The session that owns this process. A tool call forwards HARNESS_SESSION_ID;
  * the documented bash invocation (`node scripts/backlog.js worktree <id>`) does
  * NOT, so walk the process ancestry to the live lease that owns this shell. The
@@ -918,11 +938,13 @@ function ancestorSessionId(root) {
  * process is running INSIDE that session's tree. Unlike `ancestorSessionId` this
  * ignores HARNESS_SESSION_ID (which names a session, not a directory), so it can
  * answer "is this specific checkout a session's root?" — the `--open` guard in
- * `cmdWorktreePrune`. */
+ * `cmdWorktreePrune`. A lease whose session now lives elsewhere (moved by
+ * `session_move`) is a ghost and is ignored: the old tree must not be reported
+ * as "this session is rooted in it" (F-021). */
 function leaseAncestorIn(root) {
   let live;
   try {
-    live = leases.liveLeases(root);
+    live = leases.liveLeasesIn(root, leaseOpts());
   } catch {
     return "";
   }
@@ -967,7 +989,7 @@ function liveSessionWorktreeDirs(root) {
   const dirs = new Set();
   let live;
   try {
-    live = leases.liveLeases(root);
+    live = leases.liveLeasesIn(root, leaseOpts());
   } catch {
     return dirs;
   }
@@ -1452,6 +1474,25 @@ function cmdWorktreePrune(state, argv) {
   const selfSession = argv.self ? process.env.HARNESS_SESSION_ID || ancestorSessionId(main) : "";
   const selfPointer = selfSession ? readSessionWorktree(main, selfSession) : "";
   const isSelf = (p) => !!(selfPointer && path.resolve(selfPointer) === path.resolve(p));
+  // Retire GHOST leases before reading the live view: `session_move` leaves the
+  // old tree heartbeating a lease for a session that now lives elsewhere, and
+  // the guards below would otherwise treat that tree as its root forever
+  // (F-021). The store is authoritative; no readable store = no-op.
+  const retired = [];
+  const seenRoots = new Set();
+  for (const e of entries) {
+    const dir = path.resolve(e.path);
+    if (seenRoots.has(dir)) continue;
+    seenRoots.add(dir);
+    try {
+      for (const r of leases.retireForeignLeases(dir, leaseOpts())) retired.push({ ...r, root: dir });
+    } catch {
+      /* best-effort — a lease sweep must never block a prune */
+    }
+  }
+  if (retired.length) {
+    notes.push(`retired ${retired.length} moved-session lease(s) (the session now lives in another checkout)`);
+  }
   const inUse = liveSessionWorktreeDirs(main);
 
   let pruned = 0;

@@ -4222,6 +4222,29 @@ test("lease-lib clearLease/prune also drop the session worktree pointer", () => 
   assert.ok(!exists(path.join(t, ".serve", "sessions", "ses_dead_ptr.worktree")), "stale pointer pruned");
 });
 
+test("lease-lib filters moved-session leases via the injected directory resolver (F-021)", () => {
+  const oldTree = tmpdir();
+  const newTree = tmpdir();
+  leaseLib.writeLease(oldTree, "ses_moved");
+  const resolveDir = (sid) => (sid === "ses_moved" ? newTree : "");
+
+  assert.strictEqual(leaseLib.liveLeases(oldTree).length, 1, "no resolver keeps the legacy view");
+  assert.deepStrictEqual(
+    leaseLib.liveLeasesIn(oldTree, { resolveDir }).map((r) => r.sessionID),
+    [],
+    "a lease whose session moved elsewhere is not live in the old tree"
+  );
+  assert.deepStrictEqual(
+    leaseLib.liveLeasesIn(oldTree, { resolveDir: () => "" }).map((r) => r.sessionID),
+    ["ses_moved"],
+    "an unknown directory keeps the conservative behavior"
+  );
+
+  const removed = leaseLib.retireForeignLeases(oldTree, { resolveDir });
+  assert.deepStrictEqual(removed, [{ sessionID: "ses_moved", directory: newTree }]);
+  assert.ok(!exists(path.join(oldTree, ".serve", "sessions", "ses_moved.json")), "ghost lease retired");
+});
+
 test("test:concurrency lists stale leases but does not fail a clean tree", () => {
   const t = scaffoldConcurrencyTarget();
   for (const id of ["ses_lease_a", "ses_lease_b"]) leaseLib.writeLease(t, id);
@@ -6757,6 +6780,63 @@ test("context-guard: a V2 session.created writes a lease and marks a child as no
   await g.toolBefore("shell", "ses_v2_child", { command: "cat src/a.ts" });
 });
 
+test("context-guard retires a moved session's old lease on the next tool call (F-021)", async () => {
+  const oldTree = tmpdir();
+  const newTree = tmpdir();
+  const db = path.join(tmpdir(), "opencode.db");
+  const { DatabaseSync } = require("node:sqlite");
+  const sql = new DatabaseSync(db);
+  sql.exec(
+    "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT); " +
+      "CREATE TABLE session_message (id TEXT PRIMARY KEY);"
+  );
+  sql.prepare("INSERT INTO session_v2 (id, directory) VALUES (?, ?)").run("ses_moved", newTree);
+  sql.close();
+
+  const prev = process.env.OPENCODE_DB;
+  process.env.OPENCODE_DB = db;
+  try {
+    const g = await loadGuardPlugin({ directory: oldTree });
+    await g.emit({
+      type: "session.created",
+      data: { sessionID: "ses_moved", location: { directory: oldTree } },
+    });
+    const oldLease = path.join(oldTree, ".serve", "sessions", "ses_moved.json");
+    const oldPointer = path.join(oldTree, ".serve", "sessions", "ses_moved.worktree");
+    assert.ok(fs.existsSync(oldLease), "created in the old tree -> lease there");
+    fs.writeFileSync(oldPointer, newTree, "utf8");
+
+    // The store now says the session lives in the new tree; any activity in the
+    // old tree must retire its ghost instead of heartbeating it forever.
+    await g.toolAfter("read", "ses_moved", { filePath: path.join(oldTree, "x") });
+    assert.ok(!fs.existsSync(oldLease), "ghost lease retired");
+    assert.ok(!fs.existsSync(oldPointer), "ghost worktree pointer retired");
+
+    // The new tree's instance re-creates the lease on its next activity.
+    const g2 = await loadGuardPlugin({ directory: newTree });
+    await g2.toolAfter("read", "ses_moved", { filePath: path.join(newTree, "x") });
+    assert.ok(
+      fs.existsSync(path.join(newTree, ".serve", "sessions", "ses_moved.json")),
+      "session lease migrated to its current tree"
+    );
+
+    // A deleted session is cleared from THIS tree even when the delete event's
+    // location is the tree it moved to (the location filter would skip it).
+    leaseLib.writeLease(oldTree, "ses_gone");
+    await g.emit({
+      type: "session.deleted",
+      data: { sessionID: "ses_gone", location: { directory: newTree } },
+    });
+    assert.ok(
+      !fs.existsSync(path.join(oldTree, ".serve", "sessions", "ses_gone.json")),
+      "cross-location delete retires this tree's lease"
+    );
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_DB;
+    else process.env.OPENCODE_DB = prev;
+  }
+});
+
 test("context-guard: the V2 prompt hook releases the funds stop on a primary, not a child", async () => {
   const target = tmpdir();
   const g = await loadGuardPlugin({ directory: target });
@@ -8994,6 +9074,68 @@ test("worktree-prune keeps a worktree owned by a live session (mid-ship safety)"
   assert.strictEqual(res.status, 0, res.stdout + res.stderr);
   assert.match(res.stdout, /pruned wt-live/);
   assert.ok(!exists(wt), "abandoned worktree pruned");
+});
+
+test("worktree-prune drops a moved session's ghost lease but keeps a rooted session (F-021)", () => {
+  const { target } = trackedRepoFixture();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"), path.join(target, "scripts", "backlog.js"));
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "store-lib.js"),
+    path.join(target, "scripts", "qa", "store-lib.js")
+  );
+  copyBoardLib(target);
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(target, "BACKLOG.md"));
+  fs.writeFileSync(path.join(target, ".gitignore"), ".serve/\n", "utf8");
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed harness scripts"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  const makeMergedWorktree = (name, file) => {
+    const wt = path.join(tmpdir(), name);
+    git(target, ["branch", name, "main"]);
+    git(target, ["worktree", "add", wt, name]);
+    fs.writeFileSync(path.join(wt, file), "x\n", "utf8");
+    execFileSync("git", ["-C", wt, "add", "-A"], { encoding: "utf8" });
+    execFileSync("git", ["-C", wt, "commit", "-q", "-m", `${name} work`], { encoding: "utf8" });
+    git(target, ["merge", "--ff-only", name]);
+    git(target, ["push", "-q", "origin", "main"]);
+    return wt;
+  };
+  const ghost = makeMergedWorktree("feat-ghost", "g.txt");
+  const rooted = makeMergedWorktree("feat-rooted", "r.txt");
+
+  // ses_moved was created in feat-ghost, then moved to main: both trees hold a
+  // live lease, but only main is its current store directory. ses_rooted is a
+  // genuine `--open` session whose root still IS the worktree.
+  leaseLib.writeLease(ghost, "ses_moved");
+  leaseLib.writeLease(target, "ses_moved");
+  leaseLib.writeLease(rooted, "ses_rooted");
+
+  const db = path.join(tmpdir(), "opencode.db");
+  const { DatabaseSync } = require("node:sqlite");
+  const sql = new DatabaseSync(db);
+  sql.exec(
+    "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT); " +
+      "CREATE TABLE session_message (id TEXT PRIMARY KEY);"
+  );
+  const insert = sql.prepare("INSERT INTO session_v2 (id, directory) VALUES (?, ?)");
+  insert.run("ses_moved", target);
+  insert.run("ses_rooted", rooted);
+  sql.close();
+
+  const res = spawnSync(process.execPath, ["scripts/backlog.js", "worktree-prune"], {
+    cwd: target,
+    encoding: "utf8",
+    env: { ...process.env, OPENCODE_DB: db },
+  });
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /pruned wt-ghost|pruned feat-ghost/);
+  assert.doesNotMatch(res.stdout, /kept feat-ghost \(this session is rooted in it/);
+  assert.match(res.stdout, /retired 1 moved-session lease\(s\)/);
+  assert.ok(!exists(ghost), "the moved session's ghost lease no longer blocks the prune");
+  assert.match(res.stdout, /kept feat-rooted \(this session is rooted in it/);
+  assert.ok(exists(rooted), "a genuinely rooted session's checkout is kept");
 });
 
 test("worktree-prune --self lets the owner clean its own finished worktree (0.1.90 regression)", () => {

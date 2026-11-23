@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.5 — 2026-11-23
+
+- A session moved with `session_move` no longer leaves a GHOST lease in the
+  checkout it left: the guard plugin reconciles its lease against the store's
+  `session_v2.directory` (60 s TTL) and retires the old tree's lease/pointer,
+  `session.deleted` clears this tree regardless of the event's location, and
+  `worktree-prune` retires foreign leases before reading the live view so a
+  moved session no longer blocks pruning its old worktree. (F-021)
+
 ## 0.4.4 — 2026-11-23
 
 - Finalize now carries handoffs written in the shared checkout into the landing
