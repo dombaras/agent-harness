@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-020 | ? | Fix `archive` worktree cleanup when the board write runs from inside the feature worktree: cleanupWorktree resolves the recorded worktree path against the worktree root instead of the main checkout, so `git worktree remove` targets `<worktree>/../.worktrees/...` and fails, leaving the shipped worktree behind with a misleading fatal. | .agents/handoffs/F-020.md (worktree: ../.worktrees/agent-harness/f-020; branch: f-020) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -66,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-020 | P3 | ? | Fix `archive` worktree cleanup when the board write runs from inside the feature worktree: cleanupWorktree resolves the recorded worktree path against the worktree root instead of the main checkout, so `git worktree remove` targets `<worktree>/../.worktrees/...` and fails, leaving the shipped worktree behind with a misleading fatal. | F-015 finalize (2026-11-21, landed 6cd40a3): `archived F-015 (shipped) — worktree ../.worktrees/agent-harness/f-015 left in place (fatal: '/home/ronen/develop/.worktrees/agent-harness/.worktrees/agent-harness/f-015' is not a working tree)`; templates/scripts/backlog.js cleanupWorktree + parseWorktree | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
 | F-017 | P4 | ? | Cross-check agent-report/store-lib against `opencode stats --json` as an independent oracle: the CLI now emits per-tool reliability + cost/token stats, so a parity assertion would catch store-shape drift the direct-DB reader silently misses. | docs/opencode-v2.3-compat-scan.md §G5; `opencode stats --help` | ? |
 
