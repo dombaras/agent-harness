@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-019 | ? | Session-end guard: an untracked `.agents/handoffs/*.md` in a project's shared main checkout is silently orphaned — `finalize` stages only the current feature's handoff and refuses every other one, while main-checkout commits are guard-blocked. Add a gate (or a handoff sync into the landing worktree) so no session handoff can be left behind unnoticed. | .agents/handoffs/F-019.md (worktree: ../.worktrees/agent-harness/f-019; branch: f-019) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -105,6 +104,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-014 | ? | Align guard/session tool classifiers with the OpenCode 2.3.2 built-in tool set (`todo`, `skill`, `question`, `webfetch`, `websearch`, `patch`, `artifact`, `automation`, `image-generate`): `EXEMPT_TOOLS` has `todowrite` but not `todo`, `MATERIAL_TOOLS` has no `skill`/`artifact`. Verify effective tool names first, then update classifiers + the drift-guard test. | shipped |
 | F-015 | ? | Decide worktree alignment with OpenCode 2.3.2 native support: `worktree.directory` config, `ctx.worktree` (transform/add/list/create/remove), and `opencode run --worktree [=name]` now exist while the harness shells out to `git worktree` under `../.worktrees/<repo>/<id>`. Adopt the native surface or document the deliberate divergence. | shipped |
 | F-022 | ? | agent-harness update fails closed on an unmodified previous-release AGENTS.md once next dev appends its block (blocks 0.4.1+ deploy to LibraryOS) | shipped |
+| F-019 | ? | Session-end guard: an untracked `.agents/handoffs/*.md` in a project's shared main checkout is silently orphaned — `finalize` stages only the current feature's handoff and refuses every other one, while main-checkout commits are guard-blocked. Add a gate (or a handoff sync into the landing worktree) so no session handoff can be left behind unnoticed. | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.4 — 2026-11-23
+
+- Finalize now carries handoffs written in the shared checkout into the landing
+  commit, moves untracked handoffs out of the way of fast-forwarding, and reports
+  other sessions' orphaned handoffs without committing them. (F-019)
+
 ## 0.4.3 — 2026-11-21
 
 - `update` now recognises an unmodified previous-release root `AGENTS.md` that

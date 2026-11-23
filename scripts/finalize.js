@@ -73,21 +73,86 @@ function featureFromBranch(branch) {
   return m ? `F-${m[1]}` : null;
 }
 
+/* Every checkout of this repo: the shared main checkout first, then linked
+ * feature worktrees (`git worktree list --porcelain` order). */
+function worktreePaths() {
+  const res = spawnSync("git", ["-C", root, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+  if (res.status !== 0) return [];
+  return String(res.stdout || "")
+    .split(/\r?\n/)
+    .filter((l) => l.startsWith("worktree "))
+    .map((l) => l.slice("worktree ".length).trim())
+    .filter(Boolean);
+}
+
+/* The feature's handoff file in this checkout, or in another checkout of the
+ * same repo — the shared main checkout is where a checkpoint lands when the
+ * session writes it BEFORE moving into its feature worktree. */
+function findHandoff(feature) {
+  const local = path.join(root, ".agents", "handoffs", feature + ".md");
+  if (fs.existsSync(local)) return { file: local, local: true };
+  for (const dir of worktreePaths()) {
+    if (path.resolve(dir) === path.resolve(root)) continue;
+    const candidate = path.join(dir, ".agents", "handoffs", feature + ".md");
+    if (fs.existsSync(candidate)) return { file: candidate, local: false };
+  }
+  return null;
+}
+
+/* Is `rel` untracked in `dir`? (A committed handoff is history, never moved.) */
+function isUntracked(dir, rel) {
+  const res = spawnSync("git", ["-C", dir, "status", "--porcelain", "--", rel], { encoding: "utf8" });
+  if (res.status !== 0) return false;
+  return String(res.stdout || "")
+    .split(/\r?\n/)
+    .some((l) => /^\?\?\s/.test(l));
+}
+
+/* Migrate this feature's handoff into the landing checkout when it was written
+ * in another checkout (the shared main tree). `finalize` can only commit what is
+ * in its own tree, so a copy left in main silently orphaned the handoff — and
+ * later blocked main's fast-forward ("untracked working tree files would be
+ * overwritten"). An untracked source is moved (copy + unlink); a tracked source
+ * is copied and left to its own checkout. Returns the destination path or null. */
+function syncHandoff(feature) {
+  const dest = path.join(root, ".agents", "handoffs", feature + ".md");
+  if (fs.existsSync(dest)) return null;
+  const found = findHandoff(feature);
+  if (!found) return null;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(found.file, dest);
+  const sourceDir = path.dirname(path.dirname(path.dirname(found.file)));
+  const rel = path.posix.join(".agents", "handoffs", path.basename(found.file));
+  if (isUntracked(sourceDir, rel) && path.resolve(sourceDir) !== path.resolve(root)) {
+    fs.unlinkSync(found.file);
+    console.log(`\n[finalize] moved ${rel} from ${sourceDir} into the landing checkout (it would otherwise be orphaned).`);
+  } else {
+    console.log(`\n[finalize] copied ${rel} from ${sourceDir} into the landing checkout.`);
+  }
+  return dest;
+}
+
+/* Untracked handoffs OTHER sessions left in the shared main checkout. They are
+ * not this landing's work, but they must not stay invisible either. */
+function orphanHandoffs(feature) {
+  const main = worktreePaths()[0];
+  if (!main || path.resolve(main) === path.resolve(root)) return [];
+  const res = spawnSync("git", ["-C", main, "status", "--porcelain", "--untracked-files=all", "--", ".agents/handoffs"], {
+    encoding: "utf8",
+  });
+  if (res.status !== 0) return [];
+  return String(res.stdout || "")
+    .split(/\r?\n/)
+    .filter((l) => /^\?\?\s/.test(l))
+    .map((l) => l.replace(/^\?\?\s+/, "").trim().replace(/^"|"$/g, ""))
+    .filter((rel) => rel.toLowerCase().endsWith(".md") && path.basename(rel).toLowerCase() !== "readme.md")
+    .filter((rel) => path.basename(rel) !== `${feature}.md`);
+}
+
 /* The handoff's recorded outcome, if any (`## Session metadata` -> `- outcome:`). */
 function handoffOutcome(feature) {
-  let src = readIf(path.join(root, ".agents", "handoffs", feature + ".md"));
-  if (!src) {
-    const res = spawnSync("git", ["-C", root, "worktree", "list", "--porcelain"], { encoding: "utf8" });
-    for (const line of String(res.stdout || "").split(/\r?\n/)) {
-      if (!line.startsWith("worktree ")) continue;
-      const dir = line.slice("worktree ".length).trim();
-      const candidate = readIf(path.join(dir, ".agents", "handoffs", feature + ".md"));
-      if (candidate) {
-        src = candidate;
-        break;
-      }
-    }
-  }
+  const found = findHandoff(feature);
+  const src = found ? readIf(found.file) : "";
   const m = src.match(/^[-*]\s*outcome\s*:\s*(.+)$/im);
   return m ? m[1].trim().toLowerCase() : null;
 }
@@ -234,6 +299,19 @@ function boardServiceEnabled() {
 /* After a landing: converge the main checkout (ff-only, only when clean) and
  * print the close-out steps that used to appear as a session-ending remark. */
 function closeOut(base, feature) {
+  // Other sessions' handoffs are not this landing's work, but leaving them
+  // untracked in the shared main checkout is how a session handoff gets
+  // silently orphaned (and later blocks main's fast-forward). Name them.
+  const orphans = orphanHandoffs(feature);
+  if (orphans.length) {
+    console.log("\n[finalize] untracked session handoffs left in the shared main checkout:");
+    for (const rel of orphans) console.log(`      ${rel}`);
+    console.log(
+      "      Commit each from its own feature worktree (finalize migrates that feature's handoff),\n" +
+        "      or delete it if it is stale — main cannot land an unreviewed handoff for another feature."
+    );
+  }
+
   let hygiene;
   try {
     hygiene = require(path.join(root, "scripts", "qa", "worktree-hygiene.js"));
@@ -375,6 +453,9 @@ function main() {
   //    so `ship`'s dirty-tree guard cannot abort the documented one-command
   //    close. Staging is scoped: generated artifacts, symlinks and a stray
   //    worktree BACKLOG.md are refused instead of being swept in by `-A`.
+  //    A handoff written in the shared main checkout before the session moved
+  //    here is migrated first — this checkout can only commit what it holds.
+  syncHandoff(feature);
   const dirty = dirtyEntries();
   if (dirty.length) {
     console.log(
@@ -413,4 +494,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { featureFromBranch, handoffOutcome };
+module.exports = { featureFromBranch, handoffOutcome, syncHandoff, orphanHandoffs, worktreePaths };

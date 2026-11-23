@@ -10395,6 +10395,45 @@ function runFinalizeCli(target, args) {
   return { status: res.status, out: (res.stdout || "") + (res.stderr || "") };
 }
 
+/* Main checkout + linked feature worktree with the board row committed on main.
+ * The session handoff is written AFTER the worktree branch is cut, reproducing
+ * the real sequence (checkpoint first, move into the worktree later). */
+function scaffoldHandoffSyncTarget() {
+  const main = tmpdir();
+  const wt = main + "-wt";
+  fs.mkdirSync(path.join(main, "scripts", "qa"), { recursive: true });
+  for (const rel of ["scripts/backlog.js", "scripts/finalize.js", "scripts/qa/run-loop.js"]) {
+    fs.copyFileSync(path.join(h.TEMPLATES_DIR, rel), path.join(main, rel));
+  }
+  copyBoardLib(main);
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(main, "BACKLOG.md"));
+  // Stand-in ship that records its argv OUTSIDE both checkouts: writing into the
+  // landing worktree would leave an untracked file and make the tree look dirty.
+  const argsFile = path.join(tmpdir(), "ship-args");
+  fs.writeFileSync(
+    path.join(main, "scripts", "ship.js"),
+    '"use strict";\nconst fs=require("fs");\n' +
+      `fs.appendFileSync(${JSON.stringify(argsFile)}, process.argv.slice(2).join(" ")+"\\n");\n`,
+    "utf8"
+  );
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: main });
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: main });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: main });
+  execFileSync("git", ["add", "-A"], { cwd: main });
+  execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: main });
+  const added = spawnSync(process.execPath, ["scripts/backlog.js", "add", "orphan handoff", "--p", "P3"], {
+    cwd: main,
+    encoding: "utf8",
+  });
+  const id = (added.stdout.match(/\b(F-\d+)\b/) || [])[1];
+  assert.ok(id, "test scaffold could not add a row: " + added.stdout + added.stderr);
+  spawnSync(process.execPath, ["scripts/backlog.js", "take", id], { cwd: main, encoding: "utf8" });
+  execFileSync("git", ["add", "-A"], { cwd: main });
+  execFileSync("git", ["commit", "-q", "-m", "seed row"], { cwd: main });
+  execFileSync("git", ["worktree", "add", "-q", wt, "-b", "f-" + id.replace(/^F-/, "")], { cwd: main });
+  return { main, wt, id, argsFile };
+}
+
 test("finalize archives the row, commits the tail, then ships (one deterministic call)", () => {
   const { target, id } = scaffoldFinalizeTarget();
   const r = runFinalizeCli(target, ["--feature", id]);
@@ -10423,6 +10462,36 @@ test("finalize is idempotent — re-running never duplicates the row or re-archi
   );
   const inProgress = (board.split("## In progress")[1] || "").split(/^## /m)[0];
   assert.doesNotMatch(inProgress, new RegExp("\\|\\s*" + id + "\\s*\\|"), "not left In progress");
+});
+
+test("finalize moves a handoff written in the shared main checkout into the landing commit", () => {
+  const { main, wt, id, argsFile } = scaffoldHandoffSyncTarget();
+  const rel = path.join(".agents", "handoffs", id + ".md");
+  fs.mkdirSync(path.join(main, ".agents", "handoffs"), { recursive: true });
+  fs.writeFileSync(path.join(main, rel), "## Session metadata\n\n- outcome: shipped\n", "utf8");
+
+  const r = runFinalizeCli(wt, ["--feature", id]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /moved \.agents\/handoffs\//, "the move is reported");
+  assert.ok(exists(argsFile), "ship ran (stub recorded its argv outside the tree)");
+  const committed = git(wt, ["show", "--name-only", "--format=", "HEAD"]);
+  assert.match(committed, new RegExp(`\\.agents/handoffs/${id}\\.md`), "handoff rides the landing commit");
+  assert.strictEqual(git(wt, ["status", "--porcelain"]), "", "landing tree clean");
+  assert.ok(!exists(path.join(main, rel)), "the orphan copy was moved out of main (no ff blocker)");
+});
+
+test("finalize reports another session's untracked handoff in main without committing it", () => {
+  const { main, wt, id } = scaffoldHandoffSyncTarget();
+  fs.mkdirSync(path.join(main, ".agents", "handoffs"), { recursive: true });
+  const other = path.join(main, ".agents", "handoffs", "F-999.md");
+  fs.writeFileSync(other, "## Checkpoint\n", "utf8");
+
+  const r = runFinalizeCli(wt, ["--feature", id]);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /untracked session handoffs left in the shared main checkout/);
+  assert.match(r.out, /F-999\.md/);
+  assert.ok(exists(other), "the other session's file is left untouched");
+  assert.doesNotMatch(git(wt, ["show", "--name-only", "--format=", "HEAD"]), /F-999\.md/, "never swept into this landing");
 });
 
 test("finalize --dry-run plans without touching the board or shipping", () => {
@@ -10456,6 +10525,11 @@ test("[drift-guard] finalize collapses archive + commit + land into one call", (
   assert.match(src, /git", \["add", "-A"\]/, "commits the finalization tail");
   assert.match(src, /landedAlready\(base\)/, "idempotence checks the branch is landed on main");
   assert.doesNotMatch(src, /--watch-only|prState/, "no PR watch resume path remains");
+  assert.strictEqual(
+    src,
+    read(path.join(__dirname, "..", "scripts", "finalize.js")),
+    "the deployed scripts/finalize.js is the same file (no hand-edit drift)"
+  );
 });
 
 test("context-guard carries the finalization carve-out (run finalize, do not stop)", () => {
