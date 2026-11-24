@@ -292,6 +292,7 @@ function guardTexts(state, thresholds) {
   if (state?.gateRerunPending) texts.push(GATE_RERUN_TEXT);
   if (state?.todoPending && TODO_TEXTS[state.todoPending]) texts.push(TODO_TEXTS[state.todoPending]);
   if (state?.waitPending) texts.push(WAIT_TEXT);
+  if (state?.personaHintPending) texts.push(personaHintText(state.personaHintPending));
   return texts;
 }
 
@@ -302,6 +303,68 @@ function guardTexts(state, thresholds) {
 function composeGuardText(state, thresholds) {
   const texts = guardTexts(state, thresholds);
   return texts.length ? [GUARD_PROVENANCE, ...texts].join("\n\n") : null;
+}
+
+/* ------------------------------------------------- persona hint (F-025 S6)
+ * The dispatch decision is cheapest at the first real edit: the path itself
+ * says which persona owns the surface. Pure, advisory, ONE-SHOT per session —
+ * a path->persona map, never a gate. Order matters: the most specific surface
+ * wins (ui kit before the broad web surface). Paths are repo-relative POSIX. */
+const PERSONA_HINTS = Object.freeze([
+  { persona: "ui-designer", re: /(^|\/)components\/ui\//, surface: "shared UI kit" },
+  { persona: "ui-designer", re: /(^|\/)(globals\.css|tailwind\.config\.[cm]?[jt]s)$/, surface: "design tokens/theme" },
+  { persona: "system-architect", re: /(^|\/)prisma\/(schema\.prisma|migrations\/)/, surface: "schema/migration" },
+  { persona: "security-engineer", re: /(^|\/)(auth|security|secrets)\//, surface: "auth/security" },
+  { persona: "devops-engineer", re: /(^|\/)\.github\/workflows\//, surface: "CI/CD workflow" },
+  { persona: "devops-engineer", re: /(^|\/)(Dockerfile[^/]*|docker-compose[^/]*\.ya?ml|deploy\/)/, surface: "deploy/infra" },
+  { persona: "mobile-engineer", re: /(^|\/)(mobile|android|ios)\//, surface: "native/mobile" },
+  { persona: "frontend-engineer", re: /(^|\/)(app|components|pages)\//, surface: "web UI" },
+  { persona: "data-engineer", re: /(^|\/)(ingest|etl)\//, surface: "ingest/ETL" },
+  { persona: "qa-architect", re: /^\.agents\/qa-plans\//, surface: "QA plan" },
+  { persona: "qa-architect", re: /(^|\/)tests?\//, surface: "test suite" },
+  { persona: "product-manager", re: /^\.agents\/features\/[^/]+\/intent\.md$/, surface: "feature intent" },
+  { persona: "docs", re: /(^|\/)docs\//, surface: "human-facing docs" },
+  { persona: "docs", re: /(^|\/)(README|CHANGELOG)\.md$/, surface: "human-facing docs" },
+]);
+
+const EDIT_TOOLS = new Set(["edit", "write", "patch", "multiedit", "apply_patch"]);
+
+function normalizeHintPath(filePath) {
+  return String(filePath || "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/^\/+/, "");
+}
+
+function personaHintFor(filePath) {
+  const rel = normalizeHintPath(filePath);
+  if (!rel) return null;
+  for (const h of PERSONA_HINTS) {
+    if (h.re.test(rel)) return { persona: h.persona, surface: h.surface, path: rel };
+  }
+  return null;
+}
+
+function personaHintText(hint) {
+  return (
+    `PERSONA HINT — ${hint.path} is a ${hint.surface} path (${hint.persona} owns it). ` +
+    `If this is T2+ (multi-file, a contract, or 2+ surfaces), dispatch \`${hint.persona}\` with the six-field spec; ` +
+    "a T0/T1 mechanical edit stays direct. Tier it: `node scripts/qa/dispatch-tier.js` — never dispatch for a one-file rename."
+  );
+}
+
+/* Arm at the first edit whose path maps to a persona. One-shot per session: the
+ * hint is a decision reminder, not a standing rule (a standing rule belongs in
+ * AGENTS.md, which is billed on every request). */
+function armPersonaHint(state, tool, args) {
+  if (state.personaHintFlagged) return { firstFlag: false };
+  if (!EDIT_TOOLS.has(String(tool || "").toLowerCase())) return { firstFlag: false };
+  const raw = args && (args.filePath || args.file_path || args.path);
+  const hint = personaHintFor(raw);
+  if (!hint) return { firstFlag: false };
+  state.personaHintFlagged = true;
+  state.personaHintPending = hint;
+  return { firstFlag: true, hint };
 }
 
 function requestLevel(tokens, request) {
@@ -406,6 +469,10 @@ function createSessionState() {
     // wait/poll advisory (B)
     waitPending: false,
     waitFlagged: false,
+    // persona hint (F-025 S6): the first edit on a persona-owned surface arms a
+    // one-shot dispatch reminder; cleared after it is injected once.
+    personaHintPending: null,
+    personaHintFlagged: false,
     // structural tool blocks: the first pure inspection of each head / poll of
     // each kind is blocked once per session (see inspectBlockText/pollBlockText).
     blockedInspectHeads: new Set(),
@@ -531,6 +598,7 @@ function noteToolCall(state, tool, args, stuck) {
     state.noStatePending = false;
     state.orientPending = false; // real work began — drop the session-start orient block
     resetGateRuns(state); // a batched edit invalidates prior gate results
+    armPersonaHint(state, tool, args);
   }
   const exempt = isLoopExempt(tool, args);
   if (exempt) {
@@ -1471,6 +1539,7 @@ function clearOneShot(state) {
   state.gateRerunPending = false;
   state.todoPending = null;
   state.waitPending = false;
+  state.personaHintPending = null;
 }
 
 // --------------------------------------------------- inspect re-arm (D)
@@ -1591,6 +1660,10 @@ module.exports = {
   bandText,
   guardTexts,
   composeGuardText,
+  PERSONA_HINTS,
+  personaHintFor,
+  personaHintText,
+  armPersonaHint,
   requestLevel,
   requestTokensOf,
   stableStringify,

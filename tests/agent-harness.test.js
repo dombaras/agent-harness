@@ -10292,6 +10292,64 @@ test("harness maintenance push uses --no-verify so project hooks never strand it
   assert.match(src, /\["push", "--no-verify", "origin", "HEAD"\]/);
 });
 
+test("agent-harness doctor reports persona dispatch readiness, advisory only (F-025)", () => {
+  const target = tmpdir();
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  fs.mkdirSync(path.join(target, ".opencode", "agents"), { recursive: true });
+  fs.mkdirSync(path.join(target, ".agents", "skills", "planner"), { recursive: true });
+  fs.mkdirSync(path.join(target, ".agents", "skills", "orphan"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".opencode", "agents", "planner.md"),
+    "---\ndescription: Plans the work. Writes: `plan.md`.\nmodel: opencode-go/deepseek-v4-pro\n---\n",
+    "utf8"
+  );
+  fs.writeFileSync(path.join(target, ".agents", "skills", "planner", "SKILL.md"), "# planner\n", "utf8");
+  fs.writeFileSync(path.join(target, ".agents", "skills", "orphan", "SKILL.md"), "# orphan\n", "utf8");
+  const out = [];
+  const orig = console.log;
+  console.log = (...a) => out.push(a.join(" "));
+  try {
+    h.doctor(target);
+  } finally {
+    console.log = orig;
+  }
+  const text = out.join("\n");
+  assert.match(text, /\[warn\] persona dispatch: .*skill without agent: orphan/, "names the parity drift");
+  assert.match(text, /\[warn\] dispatch plugin: missing .*dispatch-persona\.js/, "names the missing dispatch tooling");
+  const dispatchLines = text.split("\n").filter((l) => /persona dispatch|dispatch plugin|persona model pins/.test(l));
+  assert.ok(dispatchLines.length >= 2, "dispatch readiness is reported");
+  assert.ok(dispatchLines.every((l) => !/\[FAIL\]/.test(l)), "the dispatch probe is advisory (warn, never fail)");
+});
+
+test("agent-harness doctor reports persona/skill parity and pins as ok when complete (F-025)", () => {
+  const target = tmpdir();
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  fs.mkdirSync(path.join(target, ".opencode", "agents"), { recursive: true });
+  fs.mkdirSync(path.join(target, ".agents", "skills", "planner"), { recursive: true });
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.mkdirSync(path.join(target, ".opencode", "plugins"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".opencode", "agents", "planner.md"),
+    "---\ndescription: Plans the work. Writes: `plan.md`.\nmodel: opencode-go/deepseek-v4-pro\n---\n",
+    "utf8"
+  );
+  fs.writeFileSync(path.join(target, ".agents", "skills", "planner", "SKILL.md"), "# planner\n", "utf8");
+  fs.writeFileSync(path.join(target, "scripts", "qa", "dispatch-persona.js"), "//\n", "utf8");
+  fs.writeFileSync(path.join(target, "scripts", "qa", "dispatch-tier.js"), "//\n", "utf8");
+  fs.writeFileSync(path.join(target, ".opencode", "plugins", "dispatch.ts"), "//\n", "utf8");
+  const out = [];
+  const orig = console.log;
+  console.log = (...a) => out.push(a.join(" "));
+  try {
+    h.doctor(target);
+  } finally {
+    console.log = orig;
+  }
+  const text = out.join("\n");
+  assert.match(text, /\[ok  \] persona dispatch: 1 personas, agent<->skill parity/);
+  assert.match(text, /\[ok  \] dispatch plugin: dispatch_persona \+ tier classifier \+ plugin present/);
+});
+
 test("agent-harness doctor reports release-cycle readiness", () => {
   const target = tmpdir();
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
@@ -10786,6 +10844,33 @@ test("context-guard carries the finalization carve-out (run finalize, do not sto
   const guard = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"));
   assert.match(guard.BAND_TEXT.checkpoint, /npm run finalize/);
   assert.match(guard.BAND_TEXT.hard, /npm run finalize/);
+});
+
+test("context-guard arms a one-shot persona hint on the first mapped edit (F-025 S6)", () => {
+  const CG = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"));
+  assert.strictEqual(CG.personaHintFor("prisma/schema.prisma").persona, "system-architect");
+  assert.strictEqual(CG.personaHintFor("./components/ui/button.tsx").persona, "ui-designer");
+  assert.strictEqual(CG.personaHintFor("app/page.tsx").persona, "frontend-engineer");
+  assert.strictEqual(CG.personaHintFor("tests/new.test.js").persona, "qa-architect");
+  assert.strictEqual(CG.personaHintFor("README.md").persona, "docs");
+  assert.strictEqual(CG.personaHintFor("scripts/ship.js"), null, "an unmapped path never hints");
+
+  const state = CG.createSessionState();
+  assert.deepStrictEqual(CG.guardTexts(state, {}), [], "nothing armed before an edit");
+  CG.noteToolCall(state, "edit", { filePath: "prisma/schema.prisma" }, {});
+  const armed = CG.guardTexts(state, {});
+  assert.ok(armed.some((t) => /PERSONA HINT/.test(t) && /system-architect/.test(t)), "maps the path to its persona");
+  assert.match(CG.composeGuardText(state, {}), /PERSONA HINT — prisma\/schema\.prisma/, "tail block carries it");
+
+  CG.clearOneShot(state);
+  assert.ok(!CG.guardTexts(state, {}).some((t) => /PERSONA HINT/.test(t)), "cleared after one injection");
+  CG.noteToolCall(state, "edit", { filePath: "app/page.tsx" }, {});
+  assert.ok(!CG.guardTexts(state, {}).some((t) => /PERSONA HINT/.test(t)), "never re-arms in the same session");
+
+  const readState = CG.createSessionState();
+  CG.noteToolCall(readState, "read", { filePath: "prisma/schema.prisma" }, {});
+  assert.ok(!CG.guardTexts(readState, {}).some((t) => /PERSONA HINT/.test(t)), "a read never arms the hint");
+  assert.strictEqual(CG.armPersonaHint(CG.createSessionState(), "bash", { command: "cat prisma/schema.prisma" }).firstFlag, false);
 });
 
 test("finalize command + script are deployed and wired", async () => {

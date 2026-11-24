@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.10 — 2026-11-24
+
+- Persona dispatch now preflights the model pin, write scope, and working tree,
+  then assembles a six-field task spec before work starts.
+- `orient` makes the cost lane visible, while the T0–T3 policy matches dispatch
+  effort to risk instead of defaulting every change to the same fan-out.
+- Finalize derives a readable `persona -> model -> status` dispatch log, and
+  `doctor` plus the context guard add advisory checks and first-edit guidance.
+  (F-025)
+
 ## 0.4.9 — 2026-11-24
 
 - The TUI harness badge now appends `↻restart` when the global

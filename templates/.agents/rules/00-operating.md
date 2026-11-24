@@ -1,10 +1,10 @@
 # {{PROJECT_NAME}} Operating Rules (summary)
 
-Always in effect. Operating mechanics live here; the durable standards — and the detail of record for the rules below — live in `.agents/AGENTS.md`. Read it before non-trivial work.
+Always in effect. Mechanics live here; the durable standards and detail of record live in `.agents/AGENTS.md`. Read it before non-trivial work.
 
 ## Step Zero — subagent dispatch gate (non-negotiable)
 
-Dispatch the relevant personas via the `subagent` tool — each runs on its own `model:` (`.opencode/agents/<name>.md`) — for non-trivial, multi-surface work with a distinct deliverable. The **dispatch economics** below and the **complexity threshold** are the authority: trivial/single-surface/single-file changes execute directly on the main model, and reads, git ops, commits, integration, and mechanical work always stay on the main model.
+Dispatch via `dispatch_persona` (preflights persona/model/write-scope/tree + assembles the six-field spec) or `subagent` — each runs its own `model:` (`.opencode/agents/<name>.md`). Classify first: `node scripts/qa/dispatch-tier.js --objective "<task>" --files a,b` gives the T0-T3 tier, gates and persona hint. The **dispatch economics** below are the authority; reads, git ops, commits, integration and mechanical work stay on the main model.
 
 - **Bound every task before dispatching.** No persona gets a bare metric ("get under N lines", "type everything"). Each dispatch prompt carries a task spec: `Objective` (one deliverable) → `Working tree` (the exact feature-worktree path/branch — or `main` — this task edits; the subagent verifies it before touching a file) → `Owned files` (exact paths) → `Read-only files` → `Shared contracts (owns|consumes)` → `Done = <gate command + observable metric>` → `Out-of-scope`.
 - **Parallel = disjoint.** Dispatch two personas in parallel only when their owned files AND shared contracts are disjoint; otherwise serialize and put the shared-contract owner first. Across *sessions*, disjoint means **isolated working trees**: run `backlog worktree <id>` (from the main tree; when a human launches it at a terminal, `--open` starts the agent in the new worktree so the session is root-scoped there and its lease lands in the worktree, not `main`) before starting ANY feature — `main` stays board + shippable code only, so one session's uncommitted work can't leak into another's pre-push gate. Declare each picked-up row's owned files (`backlog owns <id> --files "glob, glob"`) so `test:concurrency` fails *exactly* when two In-progress rows own the same file, instead of on every "2+ In progress + dirty" tree; `node scripts/qa/run-clean.js -- <gate>` snapshots the tree so a gate verifies only committed work.
@@ -26,9 +26,19 @@ Dispatch the relevant personas via the `subagent` tool — each runs on its own 
 
 ## Dispatch economics (spend inference only where it earns value)
 
+- **Tier first (T0-T3).** The change's shape decides execution:
+
+  | Tier | Shape | Execution |
+  |---|---|---|
+  | T0 | one file, no behaviour change | main model; path gate only |
+  | T1 | one surface, <=3 files | main model + QA plan + `test:quick` |
+  | T2 | multi-file on one surface, or one contract | one persona + QA plan + gates |
+  | T3 | 2+ surfaces, or schema/auth/security/public API | dispatches + architect/security/qa + gates |
+
+  A risk tag (`schema|auth|security|api-contract|concurrency|sync`) lifts the tier; T3 needs a `planner` plan and no code path skips the QA plan. `dispatch-tier.js` is the reminder.
 - **A persona's existence is never a reason to dispatch it.** Dispatch only when a persona produces a distinct deliverable the main model cannot cheaply do itself: real implementation/reasoning in a bounded owned scope that reduces risk or parallelizes genuinely disjoint work.
-- **Orchestrator-only (never a subagent):** reads needed for orchestration, `git status`/`diff`, worktree/branch creation, commits, merges, final integration, simple moves/renames, mechanical search-replace, collecting outputs, summarizing results, simple command runs.
-- **Complexity threshold → direct execution.** Trivial or single-surface/single-file changes (rename, typo, constant, one-line doc, simple CSS, config tweak) bypass the pipeline: main model implements → targeted gate → done. The planner may conclude `execution_mode: direct` (with a reason) instead of emitting dispatches.
+- **Orchestrator-only (never a subagent):** orchestration reads, `git status`/`diff`, worktree/branch creation, commits, merges, integration, moves/renames, mechanical search-replace, output collection, summarizing, simple commands.
+- **Complexity threshold → direct execution.** Trivial or single-surface changes (rename, typo, constant, one-line doc, CSS, config) bypass the pipeline: main model → targeted gate → done; the planner may record `execution_mode: direct` with a reason instead of dispatches.
 - **Absorb before spawn.** If an already-dispatched or just-completed persona can absorb a small related change inside its owned scope, extend that dispatch instead of spawning another. Never cross ownership/contract boundaries to save a dispatch.
 - **Bounded retries.** Retry once (resume the same `task_id`) with a reason; a second retry MUST change one of instructions / context / model / decomposition / diagnostics. Identical prompt+context+model+failure twice = stop and escalate/report, never loop.
 - **Funds stop (pause, announce, wait).** A provider funds/quota error (`insufficient balance`/`funds`/`credits`, `usage limit reached`, HTTP 402) is a STOP — never retry it, never degrade inline, never silently skip the persona. Announce the failed provider/model and the exact unfinished step, checkpoint to `.agents/handoffs/<feature-id>.md`, end the turn, and wait for the user's explicit top-up-complete / continue message before resuming from the checkpoint. Provider priority is OpenCode Go (`opencode-go/*`) first, DeepSeek direct (`deepseek/*`) fallback — the V4 Pro architect tier pins `opencode-go/deepseek-v4-pro#high`, with direct `deepseek/deepseek-v4-pro` as the announced fallback; announce every fallback immediately (`.agents/memory/model-routing.md`).
@@ -41,9 +51,9 @@ Dispatch the relevant personas via the `subagent` tool — each runs on its own 
 
 ## Context budget & lifecycle (bounded orchestration)
 
-The main orchestrator context is a cumulative cost. Guard it; do not let a single
-session grow without bound. Thresholds are tunable in
-`.agents/memory/orchestration.md` — resolve numbers there, not from memory.
+The main orchestrator context is a cumulative cost — guard it: a session must not
+grow without bound. Thresholds are tunable in `.agents/memory/orchestration.md`;
+resolve numbers there, not from memory.
 
 - **Feature-scoped context**: one bounded orchestration lifecycle per meaningful
   work unit. Do not let one feature's large context become the long-term home for
@@ -67,7 +77,7 @@ session grow without bound. Thresholds are tunable in
   so it is never starved by the budget.
 - **Cache-friendly prefix**: keep the stable leading context (operating rules →
   persona → project rules) byte-stable across turns; never regenerate equivalent
-  instructions in new wording (the cache is an asset). `npm run test:prefix`
+  instructions in new wording. `npm run test:prefix`
   fails a volatile value (clock timestamp, machine path, session id) in a prefix
   file — those belong in handoffs/state files, not the always-loaded context.
 - **Mechanical guard**: the `context-guard` plugin reads the thresholds from
@@ -75,8 +85,8 @@ session grow without bound. Thresholds are tunable in
   new-context (and hard-ceiling) nudges at the turn bands, plus the recovery rule
   on repeated identical tool calls — never rely on remembering the numbers.
   Crossings land in `.agents/guard-events.jsonl` (local-only, excluded clone-locally).
-- **Large tool outputs**: treat reads as evidence, but do not let a big read/diff/
-  test dump live forever in a long-lived context — checkpoint and move on.
+- **Large tool outputs**: a big read/diff/test dump must not live forever in a
+  long-lived context — checkpoint and move on.
 
 ## Verification & retry discipline (deterministic)
 

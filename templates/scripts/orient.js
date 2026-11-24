@@ -27,6 +27,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const checkpoint = require("./checkpoint.js");
 const capacity = require("./qa/capacity-lib.js");
+const dispatchPersona = require("./qa/dispatch-persona.js");
 
 const SCHEMA = "orient/1";
 
@@ -299,6 +300,102 @@ function featureWorktree(feature, root, git) {
   return null;
 }
 
+/* ------------------------------------------------ persona economics (S3) */
+/* The decision-time price list: tier + declared writes from the persona's own
+ * contract, observed cost from child sessions in the store (mean input tokens,
+ * last used). Bounded to the 8 most recently used; no store => tier/writes only,
+ * never a fabricated number. */
+const PERSONA_MAX = 8;
+const PERSONA_BRIEF_MAX = 4;
+
+function personaTier(model) {
+  const m = String(model || "").toLowerCase();
+  if (!m) return "unpinned";
+  if (/pro/.test(m)) return "reasoning";
+  if (/flash|coder|haiku/.test(m)) return "engineering";
+  if (/sonnet|gpt|gemini|general/.test(m)) return "content";
+  return "general";
+}
+
+function personaStats(query, limit = PERSONA_MAX) {
+  const rows = query(
+    `SELECT agent, COUNT(*) AS runs, CAST(AVG(tokens_input) AS INTEGER) AS mean_input, MAX(time_created) AS last,
+       (SELECT idle_outcome FROM session_v2 t WHERE t.agent = s.agent AND t.parent_id IS NOT NULL ORDER BY t.time_created DESC LIMIT 1) AS outcome
+     FROM session_v2 s WHERE s.parent_id IS NOT NULL AND s.agent IS NOT NULL
+     GROUP BY s.agent ORDER BY last DESC LIMIT ${Number(limit) || PERSONA_MAX}`
+  );
+  return (rows || []).map((r) => ({
+    name: r.agent,
+    runs: Number(r.runs) || 0,
+    meanInput: Number(r.mean_input) || 0,
+    last: Number(r.last) || 0,
+    outcome: r.outcome || null,
+  }));
+}
+
+function personaRows(root, opts = {}) {
+  const dir = path.join(root, ".opencode", "agents");
+  const names = dispatchPersona.personaNames(root);
+  const rows = names.map((name) => {
+    let parsed = { model: "", writes: [] };
+    try {
+      parsed = dispatchPersona.parsePersona(fs.readFileSync(path.join(dir, `${name}.md`), "utf8"));
+    } catch {
+      /* unreadable persona -> tier/writes unknown, still listed */
+    }
+    return {
+      name,
+      tier: personaTier(parsed.model),
+      writes: parsed.writes,
+      runs: 0,
+      meanInput: 0,
+      last: 0,
+      outcome: null,
+    };
+  });
+  let stats = null;
+  try {
+    const query = opts.query || require("./qa/store-lib.js").openStore().query;
+    stats = personaStats(query);
+  } catch {
+    stats = null; // store unreachable: tier + writes only, never an estimate
+  }
+  if (stats) {
+    const by = new Map(stats.map((s) => [s.name, s]));
+    for (const row of rows) {
+      const s = by.get(row.name);
+      if (s) Object.assign(row, { runs: s.runs, meanInput: s.meanInput, last: s.last, outcome: s.outcome });
+    }
+  }
+  return rows.sort((a, b) => b.last - a.last || a.name.localeCompare(b.name)).slice(0, PERSONA_MAX);
+}
+
+function kTokens(n) {
+  if (!n) return "?";
+  if (n < 1000) return `~${(Math.round(n / 100) / 10).toFixed(1)}K`;
+  return `~${Math.round(n / 1000)}K`;
+}
+
+function mmdd(ms) {
+  const d = new Date(Number(ms));
+  if (!Number.isFinite(d.getTime())) return "?";
+  const p = (x) => String(x).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function renderPersonasBlock(rows, max = PERSONA_MAX) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const picked = rows.slice(0, max);
+  return picked.map((r, i) => {
+    const name = String(r.name || "?").slice(0, 14).padEnd(14);
+    const tier = String(r.tier || "?").slice(0, 11).padEnd(11);
+    const cost = `${kTokens(r.meanInput)} in/call`.padEnd(13);
+    const writes = r.writes && r.writes.length ? `writes ${r.writes.slice(0, 2).join(", ")}` : "reads only";
+    const last = r.last ? `last: ${mmdd(r.last)}${r.outcome ? ` ${r.outcome}` : ""}` : "last: never";
+    return `${i === 0 ? "personas:" : "         "} ${name} ${tier} ${cost} ${writes}  ${last}`;
+  });
+}
+
 /* The whole orientation as a plain object. `deps` injects git/run for tests. */
 function collectOrient(opts = {}) {
   const root = path.resolve(opts.root || process.cwd());
@@ -368,6 +465,7 @@ function collectOrient(opts = {}) {
     ownedFiles: owned,
     checkpoint: checkpointState,
     capacity: cap,
+    personas: personaRows(root, opts),
     memory: memoryDigest(root),
     lastE2e: lastE2eRun(root),
     nightly: latestNightly(root),
@@ -423,6 +521,7 @@ function printHuman(o) {
   } else {
     lines.push("capacity: unavailable");
   }
+  lines.push(...renderPersonasBlock(o.personas));
   lines.push(
     `last e2e: ${o.lastE2e ? `${o.lastE2e.failed || 0} failed / ${o.lastE2e.total != null ? o.lastE2e.total : "?"} (${o.lastE2e.at || "?"})` : "none recorded"}`
   );
@@ -472,6 +571,7 @@ function printBrief(o) {
     lines.push(`board In progress [${ip}]${o.board.nextQueued.length ? ` · next ${o.board.nextQueued.map((r) => r.id).join(", ")}` : ""}`);
   }
   if (o.capacity) lines.push(`capacity ${o.capacity.ok ? "ok" : "EXCEEDED: " + o.capacity.reasons.join("; ")} · serves ${o.capacity.serves.join(", ") || "none"}`);
+  lines.push(...renderPersonasBlock(o.personas, PERSONA_BRIEF_MAX));
   if (o.lastE2e) lines.push(`last e2e ${o.lastE2e.failed || 0} failed / ${o.lastE2e.total != null ? o.lastE2e.total : "?"}`);
   if (o.nightly) lines.push(`nightly ${(o.nightly.verdict || "?").toUpperCase()} — ${o.nightly.failed} failing, ${o.nightly.reopened} reopened, ${o.nightly.added} new`);
   const mem = renderMemoryDigest(o.memory);
@@ -543,6 +643,12 @@ module.exports = {
   parseSections,
   memoryDigest,
   renderMemoryDigest,
+  personaRows,
+  personaStats,
+  personaTier,
+  renderPersonasBlock,
+  PERSONA_MAX,
+  PERSONA_BRIEF_MAX,
   lastE2eRun,
   latestNightly,
   boardSnapshot,

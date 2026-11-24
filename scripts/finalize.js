@@ -132,6 +132,33 @@ function syncHandoff(feature) {
   return dest;
 }
 
+/* Fill the handoff's dispatch log from observed child sessions when it is still
+ * the checkpoint placeholder. A hand-authored log is kept untouched: it is
+ * evidence too, and finalize must not overwrite another session's record. */
+function deriveDispatchLog(feature) {
+  const file = path.join(root, ".agents", "handoffs", feature + ".md");
+  if (!fs.existsSync(file)) return null;
+  let dl;
+  try {
+    dl = require(path.join(root, "scripts", "qa", "dispatch-log.js"));
+  } catch {
+    return null; // older deployment has no renderer; leave the handoff as-is
+  }
+  const text = readIf(file);
+  if (!text || dl.hasEntries(text)) return { file, changed: false, reason: "existing log kept" };
+  let rows = [];
+  try {
+    const store = require(path.join(root, "scripts", "qa", "store-lib.js"));
+    rows = dl.deriveRows({ query: store.openStore().query, feature });
+  } catch {
+    rows = []; // no store: the honest direct-lane line, never an invented row
+  }
+  const applied = dl.applyDerivedLog(text, rows, { feature });
+  if (applied.changed) fs.writeFileSync(file, applied.text);
+  console.log(`[finalize] dispatch log: ${applied.reason}`);
+  return { file, ...applied };
+}
+
 /* Untracked handoffs OTHER sessions left in the shared main checkout. They are
  * not this landing's work, but they must not stay invisible either. */
 function orphanHandoffs(feature) {
@@ -456,6 +483,7 @@ function main() {
   //    A handoff written in the shared main checkout before the session moved
   //    here is migrated first — this checkout can only commit what it holds.
   syncHandoff(feature);
+  deriveDispatchLog(feature);
   const dirty = dirtyEntries();
   if (dirty.length) {
     console.log(
@@ -494,4 +522,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { featureFromBranch, handoffOutcome, syncHandoff, orphanHandoffs, worktreePaths };
+module.exports = { featureFromBranch, handoffOutcome, syncHandoff, deriveDispatchLog, orphanHandoffs, worktreePaths };

@@ -2273,6 +2273,68 @@ function doctor(target) {
       : "missing — re-run `agent-harness update`"
   );
 
+  // Persona dispatch activation (F-025): a deployed persona is inert unless its
+  // paired skill exists, its model pin is present, and the dispatch tooling is
+  // deployed. Advisory only — a project may deliberately hand-build its agents.
+  {
+    const agentsDir = path.join(target, ".opencode", "agents");
+    const skillsDir = path.join(target, ".agents", "skills");
+    const namesIn = (dir, keep) => {
+      try {
+        return fs.readdirSync(dir).filter(keep).sort();
+      } catch {
+        return [];
+      }
+    };
+    const agents = namesIn(agentsDir, (n) => n.endsWith(".md")).map((n) => n.slice(0, -3));
+    const skills = namesIn(skillsDir, (n) => fs.existsSync(path.join(skillsDir, n, "SKILL.md")));
+    if (!agents.length) {
+      add("warn", "persona dispatch", "no .opencode/agents/*.md — personas are not deployed; run `agent-harness update`");
+    } else {
+      const missingSkills = agents.filter((a) => !skills.includes(a));
+      const orphanSkills = skills.filter((s) => !agents.includes(s));
+      const parity = [];
+      if (missingSkills.length) parity.push(`agent without skill: ${missingSkills.join(", ")}`);
+      if (orphanSkills.length) parity.push(`skill without agent: ${orphanSkills.join(", ")}`);
+      add(
+        parity.length ? "warn" : "ok",
+        "persona dispatch",
+        parity.length
+          ? `persona/skill drift — ${parity.join("; ")} (run \`agent-harness update\`)`
+          : `${agents.length} personas, agent<->skill parity`
+      );
+      let unpinned = [];
+      try {
+        const dp = require(path.join(TEMPLATES_DIR, "scripts", "qa", "dispatch-persona.js"));
+        unpinned = agents.filter((a) => {
+          try {
+            return !dp.parsePersona(fs.readFileSync(path.join(agentsDir, `${a}.md`), "utf8")).model;
+          } catch {
+            return false;
+          }
+        });
+      } catch {
+        unpinned = []; // older CLI: pin check skipped, parity still reported
+      }
+      if (unpinned.length) {
+        add("warn", "persona model pins", `${unpinned.join(", ")} has no model: pin — dispatch dies at creation (F-081/F-095)`);
+      }
+    }
+    const dispatchFiles = [
+      path.join(target, "scripts", "qa", "dispatch-persona.js"),
+      path.join(target, "scripts", "qa", "dispatch-tier.js"),
+      path.join(target, ".opencode", "plugins", "dispatch.ts"),
+    ];
+    const missingDispatch = dispatchFiles.filter((p) => !fs.existsSync(p)).map((p) => path.relative(target, p));
+    add(
+      missingDispatch.length ? "warn" : "ok",
+      "dispatch plugin",
+      missingDispatch.length
+        ? `missing ${missingDispatch.join(", ")} — dispatch preflight/tiering is inert; re-run \`agent-harness update\``
+        : "dispatch_persona + tier classifier + plugin present"
+    );
+  }
+
   // MCP per-agent gating (G1): V2 has no `tools` field, so a project still
   // declaring the V1 `tools` map (a top-level disable and/or `agents.<name>.tools`
   // enable) has that gating silently ignored — the server connects but no agent
