@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-029 | ? | Make /resume <id> orient on the named feature: forward $ARGUMENTS to orient --feature, treat an explicit id as authoritative over a board In-progress row, prefer the checkout (directory/branch) over the board in inference, and label a board-inferred feature as overridable in the full/brief output. | .agents/handoffs/F-029.md (worktree: ../.worktrees/agent-harness/f-029; branch: f-029) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -112,6 +111,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-027 | ? | Harness TUI version badge must append a restart marker when the global harness-freshness verdict is restart-needed (deployed .harness.json is current but the running opencode server predates the last write), so the footer never implies the loaded server-side harness is already active. | shipped |
 | F-025 | ? | Persona dispatch activation, remaining slices S2-S6: dispatch_persona plugin tool (create child with parentID+agent+location, preflight model/write-scope/tree), persona economics in orient, risk-tiered dispatch policy (T0-T3 classifier), derived dispatch log in finalize, dispatch health probe + persona-hint interception. S1 (decision contracts + drift guard) shipped in 0.4.8. | shipped |
 | F-028 | ? | Make finalize, update and deploy session-scoped: finalize aborts before staging when a shared checkout holds another live session's WIP (replace blanket add -u/untracked sweep with an ownership/tail allowlist), governance checks only handoffs in the push (untracked foreign drafts warn, never fail), and harness auto-deploy stops being a concurrent writer on LibraryOS main (publish-only or quiescence-gated). | shipped |
+| F-029 | ? | Make /resume <id> orient on the named feature: forward $ARGUMENTS to orient --feature, treat an explicit id as authoritative over a board In-progress row, prefer the checkout (directory/branch) over the board in inference, and label a board-inferred feature as overridable in the full/brief output. | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

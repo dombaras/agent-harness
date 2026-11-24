@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.12 — 2026-11-24
+
+- `/resume <id>` now orients on the named feature: the command forwards its id
+  to `orient --feature`, an explicit id outranks the board's In-progress row,
+  and feature inference prefers the checkout (directory/branch) before the
+  board. A board-inferred feature is labelled `pass --feature <id> to override`
+  in both the full and brief output. (F-029)
+
 ## 0.4.11 — 2026-11-24
 
 - Landing a task can no longer sweep another live session's uncommitted work

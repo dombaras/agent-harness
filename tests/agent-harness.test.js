@@ -12853,18 +12853,57 @@ test("orient: collectOrient degrades cleanly with no board/checkpoint/git", () =
   assert.strictEqual(o.lastE2e, null);
 });
 
-test("orient: infers the feature from the branch or the single In-progress row", () => {
-  assert.strictEqual(orient.inferFeature(null, "f-291-fix", "/x", null), "F-291");
-  assert.strictEqual(orient.inferFeature("f-42", "main", "/x", null), "F-42");
+test("orient: explicit > checkout > board feature inference", () => {
+  // Explicit always wins, even when the board names another row.
+  assert.strictEqual(
+    orient.inferFeature("f-42", "f-7", "/x", { inprogress: [{ id: "F-7" }] }),
+    "F-42"
+  );
+  // The checkout the session is in outranks a board row another session owns.
+  assert.strictEqual(
+    orient.inferFeature(null, "f-28-work", "/x", { inprogress: [{ id: "F-25" }] }),
+    "F-28"
+  );
+  assert.strictEqual(
+    orient.inferFeature(null, "main", "/x/f-28", { inprogress: [{ id: "F-25" }] }),
+    "F-28"
+  );
+  // The board is the last resort when the checkout says nothing.
   assert.strictEqual(
     orient.inferFeature(null, "main", "/x", { inprogress: [{ id: "F-7" }] }),
     "F-7"
   );
+  // Two In-progress rows are still ambiguous -> null.
   assert.strictEqual(
     orient.inferFeature(null, "main", "/x", { inprogress: [{ id: "F-7" }, { id: "F-8" }] }),
-    null,
-    "two In-progress rows are ambiguous -> null"
+    null
   );
+});
+
+test("orient: reports where the feature id came from so a resume can override it", () => {
+  assert.strictEqual(orient.inferFeatureSource("f-42", "main", "/x", null), "explicit");
+  assert.strictEqual(orient.inferFeatureSource(null, "f-28", "/x", null), "branch");
+  assert.strictEqual(orient.inferFeatureSource(null, "main", "/x/f-28", null), "directory");
+  assert.strictEqual(
+    orient.inferFeatureSource(null, "main", "/x", { inprogress: [{ id: "F-7" }] }),
+    "board"
+  );
+  assert.strictEqual(orient.inferFeatureSource(null, "main", "/x", null), null);
+});
+
+test("orient: the brief marks a board-inferred feature as overridable", () => {
+  const brief = orient.printBrief({
+    repo: { kind: "git", branch: "main", head: "abc", dirty: 0 },
+    harnessVersion: "0.0.0",
+    feature: "F-25",
+    featureSource: "board",
+    board: { inprogress: [{ id: "F-25" }], nextQueued: [] },
+    memory: [],
+    capacity: null,
+    lastE2e: null,
+    nightly: null,
+  });
+  assert.match(brief, /feature F-25 \(from board\) — pass --feature <id> to override/);
 });
 
 test("orient: detects a feature worktree when the session is rooted in the main checkout", () => {
@@ -13189,6 +13228,7 @@ test("[drift-guard] orient is wired into npm scripts, the tool, and the resume/n
   assert.match(tool, /scripts\/orient\.js/, "tool shells out to the script");
   const resume = read(path.join(h.TEMPLATES_DIR, ".opencode", "commands", "resume.md"));
   assert.match(resume, /orient\.js/, "resume orients in one call");
+  assert.match(resume, /--feature \$ARGUMENTS/, "resume forwards its feature id to orient");
   const next = read(path.join(h.TEMPLATES_DIR, ".opencode", "commands", "next.md"));
   assert.match(next, /orient\.js/, "next orients in one call");
 });

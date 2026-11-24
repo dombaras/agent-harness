@@ -4,8 +4,13 @@ description: Resume a bounded orchestration context from the session checkpoint 
 
 Resume the named work unit from its deterministic checkpoint.
 
-1. **Orient in one call.** Run `node scripts/orient.js` (or the `orient` tool),
-   optionally `--feature <id>`. This returns, in a single invocation: the tree
+1. **Orient in one call on the resumed feature.** The command's argument is the
+   feature ID: `$ARGUMENTS`. If it is non-empty, pass it explicitly —
+   `node scripts/orient.js --feature $ARGUMENTS` (or the `orient` tool with
+   `feature: "$ARGUMENTS"`). An explicit ID is authoritative: never let the
+   board's In-progress row (which may belong to another live session) override
+   it. Only when no ID was supplied, run `node scripts/orient.js` and use its
+   inference. The call returns, in a single invocation: the tree
    root + branch + HEAD + dirty count, the active feature, its checkpoint
    (phase + next action), the board In-progress + next-queued rows, owned files,
    the live `serve.js` jobs + capacity verdict, the last device-run summary, the
@@ -14,9 +19,11 @@ Resume the named work unit from its deterministic checkpoint.
    `git rev-parse`/`branch`/`status`, `serve.js list`, `test:capacity`, and
    memory-read prologue; use the digest and open a memory file only for a fact it
    does not carry.
-2. **Determine the feature ID** (BACKLOG row ID or handoff slug). `orient`
-   infers it from the board (single In-progress row) or the branch; if it is not
-   clear, confirm the ID — never guess a file.
+2. **Confirm the feature ID** (BACKLOG row ID or handoff slug). If an ID came
+   with the command, that is the feature — do not re-infer it from the board.
+   Otherwise use the checkout ID orient reports (branch/directory), then the
+   board's single In-progress row; if it is still ambiguous, confirm the ID —
+   never guess a file.
 3. **Print the bounded state:**
    ```
    node scripts/checkpoint.js resume --feature <id>

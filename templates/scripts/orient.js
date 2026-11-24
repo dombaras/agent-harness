@@ -257,15 +257,34 @@ function renderMemoryDigest(memory) {
 }
 
 
-/* The feature this session is working: explicit flag, else the board's single
- * In-progress row, else the branch/dir name when it names a row. */
-function inferFeature(explicit, branch, cwd, board) {
-  if (explicit) return String(explicit).toUpperCase();
-  const inprog = (board && board.inprogress) || [];
-  if (inprog.length === 1) return String(inprog[0].id || "").toUpperCase() || null;
+/* The feature this session is working. Precedence is deliberate: an explicit
+ * flag wins, then the checkout the session is physically in (directory, then
+ * branch) — stronger evidence than a board row that may belong to another
+ * live session — and only then the board's single In-progress row. */
+function inferFeatureDetailed(explicit, branch, cwd, board) {
+  if (explicit) return { id: String(explicit).toUpperCase(), source: "explicit" };
   const base = path.basename(String(cwd || "")).toUpperCase();
-  const m = base.match(/^F-\d+/) || String(branch || "").toUpperCase().match(/^F-\d+/);
-  return m ? m[0] : null;
+  let m = base.match(/^F-\d+/);
+  if (m) return { id: m[0], source: "directory" };
+  m = String(branch || "").toUpperCase().match(/^F-\d+/);
+  if (m) return { id: m[0], source: "branch" };
+  const inprog = (board && board.inprogress) || [];
+  if (inprog.length === 1) {
+    const id = String(inprog[0].id || "").toUpperCase() || null;
+    return id ? { id, source: "board" } : { id: null, source: null };
+  }
+  return { id: null, source: null };
+}
+
+function inferFeature(explicit, branch, cwd, board) {
+  return inferFeatureDetailed(explicit, branch, cwd, board).id;
+}
+
+/* Where the id came from, for the brief: "explicit" | "directory" | "branch" |
+ * "board" | null. A board-sourced id is a guess — the brief says so and points
+ * at --feature so a resume can override it. */
+function inferFeatureSource(explicit, branch, cwd, board) {
+  return inferFeatureDetailed(explicit, branch, cwd, board).source;
 }
 
 /* Compare a feature id ("F-246") to a branch/dir name ("f-246", "F-246-...")
@@ -409,7 +428,9 @@ function collectOrient(opts = {}) {
   const dirty = status == null ? null : status.split(/\r?\n/).filter(Boolean).length;
 
   const board = runCmd ? boardSnapshot(root, (argv) => runCmd(argv)) : null;
-  const feature = inferFeature(opts.feature, branch, root, board);
+  const inferred = inferFeatureDetailed(opts.feature, branch, root, board);
+  const feature = inferred.id;
+  const featureSource = inferred.source;
   const owned = ownedFor(root, feature);
   // The feature may live in a linked worktree while this session is rooted in
   // the main checkout. Surface it — a green main `tsc` is not the feature's.
@@ -452,6 +473,7 @@ function collectOrient(opts = {}) {
       dirty,
     },
     feature,
+    featureSource,
     // Non-null when the feature's work is in a linked worktree and this session
     // is rooted elsewhere (usually the main checkout): move before running tests.
     featureWorktree: worktree ? { path: worktree.path, branch: worktree.branch } : null,
@@ -497,7 +519,7 @@ function printHuman(o) {
   }
   lines.push(`repo:    ${o.repo.kind || "outside-git"} @ ${o.repo.branch || "?"} (HEAD ${o.repo.head || "?"})`);
   lines.push(`dirty:   ${o.repo.dirty == null ? "unavailable" : o.repo.dirty + " file(s)"}`);
-  lines.push(`feature: ${o.feature || "(none inferred — pass --feature <id>)"}`);
+  lines.push(`feature: ${o.feature ? `${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}` : "(none inferred — pass --feature <id>)"}`);
   lines.push(`owned:   ${o.ownedFiles || "unavailable"}`);
   if (o.checkpoint) {
     lines.push(`ckpt:    ${path.basename(o.checkpoint.file)} · phase ${o.checkpoint.phase || "?"} · count ${o.checkpoint.count || 0}`);
@@ -564,7 +586,7 @@ function printBrief(o) {
       `!! ROOT MISMATCH — ${o.feature} lives in worktree ${o.featureWorktree.path}; move the session there BEFORE running anything (this root's tsc/status are a different tree).`
     );
   }
-  if (o.feature) lines.push(`feature ${o.feature}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`);
+  if (o.feature) lines.push(`feature ${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`);
   if (o.checkpoint) lines.push(`checkpoint ${o.checkpoint.phase || "?"} · next: ${o.checkpoint.nextAction || "?"}`);
   if (o.board) {
     const ip = o.board.inprogress.map((r) => r.id).join(", ") || "none";
@@ -636,6 +658,7 @@ module.exports = {
   MEMORY_FILES,
   collectOrient,
   inferFeature,
+  inferFeatureSource,
   featureWorktree,
   checkoutKind,
   ownedFor,
