@@ -47,7 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-025 | ? | Persona dispatch activation, remaining slices S2-S6: dispatch_persona plugin tool (create child with parentID+agent+location, preflight model/write-scope/tree), persona economics in orient, risk-tiered dispatch policy (T0-T3 classifier), derived dispatch log in finalize, dispatch health probe + persona-hint interception. S1 (decision contracts + drift guard) shipped in 0.4.8. | ? |
+| F-025 | ? | Persona dispatch activation, remaining slices S2-S6: dispatch_persona plugin tool (create child with parentID+agent+location, preflight model/write-scope/tree), persona economics in orient, risk-tiered dispatch policy (T0-T3 classifier), derived dispatch log in finalize, dispatch health probe + persona-hint interception. S1 (decision contracts + drift guard) shipped in 0.4.8. | ? (worktree: ../.worktrees/agent-harness/f-025; branch: f-025) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
