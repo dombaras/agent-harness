@@ -48,6 +48,7 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-023 | ? | Session-start harness update check: compare the deployed `.harness.json` version to npm `dist-tags.latest` and suggest `npx opencode-agent-harness@latest update` (like opencode's "Update available"). Must be a cached (24h TTL) detached probe, not a blocking `npm view`; show once per new version in `orient --brief`, the TUI harness badge (v0.4.4 ↑0.5.0), and `doctor`; extend the global `harness-freshness` plugin so a stale project still sees it; stay silent offline and when the local checkout is ahead of npm. | ? (worktree: ../.worktrees/agent-harness/f-023; branch: f-023) |
+| F-024 | ? | Persona dispatch activation: make delegation legible, cheap and reliable — persona decision contracts, a prefilled dispatch_persona wrapper with preflight, persona economics in orient, risk-tiered dispatch policy, derived dispatch log, dispatch health probe | .agents/handoffs/persona-dispatch-activation.md |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -67,7 +68,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-024 | P2 | ? | Persona dispatch activation: make delegation legible, cheap and reliable — persona decision contracts, a prefilled dispatch_persona wrapper with preflight, persona economics in orient, risk-tiered dispatch policy, derived dispatch log, dispatch health probe | .agents/handoffs/persona-dispatch-activation.md (full design + slices); evidence: LibraryOS session store 39 sessions/6 children (11-19→11-23), 138 waiver-only handoffs, commit 6cf84bc retrofit | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
 | F-017 | P4 | ? | Cross-check agent-report/store-lib against `opencode stats --json` as an independent oracle: the CLI now emits per-tool reliability + cost/token stats, so a parity assertion would catch store-shape drift the direct-DB reader silently misses. | docs/opencode-v2.3-compat-scan.md §G5; `opencode stats --help` | ? |
 
