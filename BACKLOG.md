@@ -48,7 +48,7 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-023 | ? | Session-start harness update check: compare the deployed `.harness.json` version to npm `dist-tags.latest` and suggest `npx opencode-agent-harness@latest update` (like opencode's "Update available"). Must be a cached (24h TTL) detached probe, not a blocking `npm view`; show once per new version in `orient --brief`, the TUI harness badge (v0.4.4 ↑0.5.0), and `doctor`; extend the global `harness-freshness` plugin so a stale project still sees it; stay silent offline and when the local checkout is ahead of npm. | ? (worktree: ../.worktrees/agent-harness/f-023; branch: f-023) |
-| F-024 | ? | Persona dispatch activation: make delegation legible, cheap and reliable — persona decision contracts, a prefilled dispatch_persona wrapper with preflight, persona economics in orient, risk-tiered dispatch policy, derived dispatch log, dispatch health probe | .agents/handoffs/persona-dispatch-activation.md |
+| F-024 | ? | Persona dispatch activation: make delegation legible, cheap and reliable — persona decision contracts, a prefilled dispatch_persona wrapper with preflight, persona economics in orient, risk-tiered dispatch policy, derived dispatch log, dispatch health probe | .agents/handoffs/persona-dispatch-activation.md (worktree: ../.worktrees/agent-harness/f-024; branch: f-024) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
