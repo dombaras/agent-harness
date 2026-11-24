@@ -1,5 +1,5 @@
 ---
-description: Use when the user asks to save progress, hand off, wrap up, or "remind me where we stopped" — writes a planned→shipped→deferred delta and updates the session handoff memory.
+description: "Use when wrapping up, saving progress or asking where we stopped — returns the session handoff + planned→shipped delta. Skip for mid-work status. Writes: `.agents/handoffs/*.md`."
 mode: subagent
 steps: 10
 hidden: true

@@ -1,5 +1,5 @@
 ---
-description: Use when debugging errors, performance regressions, or API anomalies — log-first investigation, ExternalServiceLog, cold-start profiling, authentic reproduction.
+description: "Use when an error, regression or API anomaly needs a log-first root cause — returns the cause + the fix. Skip when the cause is already proven. Writes: instrumentation/logging code only."
 mode: subagent
 steps: 40
 model: opencode-go/deepseek-v4.1-flash#high

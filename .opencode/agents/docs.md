@@ -1,5 +1,5 @@
 ---
-description: Use when creating, updating, or maintaining project documentation — README.md, CHANGELOG.md, docs/ (architecture, ADRs, runbooks, API), CONTRIBUTING.md — keeping docs in sync with code and never duplicated.
+description: "Use when README/CHANGELOG/docs/ADRs change — returns the edited docs; cheap and parallel-safe. Skip for code comments. Writes: `README.md`, `CHANGELOG.md`, `docs/**`, `CONTRIBUTING.md`."
 mode: subagent
 steps: 20
 model: opencode-go/gpt-5.6-luna#low

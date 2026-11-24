@@ -1,5 +1,5 @@
 ---
-description: Use for catalog/data ingestion and entity resolution — external-source ingestion, canonical-record dedup, external service telemetry.
+description: "Use when ingesting an external source or resolving/deduping entities — returns the ingest job + canonical-record mapping. Skip for UI or schema design. Writes: ingest scripts + entity-resolution modules."
 mode: subagent
 steps: 40
 model: opencode-go/deepseek-v4.1-flash#high

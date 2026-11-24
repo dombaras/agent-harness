@@ -1,5 +1,5 @@
 ---
-description: Use when a change touches auth, secrets, input validation, external services, or dependencies — security review + audit.
+description: "Use when a change touches auth, secrets, input validation or deps — returns findings + fixes under `.agents/reviews/`. Skip for copy/CSS. Writes: `.agents/reviews/**`."
 mode: subagent
 steps: 40
 model: opencode-go/deepseek-v4-pro#high

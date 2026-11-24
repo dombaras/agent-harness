@@ -1,5 +1,5 @@
 ---
-description: Use for deployment, CI/CD, cron/scheduling, env & secrets management, hosting config, and mobile build/release setup.
+description: "Use when deployment, CI/CD, cron, env/secrets or release tooling changes — returns the pipeline/config change. Skip for app logic. Writes: `.github/workflows/**`, `Dockerfile*`, deploy scripts."
 mode: subagent
 steps: 40
 model: opencode-go/deepseek-v4.1-flash#high

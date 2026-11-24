@@ -1,5 +1,5 @@
 ---
-description: Use to execute a QA plan or test tier (including the catalog E2E journey and catalog test-data cleanup) and report pass/fail — does not design tests or judge risk.
+description: "Use when a tier or QA plan must be executed — returns pass/fail + exact commands and logs. Skip for test design (qa-architect). Reads only; runs tiers."
 mode: subagent
 steps: 50
 model: opencode-go/deepseek-v4.1-flash#low

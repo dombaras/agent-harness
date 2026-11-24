@@ -1,5 +1,5 @@
 ---
-description: Use when designing the visual system — design tokens, theming, and shared/reusable UI components (shadcn/ui, Tailwind, Framer Motion) — not app screens or native code.
+description: "Use when designing tokens, theming or shared UI components — returns tokens + component specs. Skip for app screens or native code. Writes: `components/ui/**`, `app/globals.css`."
 mode: subagent
 steps: 40
 model: opencode-go/gpt-5.6-luna

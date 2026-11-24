@@ -1,5 +1,5 @@
 ---
-description: Use to design the QA plan for a change — inspects the diff, assesses risk, selects the minimal tier, and authors progression tests (thinker only; does not run suites).
+description: "Use when a change needs a coverage map or a new assertion — returns `.agents/qa-plans/<id>.md` + tier. Skip when an existing test covers it. Writes: `.agents/qa-plans/**`, `scripts/qa/tests/**`."
 mode: subagent
 steps: 40
 model: opencode-go/deepseek-v4-pro#high

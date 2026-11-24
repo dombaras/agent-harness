@@ -1,5 +1,5 @@
 ---
-description: Use when changing the Prisma schema, data model, multi-tenant boundaries, privacy tiers, or sync protocol.
+description: "Use when the Prisma schema, tenancy, privacy tiers or sync protocol change — returns schema + migration + `scope.md`. Skip for UI-only work. Writes: `prisma/**`, `.agents/features/*/scope.md`."
 mode: subagent
 steps: 40
 model: opencode-go/deepseek-v4-pro#high

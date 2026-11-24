@@ -1,5 +1,5 @@
 ---
-description: Use when writing or fixing Expo / React Native native code — native runtime, Fabric, reanimated, worklets, css-interop, Android/iOS build issues.
+description: "Use when editing Expo/React Native code, native runtime, reanimated or Android/iOS builds — returns the patch. Skip for web. Writes: `mobile/**`, `android/**`, `ios/**`."
 mode: subagent
 steps: 50
 model: opencode-go/deepseek-v4.1-flash#high

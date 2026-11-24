@@ -1,5 +1,5 @@
 ---
-description: Use when designing features, gamification, or user journeys — maps DB logic to UX with the 5 UI states.
+description: "Use when defining a feature, journey or gamification loop — returns `intent.md` (actor, need, outcome, acceptance). Skip for pure refactors. Writes: `.agents/features/*/intent.md`."
 mode: subagent
 steps: 20
 model: opencode-go/gpt-5.6-luna

@@ -1,5 +1,5 @@
 ---
-description: Use when writing or fixing web React / Next.js / Tailwind / shadcn code (app/, components/, pages/), or resolving web build errors — not Expo/React Native (that's mobile-engineer).
+description: "Use when editing web React/Next/Tailwind/shadcn code or a web build error — returns the patched app code. Skip for Expo/RN. Writes: `app/**`, `components/**`, `pages/**`."
 mode: subagent
 steps: 50
 model: opencode-go/deepseek-v4.1-flash#high

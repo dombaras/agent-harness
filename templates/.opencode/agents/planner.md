@@ -1,5 +1,5 @@
 ---
-description: Use to plan/decompose a task and emit the Step Zero subagent dispatch plan (personas, models, order, parallel batches) before any file is touched — value-led, product-first.
+description: "Use when work needs decomposition or ordered/parallel batches — returns `plan.md` with value-first steps + owned files. Skip for a single-file T0/T1 fix. Writes: `.agents/features/*/plan.md`."
 mode: subagent
 steps: 25
 hidden: true

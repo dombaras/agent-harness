@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.8 — 2026-11-24
+
+- Persona `description:` lines are now decision contracts — `Use when <trigger>
+  — returns <artifact>. Skip for <anti-trigger>. Writes: <globs>` (or `Reads
+  only`) — so the main agent sees what a dispatch returns, what it costs in
+  scope, and when not to use it at the moment it chooses. A new drift guard
+  (`tests/dispatch-contract.test.js`, wired into `npm test`) fails a description
+  that loses a decision field, grows past the schema-cost budget, drops the
+  output-contract marker, or drifts between `templates/` and the deployed copy.
+  (F-024)
+
 ## 0.4.7 — 2026-11-24
 
 - A harness-provisioned session now tells you when the harness itself is stale,
