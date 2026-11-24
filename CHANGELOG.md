@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.7 — 2026-11-24
+
+- A harness-provisioned session now tells you when the harness itself is stale,
+  like opencode's own "Update available" notice: a cached probe (24 h, detached
+  at session start) compares the deployed `.harness.json` version with the
+  registry's latest and a local harness checkout, and the `orient` brief, the
+  TUI version badge (`harness v0.4.4 ↑0.5.0`), and `doctor` point at
+  `npx opencode-agent-harness@latest update` (then restart opencode). The global
+  `harness-freshness` plugin reports the registry path as advisory — it never
+  deploys a registry release on its own. Offline, disabled
+  (`AGENT_HARNESS_NO_UPDATE_CHECK=1`), current, and source-ahead checkout states
+  stay silent. (F-023)
+
 ## 0.4.6 — 2026-11-23
 
 - Archiving a shipped feature from inside its own worktree now resolves the

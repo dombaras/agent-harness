@@ -17,3 +17,29 @@ export function readHarnessVersion(directory) {
     return null
   }
 }
+
+function compareVersions(a, b) {
+  const pa = String(a || "0").split(".").map((n) => parseInt(n, 10) || 0)
+  const pb = String(b || "0").split(".").map((n) => parseInt(n, 10) || 0)
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1
+  }
+  return 0
+}
+
+// The cached npm verdict `scripts/harness-update.js refresh` writes at session
+// start (`.serve/harness-update.json`). The badge only decorates: a missing,
+// stale, or malformed cache means "no arrow", never an error inside setup().
+export function readHarnessUpdate(directory) {
+  if (typeof directory !== "string" || directory.length === 0) return null
+  try {
+    const raw = fs.readFileSync(path.join(directory, ".serve", "harness-update.json"), "utf8")
+    const doc = JSON.parse(raw)
+    const deployed = readHarnessVersion(directory)
+    const latest = typeof doc?.latest === "string" && doc.latest.trim() ? doc.latest.trim() : null
+    if (!deployed || !latest || compareVersions(deployed, latest) >= 0) return null
+    return { deployed, latest }
+  } catch {
+    return null
+  }
+}

@@ -88,6 +88,42 @@ function cmpVer(a: string, b: string): number {
   return 0
 }
 
+/* The registry's latest, cached once a day in the user cache so a session start
+ * never pays a network round-trip twice. Best-effort: offline / no npm / a
+ * registry miss all return null and the local checkout remains authoritative. */
+function npmLatest(): string | null {
+  if (process.env.AGENT_HARNESS_NO_UPDATE_CHECK === "1") return null
+  try {
+    const root = path.join(
+      process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"),
+      "opencode-agent-harness"
+    )
+    const file = path.join(root, "npm-latest.json")
+    try {
+      const cached = JSON.parse(fs.readFileSync(file, "utf8"))
+      const at = Date.parse(cached?.checkedAt)
+      if (typeof cached?.version === "string" && Number.isFinite(at) && Date.now() - at < 86400000) {
+        return cached.version
+      }
+    } catch {
+      /* cold cache */
+    }
+    const out = execFileSync(
+      process.env.AGENT_HARNESS_NPM || "npm",
+      ["view", "opencode-agent-harness", "version", "--json", "--fetch-timeout=5000", "--fetch-retries=0"],
+      { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] }
+    )
+    const parsed = JSON.parse(String(out).trim())
+    const version = typeof parsed === "string" && parsed.trim() ? parsed.trim() : null
+    if (!version) return null
+    fs.mkdirSync(root, { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ checkedAt: new Date().toISOString(), version }) + "\n")
+    return version
+  } catch {
+    return null
+  }
+}
+
 /* A real Node interpreter to run the harness CLI. opencode is a Bun-compiled
  * standalone binary, so within a plugin `process.execPath` is the opencode
  * executable, NOT Node — spawning it with the CLI path just re-launches opencode
@@ -137,6 +173,17 @@ const HarnessFreshness: Plugin = {
       report(`blocked (${sid}): ${reason}`, "warn")
     }
 
+    const advise = (sid: string, have: string, latest: string) => {
+      notices.set(
+        sid,
+        `HARNESS UPDATE AVAILABLE — v${have} -> v${latest} (npm).\n\n` +
+          `Run: npx opencode-agent-harness@latest update\n` +
+          `Then restart opencode so the updated plugins/config load.\n\n` +
+          `This is advisory — continue the task; relay it to the user when convenient.`
+      )
+      report(`update available ${have} -> ${latest} (npm)`)
+    }
+
     const writeStatus = (tree: string, status: Record<string, unknown>) => {
       try {
         const dir = path.join(tree, ".serve")
@@ -148,8 +195,13 @@ const HarnessFreshness: Plugin = {
     }
 
     const evaluate = async (sid: string, dir: string) => {
-      const latest = readVersion(LATEST_PKG)
-      if (!latest) return // no authoritative checkout here
+      // Newest harness this machine can see: a local checkout may lead the
+      // registry (development), the registry may lead a machine with no checkout.
+      const local = readVersion(LATEST_PKG)
+      const npm = npmLatest()
+      const latest = [local, npm].filter((v): v is string => !!v).sort(cmpVer).pop() || null
+      if (!latest) return // no authoritative source here
+      const source = npm && cmpVer(npm, local || "0") > 0 ? "npm" : "local"
       const top = git(dir, ["rev-parse", "--show-toplevel"])
       if (!top.ok) return // not a git tree
       const tree = top.out
@@ -182,6 +234,15 @@ const HarnessFreshness: Plugin = {
       const mainHave = readVersion(path.join(mainTop, ".harness.json"))
       const isWorktree = path.resolve(mainTop) !== path.resolve(tree)
       const base = { have, latest, tree, main: mainTop, kind: isWorktree ? "worktree" : "main" }
+
+      // A registry-only release cannot be applied by this plugin (update writes,
+      // commits and pushes), so it is advisory: tell the user the exact command
+      // and let them run it. The local-checkout path below keeps auto-applying.
+      if (source === "npm" && have) {
+        writeStatus(tree, { ...base, status: "update-available", source, at: new Date().toISOString() })
+        advise(sid, have, latest)
+        return
+      }
 
       if (isWorktree) {
         if (!mainHave || cmpVer(mainHave, latest) < 0) {

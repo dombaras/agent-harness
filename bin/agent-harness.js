@@ -2134,6 +2134,24 @@ function doctor(target) {
     config.version ? `v${config.version} (${config.projectName || "?"})` : "no .harness.json — run `agent-harness init`"
   );
 
+  // "Is my harness stale?" — compare the deployed version with the newest
+  // harness this CLI can see: its own version (a local checkout may lead the
+  // registry) and the registry's latest (F-023). Best-effort: an unreachable
+  // registry is not a failure, it only makes the answer unknowable.
+  if (config.version) {
+    const published = publishedLatestVersion();
+    const newest = published && compareVersions(published, PKG.version) > 0 ? published : PKG.version;
+    if (compareVersions(config.version, newest) < 0) {
+      add(
+        "warn",
+        "harness update",
+        `v${config.version} -> v${newest} available — run: npx ${PKG.name}@latest update (then restart opencode)`
+      );
+    } else {
+      add("ok", "harness update", `v${config.version} is current`);
+    }
+  }
+
   // The harness is OpenCode V2-only: on a V1 runtime every plugin/tool this
   // deploy writes is silently inert. Assert the floor rather than assume it.
   const opencode = whichBin("opencode", ["--version"]);

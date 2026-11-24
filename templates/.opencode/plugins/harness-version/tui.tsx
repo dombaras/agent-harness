@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { readHarnessVersion } from "./version.mjs"
+import { readHarnessUpdate, readHarnessVersion } from "./version.mjs"
 
 // A constant "harness vX.Y.Z" badge in the two footer rows that already carry
 // version/model indicators:
@@ -8,6 +8,9 @@ import { readHarnessVersion } from "./version.mjs"
 //   * prompt.footer.status — the session composer footer, beside the model.
 // The version comes from the checkout's `.harness.json`, so it tracks what
 // `agent-harness update` deployed. A repo without that file gets no badge.
+// When the cached registry probe (scripts/harness-update.js, F-023) reports a
+// newer harness, the badge appends `↑<latest>` in the warning colour — the same
+// "Update available" affordance opencode shows for itself.
 export default Plugin.define({
   id: "harness-version-badge",
   setup(context) {
@@ -23,8 +26,17 @@ export default Plugin.define({
     }
     const version = readHarnessVersion(directory)
     if (!version) return
+    const update = readHarnessUpdate(directory)
+    const color = update
+      ? ((context.theme as any)?.text?.warning ?? context.theme.text.muted)
+      : context.theme.text.muted
 
-    const badge = () => <text fg={context.theme.text.muted}>harness v{version}</text>
+    const badge = () => (
+      <text fg={color}>
+        harness v{version}
+        {update ? ` ↑${update.latest}` : ""}
+      </text>
+    )
     const home = context.ui.slot({ append: "home.footer.status", render: badge })
     const prompt = context.ui.slot({ append: "prompt.footer.status", render: badge })
 

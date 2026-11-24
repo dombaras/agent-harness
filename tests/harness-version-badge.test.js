@@ -73,6 +73,35 @@ test("readHarnessVersion returns null for malformed or version-less JSON", async
   }
 });
 
+test("readHarnessUpdate returns the cached newer version, and null otherwise", async () => {
+  const { readHarnessUpdate } = await loadHelper();
+  const dir = tmpdir();
+  fs.writeFileSync(path.join(dir, ".harness.json"), JSON.stringify({ version: "0.4.4" }));
+  fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
+  const cache = path.join(dir, ".serve", "harness-update.json");
+
+  fs.writeFileSync(cache, JSON.stringify({ latest: "0.5.0" }));
+  assert.deepStrictEqual(readHarnessUpdate(dir), { deployed: "0.4.4", latest: "0.5.0" });
+
+  fs.writeFileSync(cache, JSON.stringify({ latest: "0.4.4" }));
+  assert.strictEqual(readHarnessUpdate(dir), null, "same version -> no arrow");
+  fs.writeFileSync(cache, JSON.stringify({ latest: "0.4.0" }));
+  assert.strictEqual(readHarnessUpdate(dir), null, "local ahead -> no arrow");
+  for (const body of ["not json", "null", "[]", "{}", JSON.stringify({ latest: "" })]) {
+    fs.writeFileSync(cache, body);
+    assert.strictEqual(readHarnessUpdate(dir), null, `shape ${body}`);
+  }
+  assert.strictEqual(readHarnessUpdate(undefined), null, "no location");
+  assert.strictEqual(readHarnessUpdate(tmpdir()), null, "missing .harness.json");
+});
+
+test("the badge renders the update arrow from the same cache", () => {
+  const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
+  assert.match(tui, /readHarnessUpdate\(directory\)/, "reads the cached verdict");
+  assert.match(tui, /↑/, "renders the available version next to the deployed one");
+  assert.match(tui, /text\?\.warning/, "uses the warning colour when behind");
+});
+
 test("the template ships both entrypoints and both footer slots", () => {
   assert.ok(fs.existsSync(path.join(PLUGIN_DIR, "index.ts")), "server entrypoint");
   assert.ok(fs.existsSync(path.join(PLUGIN_DIR, "tui.tsx")), "TUI entrypoint");

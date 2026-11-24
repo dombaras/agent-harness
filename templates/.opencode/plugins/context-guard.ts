@@ -433,6 +433,28 @@ export default {
     }
   }
 
+  /* Best-effort update probe at session start: compare the deployed harness
+   * version with the registry (or a newer local harness checkout) so the session
+   * and the TUI badge can say "update available" — like opencode's own notice.
+   * Detached and cached (24 h in `.serve/harness-update.json`), so it never
+   * blocks session creation, never pays for a network call twice a day, and a
+   * repo without the script simply no-ops. */
+  const refreshHarnessUpdate = (root: string) => {
+    try {
+      const script = path.join(root, "scripts", "harness-update.js")
+      if (!fs.existsSync(script)) return
+      const child = spawn(toolLib.nodeBin(), [script, "refresh", "--root", root], {
+        cwd: root,
+        stdio: "ignore",
+        detached: true,
+      })
+      child.on("error", () => {})
+      child.unref()
+    } catch {
+      /* best-effort */
+    }
+  }
+
   /* Session-start orientation injection. A resume/claim session otherwise spends
    * its prologue re-deriving git/serve/capacity state and re-reading the
    * session-start memory files (the 2026-10 LibraryOS recon measured a 24-call
@@ -531,6 +553,7 @@ export default {
             typeof d.location?.directory === "string" && d.location.directory
               ? d.location.directory
               : directory
+          refreshHarnessUpdate(root)
           void collectOrient(sid, root)
           return
         }

@@ -79,6 +79,36 @@ function harnessVersion(root) {
   return safe(() => JSON.parse(fs.readFileSync(path.join(root, ".harness.json"), "utf8")).version, null);
 }
 
+function compareVersions(a, b) {
+  const pa = String(a || "0").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || "0").split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1;
+  }
+  return 0;
+}
+
+/* The cached update verdict written by `scripts/harness-update.js refresh` (spawned
+ * detached at session start). Read-only on purpose: orient never touches the
+ * network, so an offline/registry-less session pays nothing. */
+function harnessUpdateCheck(root) {
+  return safe(() => {
+    const doc = JSON.parse(fs.readFileSync(path.join(root, ".serve", "harness-update.json"), "utf8"));
+    const deployed = harnessVersion(root);
+    const latest = typeof doc?.latest === "string" && doc.latest.trim() ? doc.latest.trim() : null;
+    if (!deployed || !latest || compareVersions(deployed, latest) >= 0) return null;
+    return {
+      deployed,
+      latest,
+      command:
+        typeof doc.command === "string" && doc.command
+          ? doc.command
+          : "npx opencode-agent-harness@latest update",
+      checkedAt: typeof doc.checkedAt === "string" ? doc.checkedAt : null,
+    };
+  }, null);
+}
+
 function lastE2eRun(root) {
   return safe(
     () => {
@@ -342,6 +372,7 @@ function collectOrient(opts = {}) {
     lastE2e: lastE2eRun(root),
     nightly: latestNightly(root),
     harnessVersion: harnessVersion(root),
+    harnessUpdate: harnessUpdateCheck(root),
   };
 }
 
@@ -351,6 +382,13 @@ function fmt(v, label) {
 
 function printHuman(o) {
   const lines = [`Session orientation — ${o.root} (harness ${o.harnessVersion || "?"})`, ""];
+  if (o.harnessUpdate) {
+    lines.push(
+      `harness update: v${o.harnessUpdate.deployed} -> v${o.harnessUpdate.latest} available — ${o.harnessUpdate.command}`,
+      "         (then restart opencode so the updated plugins/config load)",
+      ""
+    );
+  }
   if (o.rootMismatch) {
     lines.push(
       `!! ROOT MISMATCH — ${o.feature} lives in the linked worktree ${o.featureWorktree.path} (branch ${o.featureWorktree.branch || "?"})`,
@@ -419,7 +457,9 @@ function printBrief(o) {
   lines.push(
     `SESSION ORIENT — ${o.repo.kind || "outside-git"} @ ${o.repo.branch || "?"} (HEAD ${o.repo.head || "?"}, ${o.repo.dirty == null ? "?" : o.repo.dirty} dirty)`
   );
-  lines.push(`harness ${o.harnessVersion || "?"} · root ${o.root}`);
+  lines.push(
+    `harness ${o.harnessVersion || "?"}${o.harnessUpdate ? ` -> v${o.harnessUpdate.latest} available (${o.harnessUpdate.command})` : ""} · root ${o.root}`
+  );
   if (o.rootMismatch) {
     lines.push(
       `!! ROOT MISMATCH — ${o.feature} lives in worktree ${o.featureWorktree.path}; move the session there BEFORE running anything (this root's tsc/status are a different tree).`

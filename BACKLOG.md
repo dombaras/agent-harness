@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-023 | ? | Session-start harness update check: compare the deployed `.harness.json` version to npm `dist-tags.latest` and suggest `npx opencode-agent-harness@latest update` (like opencode's "Update available"). Must be a cached (24h TTL) detached probe, not a blocking `npm view`; show once per new version in `orient --brief`, the TUI harness badge (v0.4.4 ↑0.5.0), and `doctor`; extend the global `harness-freshness` plugin so a stale project still sees it; stay silent offline and when the local checkout is ahead of npm. | ? (worktree: ../.worktrees/agent-harness/f-023; branch: f-023) |
 | F-024 | ? | Persona dispatch activation: make delegation legible, cheap and reliable — persona decision contracts, a prefilled dispatch_persona wrapper with preflight, persona economics in orient, risk-tiered dispatch policy, derived dispatch log, dispatch health probe | .agents/handoffs/persona-dispatch-activation.md (worktree: ../.worktrees/agent-harness/f-024; branch: f-024) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
@@ -107,6 +106,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-019 | ? | Session-end guard: an untracked `.agents/handoffs/*.md` in a project's shared main checkout is silently orphaned — `finalize` stages only the current feature's handoff and refuses every other one, while main-checkout commits are guard-blocked. Add a gate (or a handoff sync into the landing worktree) so no session handoff can be left behind unnoticed. | shipped |
 | F-021 | ? | Migrate or retire a session's `.serve/sessions/<id>.json` lease when `session_move` relocates the session to the main checkout: the lease file stays inside the old worktree, `liveLeases(main)` surfaces it, and `worktree-prune` then reports every merged worktree as 'this session is rooted in it' and refuses to prune (observed for f-014/f-015/f-018 after moving F-015 to main). | shipped |
 | F-020 | ? | Fix `archive` worktree cleanup when the board write runs from inside the feature worktree: cleanupWorktree resolves the recorded worktree path against the worktree root instead of the main checkout, so `git worktree remove` targets `<worktree>/../.worktrees/...` and fails, leaving the shipped worktree behind with a misleading fatal. | shipped |
+| F-023 | ? | Session-start harness update check: compare the deployed `.harness.json` version to npm `dist-tags.latest` and suggest `npx opencode-agent-harness@latest update` (like opencode's "Update available"). Must be a cached (24h TTL) detached probe, not a blocking `npm view`; show once per new version in `orient --brief`, the TUI harness badge (v0.4.4 ↑0.5.0), and `doctor`; extend the global `harness-freshness` plugin so a stale project still sees it; stay silent offline and when the local checkout is ahead of npm. | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
