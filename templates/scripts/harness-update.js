@@ -6,14 +6,20 @@
  *   node scripts/harness-update.js status  [--root <dir>] [--json]
  *   node scripts/harness-update.js refresh [--root <dir>] [--force]
  *
- * `refresh` runs at session start (spawned DETACHED by the context-guard plugin)
- * and at most once per TTL. It compares the checkout's deployed `.harness.json`
- * version with the newest harness it can see — the registry's `dist-tags.latest`
- * and, when the checkout IS the harness source, its own `package.json` version.
- * The verdict is cached in `.serve/harness-update.json`.
+ * `refresh` runs on every new / cleared / compacted session boundary (spawned
+ * DETACHED by the context-guard plugin) and probes the newest harness it can
+ * see — the registry's `dist-tags.latest` and, when the checkout IS the harness
+ * source, its own `package.json` version. The verdict is cached in
+ * `.serve/harness-update.json`.
  *
- * `status` is local-only: `orient` and the TUI badge read the cache through it
- * (or through the same file), so a session start never pays for a network call.
+ * The registry is re-read on every refresh: a 24h cache made a just-published
+ * release invisible to every session until the TTL expired, so a badge could
+ * say "0.4.11 available" while 0.4.13 was already out. The call is detached and
+ * timeout-bounded, so freshness costs the session nothing. A caller that
+ * genuinely wants throttling can pass `--max-age <ms>` (default 0 = no cache).
+ *
+ * `status` is local-only: `orient` and the TUI badge read the cache (the badge
+ * re-reads it on each render), so rendering never pays for a network call.
  *
  * Best-effort by construction: offline, no npm, malformed cache, or a
  * registry miss all degrade to "unknown" and never fail a session. Set
@@ -26,7 +32,6 @@ const { spawnSync } = require("child_process");
 const SCHEMA = "harness-update/1";
 const PKG_NAME = "opencode-agent-harness";
 const COMMAND = `npx ${PKG_NAME}@latest update`;
-const TTL_MS = 24 * 60 * 60 * 1000;
 const CACHE_REL = path.join(".serve", "harness-update.json");
 
 function disabled() {
@@ -108,16 +113,18 @@ function status(root) {
   };
 }
 
-function refresh(root, force) {
+function refresh(root, force, maxAgeMs = 0) {
   if (disabled()) return { state: "disabled" };
   const deployed = harnessVersion(root);
   if (!deployed) return { state: "unknown", reason: "no .harness.json" };
 
   const file = cacheFile(root);
   const prior = readJson(file);
-  if (!force && prior && typeof prior.checkedAt === "string") {
+  // Default `maxAgeMs` is 0: always re-probe (the caller is detached). An
+  // explicit --max-age opts into a cache window; --force bypasses any window.
+  if (!force && maxAgeMs > 0 && prior && typeof prior.checkedAt === "string") {
     const at = Date.parse(prior.checkedAt);
-    if (Number.isFinite(at) && Date.now() - at < TTL_MS) return status(root);
+    if (Number.isFinite(at) && Date.now() - at < maxAgeMs) return status(root);
   }
 
   const npm = npmLatest();
@@ -161,13 +168,15 @@ function main(argv) {
     return 0;
   }
   if (cmd === "refresh") {
-    refresh(root, argv.includes("--force"));
+    const ageFlag = argv.indexOf("--max-age");
+    const maxAge = ageFlag >= 0 ? Number(argv[ageFlag + 1]) : 0;
+    refresh(root, argv.includes("--force"), Number.isFinite(maxAge) && maxAge > 0 ? maxAge : 0);
     return 0;
   }
-  console.error("usage: harness-update.js <status|refresh> [--root <dir>] [--json] [--force]");
+  console.error("usage: harness-update.js <status|refresh> [--root <dir>] [--json] [--force] [--max-age <ms>]");
   return 2;
 }
 
-module.exports = { status, refresh, compareVersions, harnessVersion, SCHEMA, COMMAND, TTL_MS };
+module.exports = { status, refresh, compareVersions, harnessVersion, SCHEMA, COMMAND };
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));

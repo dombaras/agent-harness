@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.14 — 2026-11-24
+
+- The harness update badge can no longer lag a release behind a cached verdict.
+  The detached probe re-reads the registry on every new, cleared, or compacted
+  session (`session.created` + `session.compaction.ended`) and now probes by
+  default instead of honouring a 24h TTL (`--max-age <ms>` is the opt-in
+  throttle); the TUI badge re-reads the deployed version and the update/restart
+  verdicts on every render. A project can no longer show `0.4.10 ↑0.4.11` while
+  `0.4.13` is already published. (F-023 follow-up)
+
 ## 0.4.13 — 2026-11-24
 
 - The global `harness-freshness` plugin now closes the gap that left an active

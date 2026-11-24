@@ -136,6 +136,21 @@ test("the badge renders restart-needed from the freshness verdict (H-44)", () =>
   assert.match(tui, /update \|\| restart/, "the restart marker also uses the warning colour");
 });
 
+test("the badge re-reads the deployed version and verdicts on every render", () => {
+  const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
+  const start = tui.indexOf("const badge = () =>");
+  assert.ok(start > 0, "the badge render function exists");
+  const body = tui.slice(start, tui.indexOf("const home =", start));
+  for (const call of ["readHarnessVersion", "readHarnessUpdate", "readHarnessRestart"]) {
+    assert.match(body, new RegExp(`${call}\\(directory\\)`), `${call} is read inside render, not setup`);
+  }
+  assert.doesNotMatch(
+    tui.slice(tui.indexOf("const version ="), start),
+    /readHarnessUpdate\(directory\)/,
+    "setup must not pin the update verdict"
+  );
+});
+
 test("the template ships both entrypoints and both footer slots", () => {
   assert.ok(fs.existsSync(path.join(PLUGIN_DIR, "index.ts")), "server entrypoint");
   assert.ok(fs.existsSync(path.join(PLUGIN_DIR, "tui.tsx")), "TUI entrypoint");

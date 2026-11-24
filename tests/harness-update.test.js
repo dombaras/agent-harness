@@ -91,15 +91,28 @@ test("refresh caches the newest source (registry or a newer local harness checko
   assert.strictEqual(upd.status(dir).latest, "0.6.0");
 });
 
-test("refresh honours the 24h TTL and the kill switch", () => {
+test("refresh always re-probes the registry; --max-age is the opt-in throttle", () => {
   const dir = project("0.4.4");
-  writeCache(dir, "0.5.0");
+  writeCache(dir, "0.4.4");
   const marker = path.join(tmpdir(), "ran");
-  withNpm('"9.9.9"', marker, () => {
-    upd.refresh(dir); // fresh cache -> no registry call
-    assert.ok(!fs.existsSync(marker), "a fresh cache must not call npm");
+  withNpm('"0.5.0"', marker, () => {
+    assert.strictEqual(upd.refresh(dir).state, "behind");
+    assert.ok(fs.existsSync(marker), "a fresh cache must still call npm (no 24h TTL)");
   });
+  assert.strictEqual(upd.status(dir).latest, "0.5.0", "the fresh registry verdict is cached");
 
+  // An explicit max-age restores a cache window for callers that want one.
+  const throttled = project("0.4.4");
+  writeCache(throttled, "0.5.0");
+  const noRun = path.join(tmpdir(), "ran");
+  withNpm('"9.9.9"', noRun, () => {
+    upd.refresh(throttled, false, 60_000);
+    assert.ok(!fs.existsSync(noRun), "a caller-supplied window skips the registry");
+  });
+  assert.strictEqual(upd.status(throttled).latest, "0.5.0", "the cached verdict is kept");
+});
+
+test("refresh honours the kill switch", () => {
   const off = project("0.4.4");
   const prior = process.env.AGENT_HARNESS_NO_UPDATE_CHECK;
   process.env.AGENT_HARNESS_NO_UPDATE_CHECK = "1";
@@ -110,6 +123,15 @@ test("refresh honours the 24h TTL and the kill switch", () => {
     if (prior === undefined) delete process.env.AGENT_HARNESS_NO_UPDATE_CHECK;
     else process.env.AGENT_HARNESS_NO_UPDATE_CHECK = prior;
   }
+});
+
+test("context-guard re-checks on new and cleared/compacted sessions with --force", () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "templates", ".opencode", "plugins", "context-guard.ts"),
+    "utf8"
+  );
+  assert.match(src, /"refresh",\s*"--root",\s*root,\s*"--force"/, "forces past an older probe's TTL");
+  assert.match(src, /session\.compaction\.ended/, "re-checks after a cleared/compacted context");
 });
 
 test("refresh leaves a non-harness checkout alone and tolerates a failed registry", () => {

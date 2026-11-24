@@ -433,17 +433,18 @@ export default {
     }
   }
 
-  /* Best-effort update probe at session start: compare the deployed harness
-   * version with the registry (or a newer local harness checkout) so the session
-   * and the TUI badge can say "update available" — like opencode's own notice.
-   * Detached and cached (24 h in `.serve/harness-update.json`), so it never
-   * blocks session creation, never pays for a network call twice a day, and a
-   * repo without the script simply no-ops. */
+  /* Best-effort update probe at each context boundary: compare the deployed
+   * harness version with the registry (or a newer local harness checkout) so the
+   * session and the TUI badge can say "update available" — like opencode's own
+   * notice. Spawned detached and `--force`d, so a new/cleared/compacted context
+   * always re-checks the registry instead of trusting a 24h-old verdict; a
+   * project still running an older probe also honours `--force`. A repo without
+   * the script simply no-ops. */
   const refreshHarnessUpdate = (root: string) => {
     try {
       const script = path.join(root, "scripts", "harness-update.js")
       if (!fs.existsSync(script)) return
-      const child = spawn(toolLib.nodeBin(), [script, "refresh", "--root", root], {
+      const child = spawn(toolLib.nodeBin(), [script, "refresh", "--root", root, "--force"], {
         cwd: root,
         stdio: "ignore",
         detached: true,
@@ -555,6 +556,18 @@ export default {
               : directory
           refreshHarnessUpdate(root)
           void collectOrient(sid, root)
+          return
+        }
+
+        /* A cleared/compacted context is a fresh context: re-probe at that
+         * boundary rather than trusting the session.created verdict from before
+         * the context was replaced (the global freshness plugin re-checks its
+         * trees on the same event). Subagents cannot change the deploy, so only
+         * the primary session runs it. */
+        if (type === "session.compaction.ended") {
+          const sid = d.sessionID
+          if (typeof sid !== "string" || sid.length === 0 || childSessions.has(sid)) return
+          refreshHarnessUpdate(rootOf(sid))
           return
         }
 
