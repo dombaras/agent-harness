@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-030 | ? | Session-start harness freshness: on every new and cleared/compacted session, apply a pending harness update (local checkout or registry) when the tree is safe, and require a restart; never mutate an unsafe tree. | .agents/handoffs/F-030.md (worktree: ../.worktrees/agent-harness/f-030; branch: f-030) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -66,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-030 | P2 | ? | Session-start harness freshness: on every new and cleared/compacted session, apply a pending harness update (local checkout or registry) when the tree is safe, and require a restart; never mutate an unsafe tree. | User report 2026-11-24: LibraryOS stayed on 0.4.10 while npm/local harness reached 0.4.12; global harness-freshness only evaluated session.created and left registry-only releases advisory. | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
 | F-017 | P4 | ? | Cross-check agent-report/store-lib against `opencode stats --json` as an independent oracle: the CLI now emits per-tool reliability + cost/token stats, so a parity assertion would catch store-shape drift the direct-DB reader silently misses. | docs/opencode-v2.3-compat-scan.md §G5; `opencode stats --help` | ? |
 
