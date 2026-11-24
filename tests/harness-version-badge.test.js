@@ -95,11 +95,45 @@ test("readHarnessUpdate returns the cached newer version, and null otherwise", a
   assert.strictEqual(readHarnessUpdate(tmpdir()), null, "missing .harness.json");
 });
 
+test("readHarnessRestart returns the restart-needed verdict, and null otherwise", async () => {
+  const { readHarnessRestart } = await loadHelper();
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
+  const status = path.join(dir, ".serve", "harness-freshness.json");
+
+  fs.writeFileSync(
+    status,
+    JSON.stringify({ status: "restart-needed", have: "0.4.8", latest: "0.4.8", wrote: 1 })
+  );
+  assert.deepStrictEqual(readHarnessRestart(dir), { have: "0.4.8", latest: "0.4.8" });
+
+  for (const body of [
+    JSON.stringify({ status: "current", have: "0.4.8" }),
+    JSON.stringify({ status: "update-available", have: "0.4.8" }),
+    "not json",
+    "null",
+    "[]",
+    "{}",
+  ]) {
+    fs.writeFileSync(status, body);
+    assert.strictEqual(readHarnessRestart(dir), null, `shape ${body}`);
+  }
+  assert.strictEqual(readHarnessRestart(undefined), null, "no location");
+  assert.strictEqual(readHarnessRestart(tmpdir()), null, "missing verdict");
+});
+
 test("the badge renders the update arrow from the same cache", () => {
   const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
   assert.match(tui, /readHarnessUpdate\(directory\)/, "reads the cached verdict");
   assert.match(tui, /↑/, "renders the available version next to the deployed one");
   assert.match(tui, /text\?\.warning/, "uses the warning colour when behind");
+});
+
+test("the badge renders restart-needed from the freshness verdict (H-44)", () => {
+  const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
+  assert.match(tui, /readHarnessRestart\(directory\)/, "reads the freshness verdict");
+  assert.match(tui, /↻restart/, "marks a deployed-but-not-active harness");
+  assert.match(tui, /update \|\| restart/, "the restart marker also uses the warning colour");
 });
 
 test("the template ships both entrypoints and both footer slots", () => {

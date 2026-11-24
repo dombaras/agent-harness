@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.9 — 2026-11-24
+
+- The TUI harness badge now appends `↻restart` when the global
+  `harness-freshness` verdict is `restart-needed`: the deployed `.harness.json`
+  is current but the running opencode server predates the last write, so the
+  footer no longer reads as if the new server-side harness were already active.
+  The badge reads `.serve/harness-freshness.json` best-effort (missing or
+  malformed = no marker) and keeps the warning colour. (F-027, H-44)
+
 ## 0.4.8 — 2026-11-24
 
 - Persona `description:` lines are now decision contracts — `Use when <trigger>

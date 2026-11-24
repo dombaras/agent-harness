@@ -43,3 +43,23 @@ export function readHarnessUpdate(directory) {
     return null
   }
 }
+
+// The global `harness-freshness` plugin's verdict (`.serve/harness-freshness.json`):
+// `restart-needed` means the on-disk harness is current but the running opencode
+// process predates the last write, so the server-side plugins in effect are the
+// OLD ones (H-44, deploy != activate). The badge reads it so the footer can say
+// "restart" instead of implying the deployed version is already active.
+// A missing, stale, or malformed cache means "no marker", never a setup error.
+export function readHarnessRestart(directory) {
+  if (typeof directory !== "string" || directory.length === 0) return null
+  try {
+    const raw = fs.readFileSync(path.join(directory, ".serve", "harness-freshness.json"), "utf8")
+    const doc = JSON.parse(raw)
+    if (doc?.status !== "restart-needed") return null
+    const have = typeof doc.have === "string" && doc.have.trim() ? doc.have.trim() : null
+    const latest = typeof doc.latest === "string" && doc.latest.trim() ? doc.latest.trim() : null
+    return { have, latest }
+  } catch {
+    return null
+  }
+}

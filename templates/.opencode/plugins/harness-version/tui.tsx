@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { readHarnessUpdate, readHarnessVersion } from "./version.mjs"
+import { readHarnessRestart, readHarnessUpdate, readHarnessVersion } from "./version.mjs"
 
 // A constant "harness vX.Y.Z" badge in the two footer rows that already carry
 // version/model indicators:
@@ -11,6 +11,9 @@ import { readHarnessUpdate, readHarnessVersion } from "./version.mjs"
 // When the cached registry probe (scripts/harness-update.js, F-023) reports a
 // newer harness, the badge appends `↑<latest>` in the warning colour — the same
 // "Update available" affordance opencode shows for itself.
+// When the global `harness-freshness` plugin reports `restart-needed` (the
+// deployed version is current but the running server predates the last write),
+// the badge appends `↻restart` so it never reads as "the new version is active".
 export default Plugin.define({
   id: "harness-version-badge",
   setup(context) {
@@ -27,7 +30,8 @@ export default Plugin.define({
     const version = readHarnessVersion(directory)
     if (!version) return
     const update = readHarnessUpdate(directory)
-    const color = update
+    const restart = readHarnessRestart(directory)
+    const color = update || restart
       ? ((context.theme as any)?.text?.warning ?? context.theme.text.muted)
       : context.theme.text.muted
 
@@ -35,6 +39,7 @@ export default Plugin.define({
       <text fg={color}>
         harness v{version}
         {update ? ` ↑${update.latest}` : ""}
+        {restart ? " ↻restart" : ""}
       </text>
     )
     const home = context.ui.slot({ append: "home.footer.status", render: badge })
