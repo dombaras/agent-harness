@@ -22,23 +22,26 @@ version-independent. See `harness-freshness.ts`.
 
 ## `harness-freshness.ts`
 
-On every primary session start it compares the checkout's `.harness.json` version
-to the authoritative local harness (`AGENT_HARNESS_HOME`, default
-`~/develop/agent-harness`) and keeps the checkout current — **only when that is
-safe for the active branch**:
+On every primary session start — and again when a session is cleared/compacted —
+it compares the checkout's `.harness.json` version to the newest harness this
+machine can see (the authoritative local checkout, or the npm registry when it
+leads) and keeps the checkout current — **only when that is safe for the active
+branch**:
 
 | state | action |
 | --- | --- |
-| up to date | nothing |
+| up to date | nothing (blocks if the files are newer than the running process: `restart-needed`) |
 | linked worktree, project **main already latest**, worktree HEAD is an ancestor of main (true fast-forward), no local change overlaps the incoming files | `git merge --ff-only <main>` (never rewrites history) |
-| main checkout, no drift | `agent-harness update --target <tree>` (the sanctioned deploy; fails closed on locally-modified harness files) |
+| main checkout, no drift | `agent-harness update --target <tree>` from a local checkout, otherwise `npx --yes opencode-agent-harness@<latest> update --target <tree>` (the sanctioned deploy; fails closed on locally-modified harness files) |
 | anything else (main stale, branch diverged, overlapping dirty files, merge/rebase in progress, update failed) | **no mutation** — writes `.serve/harness-freshness.json` and injects a session notice so the agent relays it and waits |
 
-A refresh only changes files on disk; opencode loads plugins once at startup, so the
-plugin toasts that a **restart** is needed before the updated plugins take effect.
+A successful apply injects a one-shot `HARNESS UPDATED` notice: files on disk are
+current, but opencode loads plugins once at startup, so the session must restart
+opencode before the updated plugins take effect.
 
 Env knobs: `AGENT_HARNESS_HOME` (authoritative checkout), `AGENT_HARNESS_FRESHNESS=dry`
-(detect/report only, never apply).
+(detect/report only, never apply), `AGENT_HARNESS_NO_UPDATE_CHECK=1` (skip the
+registry probe), `AGENT_HARNESS_NPX` / `AGENT_HARNESS_NPM` (override the CLIs).
 
 ### Relationship to the manual deploy workflow
 

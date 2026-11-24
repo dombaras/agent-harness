@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.13 — 2026-11-24
+
+- The global `harness-freshness` plugin now closes the gap that left an active
+  project on an older harness: a release that exists only in the npm registry is
+  applied through `npx --yes opencode-agent-harness@<latest> update` instead of
+  being advisory-only, a cleared/compacted session re-checks the tree (not just
+  `session.created`), and a successful apply injects a one-shot "restart
+  opencode" notice because the running process still holds the previous plugins.
+  Unsafe trees — stale project main, diverged branch, overlapping local changes,
+  an in-flight merge/rebase, a failed update — are still blocked, never mutated.
+  (F-030)
+
 ## 0.4.12 — 2026-11-24
 
 - `/resume <id>` now orients on the named feature: the command forwards its id

@@ -130,13 +130,22 @@ test("refresh leaves a non-harness checkout alone and tolerates a failed registr
   }
 });
 
-test("the global freshness plugin advertises the npm update path (drift guard)", () => {
+test("the global freshness plugin applies updates and signals a restart (drift guard)", () => {
   const src = fs.readFileSync(
     path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
     "utf8"
   );
   assert.match(src, /"view",\s*"opencode-agent-harness"/, "probes the registry");
   assert.match(src, /AGENT_HARNESS_NO_UPDATE_CHECK/, "honours the kill switch");
-  assert.match(src, /npx opencode-agent-harness@latest update/, "names the sanctioned command");
-  assert.match(src, /source === "npm"/, "keeps the registry path advisory");
+  assert.match(
+    src,
+    /`opencode-agent-harness@\$\{latest\}`/,
+    "the registry path installs the exact version it compared (npx, not advisory text)"
+  );
+  assert.match(src, /applyCommand\(tree, latest\)/, "a stale main checkout is updated, not just advised");
+  assert.doesNotMatch(src, /source === "npm"/, "the registry path is no longer advisory-only");
+  assert.match(src, /session\.created/, "checks on a new primary session");
+  assert.match(src, /session\.compaction\.ended/, "re-checks after a cleared/compacted context");
+  assert.match(src, /HARNESS UPDATED/, "announces an applied update");
+  assert.match(src, /Restart opencode now to load the update\./, "requires a restart to activate it");
 });

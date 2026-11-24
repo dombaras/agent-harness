@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-030 | ? | Session-start harness freshness: on every new and cleared/compacted session, apply a pending harness update (local checkout or registry) when the tree is safe, and require a restart; never mutate an unsafe tree. | .agents/handoffs/F-030.md (worktree: ../.worktrees/agent-harness/f-030; branch: f-030) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -113,6 +112,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-025 | ? | Persona dispatch activation, remaining slices S2-S6: dispatch_persona plugin tool (create child with parentID+agent+location, preflight model/write-scope/tree), persona economics in orient, risk-tiered dispatch policy (T0-T3 classifier), derived dispatch log in finalize, dispatch health probe + persona-hint interception. S1 (decision contracts + drift guard) shipped in 0.4.8. | shipped |
 | F-028 | ? | Make finalize, update and deploy session-scoped: finalize aborts before staging when a shared checkout holds another live session's WIP (replace blanket add -u/untracked sweep with an ownership/tail allowlist), governance checks only handoffs in the push (untracked foreign drafts warn, never fail), and harness auto-deploy stops being a concurrent writer on LibraryOS main (publish-only or quiescence-gated). | shipped |
 | F-029 | ? | Make /resume <id> orient on the named feature: forward $ARGUMENTS to orient --feature, treat an explicit id as authoritative over a board In-progress row, prefer the checkout (directory/branch) over the board in inference, and label a board-inferred feature as overridable in the full/brief output. | shipped |
+| F-030 | ? | Session-start harness freshness: on every new and cleared/compacted session, apply a pending harness update (local checkout or registry) when the tree is safe, and require a restart; never mutate an unsafe tree. | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

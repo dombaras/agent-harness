@@ -8898,7 +8898,12 @@ test("[drift-guard] harness-freshness spawns a real Node, never process.execPath
   );
   assert.match(src, /function nodeBin\(/, "resolves a real Node interpreter");
   assert.match(src, /OPENCODE_NODE/, "honors the OPENCODE_NODE override");
-  assert.match(src, /spawn\(nodeBin\(\), \[CLI, "update", "--target", tree\]/, "runs the update with nodeBin()");
+  assert.match(
+    src,
+    /return \{ bin: nodeBin\(\), args: \[CLI, "update", "--target", tree\] \}/,
+    "runs the local update with nodeBin()"
+  );
+  assert.match(src, /spawn\(cmd\.bin, cmd\.args/, "spawns the resolved command, never process.execPath");
 });
 
 // ---------------------------------------------------------------- tool-lib + lease-lib

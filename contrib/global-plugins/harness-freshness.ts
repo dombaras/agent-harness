@@ -155,6 +155,7 @@ const HarnessFreshness: Plugin = {
   async setup(ctx) {
     const notices = new Map<string, string>()
     const checked = new Set<string>()
+    const roots = new Map<string, string>()
 
     // V1 called `client.app.log`; V2 server plugins log to the console.
     const report = (message: string, level: "info" | "warn" | "error" = "info") => {
@@ -192,6 +193,30 @@ const HarnessFreshness: Plugin = {
       } catch {
         /* observability only */
       }
+    }
+
+    /* Apply through the local harness checkout when this machine has one (the
+     * development path), otherwise through the published CLI at the exact version
+     * we just compared. `npx` keeps the registry path self-contained: no stale
+     * project copy is trusted to install its own successor. */
+    const applyCommand = (tree: string, latest: string) => {
+      if (fs.existsSync(CLI)) return { bin: nodeBin(), args: [CLI, "update", "--target", tree] }
+      return {
+        bin: process.env.AGENT_HARNESS_NPX || (process.platform === "win32" ? "npx.cmd" : "npx"),
+        args: ["--yes", `opencode-agent-harness@${latest}`, "update", "--target", tree],
+      }
+    }
+
+    /* Files changed on disk do not change the plugins/config this process already
+     * loaded. A session-start apply is therefore real only after a restart, and the
+     * session must say so rather than pretend the new behavior is active. */
+    const announce = (sid: string, have: string | null, latest: string, tree: string) => {
+      notices.set(
+        sid,
+        `HARNESS UPDATED — ${have ? `v${have} -> v${latest}` : `v${latest}`} in ${tree}.\n\n` +
+          `The files are current, but this opencode process is still running the previous ones.\n` +
+          `Restart opencode now to load the update.`
+      )
     }
 
     const evaluate = async (sid: string, dir: string) => {
@@ -234,15 +259,6 @@ const HarnessFreshness: Plugin = {
       const mainHave = readVersion(path.join(mainTop, ".harness.json"))
       const isWorktree = path.resolve(mainTop) !== path.resolve(tree)
       const base = { have, latest, tree, main: mainTop, kind: isWorktree ? "worktree" : "main" }
-
-      // A registry-only release cannot be applied by this plugin (update writes,
-      // commits and pushes), so it is advisory: tell the user the exact command
-      // and let them run it. The local-checkout path below keeps auto-applying.
-      if (source === "npm" && have) {
-        writeStatus(tree, { ...base, status: "update-available", source, at: new Date().toISOString() })
-        advise(sid, have, latest)
-        return
-      }
 
       if (isWorktree) {
         if (!mainHave || cmpVer(mainHave, latest) < 0) {
@@ -314,10 +330,14 @@ const HarnessFreshness: Plugin = {
         report(`[dry] would update main checkout ${tree} ${have} -> ${latest}`)
         return
       }
-      writeStatus(tree, { ...base, status: "updating" })
-      report(`updating main checkout ${tree}: ${have} -> ${latest}`)
+      writeStatus(tree, { ...base, status: "updating", source })
+      report(`updating main checkout ${tree}: ${have} -> ${latest} (${source})`)
+      const cmd = applyCommand(tree, latest)
+      const shown = fs.existsSync(CLI)
+        ? `node ${CLI} update --target ${tree}`
+        : `npx --yes opencode-agent-harness@${latest} update --target ${tree}`
       try {
-        const child = spawn(nodeBin(), [CLI, "update", "--target", tree], {
+        const child = spawn(cmd.bin, cmd.args, {
           cwd: tree,
           stdio: ["ignore", "pipe", "pipe"],
         })
@@ -325,25 +345,25 @@ const HarnessFreshness: Plugin = {
         child.stdout?.on("data", (d) => (out += d))
         child.stderr?.on("data", (d) => (out += d))
         child.on("error", (e: any) =>
-          void block(sid, `Deploy could not start: ${e?.message || e}`, `  node ${CLI} update --target ${tree}`)
+          void block(sid, `Deploy could not start: ${e?.message || e}`, `  ${shown}`)
         )
         child.on("close", (code) => {
           if (code === 0) {
-            notices.delete(sid)
-            writeStatus(tree, { ...base, status: "refreshed", at: new Date().toISOString() })
-            report(`updated main checkout ${tree}: ${have} -> ${latest} — restart opencode to load the updated plugins`)
+            writeStatus(tree, { ...base, status: "refreshed", source, at: new Date().toISOString() })
+            report(`updated main checkout ${tree}: ${have} -> ${latest} (${source}) — restart opencode to load it`)
+            announce(sid, have, latest, tree)
           } else {
             const tail = out.trim().split(/\r?\n/).slice(-6).join("\n")
-            writeStatus(tree, { ...base, status: "blocked", reason: "update failed", detail: tail })
+            writeStatus(tree, { ...base, status: "blocked", reason: "update failed", source, detail: tail })
             void block(
               sid,
               `The harness deploy failed (exit ${code}) — usually a locally-modified harness file (update fails closed):\n${tail}`,
-              `  fix it upstream in templates/, or back up and re-run:\n  node ${CLI} update --target ${tree} --accept-harness`
+              `  fix it upstream in templates/, or back up and re-run:\n  ${shown} --accept-harness`
             )
           }
         })
       } catch (e: any) {
-        await block(sid, `Deploy threw: ${e?.message || e}`, `  node ${CLI} update --target ${tree}`)
+        await block(sid, `Deploy threw: ${e?.message || e}`, `  ${shown}`)
       }
     }
 
@@ -361,7 +381,21 @@ const HarnessFreshness: Plugin = {
               if (typeof sid === "string" && sid) {
                 notices.delete(sid)
                 checked.delete(sid)
+                roots.delete(sid)
               }
+              continue
+            }
+            /* A cleared/compacted session starts a fresh context: re-check at that
+             * boundary instead of trusting the session.created verdict from before
+             * the context was replaced. */
+            if (event?.type === "session.compaction.ended") {
+              const sid = d.sessionID
+              if (typeof sid !== "string" || !sid) continue
+              const dir = roots.get(sid)
+              if (!dir) continue
+              checked.delete(sid)
+              checked.add(sid)
+              await evaluate(sid, dir)
               continue
             }
             if (event?.type !== "session.created") continue
@@ -374,6 +408,7 @@ const HarnessFreshness: Plugin = {
               typeof d.location?.directory === "string" && d.location.directory
                 ? d.location.directory
                 : ctx.location.directory
+            roots.set(sid, dir)
             await evaluate(sid, dir)
           } catch (err: any) {
             report(`check failed: ${err?.message || err}`, "warn")
