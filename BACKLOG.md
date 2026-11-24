@@ -48,6 +48,7 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-025 | ? | Persona dispatch activation, remaining slices S2-S6: dispatch_persona plugin tool (create child with parentID+agent+location, preflight model/write-scope/tree), persona economics in orient, risk-tiered dispatch policy (T0-T3 classifier), derived dispatch log in finalize, dispatch health probe + persona-hint interception. S1 (decision contracts + drift guard) shipped in 0.4.8. | ? (worktree: ../.worktrees/agent-harness/f-025; branch: f-025) |
+| F-028 | ? | Make finalize, update and deploy session-scoped: finalize aborts before staging when a shared checkout holds another live session's WIP (replace blanket add -u/untracked sweep with an ownership/tail allowlist), governance checks only handoffs in the push (untracked foreign drafts warn, never fail), and harness auto-deploy stops being a concurrent writer on LibraryOS main (publish-only or quiescence-gated). | .agents/handoffs/F-028.md (worktree: ../.worktrees/agent-harness/f-028; branch: f-028) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -67,7 +68,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-028 | P2 | ? | Make finalize, update and deploy session-scoped: finalize aborts before staging when a shared checkout holds another live session's WIP (replace blanket add -u/untracked sweep with an ownership/tail allowlist), governance checks only handoffs in the push (untracked foreign drafts warn, never fail), and harness auto-deploy stops being a concurrent writer on LibraryOS main (publish-only or quiescence-gated). | LibraryOS incident 2026-11-24: finalize would have committed AGENTS.md + DashboardDrilldownPanel.tsx + messages/*.json + untracked mobile-e2e-run.md from another session; governance failed on a stale untracked handoff and it had to be set aside. Code: templates/scripts/finalize.js:245,249-265,459-468; templates/scripts/qa/governance.js:117; templates/scripts/qa/check-concurrency.js:237-330; .github/workflows/deploy-libraryos.yml:51-58; bin/agent-harness.js:1043-1110,2856-2863. | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
 | F-017 | P4 | ? | Cross-check agent-report/store-lib against `opencode stats --json` as an independent oracle: the CLI now emits per-tool reliability + cost/token stats, so a parity assertion would catch store-shape drift the direct-DB reader silently misses. | docs/opencode-v2.3-compat-scan.md §G5; `opencode stats --help` | ? |
 
