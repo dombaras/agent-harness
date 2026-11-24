@@ -19,13 +19,17 @@
  *
  * Handoffs are SHARDED (like QA plans): one file per session under
  * `.agents/handoffs/` (e.g. `F-003.md`, `return-no-condition.md`), so concurrent
- * sessions never collide on a single shared file. The gate reads EVERY `.md`
- * under that directory — plus the legacy single `.agents/memory/handoff.md` for
- * backward compatibility — and requires each to open with a `## Dispatch log`
- * section containing at least one entry.
+ * sessions never collide on a single shared file. The gate validates the
+ * handoffs IN THE PUSH — git's index (`git ls-files --cached` + `git show
+ * :path`) — plus the legacy single `.agents/memory/handoff.md` for backward
+ * compatibility. Untracked drafts left in a shared checkout (another session's
+ * stale handoff) are reported as a WARNING and never fail the push; a repo that
+ * gitignores `.agents/` keeps the filesystem scan, because its handoffs are not
+ * carried by git at all.
  */
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const root = path.resolve(__dirname, "..", "..");
 
 /* Fan-out band 5–7 in `.agents/memory/orchestration.md` = "planner must provide
@@ -45,27 +49,86 @@ const check = (ok, msg) => {
 
 console.log("governance gate \u2014 wrap-up dispatch log");
 
-/* All handoff files to check: every `.md` under `.agents/handoffs/` (recursive),
- * plus the legacy single `.agents/memory/handoff.md` if present (backward compat
- * for projects deployed before sharding). `README.md` files are documentation,
- * not handoffs, so they are skipped. Sorted for deterministic output. */
-function handoffFiles(root) {
+/* Handoff files that travel WITH this push: git's index (`ls-files --cached`)
+ * is the exact content being pushed, so an untracked draft left in a shared
+ * checkout can never fail the gate. `git show :<path>` reads the staged blob
+ * (index), not a working-tree edit. A project that gitignores `.agents/` (its
+ * handoffs are not in git at all) keeps the filesystem scan. */
+function gitLines(args) {
+  const res = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  if (res.status !== 0) return null;
+  return String(res.stdout || "")
+    .split(/\r?\n/)
+    .filter(Boolean);
+}
+
+function gitShows(rel) {
+  const res = spawnSync("git", ["show", `:${rel}`], { cwd: root, encoding: "utf8" });
+  return res.status === 0 ? String(res.stdout || "") : null;
+}
+
+function isHandoffMd(rel) {
+  const base = path.basename(rel).toLowerCase();
+  return base.endsWith(".md") && base !== "readme.md";
+}
+
+function filesystemHandoffFiles() {
   const files = [];
   const collect = (dir) => {
     if (!fs.existsSync(dir)) return;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) collect(abs);
-      else if (
-        entry.name.toLowerCase().endsWith(".md") &&
-        entry.name.toLowerCase() !== "readme.md"
-      )
-        files.push(abs);
+      else if (isHandoffMd(entry.name)) files.push(abs);
     }
   };
   collect(path.join(root, ".agents", "handoffs"));
   if (fs.existsSync(LEGACY_HANDOFF)) files.push(LEGACY_HANDOFF);
   return files.sort();
+}
+
+/* `{ files: [{abs, rel, src}], drafts: [rel], mode }` where `files` is exactly
+ * what the push carries and `drafts` are untracked handoffs (warn only). */
+function handoffsInPush() {
+  const inside = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  const isGit = inside.status === 0 && String(inside.stdout || "").trim() === "true";
+  // `git check-ignore` matches a *file* under an ignored directory but returns 1
+  // for the directory path itself, even when the pattern (`/.agents/`) ignores it.
+  // Probe a synthetic handoff path so a gitignored `.agents/` takes the
+  // filesystem fallback instead of falling through to an empty index scan.
+  const ignored = isGit
+    ? spawnSync("git", ["check-ignore", "-q", "--", ".agents/handoffs/__governance_probe__.md"], { cwd: root })
+        .status === 0
+    : false;
+  if (!isGit || ignored) {
+    const files = filesystemHandoffFiles().map((abs) => ({
+      abs,
+      rel: path.relative(root, abs).split(path.sep).join("/"),
+      src: fs.readFileSync(abs, "utf8"),
+    }));
+    return { files, drafts: [], mode: ignored ? "filesystem (gitignored .agents/)" : "filesystem" };
+  }
+
+  const tracked = (gitLines(["ls-files", "--cached", "--", ".agents/handoffs"]) || []).filter(
+    isHandoffMd
+  );
+  const drafts = (gitLines(["ls-files", "--others", "--exclude-standard", "--", ".agents/handoffs"]) || [])
+    .filter(isHandoffMd)
+    .filter((rel) => !tracked.includes(rel));
+  const legacyRel = ".agents/memory/handoff.md";
+  const legacyTracked =
+    (gitLines(["ls-files", "--cached", "--", legacyRel]) || []).length > 0 ? [legacyRel] : [];
+
+  const files = [];
+  for (const rel of [...tracked, ...legacyTracked].sort()) {
+    const src = gitShows(rel);
+    if (src === null) continue; // staged deletion: nothing to validate
+    files.push({ abs: path.join(root, rel), rel, src });
+  }
+  return { files, drafts, mode: "git index (the push)" };
 }
 
 /* A dispatch-log entry is either a bullet item (`- subagent -> model -> shipped`)
@@ -114,23 +177,30 @@ function handoffDate(src) {
   return m ? m[1] : null;
 }
 
-const files = handoffFiles(root);
+const push = handoffsInPush();
+const files = push.files;
+
+if (push.drafts.length) {
+  console.log(
+    `  \u26a0 ${push.drafts.length} untracked handoff draft(s) NOT in this push (warn only \u2014 ` +
+      `commit the one you own, delete stale copies):`
+  );
+  for (const rel of push.drafts.sort()) console.log(`      ${rel}`);
+}
 
 if (files.length === 0) {
   console.error(
-    "FATAL: missing session handoff \u2014 add one under .agents/handoffs/<feature-id>.md"
+    "FATAL: missing session handoff \u2014 add one under .agents/handoffs/<feature-id>.md and commit it with the push"
   );
   process.exit(2);
 }
 
-console.log(
-  "  checked against: " + files.map((f) => path.relative(root, f)).join(", ")
-);
+console.log(`  checked against: ${files.map((f) => f.rel).join(", ")} (${push.mode})`);
 
 const waivers = [];
 for (const file of files) {
-  const rel = path.relative(root, file);
-  const src = fs.readFileSync(file, "utf8");
+  const rel = file.rel;
+  const src = file.src;
 
   const heading = src.match(/^#{1,6}\s*Dispatch log\s*$/im);
   check(!!heading, `${rel} opens a \`## Dispatch log\` section`);
@@ -143,7 +213,7 @@ for (const file of files) {
       count >= 1,
       `${rel} dispatch log contains at least one entry (subagent result, waived:, or degraded: — bullet or table row)`
     );
-    if (count >= FANOUT_JUSTIFY_MIN && file !== LEGACY_HANDOFF) {
+    if (count >= FANOUT_JUSTIFY_MIN && file.abs !== LEGACY_HANDOFF) {
       const date = handoffDate(src);
       const inScope = date !== null && date >= FANOUT_JUSTIFY_SINCE;
       if (inScope) {

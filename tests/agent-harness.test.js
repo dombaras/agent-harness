@@ -4055,6 +4055,53 @@ test("test:governance grandfathers pre-rule and undated fan-out handoffs", () =>
   assert.doesNotMatch(r.out, /Fan-out justification/);
 });
 
+/* A git target whose tracked handoff is exactly what the index carries: the
+ * gate must judge the push, not untracked drafts in the shared checkout. */
+function scaffoldGovernanceGitTarget() {
+  const target = scaffoldGovernanceTarget();
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: target });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: target });
+  return target;
+}
+
+test("test:governance ignores an untracked foreign handoff draft (warn, never fail)", () => {
+  const t = scaffoldGovernanceGitTarget();
+  writeFile(t, ".agents/handoffs/F-003.md", "# x\n\n## Dispatch log\n- qa-architect -> m -> shipped\n");
+  execFileSync("git", ["add", "-A"], { cwd: t });
+  // stale draft another session left behind, never staged
+  writeFile(t, ".agents/handoffs/mobile-e2e-run.md", "# stale draft with no dispatch log\n");
+  // a working-tree edit that is NOT in the index is also not in this push
+  writeFile(t, ".agents/handoffs/F-003.md", "# x\n\n## Dispatch log\n- qa-architect -> m -> shipped\n\nedit\n");
+
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /untracked handoff draft/);
+  assert.match(r.out, /mobile-e2e-run\.md/);
+  assert.match(r.out, /git index \(the push\)/);
+});
+
+test("test:governance still fails an invalid handoff that IS in the push", () => {
+  const t = scaffoldGovernanceGitTarget();
+  writeFile(t, ".agents/handoffs/F-035.md", "# y\n\n## Dispatch log\n\n## Done\n- z\n");
+  execFileSync("git", ["add", "-A"], { cwd: t });
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /F-035\.md/);
+  assert.match(r.out, /at least one entry/);
+});
+
+test("test:governance reads handoffs from disk when .agents/ is gitignored", () => {
+  const t = scaffoldGovernanceGitTarget();
+  writeFile(t, ".gitignore", ".agents/\n");
+  writeFile(t, ".agents/handoffs/F-004.md", "# x\n\n## Dispatch log\n- qa-architect -> m -> shipped\n");
+
+  const r = runGovernanceGate(t);
+  assert.strictEqual(r.status, 0, r.out);
+  assert.match(r.out, /filesystem \(gitignored \.agents\/\)/);
+  assert.match(r.out, /F-004\.md/);
+});
+
 // ---------------------------------------------------------------- test:concurrency gate (working-tree isolation)
 
 function scaffoldConcurrencyTarget() {
@@ -10835,6 +10882,65 @@ test("[drift-guard] finalize collapses archive + commit + land into one call", (
     read(path.join(__dirname, "..", "scripts", "finalize.js")),
     "the deployed scripts/finalize.js is the same file (no hand-edit drift)"
   );
+});
+
+test("finalize aborts before archive/commit when a shared checkout holds another live session's WIP", () => {
+  const { target, id } = scaffoldFinalizeTarget();
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"),
+    path.join(target, "scripts", "qa", "lease-lib.js")
+  );
+  fs.mkdirSync(path.join(target, ".serve", "sessions"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".serve", "sessions", "ses_other.json"),
+    JSON.stringify({ sessionID: "ses_other", pid: process.pid, startedAt: Date.now(), heartbeatAt: Date.now() }),
+    "utf8"
+  );
+  fs.writeFileSync(path.join(target, "src-foreign.ts"), "export const foreign = 1;\n", "utf8");
+
+  const before = read(path.join(target, "BACKLOG.md"));
+  const r = runFinalizeCli(target, ["--feature", id]);
+  assert.strictEqual(r.status, 1, r.out);
+  assert.match(r.out, /another live session: ses_other/);
+  assert.match(r.out, /not this landing: src-foreign\.ts/);
+  assert.strictEqual(read(path.join(target, "BACKLOG.md")), before, "the board is untouched — abort precedes the archive");
+  assert.ok(!exists(path.join(target, ".git", "ship-args")), "ship never ran");
+  assert.strictEqual(git(target, ["status", "--porcelain", "--", "src-foreign.ts"]).trim(), "?? src-foreign.ts");
+});
+
+test("finalize stages a shared checkout by ownership + tail allowlist", () => {
+  const { target, id } = scaffoldFinalizeTarget();
+  fs.copyFileSync(
+    path.join(h.TEMPLATES_DIR, "scripts", "qa", "lease-lib.js"),
+    path.join(target, "scripts", "qa", "lease-lib.js")
+  );
+  fs.mkdirSync(path.join(target, ".serve", "sessions"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".serve", "sessions", "ses_other.json"),
+    JSON.stringify({ sessionID: "ses_other", pid: process.pid, startedAt: Date.now(), heartbeatAt: Date.now() }),
+    "utf8"
+  );
+  fs.mkdirSync(path.join(target, ".agents", "memory"), { recursive: true });
+  writeFile(target, ".agents/memory/owned-files.md", `- ${id}: src-owned.ts\n`);
+  execFileSync("git", ["add", "-A"], { cwd: target });
+  execFileSync("git", ["commit", "-q", "-m", "declare ownership"], { cwd: target });
+
+  writeFile(target, "src-owned.ts", "export const owned = 1;\n");
+  writeFile(target, "CHANGELOG.md", "# Changelog\n");
+
+  const r = runFinalizeCli(target, ["--feature", id]);
+  assert.strictEqual(r.status, 0, r.out);
+  const committed = git(target, ["show", "--name-only", "--format=", "HEAD"]);
+  assert.match(committed, /src-owned\.ts/, "the declared owned file is staged");
+  assert.match(committed, /CHANGELOG\.md/, "the tail is staged");
+  assert.strictEqual(git(target, ["status", "--porcelain"]), "", "nothing left dirty");
+});
+
+test("[drift-guard] LibraryOS auto-deploy publishes a side branch and never writes main", () => {
+  const src = read(path.join(__dirname, "..", ".github", "workflows", "deploy-libraryos.yml"));
+  assert.match(src, /update --target "\$PWD" --no-push/, "the update never pushes from its own commit path");
+  assert.match(src, /refs\/heads\/harness\/auto-update/, "the update is published to a side branch");
+  assert.doesNotMatch(src, /git push[^\n]*(HEAD:main|origin main)/, "no CI write to LibraryOS main");
 });
 
 test("context-guard carries the finalization carve-out (run finalize, do not stop)", () => {

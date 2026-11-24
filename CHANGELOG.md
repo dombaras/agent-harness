@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.11 — 2026-11-24
+
+- Landing a task can no longer sweep another live session's uncommitted work
+  into the commit. When a shared checkout holds a second live session,
+  `finalize` now aborts before it archives or stages anything unless every dirty
+  path is this feature's own tail or a declared ownership glob; staging itself
+  switches from a blanket sweep to that explicit allowlist. `backlog owns <id>
+  --files …` declares the globs, and `--include-blocked` remains the deliberate
+  override. (F-028)
+- The governance gate now validates the handoffs that are actually in the push
+  (the git index) instead of every handoff on disk: a stale untracked draft
+  warns and no longer blocks a landing, while an invalid handoff that is staged
+  still fails. (F-028)
+- Harness CI no longer writes LibraryOS `main`: the auto-update publishes the
+  update commit to `refs/heads/harness/auto-update` and leaves integration to a
+  human, so a concurrent harness write cannot race LibraryOS's own landings.
+  (F-028)
+
 ## 0.4.10 — 2026-11-24
 
 - Persona dispatch now preflights the model pin, write scope, and working tree,

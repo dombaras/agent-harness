@@ -1,10 +1,20 @@
-name: Deploy LibraryOS
+name: Publish LibraryOS harness update
 
-# Every green CI run on `main` redeploys the harness into LibraryOS, so a
-# landed harness fix cannot sit unpublished (the 2026-11-21 v0.3.8 case).
+# Every green CI run on `main` builds the harness update for LibraryOS and
+# PUBLISHES it to a side branch (`harness/auto-update`) — it never writes
+# LibraryOS `main`. F-028 option A: the old design ran `update --target` with
+# its default commit+push, so CI was a concurrent writer on LibraryOS `main`
+# while a LibraryOS session could be mid-edit there. The update is still
+# computed against the CI-tested commit and remains a one-command fast-forward
+# for the next LibraryOS session:
+#
+#   git -C <libraryos> fetch origin
+#   git -C <libraryos> merge --ff-only origin/harness/auto-update   # or rebase
+#   node bin/agent-harness.js update --target .
+#
 # `agent-harness update` is idempotent: when LibraryOS already matches the
 # release it prints Nothing-to-Update and commits nothing, so board-only
-# landings that change no harness file are a cheap no-op.
+# landings that change no harness file publish nothing.
 #
 # Auth: `LIBRARYOS_DEPLOY_KEY` is a write-scoped SSH deploy key on
 # dombaras/LibraryOS. It can push only that repository and is revocable from
@@ -25,8 +35,8 @@ permissions:
   actions: read
 
 jobs:
-  deploy:
-    name: Update LibraryOS from the CI-tested commit
+  publish:
+    name: Publish the harness update for LibraryOS (no main write)
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -40,7 +50,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Check out LibraryOS
+      - name: Check out LibraryOS (read-only source for the update)
         uses: actions/checkout@v4
         with:
           repository: dombaras/LibraryOS
@@ -48,11 +58,25 @@ jobs:
           ref: main
           ssh-key: ${{ secrets.LIBRARYOS_DEPLOY_KEY }}
 
-      - name: Deploy the harness
+      - name: Build the update commit (no push)
         working-directory: .libraryos
         env:
           HARNESS_ROOT: ${{ github.workspace }}
         run: |
           git config user.name "agent-harness-deploy"
           git config user.email "agent-harness-deploy@users.noreply.github.com"
-          node "$HARNESS_ROOT/bin/agent-harness.js" update --target "$PWD"
+          node "$HARNESS_ROOT/bin/agent-harness.js" update --target "$PWD" --no-push
+
+      - name: Publish to the side branch, never main
+        working-directory: .libraryos
+        run: |
+          ahead=$(git rev-list --count origin/main..HEAD)
+          if [ "$ahead" -eq 0 ]; then
+            echo "LibraryOS already matches this harness release — nothing to publish."
+            exit 0
+          fi
+          # Force-update the bot branch so it always carries the newest update
+          # commit. No --no-verify here: LibraryOS's pre-push battery is
+          # project-owned and must not gate a published update commit.
+          git push --no-verify --force origin HEAD:refs/heads/harness/auto-update
+          echo "Published $ahead commit(s) to harness/auto-update (LibraryOS main untouched)."

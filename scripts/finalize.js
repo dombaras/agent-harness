@@ -257,6 +257,142 @@ function isSymlink(rel) {
   }
 }
 
+/* `git status --porcelain` line -> repo-relative path (rename-aware). */
+function statusPath(line) {
+  let raw = line.slice(3).trim();
+  const arrow = raw.lastIndexOf(" -> ");
+  if (arrow !== -1) raw = raw.slice(arrow + 4).trim();
+  return raw.replace(/^"|"$/g, "");
+}
+
+/* Paths from RAW porcelain output. `dirtyEntries()` trims the whole stdout, which
+ * eats the leading space of a ` M <path>` first line — paths must never be
+ * sliced from that (F-028: `CHANGELOG.md` became `ACKLOG.md`). */
+function dirtyPaths() {
+  const res = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
+  if (res.status !== 0) return [];
+  return String(res.stdout || "")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map(statusPath)
+    .filter(Boolean);
+}
+
+/* Minimal glob -> regex (`**` any depth, `*` within a segment, `?` one char),
+ * same semantics as `scripts/qa/check-concurrency.js`. */
+function globToRegExp(glob) {
+  let s = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        s += ".*";
+        i++;
+      } else {
+        s += "[^/]*";
+      }
+    } else if (c === "?") {
+      s += "[^/]";
+    } else {
+      s += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp("^" + s + "$");
+}
+
+function matchesGlob(glob, file) {
+  const g = String(glob).replace(/\\/g, "/").replace(/^\.\//, "");
+  const f = String(file).replace(/\\/g, "/").replace(/^\.\//, "");
+  return globToRegExp(g).test(f);
+}
+
+/* Globs this feature declared it owns (`backlog owns <id> --files ...`), read
+ * from the board service when enabled, else `.agents/memory/owned-files.md`. */
+function ownedGlobs(feature) {
+  const id = String(feature).toUpperCase();
+  try {
+    const client = require(path.join(root, "scripts", "qa", "board-client.js"));
+    if (client.enabled(root)) {
+      const row = (client.getBoard(root).inprogress || []).find(
+        (r) => String(r.id).toUpperCase() === id
+      );
+      if (row && Array.isArray(row.owned) && row.owned.length) return row.owned;
+      return [];
+    }
+  } catch {
+    /* fall through to the file registry */
+  }
+  const p = path.join(root, ".agents", "memory", "owned-files.md");
+  const globs = [];
+  for (const line of readIf(p).split(/\r?\n/)) {
+    const m = line.match(/^\s*[-*]\s+([A-Za-z]+-\d+)\s*:\s*(.+)$/);
+    if (m && m[1].toUpperCase() === id) {
+      globs.push(...m[2].split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean));
+    }
+  }
+  return globs;
+}
+
+/* The finalization tail this command owns regardless of an ownership
+ * declaration: the board + changelog, this feature's handoff / QA plan / QA run
+ * / review, and the shared feature-doc tree. */
+function isTailPath(rel, feature) {
+  const f = String(rel).replace(/\\/g, "/");
+  const id = String(feature).toUpperCase();
+  if (f === "CHANGELOG.md" || f === "BACKLOG.md") return true;
+  if (f === ".agents/handoffs/INDEX.md") return true;
+  // The ownership registry is the guard's own escape hatch: `backlog owns`
+  // dirties this file, and committing it is part of the tail.
+  if (f === ".agents/memory/owned-files.md") return true;
+  const matchId = (prefix) => {
+    const m = f.match(new RegExp("^" + prefix + "/(.+)$", "i"));
+    return !!m && m[1].toUpperCase().startsWith(id);
+  };
+  if (f.toUpperCase() === `.AGENTS/HANDOFFS/${id}.MD`) return true;
+  if (matchId("\\.agents/qa-plans")) return true;
+  if (matchId("\\.agents/qa-runs")) return true;
+  if (matchId("\\.agents/reviews")) return true;
+  if (f.startsWith(".agents/features/")) return true;
+  return false;
+}
+
+/* Live primary sessions OTHER than this one sharing this checkout
+ * (`.serve/sessions/` leases, same liveness rules as the concurrency gate). */
+function otherLiveSessions() {
+  try {
+    const leases = require(path.join(root, "scripts", "qa", "lease-lib.js"));
+    const self = process.env.OPENCODE_SESSION_ID || "";
+    return leases.readLeases(root).filter((rec) => leases.leaseStatus(rec).live && rec.sessionID !== self);
+  } catch {
+    return [];
+  }
+}
+
+/* `{ others, foreign }`: when another live session shares this checkout, every
+ * dirty path must be provably this feature's (its tail or a declared glob) or it
+ * is foreign WIP that must never enter this landing commit. */
+function foreignWip(feature) {
+  const others = otherLiveSessions();
+  if (!others.length) return { others, foreign: [] };
+  const owned = ownedGlobs(feature);
+  const foreign = dirtyPaths().filter(
+    (rel) => !isTailPath(rel, feature) && !owned.some((g) => matchesGlob(g, rel))
+  );
+  return { others, foreign };
+}
+
+function foreignWipMessage(feature, others, foreign) {
+  return (
+    "\n[finalize] refusing to stage a shared checkout that holds another live session's WIP:\n" +
+    others.map((r) => `      another live session: ${r.sessionID || r.name} (pid ${r.pid})`).join("\n") +
+    "\n" +
+    foreign.map((rel) => `      not this landing: ${rel}`).join("\n") +
+    "\n      This checkout is shared, so finalize cannot tell that work apart from yours.\n" +
+    `      Move it into its own worktree, commit/stash it, or declare it with \`backlog owns ${feature} --files ...\`.\n` +
+    "      Re-run with --include-blocked only to stage it deliberately."
+  );
+}
+
 /* Stage the finalization tail without `git add -A`.
  *
  * - tracked changes (`git add -u`) are the feature's own edits;
@@ -269,7 +405,26 @@ function isSymlink(rel) {
  */
 function stageTail(feature, opts = {}) {
   const includeBlocked = Boolean(opts.includeBlocked);
-  if (!run("git", ["add", "-u"], { cwd: root })) return { ok: false, blocked: [] };
+  // A shared checkout is staged by ALLOWLIST, never by `git add -u`: another
+  // live session's tracked edits must not ride into this landing. Check and
+  // stage explicitly before the untracked sweep below.
+  const shared = includeBlocked ? { others: [], foreign: [] } : foreignWip(feature);
+  if (shared.foreign.length) {
+    console.error(foreignWipMessage(feature, shared.others, shared.foreign));
+    return { ok: false, blocked: shared.foreign };
+  }
+
+  if (shared.others.length) {
+    const owned = ownedGlobs(feature);
+    const allowed = dirtyPaths().filter(
+      (rel) => isTailPath(rel, feature) || owned.some((g) => matchesGlob(g, rel))
+    );
+    if (allowed.length && !run("git", ["add", "--", ...allowed], { cwd: root })) {
+      return { ok: false, blocked: [] };
+    }
+  } else if (!run("git", ["add", "-u"], { cwd: root })) {
+    return { ok: false, blocked: [] };
+  }
 
   const blocked = [];
   const boardService = boardServiceEnabled();
@@ -443,6 +598,9 @@ function main() {
 
   const closed = args.closed || handoffOutcome(feature) || "shipped";
   const archived = isArchived(feature);
+  // A shared checkout must not stage another live session's WIP. Refuse BEFORE
+  // the archive/commit so nothing is written when the tree cannot be separated.
+  const preflight = args["include-blocked"] ? { others: [], foreign: [] } : foreignWip(feature);
 
   if (args["dry-run"]) {
     console.log("finalize (dry run)\n");
@@ -452,8 +610,15 @@ function main() {
     console.log(`  closed:   ${closed}`);
     console.log(`  archived: ${archived ? "yes" : "no"}`);
     console.log(`  landed:   ${landedAlready(base) ? "yes" : "no"}`);
+    if (preflight.others.length) {
+      console.log(`  shared:   ${preflight.others.length} other live session(s) — ${preflight.foreign.length} foreign WIP path(s)`);
+    }
     console.log("  plan:     archive -> commit -> ship (rebase, gates, land, confirm CI)");
     return;
+  }
+
+  if (preflight.foreign.length) {
+    return fail(foreignWipMessage(feature, preflight.others, preflight.foreign));
   }
 
   // Idempotence: an already-archived row whose branch is contained in
