@@ -901,6 +901,26 @@ function parentPid(pid) {
   }
 }
 
+/* Where a session lives NOW, from the opencode store — the one record
+ * `session_move` updates (`session_v2.directory`). Lazy and fail-open: a
+ * checkout without a readable store (CI fixture, older runtime) returns "" and
+ * callers keep the pre-store lease behavior. F-021. */
+let storeLib;
+function sessionStoreDirectory(sessionID) {
+  try {
+    if (!storeLib) storeLib = require("./qa/store-lib.js");
+    return storeLib.sessionDirectory(sessionID) || "";
+  } catch {
+    return "";
+  }
+}
+
+/* Every lease read in this CLI uses the store as the authority when it can, so
+ * a session that moved away leaves no GHOST that blocks its old checkout. */
+function leaseOpts() {
+  return { resolveDir: sessionStoreDirectory };
+}
+
 /* The session that owns this process. A tool call forwards HARNESS_SESSION_ID;
  * the documented bash invocation (`node scripts/backlog.js worktree <id>`) does
  * NOT, so walk the process ancestry to the live lease that owns this shell. The
@@ -918,11 +938,13 @@ function ancestorSessionId(root) {
  * process is running INSIDE that session's tree. Unlike `ancestorSessionId` this
  * ignores HARNESS_SESSION_ID (which names a session, not a directory), so it can
  * answer "is this specific checkout a session's root?" — the `--open` guard in
- * `cmdWorktreePrune`. */
+ * `cmdWorktreePrune`. A lease whose session now lives elsewhere (moved by
+ * `session_move`) is a ghost and is ignored: the old tree must not be reported
+ * as "this session is rooted in it" (F-021). */
 function leaseAncestorIn(root) {
   let live;
   try {
-    live = leases.liveLeases(root);
+    live = leases.liveLeasesIn(root, leaseOpts());
   } catch {
     return "";
   }
@@ -938,6 +960,55 @@ function leaseAncestorIn(root) {
     pid = next;
   }
   return "";
+}
+
+/* Every live session under `root` that could own THIS process. Three signals,
+ * strongest first: an explicit HARNESS_SESSION_ID (tool calls), the caller's
+ * cwd naming a session's recorded worktree, and the lease pid being this
+ * process or an ancestor.
+ *
+ * The cwd signal is what makes `worktree-prune --self` work under OpenCode V2:
+ * the bash tool runs under the pty helper, a SIBLING of `opencode serve`, so
+ * the server pid that owns every lease is never an ancestor of the tool shell.
+ * Every session also shares that one pid, so an ancestry pid->session map can
+ * only ever name an arbitrary sibling. Standing in the checkout is exact
+ * ownership evidence (a session cannot be rooted in another session's finished
+ * worktree), and prune still requires the checkout to be clean + landed. */
+function owningSessionIds(root) {
+  const env = process.env.HARNESS_SESSION_ID;
+  if (env) return new Set([env]);
+  const ids = new Set();
+  let live;
+  try {
+    live = leases.liveLeasesIn(root, leaseOpts());
+  } catch {
+    return ids;
+  }
+  let cwd = "";
+  try {
+    cwd = path.resolve(process.cwd());
+  } catch {
+    /* deleted cwd (prune removing its own checkout) — fall back to ancestry */
+  }
+  const byPid = new Map();
+  for (const rec of live) {
+    if (!rec.sessionID) continue;
+    if (typeof rec.pid === "number") {
+      if (!byPid.has(rec.pid)) byPid.set(rec.pid, []);
+      byPid.get(rec.pid).push(rec.sessionID);
+    }
+    if (!cwd) continue;
+    const ptr = readSessionWorktree(root, rec.sessionID);
+    if (ptr && path.resolve(ptr) === cwd) ids.add(rec.sessionID);
+  }
+  let pid = process.pid;
+  for (let i = 0; i < 64 && pid > 1; i++) {
+    for (const sid of byPid.get(pid) || []) ids.add(sid);
+    const next = parentPid(pid);
+    if (!next || next === pid) break;
+    pid = next;
+  }
+  return ids;
 }
 
 function readSessionWorktree(root, sessionID) {
@@ -967,7 +1038,7 @@ function liveSessionWorktreeDirs(root) {
   const dirs = new Set();
   let live;
   try {
-    live = leases.liveLeases(root);
+    live = leases.liveLeasesIn(root, leaseOpts());
   } catch {
     return dirs;
   }
@@ -1042,10 +1113,20 @@ function cmdArchive(state, argv) {
   let cleanup = [];
   if (wt) {
     const cur = path.dirname(state.p);
-    const wtAbs = path.resolve(cur, wt.rel);
+    // The Handoff cell records the worktree path RELATIVE TO THE MAIN CHECKOUT
+    // (cmdWorktreePlan), and the board root can be a linked feature worktree —
+    // a claimed row archives locally so the archive rides its branch. Resolve
+    // against the main worktree root, never the board's checkout: resolving a
+    // relative `../.worktrees/<repo>/<id>` against that worktree produced
+    // `<worktree>/../.worktrees/...`, so `git worktree remove` failed with a
+    // bogus "not a working tree" and the live session pointer was cleared
+    // while the session still stood in the checkout (F-020, F-252).
+    const main = mainWorktreeRoot(cur);
+    const base = main || cur;
+    const wtAbs = path.resolve(base, wt.rel);
     const cwd = process.cwd();
     const inside = cwd === wtAbs || cwd.startsWith(wtAbs + path.sep);
-    cleanup = cleanupWorktree(cur, wt.rel, wt.branch, { skipRemove: inside });
+    cleanup = cleanupWorktree(base, wt.rel, wt.branch, { skipRemove: inside });
     // Drop the session pointer ONLY once we are no longer standing in the
     // worktree. `finalize` archives from inside the feature checkout and only
     // THEN runs `ship` (which watches CI from it); clearing the pointer here
@@ -1438,20 +1519,46 @@ function cmdWorktreePrune(state, argv) {
   );
   const matched = new Set();
   // `--self` is the authorization token `ship` passes after CI is green, so the
-  // session that just finished may prune its OWN worktree. It resolves the
-  // caller by process ancestry (a bash invocation carries no HARNESS_SESSION_ID)
-  // against the MAIN tree's live leases, then lifts the guard ONLY for a
-  // checkout the caller's pointer actually names (`isSelf` below). A plain
-  // `worktree-prune` (a foreign/concurrent caller, e.g. the F-252 prune) passes
-  // no token; and because several sessions can share one opencode pid, the
-  // exact-pointer match means a same-pid sibling can never be mistaken for the
-  // caller. `--dir <path>` narrows a `--self` run to the single just-shipped
-  // checkout, so it can never converge (and thus never remove) another
-  // session's worktree.
+  // session that just finished may prune its OWN worktree. It resolves every
+  // live session that could own this process — explicit env id, the checkout the
+  // caller stands in, or (legacy) a lease-pid ancestor — and lifts the guard ONLY
+  // for a checkout one of those pointers actually names (`isSelf` below). A
+  // plain `worktree-prune` (a foreign/concurrent caller, e.g. the F-252 prune)
+  // passes no token, so it still sees every owner's pointer; and because several
+  // sessions share one opencode server pid under V2, `--self` no longer trusts a
+  // single pid->session guess (`owningSessionIds`). `--dir <path>` narrows a
+  // `--self` run to the single just-shipped checkout, so it can never converge
+  // (and thus never remove) another session's worktree.
   const onlyDir = argv.dir ? path.resolve(argv.dir) : null;
-  const selfSession = argv.self ? process.env.HARNESS_SESSION_ID || ancestorSessionId(main) : "";
-  const selfPointer = selfSession ? readSessionWorktree(main, selfSession) : "";
-  const isSelf = (p) => !!(selfPointer && path.resolve(selfPointer) === path.resolve(p));
+  const selfOwners = argv.self ? owningSessionIds(main) : new Set();
+  const selfOwner = (p) => {
+    const abs = path.resolve(p);
+    for (const sid of selfOwners) {
+      const ptr = readSessionWorktree(main, sid);
+      if (ptr && path.resolve(ptr) === abs) return sid;
+    }
+    return "";
+  };
+  const isSelf = (p) => !!selfOwner(p);
+  // Retire GHOST leases before reading the live view: `session_move` leaves the
+  // old tree heartbeating a lease for a session that now lives elsewhere, and
+  // the guards below would otherwise treat that tree as its root forever
+  // (F-021). The store is authoritative; no readable store = no-op.
+  const retired = [];
+  const seenRoots = new Set();
+  for (const e of entries) {
+    const dir = path.resolve(e.path);
+    if (seenRoots.has(dir)) continue;
+    seenRoots.add(dir);
+    try {
+      for (const r of leases.retireForeignLeases(dir, leaseOpts())) retired.push({ ...r, root: dir });
+    } catch {
+      /* best-effort — a lease sweep must never block a prune */
+    }
+  }
+  if (retired.length) {
+    notes.push(`retired ${retired.length} moved-session lease(s) (the session now lives in another checkout)`);
+  }
   const inUse = liveSessionWorktreeDirs(main);
 
   let pruned = 0;
@@ -1498,7 +1605,7 @@ function cmdWorktreePrune(state, argv) {
       continue;
     }
     gitCmd(root, ["branch", "-d", e.branch]);
-    clearSessionWorktree(main, isSelf(e.path) ? selfSession : process.env.HARNESS_SESSION_ID, e.path);
+    clearSessionWorktree(main, isSelf(e.path) ? selfOwner(e.path) : process.env.HARNESS_SESSION_ID, e.path);
     notes.push(`pruned ${label} (${e.branch})`);
     pruned += 1;
   }

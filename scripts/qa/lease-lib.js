@@ -166,6 +166,63 @@ function liveLeases(root, opts) {
   return readLeases(root).filter((rec) => leaseStatus(rec, opts).live);
 }
 
+/* Same checkout, tolerating a trailing separator and the Windows
+ * case-insensitive filesystem rule. */
+function sameDir(a, b) {
+  const x = path.resolve(String(a || ""));
+  const y = path.resolve(String(b || ""));
+  return process.platform === "win32" ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
+/* Where a lease's session lives NOW, per the caller's resolver (release builds
+ * inject `store-lib.sessionDirectory`). "" means "unknown", which callers must
+ * treat as "keep the old behavior" — never as proof that the lease moved. */
+function leaseSessionDir(rec, opts) {
+  if (typeof opts.resolveDir !== "function") return "";
+  const sid = rec.sessionID || (rec.name && rec.name.replace(/\.json$/, "")) || "";
+  if (!sid) return "";
+  try {
+    return opts.resolveDir(sid) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+/* Live leases whose session still lives in `root`. A session moved by
+ * `session_move` leaves a GHOST lease in the tree it left (the plugin instance
+ * there keeps heartbeating its stale root), and a ghost must never count as
+ * "this checkout is in use" or "the caller is rooted here" — the F-021 prune
+ * block. An unresolvable directory keeps the lease (conservative fallback). */
+function liveLeasesIn(root, opts = {}) {
+  return liveLeases(root, opts).filter((rec) => {
+    const dir = leaseSessionDir(rec, opts);
+    return !dir || sameDir(dir, root);
+  });
+}
+
+/* Retire the GHOST leases in `root` — live leases whose session the resolver
+ * places in a different checkout. Never touches a lease whose directory is
+ * unknown or still this tree. Returns [{sessionID, directory}]. */
+function retireForeignLeases(root, opts = {}) {
+  if (typeof opts.resolveDir !== "function") return [];
+  const removed = [];
+  for (const rec of readLeases(root)) {
+    if (!leaseStatus(rec, opts).live) continue;
+    const dir = leaseSessionDir(rec, opts);
+    if (!dir || sameDir(dir, root)) continue;
+    try {
+      fs.rmSync(rec.file, { force: true });
+      if (rec.name) {
+        fs.rmSync(path.join(leaseDir(root), rec.name.replace(/\.json$/, ".worktree")), { force: true });
+      }
+      removed.push({ sessionID: rec.sessionID || rec.name, directory: dir });
+    } catch (_) {
+      /* best-effort */
+    }
+  }
+  return removed;
+}
+
 /* Write/replace this process's lease for a primary session. */
 function writeLease(root, sessionID, meta = {}) {
   const dir = leaseDir(root);
@@ -255,6 +312,10 @@ module.exports = {
   heartbeatAt,
   leaseStatus,
   liveLeases,
+  sameDir,
+  leaseSessionDir,
+  liveLeasesIn,
+  retireForeignLeases,
   writeLease,
   touchLease,
   clearLease,
