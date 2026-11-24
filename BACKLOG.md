@@ -66,6 +66,7 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
+| F-031 | P2 | ? | Reconcile the harness self-deploy: root scripts/orient.js diverges from templates/scripts/orient.js, so `agent-harness update .` fails closed on drift, .harness.json stays at 0.4.9, and the installed harness-freshness plugin blocks every new session in the harness checkout. | `node bin/agent-harness.js update . --dry-run` -> has locally-modified harness-owned file(s): scripts/orient.js; sha256 root 5244981c… vs template 997eec1a…; diff shows root lacks the persona-economics block (require ./qa/dispatch-persona.js, personaStats/personaRows); discovered while installing harness-freshness (F-030) | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
 | F-017 | P4 | ? | Cross-check agent-report/store-lib against `opencode stats --json` as an independent oracle: the CLI now emits per-tool reliability + cost/token stats, so a parity assertion would catch store-shape drift the direct-DB reader silently misses. | docs/opencode-v2.3-compat-scan.md §G5; `opencode stats --help` | ? |
 
