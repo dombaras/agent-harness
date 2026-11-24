@@ -557,20 +557,26 @@ function main() {
  * release its own pointer; that is safe here because ship passes it only after
  * the CI watch is over, so there is no mid-watch checkout to blind (F-252). A
  * no-op with the manual fallback when the worktree cannot be removed safely.
- * Runs from `mainRoot` so it survives this process's cwd being the worktree:
- * removing the cwd would break any later relative-path work. `--dir` pins the
- * prune to THIS checkout, so a `--self` run never converges a sibling session's
- * worktree. */
+ * Runs with the worktree as its cwd: under OpenCode V2 the opencode server is a
+ * SIBLING of the bash/pty process, so the lease pid is never an ancestor;
+ * standing in the checkout is the exact ownership signal `worktree-prune --self`
+ * resolves. Removing the child's cwd is its last act and every path it uses is
+ * absolute. `--dir` pins the prune to THIS checkout, so a `--self` run never
+ * converges a sibling session's worktree. */
 function pruneShippedWorktree(mainRoot, branch, worktreeDir) {
   const backlog = path.join(mainRoot, "scripts", "backlog.js");
   if (!fs.existsSync(backlog)) {
     console.log("\n[ship] feature worktree left in place (scripts/backlog.js not found in main).");
     return;
   }
+  if (!fs.existsSync(worktreeDir)) {
+    console.log("\n[ship] feature worktree already removed.");
+    return;
+  }
   const res = spawnSync(
     process.execPath,
     [backlog, "worktree-prune", branch, "--self", "--dir", worktreeDir, "--no-fetch"],
-    { cwd: mainRoot, encoding: "utf8" }
+    { cwd: worktreeDir, encoding: "utf8" }
   );
   if (/pruned /.test(res.stdout || "")) {
     console.log("\n[ship] pruned the feature worktree (branch landed + CI green).");

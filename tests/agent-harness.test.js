@@ -9285,6 +9285,67 @@ test("worktree-prune --self never prunes a worktree the caller's pointer does no
   assert.ok(exists(wt), "a sibling's live worktree is never mistaken for the caller's own");
 });
 
+test("worktree-prune --self resolves the owner from the checkout it stands in (V2 pty runtime)", () => {
+  // OpenCode V2 runs tool bash under the pty helper, a SIBLING of `opencode
+  // serve`; every lease carries the server pid, which is never an ancestor of
+  // the prune. Only the caller's cwd names the session, so ship runs the prune
+  // from inside the finished worktree. Regression: f-023/f-024 survived finalize.
+  const { target } = trackedRepoFixture();
+  fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "scripts", "backlog.js"), path.join(target, "scripts", "backlog.js"));
+  copyBoardLib(target);
+  fs.copyFileSync(path.join(h.TEMPLATES_DIR, "BACKLOG.md"), path.join(target, "BACKLOG.md"));
+  git(target, ["add", "-A"]);
+  git(target, ["commit", "-q", "-m", "seed harness scripts"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  const wt = path.join(tmpdir(), "wt-v2");
+  git(target, ["branch", "feat-v2", "main"]);
+  git(target, ["worktree", "add", wt, "feat-v2"]);
+  fs.writeFileSync(path.join(wt, "x.txt"), "x\n", "utf8");
+  execFileSync("git", ["-C", wt, "add", "-A"], { encoding: "utf8" });
+  execFileSync("git", ["-C", wt, "commit", "-q", "-m", "feat-v2 work"], { encoding: "utf8" });
+  git(target, ["merge", "--ff-only", "feat-v2"]);
+  git(target, ["push", "-q", "origin", "main"]);
+
+  // A live server process that is NOT an ancestor of the spawned prune: exactly
+  // the shared-pid/sibling shape of `opencode serve` in the V2 runtime.
+  const server = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  try {
+    const sessions = path.join(target, ".serve", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessions, "ses_v2.json"),
+      JSON.stringify({ sessionID: "ses_v2", pid: server.pid, startedAt: Date.now(), heartbeatAt: Date.now() }),
+      "utf8"
+    );
+    fs.writeFileSync(path.join(sessions, "ses_v2.worktree"), wt, "utf8");
+
+    // A plain prune from main still honours the live-session guard (F-252).
+    let res = spawnSync(process.execPath, ["scripts/backlog.js", "worktree-prune", "feat-v2"], {
+      cwd: target,
+      encoding: "utf8",
+      env: { ...process.env, HARNESS_SESSION_ID: "" },
+    });
+    assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /kept wt-v2 \(in use by a live session\)/);
+    assert.ok(exists(wt), "a plain prune keeps the live session's worktree");
+
+    // `--self` from INSIDE the checkout resolves the owner by cwd and prunes.
+    res = spawnSync(
+      process.execPath,
+      [path.join(target, "scripts", "backlog.js"), "worktree-prune", "feat-v2", "--self", "--dir", wt],
+      { cwd: wt, encoding: "utf8", env: { ...process.env, HARNESS_SESSION_ID: "" } }
+    );
+    assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /pruned wt-v2/);
+    assert.ok(!exists(wt), "the owner's checkout is pruned despite no lease-pid ancestry");
+    assert.ok(!exists(path.join(sessions, "ses_v2.worktree")), "the session worktree pointer is cleared");
+  } finally {
+    server.kill();
+  }
+});
+
 test("archive keeps the session worktree pointer while standing inside the checkout", () => {
   const { target } = trackedRepoFixture();
   fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });

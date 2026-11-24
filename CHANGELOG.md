@@ -8,6 +8,13 @@
   footer no longer reads as if the new server-side harness were already active.
   The badge reads `.serve/harness-freshness.json` best-effort (missing or
   malformed = no marker) and keeps the warning colour. (F-027, H-44)
+- A finished feature worktree now cleans itself up again under OpenCode V2:
+  `ship` asks `worktree-prune` to remove the landed checkout from inside that
+  checkout, and `--self` accepts the caller's cwd as ownership proof when the
+  lease pid is not an ancestor (V2 runs tool bash under a pty helper that is a
+  sibling of `opencode serve`; every session also shares the server pid, so
+  ancestry cannot name the caller). Merged, clean worktrees no longer survive
+  finalize and pile up for manual housekeeping. (F-026)
 
 ## 0.4.8 — 2026-11-24
 
