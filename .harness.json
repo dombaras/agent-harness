@@ -1,11 +1,11 @@
 {
-  "version": "0.4.17",
+  "version": "0.4.18",
   "projectName": "agent-harness",
   "projectDomain": "",
   "initializedAt": "2026-11-20T15:28:27.274Z",
-  "updatedAt": "2026-11-25T12:35:46.808Z",
+  "updatedAt": "2026-11-25T12:47:43.302Z",
   "files": {
-    "package.json": "fe47d7741a2380c2d51dd9413f7a9250bacf905921d187da384b8c09d022be30",
+    "package.json": "8e5e577d7568eed436a712c810a44be52f7ab2012efc7ece43d935412e4f9f8d",
     ".gitattributes": "12c4d531af67b819a562126556e8fc3565594a3593f2db9e1640baa9a87a48f7",
     ".ignore": "fbe125871ea72e7ca387e954eefca50eec09a8ec1e9cd98b00e7cb488d486d2f",
     ".agents/AGENTS.md": "aa22099f4b61edcf939d7e91cb2df3b3a8613ae8f7273147962dcf8bc59d84cb",
@@ -52,7 +52,7 @@
     ".opencode/plugins/backlog-notify.ts": "38fa268756dc5a78caf30b31f5c1eab23b1f027485bcf9fda64ffe25f8fd4c58",
     ".opencode/plugins/backlog.ts": "b9e286b8052c0ab09a2224a040907cd6aa168dd372a8e4e452d40227ad749466",
     ".opencode/plugins/checkpoint.ts": "3bf1cccbdc426b56aa82ed104f80db4667de9aa9c2492691d87d7c5d9513c875",
-    ".opencode/plugins/context-guard.ts": "a8338e9f2677da2a4d8066d0eca791fab599841d1cf3a75f89465e8fa13ccca5",
+    ".opencode/plugins/context-guard.ts": "0cdc63fa985425ee8f18fb162f6a1e798849268f946ae79dcd7b1ff029a0b63e",
     ".opencode/plugins/diff.ts": "96a84188226d53118edf2c484260a2c442dd24a869a90808a90d38f84c1872c6",
     ".opencode/plugins/dispatch.ts": "3e0029f8a926ffe93f7ab65f9c642774c6891064a2de25286e4d1a217ae6e220",
     ".opencode/plugins/gates.ts": "d4e6601f5d7df8f5f4378ac6e760143914d0a8d7065b67d92e862c3847819d2f",
