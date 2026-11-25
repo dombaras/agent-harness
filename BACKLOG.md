@@ -47,7 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-045 | ? | Harness auto-update visibility, part 2: a successful update leaves the footer on the pre-update build because the freshness writer records `refreshed` (terminal) while the badge renders only `restart-needed`; a `blocked` verdict is discarded once its writer pid dies; and a project still on the old harness cannot render `blocked` because that badge code ships inside the blocked update. Fix: write restart-needed after a successful apply, keep blocked independent of writer liveness, have the global plugin write the project probe cache, add a refresh-only startup sweep, race/EOL hardening, and a doctor that tells the whole truth. | ? |
+| F-045 | ? | Harness auto-update visibility, part 2: a successful update leaves the footer on the pre-update build because the freshness writer records `refreshed` (terminal) while the badge renders only `restart-needed`; a `blocked` verdict is discarded once its writer pid dies; and a project still on the old harness cannot render `blocked` because that badge code ships inside the blocked update. Fix: write restart-needed after a successful apply, keep blocked independent of writer liveness, have the global plugin write the project probe cache, add a refresh-only startup sweep, race/EOL hardening, and a doctor that tells the whole truth. | ? (worktree: ../.worktrees/agent-harness/f-045; branch: f-045) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
