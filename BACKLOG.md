@@ -66,6 +66,7 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
+| F-036 | P2 | ? | Fix the false 'restart needed' harness block: classify a post-start harness write by what it touched (metadata-only = current) and make a real restart-pending notice advisory; also drop/re-collect a stale context-guard orient brief when HEAD/version moves under it | 0.4.16->0.4.17 write blocked a resumed session while the badge read 0.4.17; injected brief kept saying 0.4.16/e336214 after f194297 landed | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
 | F-017 | P4 | ? | Cross-check agent-report/store-lib against `opencode stats --json` as an independent oracle: the CLI now emits per-tool reliability + cost/token stats, so a parity assertion would catch store-shape drift the direct-DB reader silently misses. | docs/opencode-v2.3-compat-scan.md §G5; `opencode stats --help` | ? |
 
