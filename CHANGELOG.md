@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.6 — 2026-11-25
 
 - The freshness activity test no longer drives its plugin spawn against the
   developer's real project registry. That spawn lacked `XDG_STATE_HOME`, so its
