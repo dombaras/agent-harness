@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-033 | ? | Release 0.4.15: document the package.json bump rule in the gate reference (auto-update propagation probe) | .agents/handoffs/F-033.md (worktree: ../.worktrees/agent-harness/f-033; branch: f-033) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -116,6 +115,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-030 | ? | Session-start harness freshness: on every new and cleared/compacted session, apply a pending harness update (local checkout or registry) when the tree is safe, and require a restart; never mutate an unsafe tree. | shipped |
 | F-031 | ? | Reconcile the harness self-deploy: root scripts/orient.js diverges from templates/scripts/orient.js, so `agent-harness update .` fails closed on drift, .harness.json stays at 0.4.9, and the installed harness-freshness plugin blocks every new session in the harness checkout. | shipped 2026-11-24 — root scripts/orient.js reconciled to templates/ (0 root-only lines); `agent-harness update .` deployed (4 created, 3 overwritten, 1 adopted), .harness.json 0.4.9 -> 0.4.13, commit 6583d6c pushed; doctor: deployed v0.4.13, dispatch plugin present, update dry-run clean |
 | F-032 | ? | 0.4.14: always-fresh harness update probe — re-check registry on new/cleared/compacted sessions and render the badge from live files | shipped |
+| F-033 | ? | Release 0.4.15: document the package.json bump rule in the gate reference (auto-update propagation probe) | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

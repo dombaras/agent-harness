@@ -58,7 +58,10 @@ feature doc tree) is out of scope.
 `node scripts/qa/check-docs.js`
 No un-substituted `{{PLACEHOLDER}}`, no dangling links, well-formed ADRs, and every
 shipped commit is cited in `CHANGELOG.md` by short hash. **Satisfy:** add the
-CHANGELOG line in the same commit (a docs-only `chore` commit is not enough).
+CHANGELOG line in the same commit (a docs-only `chore` commit is not enough). A
+change under `bin/` or `templates/` also bumps `package.json` in the same commit —
+the harness suite fails a template change that leaves the published version
+unchanged.
 
 ## `test:concurrency` — cross-session working-tree guard
 `node scripts/qa/check-concurrency.js`

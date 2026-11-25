@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.15 — 2026-11-25
+
+- The gate reference now states the release rule the suite already enforces: a
+  change under `bin/` or `templates/` must bump `package.json` in the same
+  commit, on top of the CHANGELOG line.
+
 ## 0.4.14 — 2026-11-24
 
 - The harness update badge can no longer lag a release behind a cached verdict.
