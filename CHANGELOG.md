@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1 — 2026-11-25
+
+- `agent-harness update` no longer stops at the locally-modified-file guard in
+  the harness's own checkout. The 0.5.0 diagnosis-gate documentation landed in
+  the deployed `docs/gates.md` but not in `templates/docs/gates.md`, so every
+  self-update saw a "hand-edited" harness file, refused to write, and the
+  repo's version badge stayed on 0.4.19. The template now carries the
+  `test:diagnosis` section, so the deployed copy is identical and the update
+  proceeds. Reported case: 0.5.0 published, service restarted, badge still
+  stale in both the harness repo and LibraryOS.
+
 ## 0.5.0 — 2026-11-25
 
 - Declared bug, incident, and fix work now needs a checked diagnosis before it can finalize: two candidate causes with discriminating tests, ruled-out causes, independent falsification, and a red-before/green-after oracle. (F-040)
