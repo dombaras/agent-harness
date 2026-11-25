@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-042 | ? | harness self-update/version badge stuck after 0.5.0: templates/docs/gates.md is missing the test:diagnosis section that landed only in the deployed docs/gates.md, so update fails closed as a local hand-edit in the harness repo and neither its badge nor LibraryOS can reach 0.5.x; port the section into the template and release 0.5.1 | .agents/handoffs/F-042.md (worktree: ../.worktrees/agent-harness/f-042; branch: f-042) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -66,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-042 | P1 | ? | harness self-update/version badge stuck after 0.5.0: templates/docs/gates.md is missing the test:diagnosis section that landed only in the deployed docs/gates.md, so update fails closed as a local hand-edit in the harness repo and neither its badge nor LibraryOS can reach 0.5.x; port the section into the template and release 0.5.1 | .harness.json 0.4.19 (harness) / 0.4.18 (LibraryOS); .serve/harness-freshness.json blocked 'update failed'; dry-run: docs/gates.md diverges; diff docs/gates.md vs templates/docs/gates.md | ? |
 | F-039 | P2 | ? | stale restart badge still shown after a service restart: the freshness plugin never evaluates a project tree without a session event that carries its directory (startup writes no verdict; an unresolvable first event burns the session's once-only check), so a dead process's restart-needed file survives; the project's own badge/TUI also still runs the pre-fix build | publicvirtuallibrary TUI pid 535837 (started 13:35Z) runs the Nov-24 badge; .harness.json 0.4.18; verdict restart-needed have=0.4.17 @12:33Z never rewritten after the 14:00:40Z service restart (pid 551639, new global plugin with PROCESS_PID loaded); driving the installed plugin on the real tree in dry mode works (stale-would-update 0.4.18->0.4.19); contrib/global-plugins/harness-freshness.ts consider()/evaluate(); templates/.opencode/plugins/harness-version/{version.mjs,tui.tsx} | ? |
 | F-041 | P2 | ? | Prune the feature worktree automatically at task completion: after finalize archives the landed row and CI is green, remove the shipped worktree (or schedule worktree-prune) instead of printing "feature worktree left in place — clean up when this session ends". Never prune an unmerged or dirty worktree, or the session's own checkout; report what was kept and why. | F-040 finalize/ship output: "[ship] feature worktree left in place. Clean up when this session ends"; /home/ronen/develop/.worktrees/agent-harness/f-040 remains after a green-CI landing; scripts/ship.js tail; scripts/finalize.js archive step; docs: .agents/AGENTS.md §7.6 | ? |
 | F-037 | P3 | ? | checkpoint resume/read resolve feature IDs case-insensitively (F-036.md exists but --feature f-036 reports no handoff on a case-sensitive FS; orient matches case-insensitively) | .agents/handoffs/F-036.md; `node scripts/checkpoint.js resume --feature f-036` → 'no handoff found'; orient resolves F-036 | ? |
