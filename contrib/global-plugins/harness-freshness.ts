@@ -11,7 +11,7 @@ import { execFileSync, spawn } from "node:child_process"
 // Why global: a check shipped inside the project harness can't catch a stale
 // harness — the stale copy is what loads. And opencode loads config/plugins once
 // at startup, so an in-session update only changes files on disk; the agent must
-// restart opencode to load the updated plugins.
+// restart the opencode service to load the updated plugins.
 //
 // "Latest" is the authoritative local checkout (`AGENT_HARNESS_HOME`, default
 // ~/develop/agent-harness). On each primary session start it compares the
@@ -28,6 +28,12 @@ import { execFileSync, spawn } from "node:child_process"
 // Anything else (diverged branch, overlapping dirty files, stale project main,
 // update failure) is NOT auto-changed: it records a BLOCKED notice, injected
 // into the session tail so the agent must relay it and wait for the user.
+//
+// The check also runs once per session on its first activity. A session that
+// survives an opencode service restart never re-fires `session.created`, so a
+// `restart-needed` verdict written by the previous process would otherwise
+// outlive the very restart that resolved it (the footer badge keeps saying
+// ↻restart and the notice stays stale).
 //
 // Set AGENT_HARNESS_FRESHNESS=dry to detect+report without applying (testing).
 
@@ -179,7 +185,7 @@ const HarnessFreshness: Plugin = {
         sid,
         `HARNESS UPDATE AVAILABLE — v${have} -> v${latest} (npm).\n\n` +
           `Run: npx opencode-agent-harness@latest update\n` +
-          `Then restart opencode so the updated plugins/config load.\n\n` +
+          `Then restart the opencode service (the server process, not just the TUI) so the updated plugins/config load.\n\n` +
           `This is advisory — continue the task; relay it to the user when convenient.`
       )
       report(`update available ${have} -> ${latest} (npm)`)
@@ -214,8 +220,8 @@ const HarnessFreshness: Plugin = {
       notices.set(
         sid,
         `HARNESS UPDATED — ${have ? `v${have} -> v${latest}` : `v${latest}`} in ${tree}.\n\n` +
-          `The files are current, but this opencode process is still running the previous ones.\n` +
-          `Restart opencode now to load the update.`
+          `The files are current, but this opencode service is still running the previous ones.\n` +
+          `Restart the opencode service (the server process, not just the TUI) now to load the update.`
       )
     }
 
@@ -244,7 +250,7 @@ const HarnessFreshness: Plugin = {
             sid,
             `The harness on disk is current (${have}) but this opencode process started before the last ` +
               `harness write, so the plugins/config in effect are the OLD ones — a deploy is inert until restart.`,
-            `  restart opencode to load ${have}.`
+            `  restart the opencode service (the server process, not just the TUI) to load ${have}.`
           )
           return
         }
@@ -267,7 +273,7 @@ const HarnessFreshness: Plugin = {
             sid,
             `This worktree is on harness ${have} (latest ${latest}), but the project's MAIN checkout ` +
               `(${mainTop}) is itself stale${mainHave ? ` at ${mainHave}` : ""}.`,
-            `  node ${CLI} update --target ${mainTop}\n  # then restart opencode; the worktree can then fast-forward.`
+            `  node ${CLI} update --target ${mainTop}\n  # then restart the opencode service; the worktree can then fast-forward.`
           )
         }
         const ref = git(mainTop, ["rev-parse", "--abbrev-ref", "HEAD"]).out || "main"
@@ -277,7 +283,7 @@ const HarnessFreshness: Plugin = {
             sid,
             `This worktree's branch (${git(tree, ["rev-parse", "--abbrev-ref", "HEAD"]).out}) has commits of ` +
               `its own, so the harness refresh needs a merge/rebase, not a fast-forward.`,
-            `  git -C ${tree} merge ${ref}      # or: git -C ${tree} rebase ${ref}\n  # then restart opencode.`
+            `  git -C ${tree} merge ${ref}      # or: git -C ${tree} rebase ${ref}\n  # then restart the opencode service.`
           )
         }
         const incoming = new Set(
@@ -293,7 +299,7 @@ const HarnessFreshness: Plugin = {
           return block(
             sid,
             `Local changes overlap the files a harness refresh would touch: ${overlap.join(", ")}.`,
-            `  commit or stash them, then restart opencode to auto-refresh.`
+            `  commit or stash them, then restart the opencode service to auto-refresh.`
           )
         }
         if (DRY) {
@@ -305,7 +311,7 @@ const HarnessFreshness: Plugin = {
         if (m.ok) {
           notices.delete(sid)
           writeStatus(tree, { ...base, status: "refreshed", ref, at: new Date().toISOString() })
-          report(`refreshed worktree ${tree}: ${have} -> ${latest} (ff ${ref}) — restart opencode to load the updated plugins`)
+          report(`refreshed worktree ${tree}: ${have} -> ${latest} (ff ${ref}) — restart the opencode service to load the updated plugins`)
         } else {
           writeStatus(tree, { ...base, status: "blocked", reason: "fast-forward failed", detail: m.err || m.out })
           await block(sid, `Fast-forward refresh failed: ${(m.err || m.out || "unknown").split(/\r?\n/)[0]}`, `  git -C ${tree} merge ${ref}`)
@@ -323,7 +329,7 @@ const HarnessFreshness: Plugin = {
         fs.existsSync(path.join(tree, ".git", "rebase-apply"))
       if (inProgress) {
         writeStatus(tree, { ...base, status: "blocked", reason: "git operation in progress" })
-        return block(sid, `A git merge/rebase is already in progress in the main checkout.`, `  finish or abort it, then restart opencode.`)
+        return block(sid, `A git merge/rebase is already in progress in the main checkout.`, `  finish or abort it, then restart the opencode service.`)
       }
       if (DRY) {
         writeStatus(tree, { ...base, status: "stale-would-update" })
@@ -350,7 +356,7 @@ const HarnessFreshness: Plugin = {
         child.on("close", (code) => {
           if (code === 0) {
             writeStatus(tree, { ...base, status: "refreshed", source, at: new Date().toISOString() })
-            report(`updated main checkout ${tree}: ${have} -> ${latest} (${source}) — restart opencode to load it`)
+            report(`updated main checkout ${tree}: ${have} -> ${latest} (${source}) — restart the opencode service to load it`)
             announce(sid, have, latest, tree)
           } else {
             const tail = out.trim().split(/\r?\n/).slice(-6).join("\n")
@@ -367,6 +373,21 @@ const HarnessFreshness: Plugin = {
       }
     }
 
+    /* A session that predates this process (it survived an opencode service
+     * restart) never re-fires `session.created`. Re-evaluate once per session on
+     * its first activity so a `restart-needed` verdict written by the previous
+     * process is replaced instead of outliving the restart that resolved it. An
+     * unknown root is skipped: the event envelope carries the session's own
+     * location, so its traffic supplies it without guessing the server cwd. */
+    const childSessions = new Set<string>()
+    const consider = async (sid: string, dir: string | null | undefined) => {
+      if (!sid || checked.has(sid) || childSessions.has(sid)) return
+      const root = dir || roots.get(sid)
+      if (!root) return
+      checked.add(sid)
+      await evaluate(sid, root)
+    }
+
     // V1 used an `event` hook; V2 plugins subscribe to the event stream in setup.
     const controller = new AbortController()
     void (async () => {
@@ -381,12 +402,20 @@ const HarnessFreshness: Plugin = {
             // project. Resolve the event's own location first.
             const d: any = (event as any)?.data || {}
             const eventDir = (event as any)?.location?.directory
+            const sid = typeof d.sessionID === "string" ? d.sessionID : ""
+            const dir =
+              typeof eventDir === "string" && eventDir
+                ? eventDir
+                : typeof d.location?.directory === "string" && d.location.directory
+                  ? d.location.directory
+                  : null
+            if (sid && dir && !roots.has(sid)) roots.set(sid, dir)
             if (event?.type === "session.deleted") {
-              const sid = d.sessionID
-              if (typeof sid === "string" && sid) {
+              if (sid) {
                 notices.delete(sid)
                 checked.delete(sid)
                 roots.delete(sid)
+                childSessions.delete(sid)
               }
               continue
             }
@@ -394,29 +423,23 @@ const HarnessFreshness: Plugin = {
              * boundary instead of trusting the session.created verdict from before
              * the context was replaced. */
             if (event?.type === "session.compaction.ended") {
-              const sid = d.sessionID
-              if (typeof sid !== "string" || !sid) continue
-              const dir = roots.get(sid)
-              if (!dir) continue
+              if (!sid) continue
               checked.delete(sid)
-              checked.add(sid)
-              await evaluate(sid, dir)
+              await consider(sid, dir)
               continue
             }
-            if (event?.type !== "session.created") continue
-            const sid = d.sessionID
-            if (typeof sid !== "string" || !sid) continue
-            if (d.parentID) continue // child/subagent session
-            if (checked.has(sid)) continue
-            checked.add(sid)
-            const dir =
-              typeof eventDir === "string" && eventDir
-                ? eventDir
-                : typeof d.location?.directory === "string" && d.location.directory
-                  ? d.location.directory
-                  : ctx.location.directory
-            roots.set(sid, dir)
-            await evaluate(sid, dir)
+            if (!sid) continue
+            if (event?.type === "session.created" && d.parentID) {
+              childSessions.add(sid) // child/subagent session
+              continue
+            }
+            /* Any session-scoped event is activity: created, message, tool, idle.
+             * `consider` makes this a once-per-session check in this process, so a
+             * restored session has its verdict re-evaluated on the first event it
+             * produces after a restart. */
+            const startDir =
+              event?.type === "session.created" ? dir || ctx.location.directory : dir
+            await consider(sid, startDir)
           } catch (err: any) {
             report(`check failed: ${err?.message || err}`, "warn")
           }
@@ -432,6 +455,11 @@ const HarnessFreshness: Plugin = {
       try {
         const sid = event?.sessionID
         if (typeof sid !== "string" || !sid) return
+        /* First activity of a session restored across an opencode service
+         * restart: re-evaluate here so the stale verdict is replaced before the
+         * reply (the badge re-reads the file every render). Fire-and-forget —
+         * never delay the request on git/npm. */
+        void consider(sid, roots.get(sid)).catch(() => {})
         const text = notices.get(sid)
         if (!text) return
         notices.delete(sid) // one-shot: the model already saw it and must wait

@@ -10,6 +10,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const upd = require("../templates/scripts/harness-update.js");
 
@@ -187,5 +188,108 @@ test("the global freshness plugin applies updates and signals a restart (drift g
     "uses the top-level directory when present"
   );
   assert.match(src, /HARNESS UPDATED/, "announces an applied update");
-  assert.match(src, /Restart opencode now to load the update\./, "requires a restart to activate it");
+  assert.match(
+    src,
+    /Restart the opencode service \(the server process, not just the TUI\) now to load the update\./,
+    "requires a service restart to activate it"
+  );
+});
+
+test("a restart-needed verdict written by a previous process is replaced on session activity (F-035)", () => {
+  // The reported failure: the previous opencode process wrote restart-needed,
+  // the service restarted, but the restored session never re-fires
+  // `session.created`, so the badge kept saying ↻restart. Drive the real plugin
+  // (type-stripped) with a fake V2 ctx: one session-scoped activity event must
+  // rewrite the verdict to `current`.
+  const home = tmpdir();
+  fs.writeFileSync(
+    path.join(home, "package.json"),
+    JSON.stringify({ name: "opencode-agent-harness", version: "9.9.9" })
+  );
+  const tree = tmpdir();
+  fs.mkdirSync(path.join(tree, ".serve"), { recursive: true });
+  fs.mkdirSync(path.join(tree, ".git"), { recursive: true });
+  const git = (...args) => spawnSync("git", ["-C", tree, ...args], { encoding: "utf8" });
+  assert.strictEqual(git("init", "-q", "-b", "main").status, 0, "fixture is a git tree");
+  fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.9.9" }));
+  // The deploy predates this process by construction: an old mtime is the
+  // "previous service wrote it" signal.
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(path.join(tree, ".harness.json"), old, old);
+  const verdictPath = path.join(tree, ".serve", "harness-freshness.json");
+  fs.writeFileSync(
+    verdictPath,
+    JSON.stringify({ status: "restart-needed", have: "9.9.9", latest: "9.9.9", wrote: 1 })
+  );
+
+  const driver = path.join(tmpdir(), "freshness-driver.mjs");
+  fs.writeFileSync(
+    driver,
+    [
+      'import { pathToFileURL } from "node:url";',
+      'import fs from "node:fs";',
+      "const [pluginPath, tree] = process.argv.slice(2);",
+      'const { default: plugin } = await import(pathToFileURL(pluginPath).href);',
+      "async function* stream(signal) {",
+      '  yield { type: "message.updated", data: { sessionID: "ses_restored" }, location: { directory: tree } };',
+      "  await new Promise((resolve) => {",
+      "    if (signal.aborted) return resolve();",
+      '    signal.addEventListener("abort", resolve, { once: true });',
+      "  });",
+      "}",
+      "const ctx = {",
+      '  location: { directory: tree + "-server-cwd" }, // deliberately wrong on purpose (server cwd)',
+      "  event: { subscribe: ({ signal }) => stream(signal) },",
+      '  session: { hook: () => {} },',
+      "};",
+      "const stop = await plugin.setup(ctx);",
+      'const verdict = `${tree}/.serve/harness-freshness.json`;',
+      "const deadline = Date.now() + 5000;",
+      "let doc = null;",
+      "while (Date.now() < deadline) {",
+      "  try { doc = JSON.parse(fs.readFileSync(verdict, 'utf8')); } catch { doc = null; }",
+      '  if (doc && doc.status === "current") break;',
+      "  await new Promise((r) => setTimeout(r, 25));",
+      "}",
+      "stop();",
+      "console.log(JSON.stringify(doc));",
+      'process.exit(doc && doc.status === "current" ? 0 : 1);',
+    ].join("\n")
+  );
+
+  const env = {
+    ...process.env,
+    AGENT_HARNESS_HOME: home,
+    AGENT_HARNESS_NO_UPDATE_CHECK: "1",
+    AGENT_HARNESS_FRESHNESS: "",
+  };
+  const r = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", driver, path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"), tree],
+    { encoding: "utf8", env, timeout: 30000 }
+  );
+  assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+  const doc = JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop());
+  assert.strictEqual(doc.status, "current", "the stale verdict was replaced on activity");
+  assert.strictEqual(doc.have, "9.9.9", "the current on-disk version is recorded");
+});
+
+test("[drift-guard] freshness re-evaluation is wired to activity and names the service restart (F-035)", () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+    "utf8"
+  );
+  assert.match(src, /const consider = async \(sid: string, dir/, "one once-per-session evaluation helper");
+  assert.match(src, /await consider\(sid, startDir\)/, "every session-scoped event re-evaluates");
+  assert.match(
+    src,
+    /event\?\.type === "session\.created" && d\.parentID/,
+    "child sessions are excluded from the activity path"
+  );
+  assert.match(src, /ctx\.session\.hook\("context"/, "the context hook is the request-boundary trigger");
+  const hookAt = src.indexOf('ctx.session.hook("context"');
+  const hookBody = src.slice(hookAt, src.indexOf("return () => controller.abort()", hookAt));
+  assert.match(hookBody, /consider\(sid, roots\.get\(sid\)\)/, "the hook re-evaluates a restored session");
+  assert.match(src, /opencode service \(the server process, not just the TUI\)/, "names the service, not the TUI");
+  assert.doesNotMatch(src, /restart opencode/i, "the old TUI-confusing wording is gone");
 });

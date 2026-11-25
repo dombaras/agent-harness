@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.17 — 2026-11-25
+
+- A `restart-needed` harness verdict no longer outlives the opencode service
+  restart that resolved it. A session survives a service restart but never
+  re-fires `session.created`, so the global `harness-freshness` plugin now
+  re-evaluates once per session on its first activity (the event stream and the
+  context hook): the stale verdict is replaced, the `↻restart` footer badge
+  clears, and a real block surfaces on the next turn. The restart advice says
+  "restart the opencode service (the server process, not just the TUI)" — the
+  old "restart opencode" wording sent the user to the TUI twice. (F-035)
+
 ## 0.4.16 — 2026-11-25
 
 - The global `harness-freshness` plugin resolves a session's project tree from

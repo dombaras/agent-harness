@@ -10,8 +10,8 @@ npx opencode-agent-harness install-global        # or: node bin/agent-harness.js
 
 That links each `*.ts`/`*.js` here into `~/.config/opencode/plugins/` (a symlink
 pointing back at this checkout, or a copy where symlinks are unavailable). Opencode
-auto-loads that directory for **every** project and session. Restart opencode after
-installing.
+auto-loads that directory for **every** project and session. Restart the opencode
+service after installing.
 
 ## Why global, not a project plugin
 
@@ -22,11 +22,13 @@ version-independent. See `harness-freshness.ts`.
 
 ## `harness-freshness.ts`
 
-On every primary session start — and again when a session is cleared/compacted —
-it compares the checkout's `.harness.json` version to the newest harness this
-machine can see (the authoritative local checkout, or the npm registry when it
-leads) and keeps the checkout current — **only when that is safe for the active
-branch**:
+On every primary session start — again when a session is cleared/compacted — and
+once per session on its first activity (a session that survives an opencode
+service restart never re-fires `session.created`, so its stale verdict is
+re-checked instead of outliving the restart), it compares the checkout's
+`.harness.json` version to the newest harness this machine can see (the
+authoritative local checkout, or the npm registry when it leads) and keeps the
+checkout current — **only when that is safe for the active branch**:
 
 | state | action |
 | --- | --- |
@@ -37,7 +39,7 @@ branch**:
 
 A successful apply injects a one-shot `HARNESS UPDATED` notice: files on disk are
 current, but opencode loads plugins once at startup, so the session must restart
-opencode before the updated plugins take effect.
+the opencode service before the updated plugins take effect.
 
 Env knobs: `AGENT_HARNESS_HOME` (authoritative checkout), `AGENT_HARNESS_FRESHNESS=dry`
 (detect/report only, never apply), `AGENT_HARNESS_NO_UPDATE_CHECK=1` (skip the
