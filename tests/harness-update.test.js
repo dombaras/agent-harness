@@ -454,6 +454,7 @@ test("the badge rejects a dead process's verdict on the reported tree shape (F-0
   fs.mkdirSync(path.join(tree, ".serve"), { recursive: true });
   const wrote = fs.statSync(path.join(tree, ".harness.json")).mtimeMs;
   const writer = spawnSync(process.execPath, ["-e", "0"]);
+  const writerStartedAt = Date.now() - 1000;
   fs.writeFileSync(
     status,
     JSON.stringify({
@@ -462,7 +463,7 @@ test("the badge rejects a dead process's verdict on the reported tree shape (F-0
       latest: "0.4.4",
       wrote,
       pid: writer.pid,
-      startedAt: Date.now() - 1000,
+      startedAt: writerStartedAt,
     })
   );
   assert.strictEqual(readHarnessRestart(tree), null, "a dead writer's verdict is dropped");
@@ -474,12 +475,12 @@ test("the badge rejects a dead process's verdict on the reported tree shape (F-0
       latest: "0.4.4",
       wrote,
       pid: process.pid,
-      startedAt: Date.now() - 1000,
+      startedAt: writerStartedAt,
     })
   );
   assert.deepStrictEqual(
     readHarnessRestart(tree),
-    { have: "0.4.4", latest: "0.4.4", writerStartedAt: Date.now() - 1000 },
+    { have: "0.4.4", latest: "0.4.4", writerStartedAt },
     "a live writer's verdict renders"
   );
 });
