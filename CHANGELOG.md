@@ -12,6 +12,10 @@
   at service start via git history. Reported case: service loaded 0.4.18 at
   14:59Z, 0.5.1 was written at 15:12Z, and the footer advertised 0.5.1 as if it
   were running. (F-043)
+- The falsifier drift guard now compares the deployed persona against the
+  template rendered with the project name, as `init`/`update` do, instead of the
+  raw `{{PROJECT_NAME}}` placeholder. The 0.5.1 self-deploy legitimately
+  rendered the placeholder and turned CI red. (F-043)
 
 ## 0.5.1 — 2026-11-25
 

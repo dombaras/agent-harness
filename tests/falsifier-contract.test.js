@@ -33,6 +33,17 @@ const deployedSkillPath = path.join(root, ".agents", "skills", "falsifier", "SKI
 const personaText = fs.readFileSync(personaPath, "utf8");
 const persona = parsePersona(personaText);
 
+/* A deploy renders the template the way `init`/`update` does
+ * (bin/agent-harness.js resolveVars): project name from `.harness.json`,
+ * falling back to the directory name. The drift guard must compare the
+ * deployed copy against that rendered text, not the raw placeholder. */
+const harnessConfig = JSON.parse(fs.readFileSync(path.join(root, ".harness.json"), "utf8"));
+const projectName = harnessConfig.projectName || path.basename(root);
+
+function renderTemplate(text) {
+  return text.replace(/\{\{\s*PROJECT_NAME\s*\}\}/g, projectName);
+}
+
 test("falsifier persona parses with the architect-tier model pin", () => {
   assert.equal(persona.model, "opencode-go/deepseek-v4-pro#high");
   assert.equal(persona.mode, "subagent");
@@ -84,7 +95,7 @@ test("falsifier skill documents the input contract, the <=15-line output contrac
 });
 
 test("the deployed copies match the templates (no hand-edited drift)", () => {
-  assert.equal(fs.readFileSync(deployedPersonaPath, "utf8"), personaText);
+  assert.equal(fs.readFileSync(deployedPersonaPath, "utf8"), renderTemplate(personaText));
   assert.equal(fs.readFileSync(deployedSkillPath, "utf8"), fs.readFileSync(skillPath, "utf8"));
 });
 
