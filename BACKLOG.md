@@ -31,8 +31,8 @@ then set a row's `Epic` cell to the key — or leave `?` when unassigned. Editab
 in-file; no code change needed.
 
 | Key | Label | Goal |
-|-----|-------|------|
-| | | |
+|---|---|---|
+| inquiry-capability | Inquiry capability | Reliable root-cause discovery, independent falsification, outcome-based done, and attempt memory for future work. |
 
 ## Active / next
 
