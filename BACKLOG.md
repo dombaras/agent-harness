@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-034 | ? | harness-freshness resolves the project tree from the top-level event.location (opencode 2.4 moved it out of event.data): a LibraryOS session showed no 0.4.15 update because the plugin fell back to the server cwd ($HOME) and skipped every project. Prefer event.location.directory, then data.location, then ctx.location; pin the order with a drift guard. | .agents/handoffs/F-034.md (worktree: ../.worktrees/agent-harness/f-034; branch: f-034) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -66,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-034 | P1 | ? | harness-freshness resolves the project tree from the top-level event.location (opencode 2.4 moved it out of event.data): a LibraryOS session showed no 0.4.15 update because the plugin fell back to the server cwd ($HOME) and skipped every project. Prefer event.location.directory, then data.location, then ctx.location; pin the order with a drift guard. | .agents/handoffs/auto-update-diagnosis.md; opencode service log event.location.directory | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
 | F-017 | P4 | ? | Cross-check agent-report/store-lib against `opencode stats --json` as an independent oracle: the CLI now emits per-tool reliability + cost/token stats, so a parity assertion would catch store-shape drift the direct-DB reader silently misses. | docs/opencode-v2.3-compat-scan.md §G5; `opencode stats --help` | ? |
 
