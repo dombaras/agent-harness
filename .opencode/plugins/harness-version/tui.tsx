@@ -29,19 +29,25 @@ export default Plugin.define({
     }
     const version = readHarnessVersion(directory)
     if (!version) return
-    const update = readHarnessUpdate(directory)
-    const restart = readHarnessRestart(directory)
-    const color = update || restart
-      ? ((context.theme as any)?.text?.warning ?? context.theme.text.muted)
-      : context.theme.text.muted
-
-    const badge = () => (
-      <text fg={color}>
-        harness v{version}
-        {update ? ` ↑${update.latest}` : ""}
-        {restart ? " ↻restart" : ""}
-      </text>
-    )
+    // Read the verdicts inside `badge`, not at setup: a new/cleared/compacted
+    // session re-probes the registry and rewrites `.serve/harness-update.json`,
+    // so the footer must pick up the fresh arrow/version on the next render
+    // instead of pinning the verdict from process start.
+    const badge = () => {
+      const current = readHarnessVersion(directory) || version
+      const update = readHarnessUpdate(directory)
+      const restart = readHarnessRestart(directory)
+      const color = update || restart
+        ? ((context.theme as any)?.text?.warning ?? context.theme.text.muted)
+        : context.theme.text.muted
+      return (
+        <text fg={color}>
+          harness v{current}
+          {update ? ` ↑${update.latest}` : ""}
+          {restart ? " ↻restart" : ""}
+        </text>
+      )
+    }
     const home = context.ui.slot({ append: "home.footer.status", render: badge })
     const prompt = context.ui.slot({ append: "prompt.footer.status", render: badge })
 
