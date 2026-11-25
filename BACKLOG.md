@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-040 | inquiry-capability | Inquiry loop: gated diagnosis + independent falsification + outcome verification | .agents/handoffs/F-040.md (worktree: ../.worktrees/agent-harness/f-040; branch: f-040) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -66,7 +67,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-040 | P1 | inquiry-capability | Inquiry loop: gated diagnosis + independent falsification + outcome verification | /home/ronen/.opencode/plan/F-039-inquiry-loop.md; 2026-11-25 capability review of 110 transcripts | ? |
 | F-039 | P2 | ? | stale restart badge still shown after a service restart: the freshness plugin never evaluates a project tree without a session event that carries its directory (startup writes no verdict; an unresolvable first event burns the session's once-only check), so a dead process's restart-needed file survives; the project's own badge/TUI also still runs the pre-fix build | publicvirtuallibrary TUI pid 535837 (started 13:35Z) runs the Nov-24 badge; .harness.json 0.4.18; verdict restart-needed have=0.4.17 @12:33Z never rewritten after the 14:00:40Z service restart (pid 551639, new global plugin with PROCESS_PID loaded); driving the installed plugin on the real tree in dry mode works (stale-would-update 0.4.18->0.4.19); contrib/global-plugins/harness-freshness.ts consider()/evaluate(); templates/.opencode/plugins/harness-version/{version.mjs,tui.tsx} | ? |
 | F-037 | P3 | ? | checkpoint resume/read resolve feature IDs case-insensitively (F-036.md exists but --feature f-036 reports no handoff on a case-sensitive FS; orient matches case-insensitively) | .agents/handoffs/F-036.md; `node scripts/checkpoint.js resume --feature f-036` → 'no handoff found'; orient resolves F-036 | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
