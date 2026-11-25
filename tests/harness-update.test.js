@@ -300,6 +300,10 @@ test("a restart-needed verdict written by a previous process is replaced on sess
     AGENT_HARNESS_HOME: home,
     AGENT_HARNESS_NO_UPDATE_CHECK: "1",
     AGENT_HARNESS_FRESHNESS: "",
+    // Keep the startup sweep away from the developer's real project registry:
+    // this spawn used to register its temp tree there and stamp real checkouts
+    // with the fixture version (LibraryOS, 2026-11-25).
+    XDG_STATE_HOME: tmpdir(),
   };
   const r = spawnSync(
     process.execPath,

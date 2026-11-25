@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-049 | ? | freshness test spawn must isolate XDG_STATE_HOME so it never writes the real project registry | .agents/handoffs/F-049.md (worktree: ../.worktrees/agent-harness/f-049; branch: f-049) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -131,6 +130,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-039 | ? | stale restart badge still shown after a service restart: the freshness plugin never evaluates a project tree without a session event that carries its directory (startup writes no verdict; an unresolvable first event burns the session's once-only check), so a dead process's restart-needed file survives; the project's own badge/TUI also still runs the pre-fix build | 0.5.5: newest live process owns the verdict; /proc pid identity; older live writer cannot pin; a newer client ignores a foreign restart verdict; V2 advice = opencode service restart |
 | F-047 | ? | freshness tests must not pollute the real project registry; sweep-discovered updates render as pending, not blocked | resolved |
 | F-048 | ? | freshness applier must re-evaluate a live session after a bounded window so a mid-session harness release applies without a restart | shipped |
+| F-049 | ? | freshness test spawn must isolate XDG_STATE_HOME so it never writes the real project registry | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

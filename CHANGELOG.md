@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The freshness activity test no longer drives its plugin spawn against the
+  developer's real project registry. That spawn lacked `XDG_STATE_HOME`, so its
+  startup sweep stamped real checkouts with the fixture version `9.9.9`; it
+  repolluted LibraryOS after a service restart. The spawn now owns a temp state
+  root. (F-049)
+
 - A harness release published while a project session is open is now applied on
   the next request instead of waiting for a new session or a restart. The
   freshness plugin re-evaluates at most once per 15-minute window
