@@ -47,7 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-043 | ? | harness version badge/orient must show the loaded build vs the deployed build when a service restart is pending: badge currently prints only .harness.json (deploy), so it advertises a version the running service does not use | ? |
+| F-043 | ? | harness version badge/orient must show the loaded build vs the deployed build when a service restart is pending: badge currently prints only .harness.json (deploy), so it advertises a version the running service does not use | ? (worktree: ../.worktrees/agent-harness/f-043; branch: f-043) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
