@@ -108,6 +108,16 @@ test("readHarnessRestart returns the restart-needed verdict, and null otherwise"
   );
   assert.deepStrictEqual(readHarnessRestart(dir), { have: "0.4.8", latest: "0.4.8" });
 
+  fs.writeFileSync(
+    status,
+    JSON.stringify({ status: "restart-needed", have: "0.4.8", latest: "0.4.8", active: "0.4.7", wrote: 1 })
+  );
+  assert.deepStrictEqual(
+    readHarnessRestart(dir),
+    { have: "0.4.8", latest: "0.4.8", active: "0.4.7" },
+    "the service's loaded build passes through"
+  );
+
   for (const body of [
     JSON.stringify({ status: "current", have: "0.4.8" }),
     JSON.stringify({ status: "update-available", have: "0.4.8" }),
@@ -171,10 +181,51 @@ test("the badge renders the update arrow from the same cache", () => {
   assert.match(tui, /text\?\.warning/, "uses the warning colour when behind");
 });
 
+test("the badge names the loaded build first while a restart is pending (H-44)", async () => {
+  const { formatHarnessBadge } = await loadHelper();
+  const verdict = { have: "0.5.1", latest: "0.5.1" };
+  assert.strictEqual(
+    formatHarnessBadge({ current: "0.5.1", loaded: "0.4.18", restart: verdict }),
+    "harness v0.4.18 → v0.5.1 ↻restart",
+    "the first number is the build the service runs"
+  );
+  assert.strictEqual(
+    formatHarnessBadge({ current: "0.5.2", loaded: "0.5.2", restart: { ...verdict, active: "0.5.1" } }),
+    "harness v0.5.1 → v0.5.2 ↻restart",
+    "a verdict's active build overrides the setup-time read"
+  );
+  assert.strictEqual(
+    formatHarnessBadge({ current: "0.5.1", loaded: "0.5.1", restart: verdict }),
+    "harness v0.5.1 ↻restart",
+    "no gap to render when the loaded read agrees with disk"
+  );
+  assert.strictEqual(
+    formatHarnessBadge({ current: "0.5.1", loaded: "0.4.18" }),
+    "harness v0.5.1",
+    "without a restart verdict the deployed build is the only state"
+  );
+  assert.strictEqual(
+    formatHarnessBadge({ current: "0.5.1", loaded: "0.5.1", update: { deployed: "0.5.1", latest: "0.6.0" } }),
+    "harness v0.5.1 ↑0.6.0"
+  );
+  assert.strictEqual(
+    formatHarnessBadge({
+      current: "0.5.1",
+      loaded: "0.4.18",
+      update: { deployed: "0.5.1", latest: "0.6.0" },
+      restart: verdict,
+    }),
+    "harness v0.4.18 → v0.5.1 ↑0.6.0 ↻restart"
+  );
+  assert.strictEqual(formatHarnessBadge({}), null, "non-harness trees render nothing");
+});
+
 test("the badge renders restart-needed from the freshness verdict (H-44)", () => {
   const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
+  const helper = fs.readFileSync(path.join(PLUGIN_DIR, "version.mjs"), "utf8");
   assert.match(tui, /readHarnessRestart\(directory\)/, "reads the freshness verdict");
-  assert.match(tui, /↻restart/, "marks a deployed-but-not-active harness");
+  assert.match(tui, /formatHarnessBadge\(\{ current, loaded, update, restart \}\)/, "delegates formatting to the tested helper");
+  assert.match(helper, /↻restart/, "marks a deployed-but-not-active harness");
   assert.match(tui, /update \|\| restart/, "the restart marker also uses the warning colour");
 });
 
@@ -192,11 +243,26 @@ test("the badge re-reads the deployed version and verdicts on every render", () 
     /const directory = resolveDirectory\(\)/,
     "setup keeps only the fallback directory"
   );
+  assert.match(tui, /const loaded = readHarnessVersion\(setupDirectory\)/, "setup pins the loaded build");
   assert.doesNotMatch(
-    tui.slice(tui.indexOf("const version ="), start),
+    tui.slice(tui.indexOf("const loaded ="), start),
     /readHarnessUpdate\(directory\)/,
     "setup must not pin the update verdict"
   );
+});
+
+test("orient names the loaded build first while a restart is pending", () => {
+  const { harnessStatus } = require("../templates/scripts/orient.js");
+  assert.strictEqual(
+    harnessStatus({ harnessVersion: "0.5.1", harnessRestart: { active: "0.4.18" } }),
+    "harness 0.4.18 → 0.5.1 (restart needed)"
+  );
+  assert.strictEqual(
+    harnessStatus({ harnessVersion: "0.5.1", harnessRestart: { active: null } }),
+    "harness 0.5.1 (restart needed)",
+    "unknown active build still flags the pending restart"
+  );
+  assert.strictEqual(harnessStatus({ harnessVersion: "0.5.1", harnessRestart: null }), "harness 0.5.1");
 });
 
 test("the template ships both entrypoints and both footer slots", () => {
@@ -206,5 +272,5 @@ test("the template ships both entrypoints and both footer slots", () => {
   assert.match(tui, /home\.footer\.status/, "badge on the home footer");
   assert.match(tui, /prompt\.footer\.status/, "badge on the session prompt footer");
   assert.match(tui, /readHarnessVersion\(directory\)/, "reads the checkout's deployed version");
-  assert.match(tui, /if \(!version\) return/, "non-harness repos render nothing");
+  assert.match(tui, /if \(!loaded\) return/, "non-harness repos render nothing");
 });

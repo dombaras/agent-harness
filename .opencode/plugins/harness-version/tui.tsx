@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { readHarnessRestart, readHarnessUpdate, readHarnessVersion } from "./version.mjs"
+import { formatHarnessBadge, readHarnessRestart, readHarnessUpdate, readHarnessVersion } from "./version.mjs"
 
 // A constant "harness vX.Y.Z" badge in the two footer rows that already carry
 // version/model indicators:
@@ -32,27 +32,26 @@ export default Plugin.define({
       }
     }
     const setupDirectory = resolveDirectory()
-    const version = readHarnessVersion(setupDirectory)
-    if (!version) return
+    // The version this TUI/plugin process actually loaded. It is the best
+    // local evidence of the build in memory when a later deploy rewrote
+    // `.harness.json`; `formatHarnessBadge` compares it with the on-disk read.
+    const loaded = readHarnessVersion(setupDirectory)
+    if (!loaded) return
     // Read the verdicts inside `badge`, not at setup: a new/cleared/compacted
     // session re-probes the registry and rewrites `.serve/harness-update.json`,
     // so the footer must pick up the fresh arrow/version on the next render
     // instead of pinning the verdict from process start.
     const badge = () => {
       const directory = resolveDirectory() || setupDirectory
-      const current = readHarnessVersion(directory) || version
+      const current = readHarnessVersion(directory) || loaded
       const update = readHarnessUpdate(directory)
       const restart = readHarnessRestart(directory)
+      const text = formatHarnessBadge({ current, loaded, update, restart })
+      if (!text) return null
       const color = update || restart
         ? ((context.theme as any)?.text?.warning ?? context.theme.text.muted)
         : context.theme.text.muted
-      return (
-        <text fg={color}>
-          harness v{current}
-          {update ? ` ↑${update.latest}` : ""}
-          {restart ? " ↻restart" : ""}
-        </text>
-      )
+      return <text fg={color}>{text}</text>
     }
     const home = context.ui.slot({ append: "home.footer.status", render: badge })
     const prompt = context.ui.slot({ append: "prompt.footer.status", render: badge })

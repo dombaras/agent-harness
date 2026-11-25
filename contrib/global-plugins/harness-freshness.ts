@@ -76,6 +76,25 @@ function writeTime(p: string): number | null {
   }
 }
 
+/* The build this process actually loaded: `.harness.json` as it stood at
+ * process start. Reading it now names the deployed build, not the running one.
+ * The deploy commits that file, so git history can recover the pre-deploy
+ * version; when git cannot answer (no repo, uncommitted tree), omit `active`
+ * and let the badge fall back to its own setup-time read. */
+function versionAt(tree: string, when: number): string | null {
+  const before = new Date(when).toISOString()
+  const sha = git(tree, ["log", "-1", `--before=${before}`, "--format=%H", "--", ".harness.json"])
+  if (!sha.ok || !sha.out) return null
+  const body = git(tree, ["show", `${sha.out}:.harness.json`])
+  if (!body.ok || !body.out) return null
+  try {
+    const version = JSON.parse(body.out)?.version
+    return typeof version === "string" && version.trim() ? version.trim() : null
+  } catch {
+    return null
+  }
+}
+
 /* Paths under `rel` whose mtime is newer than `after` (recursive, bounded by the
  * three small startup surfaces above). Missing paths are simply not touched. */
 function touchedAfter(root: string, after: number, rel = "", out: string[] = []): string[] {
@@ -316,10 +335,12 @@ const HarnessFreshness: Plugin = {
             ...new Set(LOADED_AT_START.flatMap((p) => touchedAfter(tree, PROCESS_START, p))),
           ]
           if (touched.length) {
+            const active = versionAt(tree, PROCESS_START)
             writeStatus(tree, {
               status: "restart-needed",
               have,
               latest,
+              ...(active && active !== have ? { active } : {}),
               wrote,
               touched: touched.slice(0, 8),
               at: new Date().toISOString(),

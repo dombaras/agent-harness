@@ -90,14 +90,40 @@ export function readHarnessRestart(directory) {
     if (doc?.status !== "restart-needed") return null
     const have = typeof doc.have === "string" && doc.have.trim() ? doc.have.trim() : null
     const latest = typeof doc.latest === "string" && doc.latest.trim() ? doc.latest.trim() : null
+    const active = typeof doc.active === "string" && doc.active.trim() ? doc.active.trim() : null
     const deployed = readHarnessVersion(directory)
     if (deployed && deployed !== have) return null
     const wrote = Number(doc.wrote)
     const current = mtimeMs(path.join(directory, ".harness.json"))
     if (Number.isFinite(wrote) && current !== null && current > wrote + 1000) return null
     if (!writerAlive(doc.pid)) return null
-    return { have, latest }
+    const verdict = { have, latest }
+    if (active) verdict.active = active
+    return verdict
   } catch {
     return null
   }
+}
+
+// The footer text. `current` is what `.harness.json` says now (the deployed
+// version); `loaded` is what this process read when it started. A restart
+// verdict means the deployed files are NOT the ones in memory, so naming only
+// `current` advertises a version the service does not run (H-44). Render the
+// loaded build first and the deployed one as the target:
+//
+//   harness v0.4.18 → v0.5.1 ↻restart
+//
+// A verdict may name the service's active build (`active`); otherwise the
+// setup-time read is the best local evidence. When both reads agree there is no
+// gap to show, so the badge stays short. Returns null for a non-harness tree.
+export function formatHarnessBadge({ current, loaded, update, restart } = {}) {
+  const deployed = current || loaded
+  if (!deployed) return null
+  const active = restart ? restart.active || loaded || deployed : deployed
+  const inactive = Boolean(restart) && active !== deployed
+  const parts = [`harness v${inactive ? active : deployed}`]
+  if (inactive) parts.push(`→ v${deployed}`)
+  if (update?.latest) parts.push(`↑${update.latest}`)
+  if (restart) parts.push("↻restart")
+  return parts.join(" ")
 }

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.2 — 2026-11-25
+
+- The harness version badge and `orient` now name the build the running service
+  actually loaded when a restart is pending, instead of printing only the
+  deployed `.harness.json` version. A stale service now reads
+  `harness v0.4.18 → v0.5.1 ↻restart` (and `orient` says
+  `harness 0.4.18 → 0.5.1 (restart needed)`); when the loaded build cannot be
+  established the old `↻restart` marker remains and no version is invented.
+  The freshness verdict now records `active`, recovered from `.harness.json`
+  at service start via git history. Reported case: service loaded 0.4.18 at
+  14:59Z, 0.5.1 was written at 15:12Z, and the footer advertised 0.5.1 as if it
+  were running. (F-043)
+
 ## 0.5.1 — 2026-11-25
 
 - `agent-harness update` no longer stops at the locally-modified-file guard in

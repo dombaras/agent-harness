@@ -119,6 +119,45 @@ function harnessUpdateCheck(root) {
   }, null);
 }
 
+/* Deploy != activate: the freshness verdict written by the live opencode service
+ * names the deployed build and, best-effort, the build the service actually
+ * loaded. Without it `orient` reports the disk version as if it were running.
+ * The verdict only applies while it still describes this deploy and its writer
+ * is alive (F-038), matching the badge's read path. */
+function harnessRestart(root) {
+  return safe(() => {
+    const statusPath = path.join(root, ".serve", "harness-freshness.json");
+    const doc = JSON.parse(fs.readFileSync(statusPath, "utf8"));
+    if (doc?.status !== "restart-needed") return null;
+    const deployed = harnessVersion(root);
+    if (deployed && doc.have && deployed !== doc.have) return null;
+    const wrote = Number(doc.wrote);
+    const cfg = path.join(root, ".harness.json");
+    if (Number.isFinite(wrote) && fs.statSync(cfg).mtimeMs > wrote + 1000) return null;
+    const pid = doc.pid;
+    if (pid !== undefined && pid !== null) {
+      const n = Number(pid);
+      if (!Number.isInteger(n) || n <= 0) return null;
+      try {
+        process.kill(n, 0);
+      } catch (err) {
+        if (err?.code !== "EPERM") return null;
+      }
+    }
+    const active = typeof doc.active === "string" && doc.active.trim() ? doc.active.trim() : null;
+    return { deployed: deployed || doc.have || null, active };
+  }, null);
+}
+
+/* One status phrase shared by the human and brief renderers: name the build the
+ * service loaded first, then the deployed target, so neither reads as active. */
+function harnessStatus(o) {
+  const deployed = o.harnessVersion || "?";
+  if (!o.harnessRestart) return `harness ${deployed}`;
+  const active = o.harnessRestart.active;
+  return `harness ${active && active !== deployed ? `${active} → ` : ""}${deployed} (restart needed)`;
+}
+
 function lastE2eRun(root) {
   return safe(
     () => {
@@ -592,6 +631,7 @@ function collectOrient(opts = {}) {
     nightly: latestNightly(root),
     harnessVersion: harnessVer,
     harnessUpdate: harnessUpdateCheck(root),
+    harnessRestart: harnessRestart(root),
   };
 }
 
@@ -600,7 +640,7 @@ function fmt(v, label) {
 }
 
 function printHuman(o) {
-  const lines = [`Session orientation — ${o.root} (harness ${o.harnessVersion || "?"})`, ""];
+  const lines = [`Session orientation — ${o.root} (${harnessStatus(o)})`, ""];
   if (o.harnessUpdate) {
     lines.push(
       `harness update: v${o.harnessUpdate.deployed} -> v${o.harnessUpdate.latest} available — ${o.harnessUpdate.command}`,
@@ -679,7 +719,7 @@ function printBrief(o) {
     `SESSION ORIENT — ${o.repo.kind || "outside-git"} @ ${o.repo.branch || "?"} (HEAD ${o.repo.head || "?"}, ${o.repo.dirty == null ? "?" : o.repo.dirty} dirty)`
   );
   lines.push(
-    `harness ${o.harnessVersion || "?"}${o.harnessUpdate ? ` -> v${o.harnessUpdate.latest} available (${o.harnessUpdate.command})` : ""} · root ${o.root}`
+    `${harnessStatus(o)}${o.harnessUpdate ? ` -> v${o.harnessUpdate.latest} available (${o.harnessUpdate.command})` : ""} · root ${o.root}`
   );
   if (o.rootMismatch) {
     lines.push(
@@ -762,6 +802,8 @@ module.exports = {
   inferFeatureSource,
   featureWorktree,
   checkoutKind,
+  harnessRestart,
+  harnessStatus,
   ownedFor,
   diagnosisState,
   diagnosisFacts,
