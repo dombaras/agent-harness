@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-034 | ? | harness-freshness resolves the project tree from the top-level event.location (opencode 2.4 moved it out of event.data): a LibraryOS session showed no 0.4.15 update because the plugin fell back to the server cwd ($HOME) and skipped every project. Prefer event.location.directory, then data.location, then ctx.location; pin the order with a drift guard. | .agents/handoffs/F-034.md (worktree: ../.worktrees/agent-harness/f-034; branch: f-034) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -117,6 +116,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-031 | ? | Reconcile the harness self-deploy: root scripts/orient.js diverges from templates/scripts/orient.js, so `agent-harness update .` fails closed on drift, .harness.json stays at 0.4.9, and the installed harness-freshness plugin blocks every new session in the harness checkout. | shipped 2026-11-24 — root scripts/orient.js reconciled to templates/ (0 root-only lines); `agent-harness update .` deployed (4 created, 3 overwritten, 1 adopted), .harness.json 0.4.9 -> 0.4.13, commit 6583d6c pushed; doctor: deployed v0.4.13, dispatch plugin present, update dry-run clean |
 | F-032 | ? | 0.4.14: always-fresh harness update probe — re-check registry on new/cleared/compacted sessions and render the badge from live files | shipped |
 | F-033 | ? | Release 0.4.15: document the package.json bump rule in the gate reference (auto-update propagation probe) | shipped |
+| F-034 | ? | harness-freshness resolves the project tree from the top-level event.location (opencode 2.4 moved it out of event.data): a LibraryOS session showed no 0.4.15 update because the plugin fell back to the server cwd ($HOME) and skipped every project. Prefer event.location.directory, then data.location, then ctx.location; pin the order with a drift guard. | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

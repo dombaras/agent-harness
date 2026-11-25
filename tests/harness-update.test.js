@@ -168,6 +168,24 @@ test("the global freshness plugin applies updates and signals a restart (drift g
   assert.doesNotMatch(src, /source === "npm"/, "the registry path is no longer advisory-only");
   assert.match(src, /session\.created/, "checks on a new primary session");
   assert.match(src, /session\.compaction\.ended/, "re-checks after a cleared/compacted context");
+  // opencode 2.4 moved the project directory to the top-level event location;
+  // `data.location` is empty for session.created, so reading it (or the server
+  // cwd fallback) first silently skipped every project.
+  assert.match(
+    src,
+    /const eventDir = \(event as any\)\?\.location\?\.directory/,
+    "reads the event's own top-level location"
+  );
+  const eventLoc = src.indexOf("const eventDir = (event as any)?.location?.directory");
+  const dataLoc = src.indexOf("d.location?.directory");
+  const ctxLoc = src.indexOf("ctx.location.directory");
+  assert.ok(eventLoc >= 0 && dataLoc > eventLoc, "prefers event.location over data.location");
+  assert.ok(dataLoc >= 0 && ctxLoc > dataLoc, "falls back to ctx.location only last");
+  assert.match(
+    src,
+    /typeof eventDir === "string" && eventDir\s*\n\s*\? eventDir/,
+    "uses the top-level directory when present"
+  );
   assert.match(src, /HARNESS UPDATED/, "announces an applied update");
   assert.match(src, /Restart opencode now to load the update\./, "requires a restart to activate it");
 });

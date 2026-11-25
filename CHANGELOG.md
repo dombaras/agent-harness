@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.16 — 2026-11-25
+
+- The global `harness-freshness` plugin resolves a session's project tree from
+  the event's top-level `location.directory` (opencode 2.4 moved it out of
+  `event.data`), then `data.location`, then the server cwd. A LibraryOS session
+  previously fell back to the server cwd (`$HOME`), found no git tree, and
+  skipped every project — so `0.4.15` was never surfaced there. A drift guard
+  pins the fallback order. (F-034)
+
 ## 0.4.15 — 2026-11-25
 
 - The gate reference now states the release rule the suite already enforces: a

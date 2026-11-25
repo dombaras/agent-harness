@@ -374,8 +374,13 @@ const HarnessFreshness: Plugin = {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
           try {
             // V2 envelope: the payload is `event.data` (V1's `properties` field does
-            // not exist). A child session carries `data.parentID`.
+            // not exist). A child session carries `data.parentID`. The project
+            // directory moved to the TOP-LEVEL `event.location` in opencode 2.4:
+            // `data.location` is empty for `session.created`, so falling back to
+            // `ctx.location` (the server cwd, e.g. $HOME) silently skipped every
+            // project. Resolve the event's own location first.
             const d: any = (event as any)?.data || {}
+            const eventDir = (event as any)?.location?.directory
             if (event?.type === "session.deleted") {
               const sid = d.sessionID
               if (typeof sid === "string" && sid) {
@@ -405,9 +410,11 @@ const HarnessFreshness: Plugin = {
             if (checked.has(sid)) continue
             checked.add(sid)
             const dir =
-              typeof d.location?.directory === "string" && d.location.directory
-                ? d.location.directory
-                : ctx.location.directory
+              typeof eventDir === "string" && eventDir
+                ? eventDir
+                : typeof d.location?.directory === "string" && d.location.directory
+                  ? d.location.directory
+                  : ctx.location.directory
             roots.set(sid, dir)
             await evaluate(sid, dir)
           } catch (err: any) {
