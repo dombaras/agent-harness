@@ -313,7 +313,7 @@ test("readHarnessBlocked returns the blocked verdict with its cause, and null ot
   assert.strictEqual(readHarnessBlocked(tmpdir()), null, "missing verdict");
 });
 
-test("a blocked verdict only renders for the current deploy and a live writer (F-044)", async () => {
+test("a blocked verdict outlives its writer but not a later deploy (F-045)", async () => {
   const { readHarnessBlocked } = await loadHelper();
   const dir = tmpdir();
   fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
@@ -345,7 +345,44 @@ test("a blocked verdict only renders for the current deploy and a live writer (F
 
   const dead = spawnSync(process.execPath, ["-e", "0"]).pid;
   verdict({ pid: dead });
-  assert.strictEqual(readHarnessBlocked(dir), null, "the writing process is gone");
+  assert.deepStrictEqual(
+    readHarnessBlocked(dir),
+    { have: "0.5.1", latest: "0.5.2", reason: "update failed" },
+    "the tree is still blocked after the attempting process exited (F-045)"
+  );
+
+  fs.writeFileSync(
+    status,
+    JSON.stringify({ status: "blocked", have: "0.5.1", latest: "0.5.2", reason: "update failed" })
+  );
+  assert.ok(readHarnessBlocked(dir), "a legacy blocked verdict without wrote still renders");
+});
+
+test("a legacy refreshed verdict renders as restart-needed once its deploy landed (F-045)", async () => {
+  const { readHarnessRestart } = await loadHelper();
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
+  const cfg = path.join(dir, ".harness.json");
+  fs.writeFileSync(cfg, JSON.stringify({ version: "0.5.3" }));
+  const status = path.join(dir, ".serve", "harness-freshness.json");
+  // The pre-F-045 success shape: terminal `refreshed`, have = the OLD build.
+  fs.writeFileSync(
+    status,
+    JSON.stringify({ status: "refreshed", have: "0.5.2", latest: "0.5.3", pid: process.pid })
+  );
+  assert.deepStrictEqual(
+    readHarnessRestart(dir),
+    { have: "0.5.3", latest: "0.5.3", active: "0.5.2" },
+    "the deployed version explains the verdict; the old build is the active one"
+  );
+
+  // A later deploy (the record no longer names `latest`) is not this gap.
+  fs.writeFileSync(cfg, JSON.stringify({ version: "0.5.4" }));
+  assert.strictEqual(readHarnessRestart(dir), null, "a superseded refreshed record is dropped");
+  assert.strictEqual(require("../templates/scripts/orient.js").harnessStatus({
+    harnessVersion: "0.5.3",
+    harnessRestart: { active: "0.5.2" },
+  }), "harness 0.5.2 → 0.5.3 (restart needed)");
 });
 
 test("the badge renders a blocked auto-update instead of the stale version as current (F-044)", async () => {

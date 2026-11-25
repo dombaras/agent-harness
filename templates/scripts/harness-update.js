@@ -148,10 +148,15 @@ function refresh(root, force, maxAgeMs = 0) {
   // No source answered: keep the last good cache rather than downgrade it.
   if (!latest) return status(root);
 
+  // A deploy can land while the registry lookup is in flight: re-read
+  // `.harness.json` immediately before the cache write so `deployed` names the
+  // build the file holds NOW, never a pre-deploy sample (F-045).
+  const deployedNow = harnessVersion(root) || deployed;
+
   const doc = {
     schema: SCHEMA,
     checkedAt: new Date().toISOString(),
-    deployed,
+    deployed: deployedNow,
     latest,
     npm,
     local,

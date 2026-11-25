@@ -1215,10 +1215,15 @@ function collectLocalHarnessDivergences(target, previousFiles, variables) {
     const targetAbs = path.join(target, rel);
     if (!fs.existsSync(targetAbs)) continue;
     const prev = fs.readFileSync(targetAbs, "utf8");
+    // `sha256` folds CRLF -> LF, so a git `eol=crlf` checkout whose content
+    // matches the deployed template is already "unmodified" here (F-045).
     const prevHash = key === "AGENTS.md" ? sha256(harnessAgentsOwned(prev)) : sha256(prev);
     if (deployedHash === prevHash) continue; // unmodified since last deploy
     const content = substitute(fs.readFileSync(abs, "utf8"), variables);
-    if (prev === content) continue; // matches the incoming template: no clobber
+    // An EOL-only difference is not a project hand-edit: a template is LF while
+    // `.gitattributes` may check the target out CRLF. Normalize before
+    // comparing; a real content edit still diverges and fails closed (F-045).
+    if (normalizeEol(prev) === normalizeEol(content)) continue;
     // The root AGENTS.md carries a `next dev` block that the tool re-appends:
     // a block-only difference is not a project hand-edit (F-349).
     if (key === "AGENTS.md" && harnessAgentsComparable(prev) === harnessAgentsComparable(content)) continue;
@@ -2151,6 +2156,75 @@ function doctor(target) {
     } else {
       add("ok", "harness update", `v${config.version} is current`);
     }
+
+    // One truthful update-state report (F-045): deployed, what the probe knows,
+    // the last evaluation, its cause, and the exact next command. These are the
+    // same `.serve` files the footer badge reads, so `doctor` and the TUI cannot
+    // tell different stories.
+    const readServe = (name) => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(target, ".serve", name), "utf8"));
+      } catch {
+        return null;
+      }
+    };
+    const probe = readServe("harness-update.json");
+    const probeLatest = typeof probe?.latest === "string" ? probe.latest : null;
+    const probeAt = typeof probe?.checkedAt === "string" ? probe.checkedAt : "never";
+    const sources = ["npm", "local", "checkout"]
+      .map((k) => (typeof probe?.[k] === "string" ? `${k} ${probe[k]}` : null))
+      .filter(Boolean)
+      .join(", ");
+    add(
+      probeLatest ? "ok" : "warn",
+      "update probe",
+      probeLatest
+        ? `latest v${probeLatest} (checked ${probeAt}${sources ? `; ${sources}` : ""})`
+        : "no cached probe — run: node scripts/harness-update.js refresh"
+    );
+
+    const verdict = readServe("harness-freshness.json");
+    const verdictStatus =
+      verdict && (!verdict.have || verdict.have === config.version) && typeof verdict.status === "string"
+        ? verdict.status
+        : "none";
+    const cause =
+      verdictStatus === "blocked"
+        ? ` — ${String(verdict.detail || "").split(/\r?\n/)[0] || verdict.reason || "update blocked"}`
+        : "";
+    const next =
+      verdictStatus === "blocked"
+        ? `next: npx ${PKG.name}@latest update`
+        : verdictStatus === "restart-needed"
+          ? "next: restart the opencode service"
+          : "next: none";
+    add(
+      verdictStatus === "blocked" ? "warn" : "ok",
+      "freshness verdict",
+      verdictStatus === "none" ? "no verdict recorded (not evaluated yet)" : `${verdictStatus}${cause}; ${next}`
+    );
+
+    // A stale global plugin is the one failure a project cannot self-heal: the
+    // applier would run old logic forever. Verify the symlink names this build.
+    const bundledPlugin = path.join(GLOBAL_PLUGINS_SRC, "harness-freshness.ts");
+    const installedPlugin = path.join(opencodeGlobalPluginsDir(), "harness-freshness.ts");
+    let installedTarget = null;
+    try {
+      installedTarget = fs.realpathSync(installedPlugin);
+    } catch {
+      installedTarget = null;
+    }
+    const pluginCurrent =
+      installedTarget !== null && path.resolve(installedTarget) === path.resolve(bundledPlugin);
+    add(
+      pluginCurrent ? "ok" : "warn",
+      "global plugin",
+      pluginCurrent
+        ? `harness-freshness.ts -> ${bundledPlugin}`
+        : installedTarget
+          ? `stale link -> ${installedTarget} — run: agent-harness install-global --force`
+          : "not installed — run: agent-harness install-global"
+    );
   }
 
   // The harness is OpenCode V2-only: on a V1 runtime every plugin/tool this
@@ -3399,6 +3473,7 @@ module.exports = {
   withDeployLock,
   sha256,
   harnessAgentsOwned,
+  collectLocalHarnessDivergences,
   dirtyTemplateEntries,
   readConfig,
   resolveVars,

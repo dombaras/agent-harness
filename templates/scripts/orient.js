@@ -122,29 +122,42 @@ function harnessUpdateCheck(root) {
 /* Deploy != activate: the freshness verdict written by the live opencode service
  * names the deployed build and, best-effort, the build the service actually
  * loaded. Without it `orient` reports the disk version as if it were running.
- * The verdict only applies while it still describes this deploy and its writer
- * is alive (F-038), matching the badge's read path. */
+ * Two lifetimes (F-045): a `restart-needed` verdict dies with its writer process;
+ * a `blocked` verdict belongs to the tree and survives it. A legacy `refreshed`
+ * record (pre-F-045 success) is read as restart-needed once the deployed version
+ * equals its `latest`. */
 function freshnessVerdict(root, status) {
   return safe(() => {
     const statusPath = path.join(root, ".serve", "harness-freshness.json");
     const doc = JSON.parse(fs.readFileSync(statusPath, "utf8"));
-    if (doc?.status !== status) return null;
+    const legacy = status === "restart-needed" && doc?.status === "refreshed";
+    if (doc?.status !== status && !legacy) return null;
     const deployed = harnessVersion(root);
-    if (deployed && doc.have && deployed !== doc.have) return null;
+    const latest = typeof doc.latest === "string" && doc.latest.trim() ? doc.latest.trim() : null;
+    let have = typeof doc.have === "string" && doc.have.trim() ? doc.have.trim() : null;
+    let active = typeof doc.active === "string" && doc.active.trim() ? doc.active.trim() : null;
+    if (legacy) {
+      if (!deployed || !latest || deployed !== latest) return null;
+      active = have; // the old build the record named before the deploy
+      have = deployed;
+    }
+    if (deployed && have && deployed !== have) return null;
     const wrote = Number(doc.wrote);
     const cfg = path.join(root, ".harness.json");
     if (Number.isFinite(wrote) && fs.statSync(cfg).mtimeMs > wrote + 1000) return null;
-    const pid = doc.pid;
-    if (pid !== undefined && pid !== null) {
-      const n = Number(pid);
-      if (!Number.isInteger(n) || n <= 0) return null;
-      try {
-        process.kill(n, 0);
-      } catch (err) {
-        if (err?.code !== "EPERM") return null;
+    if (status === "restart-needed") {
+      const pid = doc.pid;
+      if (pid !== undefined && pid !== null) {
+        const n = Number(pid);
+        if (!Number.isInteger(n) || n <= 0) return null;
+        try {
+          process.kill(n, 0);
+        } catch (err) {
+          if (err?.code !== "EPERM") return null;
+        }
       }
     }
-    return doc;
+    return { ...doc, status, have, ...(active ? { active } : {}) };
   }, null);
 }
 

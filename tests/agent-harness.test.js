@@ -11406,6 +11406,97 @@ test("[drift-guard] device-tier startup cache: content-addressed overlay with a 
   assert.match(cli, /AGENT_HARNESS_PREWARM/, "gated behind an explicit opt-in");
 });
 
+test("an EOL-only divergence is not a hand-edit; a real edit still fails closed (F-045)", () => {
+  const key = "scripts/harness-update.js";
+  const target = tmpdir();
+  fs.mkdirSync(path.join(target, "scripts"), { recursive: true });
+  const content = read(path.join(h.TEMPLATES_DIR, "scripts", "harness-update.js"));
+  const lf = content.replace(/\r?\n/g, "\n");
+  // A git `eol=crlf` checkout writes the LF template as CRLF on disk.
+  const crlf = lf.replace(/\n/g, "\r\n");
+  const file = path.join(target, "scripts", "harness-update.js");
+  fs.writeFileSync(file, crlf, "utf8");
+
+  // sha256 folds CRLF -> LF, so the "unmodified since last deploy" check cannot
+  // save it here: previousFiles carries a RAW hash of the CRLF bytes, forcing
+  // the content comparison to be the only thing that can clear the divergence.
+  const rawCrlfHash = require("crypto").createHash("sha256").update(crlf, "utf8").digest("hex");
+  assert.strictEqual(h.sha256(crlf), h.sha256(lf), "sha256 is EOL-insensitive");
+  assert.notStrictEqual(rawCrlfHash, h.sha256(crlf), "the raw CRLF hash is not the folded hash");
+
+  assert.deepStrictEqual(
+    h.collectLocalHarnessDivergences(target, { [key]: rawCrlfHash }, {}),
+    [],
+    "an EOL-only difference is not a project hand-edit"
+  );
+
+  // Negative fixture: a real content edit in that same file still fails closed.
+  fs.writeFileSync(file, crlf + "// local hand edit\n", "utf8");
+  const divergent = h.collectLocalHarnessDivergences(target, { [key]: rawCrlfHash }, {});
+  assert.deepStrictEqual(divergent.map((d) => d.rel), [key], "a real edit is still a divergence");
+});
+
+test("doctor tells the whole update story: probe, verdict, global plugin (F-045)", () => {
+  const target = tmpdir();
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: target });
+  fs.writeFileSync(path.join(target, "README.md"), "x\n", "utf8");
+  // The update-state report is only rendered for a deployed project.
+  fs.writeFileSync(
+    path.join(target, ".harness.json"),
+    JSON.stringify({ version: "0.5.2", projectName: "probe-test" }) + "\n",
+    "utf8"
+  );
+  fs.mkdirSync(path.join(target, ".serve"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".serve", "harness-update.json"),
+    JSON.stringify({
+      schema: "harness-update/1",
+      checkedAt: "2026-11-24T10:00:00Z",
+      deployed: "0.5.2",
+      latest: "0.5.3",
+      npm: "0.5.3",
+      checkout: "0.5.3",
+      command: "npx opencode-agent-harness@latest update",
+    }) + "\n",
+    "utf8"
+  );
+  // The cause is the FIRST detail line only — a second line must not leak in.
+  fs.writeFileSync(
+    path.join(target, ".serve", "harness-freshness.json"),
+    JSON.stringify({
+      status: "blocked",
+      reason: "update available",
+      detail: "harness files differ from the template\nsecond line",
+    }) + "\n",
+    "utf8"
+  );
+
+  // Isolate the global plugin dir so the verdict is a real "not installed".
+  const home = tmpdir();
+  const cli = path.join(__dirname, "..", "bin", "agent-harness.js");
+  const res = spawnSync(process.execPath, [cli, "doctor", "--target", target], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, ".config") },
+  });
+  const text = (res.stdout || "") + (res.stderr || "");
+  assert.match(
+    text,
+    /update probe: latest v0\.5\.3 \(checked 2026-11-24T10:00:00Z; npm 0\.5\.3, checkout 0\.5\.3\)/,
+    "doctor reports what it probed and where the answer came from"
+  );
+  assert.match(
+    text,
+    /freshness verdict: blocked — harness files differ from the template; next: npx opencode-agent-harness@latest update/,
+    "doctor names the cause (first line) and the exact next command"
+  );
+  assert.doesNotMatch(text, /second line/, "only the first detail line is the cause");
+  assert.match(
+    text,
+    /global plugin: not installed — run: agent-harness install-global/,
+    "doctor flags the one failure a project cannot self-heal"
+  );
+});
+
 test("[drift-guard] device-up instrumented + quickboot snapshot with a cold-boot fallback", () => {
   const up = read(path.join(h.TEMPLATES_DIR, "scripts", "qa", "mobile-e2e", "device-up.sh"));
   assert.match(up, /device-up:timings/, "device-up emits per-phase timings");

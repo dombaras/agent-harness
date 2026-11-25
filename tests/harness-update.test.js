@@ -512,3 +512,243 @@ test("a metadata-only harness write needs no restart; a plugin write does, as ad
   assert.doesNotMatch(loaded.text, /do NOT begin work yet/, "the task is never blocked on a restart");
   assert.match(loaded.text, /Continue the current task now/, "it says work can continue");
 });
+
+/* F-045: drive the real global plugin through a successful deploy. Before the
+ * fix the success path wrote terminal `refreshed`, which the badge does not
+ * render, so the footer kept claiming the old build. The same run must publish
+ * the project probe cache so a project badge that predates `blocked` still
+ * shows the update arrow. */
+test("a successful apply writes restart-needed and publishes the project probe cache (F-045)", () => {
+  const home = tmpdir();
+  fs.writeFileSync(
+    path.join(home, "package.json"),
+    JSON.stringify({ name: "opencode-agent-harness", version: "9.9.9" })
+  );
+  fs.mkdirSync(path.join(home, "bin"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, "bin", "agent-harness.js"),
+    [
+      'const fs = require("fs");',
+      'const path = require("path");',
+      'const target = process.argv[process.argv.indexOf("--target") + 1];',
+      'fs.writeFileSync(process.env.STUB_MARKER, "applied");',
+      'fs.writeFileSync(path.join(target, ".harness.json"), JSON.stringify({ version: "9.9.9" }, null, 2) + "\\n");',
+    ].join("\n")
+  );
+
+  const driver = path.join(tmpdir(), "freshness-apply-driver.mjs");
+  fs.writeFileSync(
+    driver,
+    [
+      'import { pathToFileURL } from "node:url";',
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      "const [pluginPath, tree] = process.argv.slice(2);",
+      'const { default: plugin } = await import(pathToFileURL(pluginPath).href);',
+      "async function* stream(signal) {",
+      '  yield { type: "message.updated", data: { sessionID: "ses_apply" }, location: { directory: tree } };',
+      "  await new Promise((resolve) => {",
+      "    if (signal.aborted) return resolve();",
+      '    signal.addEventListener("abort", resolve, { once: true });',
+      "  });",
+      "}",
+      "const ctx = {",
+      "  location: { directory: tree },",
+      "  event: { subscribe: ({ signal }) => stream(signal) },",
+      "  session: { hook: () => {} },",
+      "};",
+      "const stop = await plugin.setup(ctx);",
+      'const verdict = path.join(tree, ".serve", "harness-freshness.json");',
+      "const deadline = Date.now() + 8000;",
+      "let doc = null;",
+      "while (Date.now() < deadline) {",
+      "  try { doc = JSON.parse(fs.readFileSync(verdict, 'utf8')); } catch { doc = null; }",
+      '  if (doc && doc.status === "restart-needed") break;',
+      "  await new Promise((r) => setTimeout(r, 25));",
+      "}",
+      "let probe = null;",
+      'try { probe = JSON.parse(fs.readFileSync(path.join(tree, ".serve", "harness-update.json"), "utf8")); } catch {}',
+      "stop();",
+      "console.log(JSON.stringify({ doc, probe }));",
+      'process.exit(doc && doc.status === "restart-needed" && probe ? 0 : 1);',
+    ].join("\n")
+  );
+
+  const tree = tmpdir();
+  const git = (...args) => spawnSync("git", ["-C", tree, ...args], { encoding: "utf8" });
+  fs.mkdirSync(path.join(tree, ".serve"), { recursive: true });
+  assert.strictEqual(git("init", "-q", "-b", "main").status, 0, "fixture is a git tree");
+  fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.0.0" }));
+  const marker = path.join(tmpdir(), "applied");
+
+  const r = spawnSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      driver,
+      path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+      tree,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 30000,
+      env: {
+        ...process.env,
+        AGENT_HARNESS_HOME: home,
+        AGENT_HARNESS_NO_UPDATE_CHECK: "1",
+        AGENT_HARNESS_FRESHNESS: "",
+        XDG_STATE_HOME: tmpdir(),
+        STUB_MARKER: marker,
+      },
+    }
+  );
+  assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+  const { doc, probe } = JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop());
+
+  assert.ok(fs.existsSync(marker), "the sanctioned update ran");
+  assert.strictEqual(doc.status, "restart-needed", "success is an activation gap, not terminal");
+  assert.strictEqual(doc.have, "9.9.9", "have names the deploy the verdict explains");
+  assert.strictEqual(doc.active, "9.0.0", "active names the build the service loaded");
+  assert.strictEqual(doc.latest, "9.9.9");
+  assert.strictEqual(typeof doc.wrote, "number", "the verdict carries the write it saw");
+  assert.strictEqual(typeof doc.pid, "number", "restart-needed keeps process provenance");
+  assert.strictEqual(probe.schema, "harness-update/1", "the shared probe schema is published");
+  assert.strictEqual(probe.deployed, "9.9.9", "the probe re-reads the deploy after the apply");
+  assert.strictEqual(probe.latest, "9.9.9");
+  assert.strictEqual(probe.checkout, "9.9.9", "the applier publishes its authoritative latest");
+  assert.strictEqual(probe.local, null, "a project's own app version is not a harness version");
+
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+    "utf8"
+  );
+  assert.match(
+    src,
+    /status\.status === "blocked" && status\.wrote === undefined/,
+    "every blocked verdict records the write it saw (F-045)"
+  );
+  assert.doesNotMatch(src, /status: "refreshed"/, "no success path writes the terminal refreshed state");
+});
+
+test("the startup sweep refreshes known trees without applying (F-045)", () => {
+  const home = tmpdir();
+  fs.writeFileSync(
+    path.join(home, "package.json"),
+    JSON.stringify({ name: "opencode-agent-harness", version: "9.9.9" })
+  );
+  const tree = tmpdir();
+  const git = (...args) => spawnSync("git", ["-C", tree, ...args], { encoding: "utf8" });
+  fs.mkdirSync(path.join(tree, ".serve"), { recursive: true });
+  assert.strictEqual(git("init", "-q", "-b", "main").status, 0, "fixture is a git tree");
+  fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.0.0" }));
+  const state = tmpdir();
+  fs.mkdirSync(path.join(state, "opencode-agent-harness"), { recursive: true });
+  fs.writeFileSync(
+    path.join(state, "opencode-agent-harness", "projects.json"),
+    JSON.stringify({ schema: "harness-projects/1", trees: [tree] })
+  );
+
+  const driver = path.join(tmpdir(), "freshness-sweep-driver.mjs");
+  fs.writeFileSync(
+    driver,
+    [
+      'import { pathToFileURL } from "node:url";',
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      "const [pluginPath, tree] = process.argv.slice(2);",
+      'const { default: plugin } = await import(pathToFileURL(pluginPath).href);',
+      "async function* stream(signal) {",
+      "  await new Promise((resolve) => {",
+      "    if (signal.aborted) return resolve();",
+      '    signal.addEventListener("abort", resolve, { once: true });',
+      "  });",
+      "}",
+      "const stop = await plugin.setup({",
+      "  location: { directory: tree },",
+      "  event: { subscribe: ({ signal }) => stream(signal) },",
+      "  session: { hook: () => {} },",
+      "});",
+      'const probePath = path.join(tree, ".serve", "harness-update.json");',
+      'const verdictPath = path.join(tree, ".serve", "harness-freshness.json");',
+      "const deadline = Date.now() + 8000;",
+      "let probe = null;",
+      "let doc = null;",
+      "while (Date.now() < deadline) {",
+      "  try { probe = JSON.parse(fs.readFileSync(probePath, 'utf8')); } catch { probe = null; }",
+      "  try { doc = JSON.parse(fs.readFileSync(verdictPath, 'utf8')); } catch { doc = null; }",
+      '  if (probe && doc) break;',
+      "  await new Promise((r) => setTimeout(r, 25));",
+      "}",
+      "stop();",
+      "console.log(JSON.stringify({ doc, probe }));",
+      "process.exit(probe && doc ? 0 : 1);",
+    ].join("\n")
+  );
+
+  const r = spawnSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      driver,
+      path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+      tree,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 30000,
+      env: {
+        ...process.env,
+        AGENT_HARNESS_HOME: home,
+        AGENT_HARNESS_NO_UPDATE_CHECK: "1",
+        AGENT_HARNESS_FRESHNESS: "",
+        XDG_STATE_HOME: state,
+      },
+    }
+  );
+  assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+  const { doc, probe } = JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop());
+  assert.strictEqual(probe.latest, "9.9.9", "the known tree gets a fresh probe without a session event");
+  assert.strictEqual(probe.deployed, "9.0.0");
+  assert.strictEqual(doc.status, "blocked", "a stale tree is visible before any session activity");
+  assert.strictEqual(doc.reason, "update available");
+  assert.strictEqual(typeof doc.wrote, "number", "blocked records the write it saw");
+  assert.strictEqual(
+    JSON.parse(fs.readFileSync(path.join(tree, ".harness.json"), "utf8")).version,
+    "9.0.0",
+    "the startup sweep never applies an update"
+  );
+});
+
+test("refresh re-reads the deploy before writing the cache (F-045)", () => {
+  // A deploy can land while the registry lookup is in flight. The stub npm call
+  // performs that write, so the old pre-lookup sample would be recorded: with the
+  // fix the cache names the post-deploy version.
+  const dir = project("0.4.4");
+  const marker = path.join(tmpdir(), "deployed");
+  const bin = tmpdir();
+  const cli = path.join(bin, "npm-cli.js");
+  fs.writeFileSync(
+    cli,
+    [
+      'const fs = require("fs");',
+      'const path = require("path");',
+      'fs.writeFileSync(process.env.RACE_TARGET, JSON.stringify({ version: "0.4.6" }) + "\\n");',
+      'process.stdout.write("0.4.6\\n");',
+    ].join("\n")
+  );
+  const prior = process.env.npm_execpath;
+  const priorTarget = process.env.RACE_TARGET;
+  process.env.npm_execpath = cli;
+  process.env.RACE_TARGET = path.join(dir, ".harness.json");
+  try {
+    const r = upd.refresh(dir, true);
+    assert.strictEqual(r.deployed, "0.4.6", "re-read after the lookup");
+  } finally {
+    if (prior === undefined) delete process.env.npm_execpath;
+    else process.env.npm_execpath = prior;
+    if (priorTarget === undefined) delete process.env.RACE_TARGET;
+    else process.env.RACE_TARGET = priorTarget;
+  }
+  const doc = JSON.parse(fs.readFileSync(path.join(dir, ".serve", "harness-update.json"), "utf8"));
+  assert.strictEqual(doc.deployed, "0.4.6", "the cache cannot name a build `.harness.json` already moved past");
+});

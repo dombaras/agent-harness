@@ -81,22 +81,40 @@ function writerAlive(pid) {
 // process is gone, the verdict cannot describe the running service and is
 // dropped. Without these checks a dead process's `restart-needed` file outlives
 // the restart that resolved it, and the badge says ↻restart forever (F-038).
+// The two statuses have different lifetimes (F-045):
+//   * `restart-needed` belongs to a PROCESS — the deploy landed but this service
+//     still runs the previous build. It dies with its writer (a restart resolved
+//     it) and is dropped by a later deploy.
+//   * `blocked` belongs to the TREE — the auto-update failed or was refused. It
+//     must survive the process that recorded it; only a later deploy
+//     (`deployed !== have`) or a newer `.harness.json` write clears it.
+// A pre-F-045 success wrote `status: "refreshed"` naming the OLD build in `have`.
+// That is the same activation gap, so it is read as restart-needed once the
+// deployed version equals the record's `latest` (no rewrite required).
 // A missing, stale, or malformed cache means "no marker", never a setup error.
 function readFreshness(directory, status) {
   if (typeof directory !== "string" || directory.length === 0) return null
   try {
     const raw = fs.readFileSync(path.join(directory, ".serve", "harness-freshness.json"), "utf8")
     const doc = JSON.parse(raw)
-    if (doc?.status !== status) return null
-    const have = typeof doc.have === "string" && doc.have.trim() ? doc.have.trim() : null
-    const latest = typeof doc.latest === "string" && doc.latest.trim() ? doc.latest.trim() : null
-    const active = typeof doc.active === "string" && doc.active.trim() ? doc.active.trim() : null
+    const legacy = status === "restart-needed" && doc?.status === "refreshed"
+    if (doc?.status !== status && !legacy) return null
     const deployed = readHarnessVersion(directory)
+    const latest = typeof doc.latest === "string" && doc.latest.trim() ? doc.latest.trim() : null
+    let have = typeof doc.have === "string" && doc.have.trim() ? doc.have.trim() : null
+    let active = typeof doc.active === "string" && doc.active.trim() ? doc.active.trim() : null
+    if (legacy) {
+      if (!deployed || !latest || deployed !== latest) return null
+      active = have // the old build the record named before the deploy
+      have = deployed
+    }
     if (deployed && deployed !== have) return null
     const wrote = Number(doc.wrote)
     const current = mtimeMs(path.join(directory, ".harness.json"))
     if (Number.isFinite(wrote) && current !== null && current > wrote + 1000) return null
-    if (!writerAlive(doc.pid)) return null
+    // A restart verdict is about the process that wrote it; a blocked tree
+    // outlives that process (F-045).
+    if (status === "restart-needed" && !writerAlive(doc.pid)) return null
     const verdict = { have, latest }
     if (active) verdict.active = active
     if (status === "blocked") {

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.4 — 2026-11-25
+
+- The harness update state is now truthful and self-healing, so "deployed" and
+  "running" are never confused again. A successful `update` records
+  `restart-needed` (deployed = new build, active = the build the running service
+  still holds, latest = new) instead of claiming `current`: the footer badge and
+  `orient` say a restart is pending until the service actually reloads. A
+  `blocked` verdict now survives the updater process exiting — it is cleared only
+  by a later deploy or a newer write — so a checkout the updater cannot refresh
+  keeps showing why. Readers normalize the legacy `refreshed` state, and the
+  update probe is persisted to `.serve/harness-update.json` (schema
+  `harness-update/1`, atomic, re-reads the deployed version at write time) with a
+  bounded registry plus a refresh-only startup sweep. `doctor` now tells the whole
+  story in three lines: `update probe` (latest, when, which source answered),
+  `freshness verdict` (status, first cause line, exact next command) and
+  `global plugin` (symlink target vs the bundled source — the one failure a
+  project cannot self-heal). EOL-only differences (a `git` `eol=crlf` checkout of
+  an LF template) no longer count as hand-edits that fail `update` closed, while a
+  real content edit still does. (F-045)
+
 ## 0.5.3 — 2026-11-25
 
 - A refused or failed harness auto-update is now visible instead of silent: the

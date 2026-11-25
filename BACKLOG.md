@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-045 | ? | Harness auto-update visibility, part 2: a successful update leaves the footer on the pre-update build because the freshness writer records `refreshed` (terminal) while the badge renders only `restart-needed`; a `blocked` verdict is discarded once its writer pid dies; and a project still on the old harness cannot render `blocked` because that badge code ships inside the blocked update. Fix: write restart-needed after a successful apply, keep blocked independent of writer liveness, have the global plugin write the project probe cache, add a refresh-only startup sweep, race/EOL hardening, and a doctor that tells the whole truth. | ? (worktree: ../.worktrees/agent-harness/f-045; branch: f-045) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -128,6 +127,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-042 | ? | harness self-update/version badge stuck after 0.5.0: templates/docs/gates.md is missing the test:diagnosis section that landed only in the deployed docs/gates.md, so update fails closed as a local hand-edit in the harness repo and neither its badge nor LibraryOS can reach 0.5.x; port the section into the template and release 0.5.1 | pending |
 | F-043 | ? | harness version badge/orient must show the loaded build vs the deployed build when a service restart is pending: badge currently prints only .harness.json (deploy), so it advertises a version the running service does not use | shipped |
 | F-044 | ? | Harness auto-update failure is invisible: LibraryOS left on 0.5.1 with a blocked freshness verdict, the footer badge renders nothing for `blocked`, and the project update probe reports npm 0.5.1 as latest so even the ↑ arrow never appears while the local checkout is ahead. | shipped |
+| F-045 | ? | Harness auto-update visibility, part 2: a successful update leaves the footer on the pre-update build because the freshness writer records `refreshed` (terminal) while the badge renders only `restart-needed`; a `blocked` verdict is discarded once its writer pid dies; and a project still on the old harness cannot render `blocked` because that badge code ships inside the blocked update. Fix: write restart-needed after a successful apply, keep blocked independent of writer liveness, have the global plugin write the project probe cache, add a refresh-only startup sweep, race/EOL hardening, and a doctor that tells the whole truth. | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
