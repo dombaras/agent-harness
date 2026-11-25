@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-036 | ? | Fix the false 'restart needed' harness block: classify a post-start harness write by what it touched (metadata-only = current) and make a real restart-pending notice advisory; also drop/re-collect a stale context-guard orient brief when HEAD/version moves under it | .agents/handoffs/F-036.md (worktree: ../.worktrees/agent-harness/f-036; branch: f-036) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -119,6 +118,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-033 | ? | Release 0.4.15: document the package.json bump rule in the gate reference (auto-update propagation probe) | shipped |
 | F-034 | ? | harness-freshness resolves the project tree from the top-level event.location (opencode 2.4 moved it out of event.data): a LibraryOS session showed no 0.4.15 update because the plugin fell back to the server cwd ($HOME) and skipped every project. Prefer event.location.directory, then data.location, then ctx.location; pin the order with a drift guard. | shipped |
 | F-035 | ? | harness-freshness: a restart-needed verdict written before an opencode service restart outlives it — the badge keeps showing ↻restart and the snippet stays stale because existing sessions never re-trigger session.created. Re-evaluate on session activity (context hook, once per session) so a post-restart message clears the verdict; also change the notice wording to 'opencode service restart' (not 'restart opencode'), which sent the user to the TUI twice. | shipped |
+| F-036 | ? | Fix the false 'restart needed' harness block: classify a post-start harness write by what it touched (metadata-only = current) and make a real restart-pending notice advisory; also drop/re-collect a stale context-guard orient brief when HEAD/version moves under it | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
