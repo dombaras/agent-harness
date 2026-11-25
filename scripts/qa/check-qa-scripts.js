@@ -23,6 +23,7 @@ const EXPECTED = {
   "test:dispatch": "harness — persona model-pin preflight (shipped)",
   "test:governance": "harness — session-governance gate (shipped)",
   "test:qa-plan": "harness — diff-coverage + flow-closure gate (changed code paths covered; touched flows' sibling surfaces/variants audited)",
+  "test:diagnosis": "harness — inquiry-loop gate (declared bug/incident/fix features carry a falsified diagnosis + outcome oracle)",
   "test:backlog": "harness — canonical single-file backlog gate (board schema + depends-on references valid)",
   "test:concurrency": "harness — cross-session working-tree guard (a concurrent session's uncommitted work must not leak into your push)",
   "test:integrate": "harness — pre-push rebase check (rebase onto main before push, so conflicts surface early)",

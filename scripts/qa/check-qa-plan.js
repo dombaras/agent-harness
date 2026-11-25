@@ -266,18 +266,96 @@ const fail = (m) => {
   console.log("  \u2717 " + m);
 };
 
+/* ------------------------------------------ outcome oracle (inquiry loop)
+ * A bug/incident/fix feature's QA plan must prove the REPORTED behaviour
+ * changed, not just that some assertion passes: `## Outcome oracle` records the
+ * before-red / after-green observation on the real surface plus an owner.
+ * Required only for declared diagnostic kinds, so legacy features and feature
+ * work are unaffected. Runs even when the diff is empty. */
+const ORACLE_KEYS = [
+  ["reported-symptom", "Reported symptom"],
+  ["before-(red)", "Before (red)"],
+  ["after-(green)", "After (green)"],
+  ["command-/-observation", "Command / observation"],
+  ["environment-/-surface", "Environment / surface"],
+  ["independent-owner", "Independent owner"],
+];
+
+function planForFeature(id) {
+  const dir = path.join(root, ".agents", "qa-plans");
+  if (!fs.existsSync(dir)) return null;
+  const want = String(id).toLowerCase().replace(/[^a-z0-9]/g, "");
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.toLowerCase().endsWith(".md")) continue;
+    if (name.toLowerCase().replace(/[^a-z0-9]/g, "").startsWith(want)) return path.join(dir, name);
+  }
+  return null;
+}
+
+function oracleFailures() {
+  let lib;
+  try {
+    lib = require("./diagnosis-lib.js");
+  } catch (_) {
+    return 0; // pre-inquiry deploy: the gate keeps its old scope
+  }
+  const out = [];
+  for (const f of lib.featureDirs(root)) {
+    const meta = lib.readJson(lib.metaPath(f.dir));
+    if (!meta) continue;
+    const requires = typeof meta.requiresDiagnosis === "boolean" ? meta.requiresDiagnosis : ["bug", "incident", "fix"].includes(String(meta.kind || "").toLowerCase());
+    if (!requires) continue;
+    const id = String(meta.id || f.slug).toUpperCase();
+    const plan = planForFeature(id);
+    if (!plan) {
+      out.push(`${id} QA plan: missing .agents/qa-plans/${id}.md with ## Outcome oracle (required for kind=${meta.kind})`);
+      continue;
+    }
+    let inOracle = false;
+    const bullets = {};
+    for (const raw of fs.readFileSync(plan, "utf8").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (/^#{1,6}\s*Outcome oracle\s*$/i.test(line)) {
+        inOracle = true;
+        continue;
+      }
+      if (inOracle && /^#{1,6}\s/.test(line)) inOracle = false;
+      if (!inOracle) continue;
+      const m = line.match(/^[-*+]\s*([^:]+):\s*(.*)$/);
+      if (m) bullets[m[1].trim().toLowerCase().replace(/\s+/g, "-")] = m[2].trim();
+    }
+    for (const [key, label] of ORACLE_KEYS) {
+      const val = bullets[key];
+      if (!val || lib.isBlank(val)) {
+        out.push(`${id} QA plan (${path.relative(root, plan)}): missing "- ${label}: <...>" in ## Outcome oracle (required for kind=${meta.kind})`);
+      }
+    }
+  }
+  return out;
+}
+
 console.log("diff-coverage gate \u2014 QA plan covers every changed code path");
+
+// Inquiry loop (F-040): the oracle check is metadata-scoped, so it must run even
+// with a clean diff \u2014 a declared bug cannot be "done" by an empty push.
+const oracleProblems = oracleFailures();
+if (oracleProblems.length) {
+  console.log("outcome-oracle gate \u2014 a declared bug/incident/fix proves the reported behaviour changed");
+  for (const p of oracleProblems) fail(p);
+}
 
 const changed = gitChangedFiles();
 if (changed == null) {
   console.log("  \u26a0 not a git repo or no base history \u2014 coverage gate skipped");
-  console.log("\nRESULT: skipped (0 failures)");
-  process.exit(0);
+  console.log("\nRESULT: " + (failures.length ? `${failures.length} FAILURE(S)` : "skipped (0 failures)"));
+  process.exit(failures.length ? 1 : 0);
 }
 if (changed.length === 0) {
   console.log("  \u2713 no diff vs " + base + " \u2014 nothing to cover");
-  console.log("\nRESULT: green");
-  process.exit(0);
+  console.log(
+    "\nRESULT: " + (failures.length ? `${failures.length} FAILURE(S)` : "green")
+  );
+  process.exit(failures.length ? 1 : 0);
 }
 
 const plans = planFiles(root);

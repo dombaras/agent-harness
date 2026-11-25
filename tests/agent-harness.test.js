@@ -148,7 +148,7 @@ test("listFiles enumerates the full template tree", () => {
   assert.ok(rels.includes(".opencode/agents/planner.md"));
   assert.ok(rels.includes("opencode.json"));
   const agentCount = rels.filter((r) => r.startsWith(".opencode/agents/") && r.endsWith(".md")).length;
-  assert.strictEqual(agentCount, 15);
+  assert.strictEqual(agentCount, 16);
 });
 
 test("agents carry mechanical enforcement frontmatter (native V2 permissions)", () => {

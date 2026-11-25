@@ -9,8 +9,10 @@
  *      provider model (frozen allowlist seeded from `opencode models`).
  *   2. Personas are 1:1: every `.agents/skills/<name>/SKILL.md` has a matching
  *      `.opencode/agents/<name>.md` and vice-versa (no path/skill drift).
- *   3. Every agent body carries the output-contract marker (Result / Evidence /
- *      Deferred & risks) so subagents return a consistent report shape.
+ *   3. Every agent body carries an output contract: the standard recap
+ *      (Result / Evidence / Deferred & risks), or a declared artifact block for a
+ *      read-only reviewer (`Return ONLY the `## <Block>` block`, e.g. the
+ *      falsifier's `## Falsification`), so subagents return a consistent shape.
  *   4. `opencode.json` main `model` + `agents.title.model` (the small-model pin)
  *      and every `agents.<name>.model` override (e.g. the opportunistic
  *      `explore` pin) are real provider IDs.
@@ -76,6 +78,13 @@ if (zenLines.length) {
       "policy is opencode-go/* + deepseek/* only; remove them"
   );
 }
+
+/* Most personas close with the standard receipt. A read-only reviewer instead
+ * returns its artifact: the falsifier's whole output is the block the
+ * orchestrator appends, so "Return ONLY the `## Falsification` block" is its
+ * contract (F-040). Both are accepted; a body with neither still fails. */
+const OUTPUT_CONTRACT = /return your final message in this exact order[\s\S]*Deferred & risks/i;
+const ARTIFACT_CONTRACT = /Return ONLY the `## [A-Z][^`\n]+` block/;
 
 function frontmatterModelRaw(file) {
   const src = fs.readFileSync(file, "utf8");
@@ -168,8 +177,8 @@ for (const f of agentNames) {
   else if (!allowlist.has(model)) fail(`agent ${f}: model \`${model}\` NOT in provider allowlist`);
   else pass(`agent ${name}: model \`${model}\` is a real provider model`);
   if (!fs.existsSync(skillMd)) fail(`agent ${name}: referenced skill missing \`${path.relative(root, skillMd)}\``);
-  if (!/return your final message in this exact order[\s\S]*Deferred & risks/i.test(body))
-    fail(`agent ${name}: missing output-contract marker (Result -> Evidence -> Deferred & risks)`);
+  if (!OUTPUT_CONTRACT.test(body) && !ARTIFACT_CONTRACT.test(body))
+    fail(`agent ${name}: missing output contract (Result -> Evidence -> Deferred & risks, or a declared "Return ONLY the \`## <Block>\` block")`);
   const canBash = frontmatterPermissions(file).some((p) => p.action === "shell" && p.effect === "allow");
   if (canBash && !/git rev-parse --show-toplevel/.test(body))
     fail(`agent ${name}: shell-enabled editor missing the working-tree gate (verify \`git rev-parse --show-toplevel\` + branch before editing)`);

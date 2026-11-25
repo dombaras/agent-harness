@@ -39,6 +39,19 @@ has its sibling surfaces + declared variants addressed in the plan's
 `--base=HEAD` is an empty diff). **Satisfy:** author the plan (qa-architect, or the
 orchestrator in its place). **Waive:** an explicit `audited:`/waiver line per path.
 
+## `test:diagnosis` — inquiry-loop diagnosis gate
+`node scripts/qa/check-diagnosis.js [--feature <id>] [--warn] [--json]`
+A declared `kind: bug | incident | fix` feature (`.agents/features/<slug>/meta.json`)
+cannot finalize without a `diagnosis.md` that states the observed vs expected
+behaviour, at least two candidate causes each with a discriminating test, the
+candidates ruled out, an independent falsification record, and a complete
+`## Outcome oracle` (red before / green after). Scope is explicit metadata, never
+inferred from a diff; legacy features (no `meta.json`) and `requiresDiagnosis:
+false` are never blocked. **Satisfy:** run `/diagnose <symptom>` / the `diagnose`
+skill, or fill the scaffolded `diagnosis.md` before implementing; the one-release
+warning mode is `AGENT_HARNESS_DIAGNOSIS=warn` (or `--warn`). **Waive:**
+`requiresDiagnosis: false` in `meta.json` for a knowingly-designed change.
+
 ## `test:backlog` — canonical-single-backlog gate
 `node scripts/qa/check-backlog.js`
 The shared board service is the only source of truth (ADR 0001); when the service

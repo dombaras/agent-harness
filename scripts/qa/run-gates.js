@@ -44,6 +44,7 @@ const PHASES = {
     ["test:wiring"],
     ["test:integrate"],
     ["test:qa-plan", "--base={base}"],
+    ["test:diagnosis"],
     ["test:product"],
     ["test:docs"],
     ["test:prefix"],

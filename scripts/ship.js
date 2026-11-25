@@ -332,6 +332,7 @@ const PROCESS_GATES = [
   "test:capacity",
   "test:backlog",
   "test:wiring",
+  "test:diagnosis",
   "test:product",
   "test:docs",
   "test:prefix",

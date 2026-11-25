@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 — 2026-11-25
+
+- Declared bug, incident, and fix work now needs a checked diagnosis before it can finalize: two candidate causes with discriminating tests, ruled-out causes, independent falsification, and a red-before/green-after oracle. (F-040)
+- A read-only `falsifier` persona plus the `/diagnose` command and skill challenge the cause before code changes; unknown-cause work routes to at least T2 and pays the new gate. (F-040)
+- `npm run test:diagnosis` validates the artifact, supports one-release warn mode with `AGENT_HARNESS_DIAGNOSIS=warn`, never blocks legacy features without `meta.json`, and honors `requiresDiagnosis: false` as the deliberate opt-out. (F-040)
+- Bug, incident, and fix QA plans now carry an `## Outcome oracle` covering the reported symptom, before red, after green, command, environment, and independent owner. (F-040)
+- `orient` and `checkpoint resume` surface diagnosis status, confidence, staleness, and open questions. (F-040)
+- [`docs/harness-lifecycle.md`](docs/harness-lifecycle.md) describes the inquiry loop end to end. (F-040)
+
 ## 0.4.19 — 2026-11-25
 
 - A `restart-needed` verdict can no longer outlive the deploy or process it

@@ -26,6 +26,15 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
+/* The inquiry-loop parser (F-040). Optional so an older deploy still resumes
+ * without the diagnosis artifact. */
+let diagnosisLib = null;
+try {
+  diagnosisLib = require("./qa/diagnosis-lib.js");
+} catch (_) {
+  diagnosisLib = null;
+}
+
 /* The project root. Resolve from an explicit `--root <dir>` when given, else
  * `process.cwd()` when it looks like a project root, and only fall back to
  * `__dirname/..`. Under the harness dogfood the repo `scripts` dir is symlinked
@@ -119,6 +128,93 @@ function featureWorktreeRoot(feature) {
 function handoffPath(feature) {
   const base = featureWorktreeRoot(feature) || root;
   return path.join(base, ".agents", "handoffs", feature + ".md");
+}
+
+/* Read-only diagnosis state carried by `resume` (F-040). The artifact is never
+ * rewritten here: a conclusion proven at another HEAD/version is flagged stale
+ * so the resumed session revalidates instead of trusting it. */
+function gitHead(dir) {
+  const res = spawnSync("git", ["-C", dir, "rev-parse", "--short", "HEAD"], { encoding: "utf8" });
+  const out = res.status === 0 && typeof res.stdout === "string" ? res.stdout.trim() : "";
+  return out || null;
+}
+
+function harnessVersionAt(dir) {
+  try {
+    const doc = JSON.parse(fs.readFileSync(path.join(dir, ".harness.json"), "utf8"));
+    return doc && typeof doc.version === "string" && doc.version.trim() ? doc.version.trim() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/* Up to `limit` unanswered questions from the diagnosis's `## Open questions`.
+ * A placeholder ("?", "none") is not a question. Pure read. */
+function openQuestions(text, limit = 3) {
+  if (!diagnosisLib) return [];
+  const section = (diagnosisLib.sectionsOf(text) || []).find((s) => /^Open questions\b/i.test(s.name));
+  if (!section) return [];
+  const out = [];
+  for (const raw of section.lines) {
+    const m = String(raw).trim().match(/^[-*+]\s+(.+)$/);
+    if (!m) continue;
+    const q = m[1].trim();
+    if (diagnosisLib.isBlank(q) || /^none\b/i.test(q)) continue;
+    out.push(q);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function diagnosisState(feature, baseRoot) {
+  if (!diagnosisLib) return null;
+  let rec = null;
+  try {
+    rec = diagnosisLib.readFeature(baseRoot, feature);
+  } catch (_) {
+    rec = null;
+  }
+  if (!rec) return null;
+  const errors = Array.isArray(rec.errors) ? rec.errors : [];
+  let stale = null;
+  try {
+    stale = diagnosisLib.staleReason(rec, rec.diagnosisText, {
+      head: gitHead(baseRoot),
+      harnessVersion: harnessVersionAt(baseRoot),
+    });
+  } catch (_) {
+    stale = null;
+  }
+  return {
+    id: (rec.meta && rec.meta.id) || feature,
+    kind: (rec.meta && rec.meta.kind) || null,
+    required: Boolean(rec.required),
+    ok: Boolean(rec.ok),
+    status: rec.status || null,
+    confidence: rec.confidence || null,
+    stale: stale || null,
+    questions: openQuestions(rec.diagnosisText),
+    errors,
+  };
+}
+
+function renderDiagnosisBrief(d) {
+  if (!d) return [];
+  const lines = [];
+  if (d.required && !d.ok) {
+    const missing = (d.errors || []).some((e) => e.code === "missing");
+    const detail = missing
+      ? "run /diagnose before editing"
+      : (d.errors[0] && d.errors[0].message) || "fix the diagnosis before editing";
+    lines.push(`diagnosis: ${missing ? "MISSING" : "INVALID"} (kind=${d.kind || "?"}) — ${detail}`);
+  } else if (!d.required) {
+    lines.push(`diagnosis: not required (${d.kind ? `kind=${d.kind}` : "legacy feature"})`);
+  } else {
+    lines.push(`diagnosis: ${d.status || "open"} (${d.confidence || "?"})`);
+  }
+  if (d.stale) lines.push(`stale: ${d.stale} — revalidate before trusting the conclusion`);
+  for (const q of d.questions || []) lines.push(`open question: ${q}`);
+  return lines;
 }
 
 /* A feature id must be a real slug. Reject the stringified sentinels a tool
@@ -233,7 +329,16 @@ function readCheckpoint(args) {
   if (!fs.existsSync(file)) throw new Error(`no handoff found for "${feature}" (${path.relative(root, file)})`);
   const parts = splitCheckpoint(fs.readFileSync(file, "utf8"));
   if (!parts.body) throw new Error(`"${feature}" has no ## Checkpoint block yet — run checkpoint write first`);
-  return { feature, file, root, worktree, body: parts.body.trim(), state: parseBlock(parts.body) };
+  return {
+    feature,
+    file,
+    root,
+    worktree,
+    body: parts.body.trim(),
+    state: parseBlock(parts.body),
+    // Resolve the diagnosis where the feature actually lives, like the handoff.
+    diagnosis: diagnosisState(feature, worktree || root),
+  };
 }
 
 function main() {
@@ -254,7 +359,13 @@ function main() {
   if (cmd === "resume") {
     const r = readCheckpoint(args);
     if (args.json) {
-      console.log(JSON.stringify({ schema: SCHEMA, feature: r.feature, state: r.state, root: r.root, worktree: r.worktree }, null, 2));
+      console.log(
+        JSON.stringify(
+          { schema: SCHEMA, feature: r.feature, state: r.state, root: r.root, worktree: r.worktree, diagnosis: r.diagnosis },
+          null,
+          2
+        )
+      );
       return;
     }
     // The handoff is resolved through the feature's linked worktree, so a session
@@ -267,6 +378,8 @@ function main() {
       );
     }
     console.log(r.body);
+    const dLines = renderDiagnosisBrief(r.diagnosis);
+    if (dLines.length) console.log("\n" + dLines.join("\n"));
     return;
   }
   console.error(
@@ -287,4 +400,16 @@ if (require.main === module) {
   }
 }
 
-module.exports = { SCHEMA, splitCheckpoint, renderBlock, parseBlock, writeCheckpoint, readCheckpoint, handoffPath, assertFeature };
+module.exports = {
+  SCHEMA,
+  splitCheckpoint,
+  renderBlock,
+  parseBlock,
+  writeCheckpoint,
+  readCheckpoint,
+  handoffPath,
+  assertFeature,
+  diagnosisState,
+  openQuestions,
+  renderDiagnosisBrief,
+};

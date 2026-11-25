@@ -604,6 +604,7 @@ const HARNESS_SCRIPTS = {
   "test:dispatch": "node scripts/qa/check-dispatch-config.js",
   "test:governance": "node scripts/qa/governance.js",
   "test:qa-plan": "node scripts/qa/check-qa-plan.js",
+  "test:diagnosis": "node scripts/qa/check-diagnosis.js",
   "test:backlog": "node scripts/qa/check-backlog.js",
   "test:product": "node scripts/qa/check-product.js",
   "test:docs": "node scripts/qa/check-docs.js",
@@ -2270,6 +2271,13 @@ function doctor(target) {
     "gate reference",
     fs.existsSync(path.join(target, "docs", "gates.md"))
       ? "docs/gates.md present (`agent-harness explain <gate>`)"
+      : "missing — re-run `agent-harness update`"
+  );
+  add(
+    fs.existsSync(path.join(target, "scripts", "qa", "check-diagnosis.js")) ? "ok" : "warn",
+    "diagnosis gate",
+    fs.existsSync(path.join(target, "scripts", "qa", "check-diagnosis.js"))
+      ? "inquiry loop available (`npm run test:diagnosis`, warn mode AGENT_HARNESS_DIAGNOSIS=warn)"
       : "missing — re-run `agent-harness update`"
   );
 

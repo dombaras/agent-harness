@@ -29,6 +29,15 @@ const checkpoint = require("./checkpoint.js");
 const capacity = require("./qa/capacity-lib.js");
 const dispatchPersona = require("./qa/dispatch-persona.js");
 
+/* The inquiry-loop parser (F-040). Optional on purpose: an older deploy may not
+ * ship `qa/diagnosis-lib.js`, and orient must still orient. */
+let diagnosisLib = null;
+try {
+  diagnosisLib = require("./qa/diagnosis-lib.js");
+} catch (_) {
+  diagnosisLib = null;
+}
+
 const SCHEMA = "orient/1";
 
 function safe(fn, fallback = null) {
@@ -415,6 +424,91 @@ function renderPersonasBlock(rows, max = PERSONA_MAX) {
   });
 }
 
+/* ------------------------------------------------- diagnosis visibility (S5) */
+/* The active feature's diagnosis, display-ready. Read-only: orient reports a
+ * stale or missing artifact, it never rewrites one — revalidation is a
+ * `/diagnose` step, not an orientation side effect. */
+function diagnosisState(root, feature, now = {}) {
+  if (!feature || !diagnosisLib) return null;
+  const rec = safe(() => diagnosisLib.readFeature(root, feature), null);
+  if (!rec) {
+    // No feature dir in this checkout (a resume from the main tree while the
+    // feature lives in a linked worktree): nothing declared here to require.
+    return {
+      id: feature,
+      kind: null,
+      required: false,
+      ok: true,
+      status: null,
+      confidence: null,
+      stale: null,
+      errors: [],
+      action: null,
+    };
+  }
+  const errors = Array.isArray(rec.errors) ? rec.errors : [];
+  const text = String(rec.diagnosisText || "");
+  const missing = errors.some((e) => e.code === "missing") || !text.trim();
+  const stale = safe(
+    () => diagnosisLib.staleReason(rec, text, { head: now.head, harnessVersion: now.harnessVersion }),
+    null
+  );
+  const facts = diagnosisFacts(text);
+  // One-line next step: a missing artifact needs the command, a malformed one
+  // needs its first concrete defect. A valid diagnosis stays silent.
+  let action = null;
+  if (rec.required && !rec.ok) {
+    action = missing ? "run /diagnose before editing" : errors[0] && errors[0].message ? errors[0].message : "fix the diagnosis before editing";
+  }
+  return {
+    id: (rec.meta && rec.meta.id) || feature,
+    kind: (rec.meta && rec.meta.kind) || null,
+    required: Boolean(rec.required),
+    ok: Boolean(rec.ok),
+    status: rec.status || null,
+    confidence: rec.confidence || null,
+    stale: stale || null,
+    errors,
+    action,
+    // Display facts for the human line; not part of the gate contract.
+    falsifier: facts.falsifier,
+    oracle: facts.oracle,
+  };
+}
+
+/* `falsifier: yes` / `oracle: recorded` for the human line, from the same
+ * parser the gate uses (no second interpretation of the markdown). */
+function diagnosisFacts(text) {
+  if (!diagnosisLib) return { falsifier: "no", oracle: "missing" };
+  const sections = safe(() => diagnosisLib.sectionsOf(text), []) || [];
+  const scalars = safe(() => diagnosisLib.parseScalars(text), {}) || {};
+  const fals = sections.find((s) => /^Falsification\b/i.test(s.name));
+  const falsB = fals ? diagnosisLib.parseBullets(fals.lines) : {};
+  const falsifier = !diagnosisLib.isBlank(falsB.reviewer) || !diagnosisLib.isBlank(scalars.falsifier) ? "yes" : "no";
+  const oracle = sections.find((s) => /^Outcome oracle\b/i.test(s.name));
+  const oracleB = oracle ? diagnosisLib.parseBullets(oracle.lines) : {};
+  const recorded = ["before-(red)", "after-(green)", "command-/-observation"].every((key) =>
+    !diagnosisLib.isBlank(oracleB[key])
+  );
+  return { falsifier, oracle: recorded ? "recorded" : "missing" };
+}
+
+/* The human/brief line(s) for the diagnosis block. Pure; `null` renders nothing. */
+function renderDiagnosisLines(d) {
+  if (!d) return [];
+  let line;
+  if (!d.required) {
+    line = `diagnosis: not required (${d.kind ? `kind=${d.kind}` : "legacy feature"})`;
+  } else if (!d.ok) {
+    const missing = (d.errors || []).some((e) => e.code === "missing");
+    line = `diagnosis: ${missing ? "MISSING" : "INVALID"} (kind=${d.kind || "?"}) — ${d.action || "fix the diagnosis before editing"}`;
+  } else {
+    line = `diagnosis: ${d.status || "open"} (${d.confidence || "?"}) · falsifier: ${d.falsifier || "no"} · oracle: ${d.oracle || "missing"}`;
+  }
+  if (d.stale) line += ` · STALE: ${d.stale}`;
+  return [line];
+}
+
 /* The whole orientation as a plain object. `deps` injects git/run for tests. */
 function collectOrient(opts = {}) {
   const root = path.resolve(opts.root || process.cwd());
@@ -448,6 +542,10 @@ function collectOrient(opts = {}) {
         count: ck.state && ck.state.checkpoint_count,
       }
     : null;
+  // The inquiry loop's artifact for the active feature: status/confidence, a
+  // staleness verdict against this HEAD/harness, and the next action.
+  const harnessVer = harnessVersion(root);
+  const diagnosis = feature ? diagnosisState(root, feature, { head, harnessVersion: harnessVer }) : null;
 
   let cap = null;
   try {
@@ -486,12 +584,13 @@ function collectOrient(opts = {}) {
       : null,
     ownedFiles: owned,
     checkpoint: checkpointState,
+    diagnosis,
     capacity: cap,
     personas: personaRows(root, opts),
     memory: memoryDigest(root),
     lastE2e: lastE2eRun(root),
     nightly: latestNightly(root),
-    harnessVersion: harnessVersion(root),
+    harnessVersion: harnessVer,
     harnessUpdate: harnessUpdateCheck(root),
   };
 }
@@ -527,6 +626,7 @@ function printHuman(o) {
   } else {
     lines.push("ckpt:    none (fresh work unit or feature has no checkpoint yet)");
   }
+  lines.push(...renderDiagnosisLines(o.diagnosis));
   if (o.board) {
     const ip = o.board.inprogress.map((r) => r.id).join(", ") || "none";
     lines.push(`board:   In progress [${ip}]`);
@@ -588,6 +688,7 @@ function printBrief(o) {
   }
   if (o.feature) lines.push(`feature ${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`);
   if (o.checkpoint) lines.push(`checkpoint ${o.checkpoint.phase || "?"} · next: ${o.checkpoint.nextAction || "?"}`);
+  lines.push(...renderDiagnosisLines(o.diagnosis));
   if (o.board) {
     const ip = o.board.inprogress.map((r) => r.id).join(", ") || "none";
     lines.push(`board In progress [${ip}]${o.board.nextQueued.length ? ` · next ${o.board.nextQueued.map((r) => r.id).join(", ")}` : ""}`);
@@ -662,6 +763,9 @@ module.exports = {
   featureWorktree,
   checkoutKind,
   ownedFor,
+  diagnosisState,
+  diagnosisFacts,
+  renderDiagnosisLines,
   parseFirstTable,
   parseSections,
   memoryDigest,

@@ -628,6 +628,20 @@ function main() {
     return;
   }
 
+  // Inquiry loop: a declared bug/incident/fix must carry a falsified diagnosis
+  // BEFORE anything is staged. Legacy features warn only (the gate owns that
+  // policy); a malformed diagnosis is a blocker, not a warning.
+  const diagnosisScript = path.join(root, "scripts", "qa", "check-diagnosis.js");
+  if (fs.existsSync(diagnosisScript)) {
+    const ok = run(process.execPath, [diagnosisScript, "--feature", feature], { cwd: root });
+    if (!ok) {
+      return fail(
+        `finalize: ${feature} has an incomplete diagnosis — fill .agents/features/<slug>/diagnosis.md ` +
+          "(candidates + discriminating tests + falsifier + outcome oracle), then re-run."
+      );
+    }
+  }
+
   const backlogScript = path.join(root, "scripts", "backlog.js");
 
   // 1. Archive the row (idempotent). The archive runs from inside the worktree,

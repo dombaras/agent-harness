@@ -14,6 +14,10 @@
  *   T2  one dispatch          multi-file on one surface, or one API/contract change
  *   T3  several dispatches    2+ surfaces, or schema/auth/security/public API
  *
+ * An unknown-cause objective ("unknown cause", "root cause", "investigate",
+ * "intermittent", "regression", "why", "diagnose") is at least T2 and pays
+ * `test:diagnosis`: a patch before a proven cause is a guess, not a fix.
+ *
  * It is pure: no git, no filesystem, no store. The plugin/doctor/agent passes
  * the facts; every branch is unit-testable and the CLI is a thin wrapper.
  *
@@ -46,6 +50,17 @@ const RISK_TAGS = [
 ];
 
 const HIGH_RISK = new Set(["schema", "auth", "security", "api-contract", "concurrency", "sync"]);
+
+/* Unknown-cause signals. These objectives are investigations before they are
+ * changes: the cause is not proven, so a patch would be a guess. Keep the
+ * vocabulary narrow — "look into" and "flaky" are deliberately absent because
+ * they appear in ordinary small-change objectives. */
+const UNKNOWN_CAUSE =
+  /\b(unknown[\s-]+cause|root[\s-]+cause|investigat(?:e|es|ed|ing|ion)|intermittent(?:ly)?|regression|why|diagnos(?:e|es|ed|ing|is|tic|tics))\b/i;
+
+function hasUnknownCause(objective) {
+  return UNKNOWN_CAUSE.test(String(objective || ""));
+}
 
 /* A surface is the unit a different gate/persona owns. Map the first path
  * segment (and a few repo conventions) instead of trusting a caller label. */
@@ -133,7 +148,7 @@ function personasFor(surfaces, risk, tier) {
 
 /* The gate set is derived from the touched paths, so a T3 that never touches
  * the prefix files does not pay `test:prefix`. */
-function gatesFor(files, surfaces, risk, code) {
+function gatesFor(files, surfaces, risk, code, unknownCause = false) {
   const rels = (files || []).map(normalizeRel);
   const gates = [];
   const add = (g) => { if (!gates.includes(g)) gates.push(g); };
@@ -142,6 +157,7 @@ function gatesFor(files, surfaces, risk, code) {
     add("test:qa-plan");
     add("test:wiring");
   }
+  if (unknownCause) add("test:diagnosis");
   if (rels.some((f) => /^(templates\/)?AGENTS\.md$|^(templates\/)?\.agents\/(AGENTS\.md|rules\/)/.test(f)))
     add("test:prefix");
   if (rels.some((f) => /^(templates\/)?\.opencode\/agents\/|^(templates\/)?\.opencode\/plugins\/|model-routing\.md$/.test(f)))
@@ -159,6 +175,7 @@ function classify(input = {}) {
   const surfaces = deriveSurfaces(files, input.surfaces);
   const risk = riskTags(objective, input.risk);
   const code = isCodeChange(files, input);
+  const unknownCause = code && hasUnknownCause(objective);
   const highRisk = risk.some((t) => HIGH_RISK.has(t));
   const mediumRisk = risk.length > 0;
   const multiScope = Boolean(input.parallel) || surfaces.length >= 3;
@@ -188,8 +205,13 @@ function classify(input = {}) {
     reasons.push(`${files.length} files on one surface, no contract risk`);
   }
 
+  if (unknownCause) {
+    if (tier < 2) tier = 2;
+    reasons.push("unknown cause: diagnosis + falsifier before implementation (min T2)");
+  }
+
   const personas = personasFor(surfaces, risk, tier);
-  const gates = gatesFor(files, surfaces, risk, code);
+  const gates = gatesFor(files, surfaces, risk, code, unknownCause);
   return {
     schema: "dispatch-tier/1",
     tier,
@@ -200,6 +222,7 @@ function classify(input = {}) {
     surfaces,
     risk,
     code,
+    unknownCause,
     qaPlan: code,
     security: risk.includes("auth") || risk.includes("security"),
     execution: tier >= 2 ? "dispatch" : "direct",
@@ -243,10 +266,12 @@ function main() {
 module.exports = {
   TIER_NAMES,
   HIGH_RISK,
+  UNKNOWN_CAUSE,
   normalizeRel,
   surfaceOf,
   deriveSurfaces,
   riskTags,
+  hasUnknownCause,
   isCodeChange,
   personasFor,
   gatesFor,
