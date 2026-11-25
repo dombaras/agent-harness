@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-042 | ? | harness self-update/version badge stuck after 0.5.0: templates/docs/gates.md is missing the test:diagnosis section that landed only in the deployed docs/gates.md, so update fails closed as a local hand-edit in the harness repo and neither its badge nor LibraryOS can reach 0.5.x; port the section into the template and release 0.5.1 | .agents/handoffs/F-042.md (worktree: ../.worktrees/agent-harness/f-042; branch: f-042) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -125,6 +124,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-036 | ? | Fix the false 'restart needed' harness block: classify a post-start harness write by what it touched (metadata-only = current) and make a real restart-pending notice advisory; also drop/re-collect a stale context-guard orient brief when HEAD/version moves under it | shipped |
 | F-038 | ? | stale harness restart badge: .serve/harness-freshness.json from a dead process survives the service restart (publicvirtuallibrary verdict=restart-needed have=0.4.17 @12:33Z while .harness.json=0.4.18 @13:01Z); badge renders fresh 0.4.18 + stale ↻restart forever. Add verdict provenance (process/deploy id), ignore a verdict whose have != current version or older than the deploy, re-invalidate at process start, and resolve the badge directory per render. | shipped |
 | F-040 | inquiry-capability | Inquiry loop: gated diagnosis + independent falsification + outcome verification | shipped |
+| F-042 | ? | harness self-update/version badge stuck after 0.5.0: templates/docs/gates.md is missing the test:diagnosis section that landed only in the deployed docs/gates.md, so update fails closed as a local hand-edit in the harness repo and neither its badge nor LibraryOS can reach 0.5.x; port the section into the template and release 0.5.1 | pending |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
