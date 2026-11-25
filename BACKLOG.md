@@ -66,6 +66,7 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
+| F-035 | P2 | ? | harness-freshness: a restart-needed verdict written before an opencode service restart outlives it — the badge keeps showing ↻restart and the snippet stays stale because existing sessions never re-trigger session.created. Re-evaluate on session activity (context hook, once per session) so a post-restart message clears the verdict; also change the notice wording to 'opencode service restart' (not 'restart opencode'), which sent the user to the TUI twice. | .agents/handoffs/F-034.md; LibraryOS .serve/harness-freshness.json at 06:02:31Z vs service load 06:08:17Z (run 1582b6b4) | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
 | F-017 | P4 | ? | Cross-check agent-report/store-lib against `opencode stats --json` as an independent oracle: the CLI now emits per-tool reliability + cost/token stats, so a parity assertion would catch store-shape drift the direct-DB reader silently misses. | docs/opencode-v2.3-compat-scan.md §G5; `opencode stats --help` | ? |
 
