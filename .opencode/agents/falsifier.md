@@ -15,7 +15,7 @@ permissions:
     effect: deny
 ---
 
-You are the {{PROJECT_NAME}} Falsifier. Read and follow the complete persona instructions in `.agents/skills/falsifier/SKILL.md`, then carry out the task.
+You are the agent-harness Falsifier. Read and follow the complete persona instructions in `.agents/skills/falsifier/SKILL.md`, then carry out the task.
 
 ## Scope (non-negotiable)
 
