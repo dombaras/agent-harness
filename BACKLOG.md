@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-047 | ? | freshness tests must not pollute the real project registry; sweep-discovered updates render as pending, not blocked | .agents/handoffs/F-047.md (worktree: ../.worktrees/agent-harness/f-047; branch: f-047) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -129,6 +128,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-044 | ? | Harness auto-update failure is invisible: LibraryOS left on 0.5.1 with a blocked freshness verdict, the footer badge renders nothing for `blocked`, and the project update probe reports npm 0.5.1 as latest so even the ↑ arrow never appears while the local checkout is ahead. | shipped |
 | F-045 | ? | Harness auto-update visibility, part 2: a successful update leaves the footer on the pre-update build because the freshness writer records `refreshed` (terminal) while the badge renders only `restart-needed`; a `blocked` verdict is discarded once its writer pid dies; and a project still on the old harness cannot render `blocked` because that badge code ships inside the blocked update. Fix: write restart-needed after a successful apply, keep blocked independent of writer liveness, have the global plugin write the project probe cache, add a refresh-only startup sweep, race/EOL hardening, and a doctor that tells the whole truth. | shipped |
 | F-039 | ? | stale restart badge still shown after a service restart: the freshness plugin never evaluates a project tree without a session event that carries its directory (startup writes no verdict; an unresolvable first event burns the session's once-only check), so a dead process's restart-needed file survives; the project's own badge/TUI also still runs the pre-fix build | 0.5.5: newest live process owns the verdict; /proc pid identity; older live writer cannot pin; a newer client ignores a foreign restart verdict; V2 advice = opencode service restart |
+| F-047 | ? | freshness tests must not pollute the real project registry; sweep-discovered updates render as pending, not blocked | resolved |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

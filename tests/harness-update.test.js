@@ -572,6 +572,11 @@ test("a metadata-only harness write needs no restart; a plugin write does, as ad
     const git = (...args) => spawnSync("git", ["-C", tree, ...args], { encoding: "utf8" });
     assert.strictEqual(git("init", "-q", "-b", "main").status, 0, "fixture is a git tree");
     fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.9.9" }));
+    // The plugin's startup sweep reads the project registry. Without an isolated
+    // state dir this suite registered its temp trees in the REAL registry and
+    // stamped every real project "blocked / update available" with the fixture
+    // version 9.9.9 (observed in LibraryOS, 2026-11-25).
+    const state = tmpdir();
     const r = spawnSync(
       process.execPath,
       [
@@ -589,10 +594,26 @@ test("a metadata-only harness write needs no restart; a plugin write does, as ad
           AGENT_HARNESS_HOME: home,
           AGENT_HARNESS_NO_UPDATE_CHECK: "1",
           AGENT_HARNESS_FRESHNESS: "",
+          XDG_STATE_HOME: state,
+          XDG_CACHE_HOME: tmpdir(),
         },
       }
     );
     assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+    const ambientState = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+    const realRegistry = path.join(ambientState, "opencode-agent-harness", "projects.json");
+    const realTrees = (() => {
+      try {
+        return JSON.parse(fs.readFileSync(realRegistry, "utf8")).trees || [];
+      } catch {
+        return [];
+      }
+    })();
+    assert.ok(!realTrees.includes(tree), "the spawned plugin must not write the real project registry");
+    const isolated = JSON.parse(
+      fs.readFileSync(path.join(state, "opencode-agent-harness", "projects.json"), "utf8")
+    );
+    assert.ok(isolated.trees.includes(tree), "the isolated registry records the tree");
     return JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop());
   };
 

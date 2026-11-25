@@ -186,7 +186,12 @@ function harnessStatus(o) {
   const deployed = o.harnessVersion || "?";
   if (!o.harnessRestart) {
     if (!o.harnessBlocked) return `harness ${deployed}`;
-    const reason = o.harnessBlocked.reason === "update failed" ? "update failed" : "update blocked";
+    const reason =
+      o.harnessBlocked.reason === "update failed"
+        ? "update failed"
+        : o.harnessBlocked.reason === "update available"
+          ? "update pending"
+          : "update blocked";
     return `harness ${deployed} (${reason})`;
   }
   const active = o.harnessRestart.active;

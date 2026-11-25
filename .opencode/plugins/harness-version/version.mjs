@@ -197,6 +197,14 @@ export function formatHarnessBadge({ current, loaded, update, restart, blocked }
   if (inactive) parts.push(`→ v${deployed}`)
   if (update?.latest) parts.push(`↑${update.latest}`)
   if (restart) parts.push("↻restart")
-  if (blocked) parts.push(blocked.reason === "update failed" ? "⚠update failed" : "⚠update blocked")
+  if (blocked) {
+    parts.push(
+      blocked.reason === "update failed"
+        ? "⚠update failed"
+        : blocked.reason === "update available"
+          ? "⚠update pending"
+          : "⚠update blocked"
+    )
+  }
   return parts.join(" ")
 }

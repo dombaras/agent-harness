@@ -465,6 +465,16 @@ test("the badge renders a blocked auto-update instead of the stale version as cu
     formatHarnessBadge({
       current: "0.5.1",
       loaded: "0.5.1",
+      update: { deployed: "0.5.1", latest: "0.5.2" },
+      blocked: { have: "0.5.1", latest: "0.5.2", reason: "update available" },
+    }),
+    "harness v0.5.1 ↑0.5.2 ⚠update pending",
+    "a sweep-discovered update is pending, not blocked"
+  );
+  assert.strictEqual(
+    formatHarnessBadge({
+      current: "0.5.1",
+      loaded: "0.5.1",
       blocked: { have: "0.5.1", latest: null, reason: "update blocked" },
     }),
     "harness v0.5.1 ⚠update blocked",
@@ -488,6 +498,11 @@ test("orient names a blocked auto-update instead of the stale version as current
   assert.strictEqual(
     harnessStatus({ harnessVersion: "0.5.1", harnessBlocked: { reason: "update failed" } }),
     "harness 0.5.1 (update failed)"
+  );
+  assert.strictEqual(
+    harnessStatus({ harnessVersion: "0.5.1", harnessBlocked: { reason: "update available" } }),
+    "harness 0.5.1 (update pending)",
+    "a sweep-discovered update is pending, not blocked"
   );
   assert.strictEqual(
     harnessStatus({ harnessVersion: "0.5.1", harnessBlocked: { reason: "branch diverged" } }),

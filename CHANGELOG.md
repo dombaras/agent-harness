@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- A sweep-discovered harness update now reads `⚠update pending` (footer badge)
+  and `(update pending)` (`orient`) instead of `⚠update blocked`: the startup
+  sweep never applies an update, so "pending" is the truthful state. The
+  freshness F-035 test now isolates `XDG_STATE_HOME`/`XDG_CACHE_HOME` and
+  asserts the real project registry is untouched — it had registered its
+  `/tmp/harness-update-*` fixtures in the machine registry and stamped real
+  checkouts with a fake `latest: 9.9.9`, pinning LibraryOS on `⚠update blocked`
+  after the test process was gone. (F-047)
+
 ## 0.5.5 — 2026-11-25
 
 - A `restart-needed` badge can no longer be pinned by an older opencode process.
