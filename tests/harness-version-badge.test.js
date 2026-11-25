@@ -151,7 +151,11 @@ test("a restart verdict only renders while it describes the current deploy and a
     );
 
   verdict({ pid: process.pid, startedAt: Date.now() - 1000 });
-  assert.deepStrictEqual(readHarnessRestart(dir), { have: "0.4.18", latest: "0.4.18" }, "current deploy + live writer");
+  assert.deepStrictEqual(
+    readHarnessRestart(dir),
+    { have: "0.4.18", latest: "0.4.18", writerStartedAt: Number(JSON.parse(fs.readFileSync(status, "utf8")).startedAt) },
+    "current deploy + live writer"
+  );
 
   verdict({ have: "0.4.17", latest: "0.4.17", pid: process.pid });
   assert.strictEqual(readHarnessRestart(dir), null, "a later deploy supersedes the verdict");
@@ -172,6 +176,67 @@ test("a restart verdict only renders while it describes the current deploy and a
     { have: "0.4.18", latest: "0.4.18" },
     "a legacy verdict without provenance still renders (version/deploy checks apply)"
   );
+});
+
+test("a reused pid is not the writer (process identity, F-038)", { skip: !fs.existsSync("/proc/self/stat") }, async () => {
+  const { readHarnessRestart } = await loadHelper();
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
+  const cfg = path.join(dir, ".harness.json");
+  fs.writeFileSync(cfg, JSON.stringify({ version: "0.5.4" }));
+  const status = path.join(dir, ".serve", "harness-freshness.json");
+  fs.writeFileSync(
+    status,
+    JSON.stringify({
+      status: "restart-needed",
+      have: "0.5.4",
+      latest: "0.5.4",
+      wrote: fs.statSync(cfg).mtimeMs,
+      // Alive, but NOT the process that wrote the verdict.
+      pid: process.ppid,
+      pidBoot: "00000000-0000-0000-0000-000000000000",
+      pidStart: "1",
+    })
+  );
+  assert.strictEqual(readHarnessRestart(dir), null, "pid reuse must not keep the writer alive");
+});
+
+test("a foreign restart verdict cannot outlive a newer client that loaded the deploy", async () => {
+  // One tree can be served by several opencode processes (shared service + ACP
+  // stdio servers). A stale server's verdict painted ↻restart in a TUI that had
+  // restarted after the deploy. A client that loaded the deployed build after
+  // the verdict was written ignores it; one still on the old build keeps it.
+  const { readHarnessRestart } = await loadHelper();
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
+  const cfg = path.join(dir, ".harness.json");
+  fs.writeFileSync(cfg, JSON.stringify({ version: "0.5.4" }));
+  const wrote = fs.statSync(cfg).mtimeMs;
+  const writerStartedAt = Date.now() - 60_000;
+  fs.writeFileSync(
+    path.join(dir, ".serve", "harness-freshness.json"),
+    JSON.stringify({
+      status: "restart-needed",
+      have: "0.5.4",
+      latest: "0.5.4",
+      active: "0.5.1",
+      pid: process.pid,
+      startedAt: writerStartedAt,
+      wrote,
+    })
+  );
+
+  assert.strictEqual(
+    readHarnessRestart(dir, { loaded: "0.5.4", startedAt: Date.now() }),
+    null,
+    "a newer client on the deployed build ignores another server's verdict"
+  );
+  assert.deepStrictEqual(
+    readHarnessRestart(dir, { loaded: "0.5.1", startedAt: Date.now() }),
+    { have: "0.5.4", latest: "0.5.4", active: "0.5.1", writerStartedAt },
+    "a client still on the old build keeps the restart marker"
+  );
+  assert.ok(readHarnessRestart(dir), "no client start keeps the legacy behaviour");
 });
 
 test("the badge renders the update arrow from the same cache", () => {

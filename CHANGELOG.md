@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.5 — 2026-11-25
+
+- A `restart-needed` badge can no longer be pinned by an older opencode process.
+  One checkout may be served by several processes (the shared background service
+  plus per-client stdio/ACP servers), so the newest live process now owns the
+  tree's verdict: an older process can no longer rewrite it, and verdict
+  provenance includes the writer's `/proc` boot id + process start time so pid
+  reuse is not mistaken for a live writer. A client that loaded the deployed
+  build ignores a verdict written before it started. Restart advice now names the
+  V2 command `opencode service restart` and explains that restarting the TUI
+  alone reloads nothing. LibraryOS had stayed on `v0.5.1 -> v0.5.4 ↻restart`
+  after a restart because a stale ACP server held the tree's verdict. (F-039)
+
 ## 0.5.4 — 2026-11-25
 
 - The harness update state is now truthful and self-healing, so "deployed" and

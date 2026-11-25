@@ -56,11 +56,32 @@ function mtimeMs(p) {
 // file behind, so a verdict whose writer is gone describes a process that no
 // longer exists (F-038). A missing pid is an older verdict: its version/deploy
 // checks still apply. A present-but-unusable pid is not trusted.
-function writerAlive(pid) {
+//
+// Pid reuse: Linux can hand the dead writer's number to an unrelated process,
+// which made a stale ↻restart look alive. When the verdict carries the writer's
+// /proc start identity, compare it; a mismatch means the writer is gone. A
+// reader without /proc falls back to plain liveness.
+function procIdentity(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8")
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(" ")
+    const start = fields[19]
+    const boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+    return start && boot ? { boot, start } : null
+  } catch {
+    return null
+  }
+}
+
+function writerAlive(pid, boot, start) {
   if (pid === undefined || pid === null) return true
   const n = Number(pid)
   if (!Number.isInteger(n) || n <= 0) return false
   if (n === process.pid) return true
+  if (typeof boot === "string" && boot && typeof start === "string" && start) {
+    const now = procIdentity(n)
+    if (now && (now.boot !== boot || now.start !== start)) return false
+  }
   try {
     process.kill(n, 0)
     return true
@@ -114,9 +135,11 @@ function readFreshness(directory, status) {
     if (Number.isFinite(wrote) && current !== null && current > wrote + 1000) return null
     // A restart verdict is about the process that wrote it; a blocked tree
     // outlives that process (F-045).
-    if (status === "restart-needed" && !writerAlive(doc.pid)) return null
+    if (status === "restart-needed" && !writerAlive(doc.pid, doc.pidBoot, doc.pidStart)) return null
     const verdict = { have, latest }
     if (active) verdict.active = active
+    const startedAt = Number(doc.startedAt)
+    if (Number.isFinite(startedAt)) verdict.writerStartedAt = startedAt
     if (status === "blocked") {
       verdict.reason =
         typeof doc.reason === "string" && doc.reason.trim() ? doc.reason.trim() : "update blocked"
@@ -127,8 +150,20 @@ function readFreshness(directory, status) {
   }
 }
 
-export function readHarnessRestart(directory) {
-  return readFreshness(directory, "restart-needed")
+// A tree can be served by more than one opencode process (the shared background
+// service plus per-client stdio servers). A `restart-needed` record written by
+// an OLDER process therefore cannot describe THIS process's build: when this
+// client loaded the deployed version after that record was written, the record
+// belongs to another, stale server and must not paint ↻restart in this window.
+// `loaded` is the build this process read at setup; `startedAt` is its start.
+export function readHarnessRestart(directory, { loaded, startedAt } = {}) {
+  const verdict = readFreshness(directory, "restart-needed")
+  if (!verdict) return null
+  const mine = Number(startedAt)
+  const theirs = Number(verdict.writerStartedAt)
+  const current = typeof loaded === "string" && loaded === verdict.have
+  if (current && Number.isFinite(mine) && Number.isFinite(theirs) && mine > theirs) return null
+  return verdict
 }
 
 // `blocked` means the global plugin refused or failed to apply a newer harness

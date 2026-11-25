@@ -11,7 +11,7 @@ import { execFileSync, spawn } from "node:child_process"
 // Why global: a check shipped inside the project harness can't catch a stale
 // harness — the stale copy is what loads. And opencode loads config/plugins once
 // at startup, so an in-session update only changes files on disk; the agent must
-// restart the opencode service to load the updated plugins.
+// run `opencode service restart` to load the updated plugins.
 //
 // "Latest" is the authoritative local checkout (`AGENT_HARNESS_HOME`, default
 // ~/develop/agent-harness). On each primary session start it compares the
@@ -59,6 +59,25 @@ const PROCESS_START = Date.now()
  * `restart-needed` file left behind by a dead process must never keep the badge
  * (or a notice) alive over a restart that already happened (F-038). */
 const PROCESS_PID = process.pid
+
+/* Pid reuse: Linux hands a dead writer's number to an unrelated process, so a
+ * `restart-needed` file must carry the writer's START identity too (F-038).
+ * `/proc/<pid>/stat` field 22 is the process start in clock ticks since boot;
+ * the boot id keeps the pair unique across reboots. Unsupported platforms
+ * yield null and fall back to pid liveness. */
+function procIdentity(pid: number): { boot: string; start: string } | null {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8")
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(" ")
+    const start = fields[19]
+    const boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+    return start && boot ? { boot, start } : null
+  } catch {
+    return null
+  }
+}
+
+const PROCESS_IDENTITY = procIdentity(PROCESS_PID)
 
 /* What opencode actually loads once at startup: config, instructions, plugins,
  * agents, commands, skills. A harness write that touched only metadata/docs
@@ -130,11 +149,16 @@ function harnessSourceVersion(tree: string): string | null {
   }
 }
 
-function writerAlive(pid: unknown): boolean {
+function writerAlive(pid: unknown, boot?: unknown, start?: unknown): boolean {
   if (pid === undefined || pid === null) return true
   const n = Number(pid)
   if (!Number.isInteger(n) || n <= 0) return false
   if (n === PROCESS_PID) return true
+  if (typeof boot === "string" && boot && typeof start === "string" && start) {
+    const now = procIdentity(n)
+    // No /proc here: identity cannot be compared, so liveness is the best test.
+    if (now && (now.boot !== boot || now.start !== start)) return false
+  }
   try {
     process.kill(n, 0)
     return true
@@ -332,7 +356,8 @@ const HarnessFreshness: Plugin = {
         sid,
         `HARNESS UPDATE AVAILABLE — v${have} -> v${latest} (npm).\n\n` +
           `Run: npx opencode-agent-harness@latest update\n` +
-          `Then restart the opencode service (the server process, not just the TUI) so the updated plugins/config load.\n\n` +
+          `Then run: opencode service restart\n` +
+          `(restarting the TUI alone reconnects to the same service and reloads nothing).\n\n`
           `This is advisory — continue the task; relay it to the user when convenient.`
       )
       report(`update available ${have} -> ${latest} (npm)`)
@@ -340,6 +365,22 @@ const HarnessFreshness: Plugin = {
 
     const writeStatus = (tree: string, status: Record<string, unknown>) => {
       try {
+        /* One tree can be served by several opencode processes (the shared
+         * background service plus per-client stdio servers). The NEWEST live
+         * process owns the tree's verdict: an older process that reloaded a
+         * stale build must not rewrite `restart-needed` after a newer one has
+         * already evaluated the tree, or the badge lives forever (F-038). */
+        const prior = readVerdict(tree)
+        const priorAt = Number(prior?.startedAt)
+        if (
+          prior &&
+          Number(prior.pid) !== PROCESS_PID &&
+          Number.isFinite(priorAt) &&
+          priorAt > PROCESS_START &&
+          writerAlive(prior.pid, prior.pidBoot, prior.pidStart)
+        ) {
+          return
+        }
         const dir = path.join(tree, ".serve")
         fs.mkdirSync(dir, { recursive: true })
         // A blocked verdict names the deploy it explains and the write it saw, so
@@ -350,7 +391,17 @@ const HarnessFreshness: Plugin = {
             : status
         atomicWrite(
           path.join(dir, "harness-freshness.json"),
-          JSON.stringify({ pid: PROCESS_PID, startedAt: PROCESS_START, ...body }, null, 2) + "\n"
+          JSON.stringify(
+            {
+              pid: PROCESS_PID,
+              startedAt: PROCESS_START,
+              pidBoot: PROCESS_IDENTITY?.boot,
+              pidStart: PROCESS_IDENTITY?.start,
+              ...body,
+            },
+            null,
+            2
+          ) + "\n"
         )
       } catch {
         /* observability only */
@@ -403,8 +454,9 @@ const HarnessFreshness: Plugin = {
       notices.set(
         sid,
         `HARNESS UPDATED — ${have ? `v${have} -> v${latest}` : `v${latest}`} in ${tree}.\n\n` +
-          `The files are current, but this opencode service is still running the previous ones.\n` +
-          `Restart the opencode service (the server process, not just the TUI) now to load the update.`
+          `The files are current, but the opencode background service is still running the previous ones.\n` +
+          `Restart it with: opencode service restart\n` +
+          `(restarting the TUI alone reconnects to the same service and reloads nothing).`
       )
     }
 
@@ -419,10 +471,11 @@ const HarnessFreshness: Plugin = {
         : ""
       notices.set(
         sid,
-        `HARNESS UPDATED ON DISK${what} — v${have} is deployed, but this opencode service started ` +
+        `HARNESS UPDATED ON DISK${what} — v${have} is deployed, but the opencode background service started ` +
           `before the write, so the plugins/config in effect are still the previous build.\n\n` +
-          `Restart the opencode service (the server process, not just the TUI) when convenient to ` +
-          `load it. Continue the current task now — do not stop or wait for the restart.`
+          `Restart it when convenient with: opencode service restart\n` +
+          `(restarting the TUI alone reconnects to the same service and reloads nothing).\n` +
+          `Continue the current task now — do not stop or wait for the restart.`
       )
       report(`restart pending: ${have}${what}`)
     }
@@ -487,7 +540,7 @@ const HarnessFreshness: Plugin = {
             sid,
             `This worktree is on harness ${have} (latest ${latest}), but the project's MAIN checkout ` +
               `(${mainTop}) is itself stale${mainHave ? ` at ${mainHave}` : ""}.`,
-            `  node ${CLI} update --target ${mainTop}\n  # then restart the opencode service; the worktree can then fast-forward.`
+            `  node ${CLI} update --target ${mainTop}\n  # then run opencode service restart; the worktree can then fast-forward.`
           )
         }
         const ref = git(mainTop, ["rev-parse", "--abbrev-ref", "HEAD"]).out || "main"
@@ -497,7 +550,7 @@ const HarnessFreshness: Plugin = {
             sid,
             `This worktree's branch (${git(tree, ["rev-parse", "--abbrev-ref", "HEAD"]).out}) has commits of ` +
               `its own, so the harness refresh needs a merge/rebase, not a fast-forward.`,
-            `  git -C ${tree} merge ${ref}      # or: git -C ${tree} rebase ${ref}\n  # then restart the opencode service.`
+            `  git -C ${tree} merge ${ref}      # or: git -C ${tree} rebase ${ref}\n  # then run opencode service restart.`
           )
         }
         const incoming = new Set(
@@ -513,7 +566,7 @@ const HarnessFreshness: Plugin = {
           return block(
             sid,
             `Local changes overlap the files a harness refresh would touch: ${overlap.join(", ")}.`,
-            `  commit or stash them, then restart the opencode service to auto-refresh.`
+            `  commit or stash them, then run opencode service restart to auto-refresh.`
           )
         }
         if (DRY) {
@@ -570,7 +623,7 @@ const HarnessFreshness: Plugin = {
         fs.existsSync(path.join(tree, ".git", "rebase-apply"))
       if (inProgress) {
         writeStatus(tree, { ...base, status: "blocked", reason: "git operation in progress" })
-        return block(sid, `A git merge/rebase is already in progress in the main checkout.`, `  finish or abort it, then restart the opencode service.`)
+        return block(sid, `A git merge/rebase is already in progress in the main checkout.`, `  finish or abort it, then run opencode service restart.`)
       }
       if (DRY) {
         writeStatus(tree, { ...base, status: "stale-would-update" })
@@ -670,15 +723,6 @@ const HarnessFreshness: Plugin = {
           if (!have) continue
           publishProbe(tree, latest, npm, local)
           const prior = readVerdict(tree)
-          // Another live service may hold a restart verdict this process cannot
-          // explain: leave it alone (it dies with that writer).
-          if (
-            prior?.status === "restart-needed" &&
-            Number(prior.pid) !== PROCESS_PID &&
-            writerAlive(prior.pid)
-          ) {
-            continue
-          }
           if (cmpVer(have, latest) >= 0) {
             writeStatus(tree, { status: "current", have, latest, at: new Date().toISOString() })
           } else if (prior?.status !== "blocked" || prior?.have !== have) {

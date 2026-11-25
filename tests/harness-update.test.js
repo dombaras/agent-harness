@@ -229,11 +229,8 @@ test("the global freshness plugin applies updates and signals a restart (drift g
     "uses the top-level directory when present"
   );
   assert.match(src, /HARNESS UPDATED/, "announces an applied update");
-  assert.match(
-    src,
-    /Restart the opencode service \(the server process, not just the TUI\) now to load the update\./,
-    "requires a service restart to activate it"
-  );
+  assert.match(src, /Restart it with: opencode service restart/, "requires a service restart to activate it");
+  assert.match(src, /restarting the TUI alone/, "says a TUI restart reloads nothing");
 });
 
 test("a restart-needed verdict written by a previous process is replaced on session activity (F-035)", () => {
@@ -315,6 +312,97 @@ test("a restart-needed verdict written by a previous process is replaced on sess
   assert.strictEqual(doc.have, "9.9.9", "the current on-disk version is recorded");
 });
 
+test("only the newest live process owns a tree's verdict (multi-server trees)", () => {
+  // One checkout is served by several opencode processes (shared service + ACP
+  // stdio servers). An older process that loaded the previous build kept
+  // rewriting `restart-needed` after a newer TUI was already current, so the
+  // badge said ↻restart forever (F-038). Newest live writer wins; an older one
+  // cannot clobber it.
+  const home = tmpdir();
+  fs.writeFileSync(
+    path.join(home, "package.json"),
+    JSON.stringify({ name: "opencode-agent-harness", version: "9.9.9" })
+  );
+  const tree = tmpdir();
+  fs.mkdirSync(path.join(tree, ".serve"), { recursive: true });
+  assert.strictEqual(spawnSync("git", ["-C", tree, "init", "-q", "-b", "main"]).status, 0);
+  fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.9.9" }));
+  const verdictPath = path.join(tree, ".serve", "harness-freshness.json");
+
+  const driver = path.join(tmpdir(), "freshness-owner.mjs");
+  fs.writeFileSync(
+    driver,
+    [
+      'import { pathToFileURL } from "node:url";',
+      'import fs from "node:fs";',
+      "const [pluginPath, tree] = process.argv.slice(2);",
+      'const { default: plugin } = await import(pathToFileURL(pluginPath).href);',
+      "async function* stream(signal) {",
+      '  yield { type: "message.updated", data: { sessionID: "ses_owner" }, location: { directory: tree } };',
+      "  await new Promise((resolve) => {",
+      "    if (signal.aborted) return resolve();",
+      '    signal.addEventListener("abort", resolve, { once: true });',
+      "  });",
+      "}",
+      "const ctx = {",
+      "  location: { directory: tree },",
+      "  event: { subscribe: ({ signal }) => stream(signal) },",
+      "  session: { hook: () => {} },",
+      "};",
+      "const stop = await plugin.setup(ctx);",
+      "await new Promise((r) => setTimeout(r, 600));",
+      "stop();",
+      'console.log(JSON.stringify(JSON.parse(fs.readFileSync(`${tree}/.serve/harness-freshness.json`, "utf8"))));',
+    ].join("\n")
+  );
+
+  const env = {
+    ...process.env,
+    AGENT_HARNESS_HOME: home,
+    AGENT_HARNESS_NO_UPDATE_CHECK: "1",
+    AGENT_HARNESS_FRESHNESS: "",
+    // Keep the startup sweep away from the developer's real project registry.
+    XDG_STATE_HOME: tmpdir(),
+  };
+  const run = () =>
+    spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", driver, path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"), tree],
+      { encoding: "utf8", env, timeout: 30000 }
+    );
+  const last = (r) => JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop());
+
+  // A NEWER live process already wrote the verdict: this older one leaves it.
+  fs.writeFileSync(
+    verdictPath,
+    JSON.stringify({
+      status: "restart-needed",
+      have: "9.9.9",
+      latest: "9.9.9",
+      pid: process.pid,
+      startedAt: Date.now() + 60_000,
+    })
+  );
+  let r = run();
+  assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+  assert.strictEqual(last(r).status, "restart-needed", "a newer live writer owns the verdict");
+
+  // The writer is now OLDER than this process: its stale verdict is replaced.
+  fs.writeFileSync(
+    verdictPath,
+    JSON.stringify({
+      status: "restart-needed",
+      have: "9.9.9",
+      latest: "9.9.9",
+      pid: process.pid,
+      startedAt: Date.now() - 60_000,
+    })
+  );
+  r = run();
+  assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+  assert.strictEqual(last(r).status, "current", "the newer process clears an older writer's verdict");
+});
+
 test("[drift-guard] every freshness verdict names the process that wrote it (F-038)", () => {
   // A service restart leaves the verdict file behind. Without provenance the
   // badge cannot tell a live verdict from a dead process's, so a
@@ -389,7 +477,11 @@ test("the badge rejects a dead process's verdict on the reported tree shape (F-0
       startedAt: Date.now() - 1000,
     })
   );
-  assert.deepStrictEqual(readHarnessRestart(tree), { have: "0.4.4", latest: "0.4.4" }, "a live writer's verdict renders");
+  assert.deepStrictEqual(
+    readHarnessRestart(tree),
+    { have: "0.4.4", latest: "0.4.4", writerStartedAt: Date.now() - 1000 },
+    "a live writer's verdict renders"
+  );
 });
 
 test("[drift-guard] freshness re-evaluation is wired to activity and names the service restart (F-035)", () => {
@@ -408,7 +500,8 @@ test("[drift-guard] freshness re-evaluation is wired to activity and names the s
   const hookAt = src.indexOf('ctx.session.hook("context"');
   const hookBody = src.slice(hookAt, src.indexOf("return () => controller.abort()", hookAt));
   assert.match(hookBody, /consider\(sid, roots\.get\(sid\)\)/, "the hook re-evaluates a restored session");
-  assert.match(src, /opencode service \(the server process, not just the TUI\)/, "names the service, not the TUI");
+  assert.match(src, /opencode service restart/, "names the V2 service restart, not a TUI restart");
+  assert.match(src, /restarting the TUI alone/, "explains that a TUI restart reloads nothing");
   assert.doesNotMatch(src, /restart opencode/i, "the old TUI-confusing wording is gone");
 });
 
