@@ -48,12 +48,44 @@ const DRY = process.env.AGENT_HARNESS_FRESHNESS === "dry"
 // The version compares "current" but the process is stale (F-19/H-44).
 const PROCESS_START = Date.now()
 
+/* What opencode actually loads once at startup: config, instructions, plugins,
+ * agents, commands, skills. A harness write that touched only metadata/docs
+ * changes nothing this process holds in memory, so demanding a restart for it is
+ * a false positive — the reported 2026-11-25 case rewrote `.harness.json` alone
+ * (0.4.16 -> 0.4.17) and blocked the session over a restart that would have
+ * changed nothing while the badge already read 0.4.17. */
+const LOADED_AT_START = ["opencode.json", "AGENTS.md", ".opencode"]
+
 function writeTime(p: string): number | null {
   try {
     return fs.statSync(p).mtimeMs
   } catch {
     return null
   }
+}
+
+/* Paths under `rel` whose mtime is newer than `after` (recursive, bounded by the
+ * three small startup surfaces above). Missing paths are simply not touched. */
+function touchedAfter(root: string, after: number, rel = "", out: string[] = []): string[] {
+  const abs = rel ? path.join(root, rel) : root
+  let st: fs.Stats
+  try {
+    st = fs.statSync(abs)
+  } catch {
+    return out
+  }
+  if (st.isDirectory()) {
+    let entries: fs.Dirent[] = []
+    try {
+      entries = fs.readdirSync(abs, { withFileTypes: true })
+    } catch {
+      return out
+    }
+    for (const e of entries) touchedAfter(root, after, rel ? path.join(rel, e.name) : e.name, out)
+    return out
+  }
+  if (st.mtimeMs > after) out.push(rel)
+  return out
 }
 
 type GitResult = { ok: boolean; out: string; err: string }
@@ -225,6 +257,25 @@ const HarnessFreshness: Plugin = {
       )
     }
 
+    /* Files on disk do not change the plugins/config this process already
+     * loaded. A session-start apply is therefore real only after a restart, but
+     * the task itself does not depend on the new build — so this is advice, never
+     * a gate: blocking here made a resumed session refuse to start over a restart
+     * that had not happened yet. */
+    const adviseRestart = (sid: string, have: string, touched: string[]) => {
+      const what = touched.length
+        ? ` (${touched.slice(0, 3).join(", ")}${touched.length > 3 ? ", …" : ""})`
+        : ""
+      notices.set(
+        sid,
+        `HARNESS UPDATED ON DISK${what} — v${have} is deployed, but this opencode service started ` +
+          `before the write, so the plugins/config in effect are still the previous build.\n\n` +
+          `Restart the opencode service (the server process, not just the TUI) when convenient to ` +
+          `load it. Continue the current task now — do not stop or wait for the restart.`
+      )
+      report(`restart pending: ${have}${what}`)
+    }
+
     const evaluate = async (sid: string, dir: string) => {
       // Newest harness this machine can see: a local checkout may lead the
       // registry (development), the registry may lead a machine with no checkout.
@@ -241,18 +292,26 @@ const HarnessFreshness: Plugin = {
       const have = readVersion(cfg)
       if (have && cmpVer(have, latest) >= 0) {
         // Version is current, but the RUNNING process may still predate the last
-        // harness write (deploy != activate, F-19/H-44): the plugins/config in
-        // effect are the OLD ones until opencode restarts.
+        // harness write (deploy != activate, F-19/H-44). That only matters for
+        // the files opencode holds in memory: a metadata-only write (e.g. a
+        // `.harness.json` version bump) activates nothing, so it is current.
         const wrote = writeTime(cfg)
         if (wrote && wrote > PROCESS_START) {
-          writeStatus(tree, { status: "restart-needed", have, latest, wrote, at: new Date().toISOString() })
-          await block(
-            sid,
-            `The harness on disk is current (${have}) but this opencode process started before the last ` +
-              `harness write, so the plugins/config in effect are the OLD ones — a deploy is inert until restart.`,
-            `  restart the opencode service (the server process, not just the TUI) to load ${have}.`
-          )
-          return
+          const touched = [
+            ...new Set(LOADED_AT_START.flatMap((p) => touchedAfter(tree, PROCESS_START, p))),
+          ]
+          if (touched.length) {
+            writeStatus(tree, {
+              status: "restart-needed",
+              have,
+              latest,
+              wrote,
+              touched: touched.slice(0, 8),
+              at: new Date().toISOString(),
+            })
+            adviseRestart(sid, have, touched)
+            return
+          }
         }
         notices.delete(sid)
         writeStatus(tree, { status: "current", have, latest, at: new Date().toISOString() })

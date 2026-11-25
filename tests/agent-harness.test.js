@@ -6805,6 +6805,57 @@ test("context-guard injects the session-start orient brief until the first mater
   assert.doesNotMatch(injected, /SESSION ORIENT/, "orient is dropped once real work starts");
 });
 
+test("context-guard never re-injects an orient brief the tree has moved past", async () => {
+  // The reported 2026-11-25 case: the brief was collected at 0.4.16, the harness
+  // auto-commit to 0.4.17 landed seconds later, and the guard kept re-injecting
+  // the old snapshot while the TUI badge read the live 0.4.17 — the agent then
+  // asked for a server restart over a version difference that no longer existed.
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const g = await loadGuardPlugin({ directory: target });
+
+  const sid = "ses_orient_stale";
+  await g.emit({ type: "session.created", data: { sessionID: sid } });
+
+  const eventsFile = path.join(target, ".agents", "guard-events.jsonl");
+  const orientCount = () =>
+    fs.existsSync(eventsFile)
+      ? (fs.readFileSync(eventsFile, "utf8").match(/"kind":"orient"/g) || []).length
+      : 0;
+  const waitFor = async (n) => {
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      if (orientCount() >= n) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  };
+  assert.ok(await waitFor(1), "the initial brief was collected");
+
+  const first = [{ role: "user", content: [{ type: "text", text: "resume" }] }];
+  await g.context(sid, first);
+  assert.match(first[1].content[0].text, /SESSION ORIENT/, "the fresh snapshot is injected");
+
+  // The tree moves under the snapshot: a harness update lands a new version.
+  fs.writeFileSync(
+    path.join(target, ".harness.json"),
+    JSON.stringify({ version: "99.99.99" }, null, 2) + "\n"
+  );
+  const stale = [{ role: "user", content: [{ type: "text", text: "go" }] }];
+  await g.context(sid, stale);
+  const injected = stale.length > 1 ? stale[stale.length - 1].content[0].text : "";
+  assert.doesNotMatch(injected, /SESSION ORIENT/, "a brief for the old HEAD/version is never re-injected");
+
+  assert.ok(await waitFor(2), "the revalidation refilled the brief");
+  const fresh = [{ role: "user", content: [{ type: "text", text: "go" }] }];
+  await g.context(sid, fresh);
+  assert.match(
+    fresh[fresh.length - 1].content[0].text,
+    /99\.99\.99/,
+    "the refilled brief reports the version now on disk"
+  );
+});
+
 test("context-guard: a V2 session.created writes a lease and marks a child as non-primary", async () => {
   const target = tmpdir();
   const g = await loadGuardPlugin({ directory: target });

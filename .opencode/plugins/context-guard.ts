@@ -464,6 +464,41 @@ export default {
    * and stash its text on the session state; the transform injects it into the
    * cache-safe tail until the first material action clears it. Best-effort:
    * a missing script or a failed spawn injects nothing and never blocks. */
+  /* Identity of the tree a brief snapshot describes. The brief is collected once
+   * at session start, but the tree can change under it — a harness update lands
+   * its commit seconds later — and re-injecting that snapshot then reports an old
+   * HEAD/version while the TUI badge reads the live `.harness.json` (2026-11-25:
+   * the brief said 0.4.16, the badge 0.4.17, and the agent asked for a server
+   * restart over a difference that no longer existed). Two cheap stats plus the
+   * deployed version are enough to know the snapshot moved. */
+  const treeStamp = (root: string): string => {
+    let gitDir = path.join(root, ".git")
+    try {
+      if (fs.statSync(gitDir).isFile()) {
+        const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(gitDir, "utf8"))
+        gitDir = m ? path.resolve(root, m[1].trim()) : ""
+      }
+    } catch {
+      gitDir = ""
+    }
+    const mtime = (p: string) => {
+      try {
+        return fs.statSync(p).mtimeMs
+      } catch {
+        return 0
+      }
+    }
+    let version = ""
+    try {
+      const v = JSON.parse(fs.readFileSync(path.join(root, ".harness.json"), "utf8")).version
+      if (typeof v === "string") version = v
+    } catch {
+      /* no harness here */
+    }
+    const index = gitDir ? mtime(path.join(gitDir, "index")) : 0
+    return `${index}:${mtime(path.join(root, ".harness.json"))}:${version}`
+  }
+
   const collectOrient = async (sid: string, root: string) => {
     try {
       const script = path.join(root, "scripts", "orient.js")
@@ -478,6 +513,7 @@ export default {
       if (res.code !== 0 || !text) return
       const state = stateFor(sid)
       state.orientText = text
+      state.orientStamp = treeStamp(root)
       state.orientPending = true
       logEvent({ kind: "orient", sessionID: sid, bytes: text.length })
     } catch {
@@ -1154,6 +1190,22 @@ export default {
       const messages = event?.messages
       if (!Array.isArray(messages)) return
       const state = stateFor(sid)
+      // A brief snapshot can go stale while the prologue runs (a harness update
+      // commits seconds after collection). Never inject a HEAD/version the tree
+      // no longer has: drop it and refill for the next request.
+      if (state.orientPending && state.orientStamp) {
+        const root = rootOf(sid)
+        if (state.orientStamp !== treeStamp(root)) {
+          state.orientPending = false
+          state.orientText = null
+          if (!state.orientRefreshing) {
+            state.orientRefreshing = true
+            void collectOrient(sid, root).finally(() => {
+              state.orientRefreshing = false
+            })
+          }
+        }
+      }
       // The capacity notice (set by the heavy-launch guard) rides the same
       // cache-safe tail message as the context-budget nudges; the session-start
       // orientation block rides it too until the first material action.

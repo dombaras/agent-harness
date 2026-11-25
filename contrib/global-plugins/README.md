@@ -32,7 +32,7 @@ checkout current — **only when that is safe for the active branch**:
 
 | state | action |
 | --- | --- |
-| up to date | nothing (blocks if the files are newer than the running process: `restart-needed`) |
+| up to date | nothing when only metadata moved; if a file opencode loads at startup changed after this process started, writes `restart-needed` and tells the session to restart **when convenient** (the task continues) |
 | linked worktree, project **main already latest**, worktree HEAD is an ancestor of main (true fast-forward), no local change overlaps the incoming files | `git merge --ff-only <main>` (never rewrites history) |
 | main checkout, no drift | `agent-harness update --target <tree>` from a local checkout, otherwise `npx --yes opencode-agent-harness@<latest> update --target <tree>` (the sanctioned deploy; fails closed on locally-modified harness files) |
 | anything else (main stale, branch diverged, overlapping dirty files, merge/rebase in progress, update failed) | **no mutation** — writes `.serve/harness-freshness.json` and injects a session notice so the agent relays it and waits |

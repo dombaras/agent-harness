@@ -293,3 +293,104 @@ test("[drift-guard] freshness re-evaluation is wired to activity and names the s
   assert.match(src, /opencode service \(the server process, not just the TUI\)/, "names the service, not the TUI");
   assert.doesNotMatch(src, /restart opencode/i, "the old TUI-confusing wording is gone");
 });
+
+test("a metadata-only harness write needs no restart; a plugin write does, as advice (F-035)", () => {
+  // The reported case: `0.4.16 -> 0.4.17` auto-committed while a session ran,
+  // rewriting `.harness.json` alone. The old verdict blocked the resumed session
+  // ("do NOT begin work yet") over a restart that would have changed nothing,
+  // while the TUI badge already read 0.4.17. Drive the real plugin twice: the
+  // write must be classified by what it actually touched, and even a real plugin
+  // write is advice the task can proceed past.
+  const home = tmpdir();
+  fs.writeFileSync(
+    path.join(home, "package.json"),
+    JSON.stringify({ name: "opencode-agent-harness", version: "9.9.9" })
+  );
+
+  const driver = path.join(tmpdir(), "freshness-restart-driver.mjs");
+  fs.writeFileSync(
+    driver,
+    [
+      'import { pathToFileURL } from "node:url";',
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      "const [pluginPath, tree, mode] = process.argv.slice(2);",
+      'const { default: plugin } = await import(pathToFileURL(pluginPath).href);',
+      "// the harness write lands AFTER this process loaded its plugins",
+      "await new Promise((r) => setTimeout(r, 25));",
+      'fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.9.9" }, null, 2) + "\\n");',
+      'if (mode === "loaded") {',
+      '  fs.mkdirSync(path.join(tree, ".opencode", "plugins"), { recursive: true });',
+      '  fs.writeFileSync(path.join(tree, ".opencode", "plugins", "new.ts"), "// new plugin\\n");',
+      "}",
+      "async function* stream(signal) {",
+      '  yield { type: "message.updated", data: { sessionID: "ses_restart" }, location: { directory: tree } };',
+      "  await new Promise((resolve) => {",
+      "    if (signal.aborted) return resolve();",
+      '    signal.addEventListener("abort", resolve, { once: true });',
+      "  });",
+      "}",
+      "let contextHook = null;",
+      "const ctx = {",
+      "  location: { directory: tree },",
+      "  event: { subscribe: ({ signal }) => stream(signal) },",
+      "  session: { hook: (name, fn) => { if (name === \"context\") contextHook = fn; } },",
+      "};",
+      "const stop = await plugin.setup(ctx);",
+      'const verdict = path.join(tree, ".serve", "harness-freshness.json");',
+      "const deadline = Date.now() + 5000;",
+      "let doc = null;",
+      "while (Date.now() < deadline) {",
+      "  try { doc = JSON.parse(fs.readFileSync(verdict, 'utf8')); } catch { doc = null; }",
+      '  if (doc && (doc.status === "current" || doc.status === "restart-needed")) break;',
+      "  await new Promise((r) => setTimeout(r, 25));",
+      "}",
+      'const messages = [{ role: "user", content: [{ type: "text", text: "resume f-331" }] }];',
+      'if (contextHook) contextHook({ sessionID: "ses_restart", messages });',
+      "stop();",
+      "const text = messages.length > 1 ? messages[messages.length - 1].content[0].text : \"\";",
+      "console.log(JSON.stringify({ doc, text }));",
+      "process.exit(doc ? 0 : 1);",
+    ].join("\n")
+  );
+
+  const run = (mode) => {
+    const tree = tmpdir();
+    fs.mkdirSync(path.join(tree, ".serve"), { recursive: true });
+    const git = (...args) => spawnSync("git", ["-C", tree, ...args], { encoding: "utf8" });
+    assert.strictEqual(git("init", "-q", "-b", "main").status, 0, "fixture is a git tree");
+    fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.9.9" }));
+    const r = spawnSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        driver,
+        path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+        tree,
+        mode,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 30000,
+        env: {
+          ...process.env,
+          AGENT_HARNESS_HOME: home,
+          AGENT_HARNESS_NO_UPDATE_CHECK: "1",
+          AGENT_HARNESS_FRESHNESS: "",
+        },
+      }
+    );
+    assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+    return JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop());
+  };
+
+  const meta = run("metadata");
+  assert.strictEqual(meta.doc.status, "current", "a `.harness.json`-only write activates nothing");
+  assert.doesNotMatch(meta.text, /HARNESS UPDATED/, "no restart notice when the loaded build did not change");
+
+  const loaded = run("loaded");
+  assert.strictEqual(loaded.doc.status, "restart-needed", "a plugin write is a real deploy");
+  assert.match(loaded.text, /HARNESS UPDATED ON DISK/, "the session is told the disk is ahead");
+  assert.doesNotMatch(loaded.text, /do NOT begin work yet/, "the task is never blocked on a restart");
+  assert.match(loaded.text, /Continue the current task now/, "it says work can continue");
+});

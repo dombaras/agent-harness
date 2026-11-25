@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.18 — 2026-11-25
+
+- A harness update that only rewrote deployment metadata (`.harness.json`) no
+  longer blocks a resumed session or claims the running plugins are old: the
+  freshness plugin now checks whether anything opencode loads at startup
+  (`opencode.json`, `AGENTS.md`, `.opencode/**`) actually changed after the
+  process started, and a real change is advisory ("continue now, restart when
+  convenient") instead of a "do NOT begin work yet" gate. Reported case:
+  0.4.16 -> 0.4.17 auto-committed mid-session, the badge read 0.4.17, and the
+  agent refused to resume over a restart that would have changed nothing. (F-036)
+- The context-guard session brief is revalidated against the tree before it is
+  re-injected: if HEAD or the deployed harness version moved after the snapshot
+  was collected (a harness update landing seconds later), the stale brief is
+  dropped and re-collected instead of telling the agent an old version while the
+  TUI badge reads the new one. (F-036)
+
 ## 0.4.17 — 2026-11-25
 
 - A `restart-needed` harness verdict no longer outlives the opencode service
