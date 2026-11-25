@@ -490,7 +490,11 @@ test("[drift-guard] freshness re-evaluation is wired to activity and names the s
     path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
     "utf8"
   );
-  assert.match(src, /const consider = async \(sid: string, dir/, "one once-per-session evaluation helper");
+  assert.match(src, /const consider = async \(sid: string, dir/, "one bounded evaluation helper");
+  assert.match(src, /const checked = new Map<string, number>\(\)/, "activity checks are time-stamped");
+  assert.match(src, /Date\.now\(\) - last < RECHECK_MS/, "a live session re-checks after the window");
+  assert.match(src, /AGENT_HARNESS_RECHECK_MS/, "the window is overridable for tests");
+  assert.doesNotMatch(src, /checked\.has\(sid\)/, "not once-per-process any more");
   assert.match(src, /await consider\(sid, startDir\)/, "every session-scoped event re-evaluates");
   assert.match(
     src,

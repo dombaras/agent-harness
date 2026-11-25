@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A harness release published while a project session is open is now applied on
+  the next request instead of waiting for a new session or a restart. The
+  freshness plugin re-evaluates at most once per 15-minute window
+  (`AGENT_HARNESS_RECHECK_MS` overrides it), which also backs off a genuine
+  refusal. (F-048)
+
 - A sweep-discovered harness update now reads `⚠update pending` (footer badge)
   and `(update pending)` (`orient`) instead of `⚠update blocked`: the startup
   sweep never applies an update, so "pending" is the truthful state. The

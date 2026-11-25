@@ -29,8 +29,11 @@ import { execFileSync, spawn } from "node:child_process"
 // update failure) is NOT auto-changed: it records a BLOCKED notice, injected
 // into the session tail so the agent must relay it and wait for the user.
 //
-// The check also runs once per session on its first activity. A session that
-// survives an opencode service restart never re-fires `session.created`, so a
+// The check also runs on session activity at most once per window (default
+// 15 minutes), so a harness release published while a project session is open
+// is applied on the next request instead of waiting for a new session. The
+// window is also the backoff for a genuine refusal. A session that survives an
+// opencode service restart never re-fires `session.created`, so a
 // `restart-needed` verdict written by the previous process would otherwise
 // outlive the very restart that resolved it (the footer badge keeps saying
 // ↻restart and the notice stays stale).
@@ -47,6 +50,18 @@ const HARNESS_HOME = process.env.AGENT_HARNESS_HOME || path.join(os.homedir(), "
 const LATEST_PKG = path.join(HARNESS_HOME, "package.json")
 const CLI = path.join(HARNESS_HOME, "bin", "agent-harness.js")
 const DRY = process.env.AGENT_HARNESS_FRESHNESS === "dry"
+
+/* A mid-session harness release must reach an already-open project without a
+ * restart: the old once-per-session check left LibraryOS on 0.5.4 after 0.5.5
+ * was published, because its session had already been evaluated. Re-evaluate at
+ * most once per window; the same window backs off a genuine refusal instead of
+ * retrying on every message. `AGENT_HARNESS_RECHECK_MS=0` re-checks every event
+ * (tests). */
+const RECHECK_ENV = process.env.AGENT_HARNESS_RECHECK_MS
+const RECHECK_MS =
+  RECHECK_ENV !== undefined && Number.isFinite(Number(RECHECK_ENV)) && Number(RECHECK_ENV) >= 0
+    ? Number(RECHECK_ENV)
+    : 15 * 60 * 1000
 
 // When this module is evaluated, the opencode process is (essentially) starting.
 // If the checkout's `.harness.json` was written AFTER this instant, the running
@@ -331,7 +346,7 @@ const HarnessFreshness: Plugin = {
   id: "harness-freshness",
   async setup(ctx) {
     const notices = new Map<string, string>()
-    const checked = new Set<string>()
+    const checked = new Map<string, number>()
     const roots = new Map<string, string>()
 
     // V1 called `client.app.log`; V2 server plugins log to the console.
@@ -744,17 +759,21 @@ const HarnessFreshness: Plugin = {
     void sweepKnownTrees().catch(() => {})
 
     /* A session that predates this process (it survived an opencode service
-     * restart) never re-fires `session.created`. Re-evaluate once per session on
-     * its first activity so a `restart-needed` verdict written by the previous
-     * process is replaced instead of outliving the restart that resolved it. An
-     * unknown root is skipped: the event envelope carries the session's own
-     * location, so its traffic supplies it without guessing the server cwd. */
+     * restart) never re-fires `session.created`. Re-evaluate on activity at most
+     * once per window so a `restart-needed` verdict written by the previous
+     * process is replaced instead of outliving the restart that resolved it,
+     * and a harness release published mid-session is applied on the next
+     * request. An unknown root is skipped: the event envelope carries the
+     * session's own location, so its traffic supplies it without guessing the
+     * server cwd. */
     const childSessions = new Set<string>()
     const consider = async (sid: string, dir: string | null | undefined) => {
-      if (!sid || checked.has(sid) || childSessions.has(sid)) return
+      if (!sid || childSessions.has(sid)) return
+      const last = checked.get(sid)
+      if (last !== undefined && Date.now() - last < RECHECK_MS) return
       const root = dir || roots.get(sid)
       if (!root) return
-      checked.add(sid)
+      checked.set(sid, Date.now())
       await evaluate(sid, root)
     }
 
