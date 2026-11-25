@@ -1,6 +1,6 @@
 {
   "name": "opencode-agent-harness",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Reusable multi-agent harness for OpenCode: personas, skills, operating rules, model routing, and QA gates. Deploy into any project with `npx opencode-agent-harness init`.",
   "bin": {
     "agent-harness": "bin/agent-harness.js"
@@ -28,7 +28,7 @@
   "scripts": {
     "prepublishOnly": "npm run lint && npm test && npm run test:pack",
     "test:pack": "node --test tests/pack.e2e.js",
-    "test": "node --test tests/agent-harness.test.js tests/plugin-loader.e2e.js tests/harness-version-badge.test.js tests/harness-update.test.js tests/ci-usage.test.js tests/ci-triage.test.js tests/init-safety.test.js tests/release-bundle.e2e.js tests/worktree-hygiene.test.js tests/dispatch-contract.test.js tests/dispatch-persona.test.js tests/dispatch-tier.test.js tests/dispatch-log.test.js tests/orient-personas.test.js tests/diagnosis.test.js tests/orient-diagnosis.test.js tests/falsifier-contract.test.js tests/outcome-oracle.test.js",
+    "test": "node --test tests/agent-harness.test.js tests/plugin-loader.e2e.js tests/harness-version-badge.test.js tests/harness-update.test.js tests/mobile-e2e-cache.test.js tests/ci-usage.test.js tests/ci-triage.test.js tests/init-safety.test.js tests/release-bundle.e2e.js tests/worktree-hygiene.test.js tests/dispatch-contract.test.js tests/dispatch-persona.test.js tests/dispatch-tier.test.js tests/dispatch-log.test.js tests/orient-personas.test.js tests/diagnosis.test.js tests/orient-diagnosis.test.js tests/falsifier-contract.test.js tests/outcome-oracle.test.js",
     "test:quick": "node --test tests/agent-harness.test.js",
     "bundle": "node tools/make-release-bundle.mjs",
     "test:plugin-loader": "node --test tests/plugin-loader.e2e.js",

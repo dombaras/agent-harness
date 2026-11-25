@@ -454,11 +454,18 @@ const HarnessFreshness: Plugin = {
             report(`updated main checkout ${tree}: ${have} -> ${latest} (${source}) — restart the opencode service to load it`)
             announce(sid, have, latest, tree)
           } else {
-            const tail = out.trim().split(/\r?\n/).slice(-6).join("\n")
-            writeStatus(tree, { ...base, status: "blocked", reason: "update failed", source, detail: tail })
+            // Keep the HEAD of the output: Node prints the error message on the
+            // first line, then a stack. Keeping only the last 6 lines recorded
+            // bare stack frames ("at main ...") and hid the actual cause — the
+            // LibraryOS 0.5.1->0.5.2 update failure named two hand-edited files
+            // in line 1, but the verdict only held frame lines (F-044).
+            const lines = out.trim().split(/\r?\n/).filter((l) => l.trim())
+            const detail =
+              lines.length <= 6 ? lines.join("\n") : [...lines.slice(0, 3), "…", ...lines.slice(-2)].join("\n")
+            writeStatus(tree, { ...base, status: "blocked", reason: "update failed", source, detail })
             void block(
               sid,
-              `The harness deploy failed (exit ${code}) — usually a locally-modified harness file (update fails closed):\n${tail}`,
+              `The harness deploy failed (exit ${code}) — usually a locally-modified harness file (update fails closed):\n${detail}`,
               `  fix it upstream in templates/, or back up and re-run:\n  ${shown} --accept-harness`
             )
           }

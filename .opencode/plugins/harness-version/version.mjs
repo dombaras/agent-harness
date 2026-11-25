@@ -82,12 +82,12 @@ function writerAlive(pid) {
 // dropped. Without these checks a dead process's `restart-needed` file outlives
 // the restart that resolved it, and the badge says ↻restart forever (F-038).
 // A missing, stale, or malformed cache means "no marker", never a setup error.
-export function readHarnessRestart(directory) {
+function readFreshness(directory, status) {
   if (typeof directory !== "string" || directory.length === 0) return null
   try {
     const raw = fs.readFileSync(path.join(directory, ".serve", "harness-freshness.json"), "utf8")
     const doc = JSON.parse(raw)
-    if (doc?.status !== "restart-needed") return null
+    if (doc?.status !== status) return null
     const have = typeof doc.have === "string" && doc.have.trim() ? doc.have.trim() : null
     const latest = typeof doc.latest === "string" && doc.latest.trim() ? doc.latest.trim() : null
     const active = typeof doc.active === "string" && doc.active.trim() ? doc.active.trim() : null
@@ -99,10 +99,29 @@ export function readHarnessRestart(directory) {
     if (!writerAlive(doc.pid)) return null
     const verdict = { have, latest }
     if (active) verdict.active = active
+    if (status === "blocked") {
+      verdict.reason =
+        typeof doc.reason === "string" && doc.reason.trim() ? doc.reason.trim() : "update blocked"
+    }
     return verdict
   } catch {
     return null
   }
+}
+
+export function readHarnessRestart(directory) {
+  return readFreshness(directory, "restart-needed")
+}
+
+// `blocked` means the global plugin refused or failed to apply a newer harness
+// (locally-modified harness files, a diverged branch, a stale project main).
+// The footer must say so persistently: otherwise it advertises the stale
+// version as current and the user has to rediscover the failed auto-update
+// every session (F-044). The same provenance/deploy checks apply, so a failed
+// run from a process that has since restarted, or from an older deploy, is not
+// rendered.
+export function readHarnessBlocked(directory) {
+  return readFreshness(directory, "blocked")
 }
 
 // The footer text. `current` is what `.harness.json` says now (the deployed
@@ -116,7 +135,7 @@ export function readHarnessRestart(directory) {
 // A verdict may name the service's active build (`active`); otherwise the
 // setup-time read is the best local evidence. When both reads agree there is no
 // gap to show, so the badge stays short. Returns null for a non-harness tree.
-export function formatHarnessBadge({ current, loaded, update, restart } = {}) {
+export function formatHarnessBadge({ current, loaded, update, restart, blocked } = {}) {
   const deployed = current || loaded
   if (!deployed) return null
   const active = restart ? restart.active || loaded || deployed : deployed
@@ -125,5 +144,6 @@ export function formatHarnessBadge({ current, loaded, update, restart } = {}) {
   if (inactive) parts.push(`→ v${deployed}`)
   if (update?.latest) parts.push(`↑${update.latest}`)
   if (restart) parts.push("↻restart")
+  if (blocked) parts.push(blocked.reason === "update failed" ? "⚠update failed" : "⚠update blocked")
   return parts.join(" ")
 }

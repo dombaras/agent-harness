@@ -97,22 +97,52 @@ echo ""
 export MOBILE_E2E_API_URL="${API_URL}"
 CACHE_JS="${ROOT}/scripts/qa/mobile-e2e/apk-cache.js"
 
+# An APK is only usable if the embedded bundle actually targets the requested
+# backend. `EXPO_PUBLIC_API_URL` is NOT a Gradle task input, so a previous build
+# for a different backend (e.g. a Play/EAS `preview` build that baked uat) left
+# `createBundleReleaseJsAndAssets` UP-TO-DATE and shipped the old URL — F-331:
+# the emulator called `ekedio-uat.vercel.app`, where the dev-minted actors do
+# not exist, so every valid login 401'd and the whole matrix failed. Verify
+# BEFORE caching, so a wrong-URL APK is never stored under a dev cache key.
+verify_baked_api_url() {
+  local apk="$1"
+  if [ ! -f "$apk" ]; then
+    echo "FAIL — APK not found at $apk" >&2
+    return 1
+  fi
+  # No `grep -q` here: under `set -o pipefail`, grep exiting on its first match
+  # SIGPIPEs `unzip` (exit 141) and fails the pipeline even though the URL was
+  # found. Drain the stream instead so the exit code is grep's.
+  if ! unzip -p "$apk" assets/index.android.bundle 2>/dev/null | grep -a -F -- "$API_URL" >/dev/null; then
+    echo "FAIL — $apk does not bake EXPO_PUBLIC_API_URL=$API_URL" >&2
+    echo "       A stale Gradle createBundleReleaseJsAndAssets output was reused." >&2
+    echo "       Delete mobile/android/app/build/generated/{assets,res}/react and rebuild." >&2
+    return 1
+  fi
+}
+
 # 0. Reuse before building. A full-key hit means native + JS are unchanged; the
 #    overlay re-signs a fresh bundle onto the cached native base. Both are pure
 #    accelerators — any failure (exit != 0) falls through to the Gradle build.
 if [ "${MOBILE_E2E_SKIP_CACHE:-0}" != "1" ] && [ -f "${CACHE_JS}" ]; then
   if hit="$(node "${CACHE_JS}" get 2>/dev/null)"; then
-    echo "cache hit (native + JS unchanged): reusing ${hit}"
-    echo ""
-    echo "APK=${hit}"
-    exit 0
-  fi
-  if [ "${MOBILE_E2E_APK_OVERLAY:-1}" != "0" ]; then
-    if hit="$(node "${CACHE_JS}" overlay 2>/dev/null)"; then
-      echo "cache overlay (native base + fresh JS bundle): ${hit}"
+    if verify_baked_api_url "$hit"; then
+      echo "cache hit (native + JS unchanged): reusing ${hit}"
       echo ""
       echo "APK=${hit}"
       exit 0
+    fi
+    echo "  cached APK ignored (wrong baked API URL); rebuilding"
+  fi
+  if [ "${MOBILE_E2E_APK_OVERLAY:-1}" != "0" ]; then
+    if hit="$(node "${CACHE_JS}" overlay 2>/dev/null)"; then
+      if verify_baked_api_url "$hit"; then
+        echo "cache overlay (native base + fresh JS bundle): ${hit}"
+        echo ""
+        echo "APK=${hit}"
+        exit 0
+      fi
+      echo "  overlaid APK ignored (wrong baked API URL); building"
     fi
   fi
   echo "cache miss — building (override with MOBILE_E2E_SKIP_CACHE=1)"
@@ -185,6 +215,12 @@ NODE
 #    build's exit code; a Gradle runaway is OOM-killed in its own scope, not the
 #    whole VM. One ABI (the emulator's) keeps the native build from compiling
 #    all four.
+#
+#    Delete the generated bundle tree first: `EXPO_PUBLIC_API_URL` is read at
+#    task execution but is not a task input, so Gradle keeps
+#    `createBundleReleaseJsAndAssets` UP-TO-DATE from a build that baked a
+#    different backend (F-331: a stale uat bundle shipped and every login 401'd).
+rm -rf "${ANDROID_DIR}/app/build/generated/assets/react" "${ANDROID_DIR}/app/build/generated/res/react"
 echo "-> serve.js run: ./gradlew assembleRelease (EXPO_PUBLIC_API_URL=${API_URL})"
 GRADLE_CMD="cd \"${ANDROID_DIR}\" && EXPO_PUBLIC_API_URL=\"${API_URL}\" ./gradlew --no-daemon --build-cache --configuration-cache --max-workers=1 -PreactNativeArchitectures=${ABIS} assembleRelease"
 node "${ROOT}/scripts/serve.js" run \
@@ -193,13 +229,12 @@ node "${ROOT}/scripts/serve.js" run \
   --cpu-max "${CPU_MAX}" \
   --cmd "${GRADLE_CMD}"
 
-if [ ! -f "${APK}" ]; then
-  echo "FAIL: expected APK not found at ${APK}" >&2
-  exit 1
-fi
+verify_baked_api_url "${APK}" || exit 1
 
 # 5. Populate the cache for the next run/worktree (best-effort): the native base
 #    (reused by the overlay) and the full-key artifact (instant no-op reuse).
+#    Only a verified APK is stored, so a wrong-URL bundle can never poison a dev
+#    cache key (the verification above already ran).
 if [ "${MOBILE_E2E_SKIP_CACHE:-0}" != "1" ] && [ -f "${CACHE_JS}" ]; then
   node "${CACHE_JS}" base-put "${APK}" >/dev/null 2>&1 || true
   node "${CACHE_JS}" put "${APK}" >/dev/null 2>&1 || true

@@ -124,11 +124,11 @@ function harnessUpdateCheck(root) {
  * loaded. Without it `orient` reports the disk version as if it were running.
  * The verdict only applies while it still describes this deploy and its writer
  * is alive (F-038), matching the badge's read path. */
-function harnessRestart(root) {
+function freshnessVerdict(root, status) {
   return safe(() => {
     const statusPath = path.join(root, ".serve", "harness-freshness.json");
     const doc = JSON.parse(fs.readFileSync(statusPath, "utf8"));
-    if (doc?.status !== "restart-needed") return null;
+    if (doc?.status !== status) return null;
     const deployed = harnessVersion(root);
     if (deployed && doc.have && deployed !== doc.have) return null;
     const wrote = Number(doc.wrote);
@@ -144,16 +144,38 @@ function harnessRestart(root) {
         if (err?.code !== "EPERM") return null;
       }
     }
-    const active = typeof doc.active === "string" && doc.active.trim() ? doc.active.trim() : null;
-    return { deployed: deployed || doc.have || null, active };
+    return doc;
   }, null);
+}
+
+function harnessRestart(root) {
+  const doc = freshnessVerdict(root, "restart-needed");
+  if (!doc) return null;
+  const deployed = harnessVersion(root);
+  const active = typeof doc.active === "string" && doc.active.trim() ? doc.active.trim() : null;
+  return { deployed: deployed || doc.have || null, active };
+}
+
+/* A blocked verdict is the persistent "the automatic update did NOT happen"
+ * signal (F-044). The update cache can still name npm's older release, so
+ * without this the orientation line reads the stale version as current. */
+function harnessBlocked(root) {
+  const doc = freshnessVerdict(root, "blocked");
+  if (!doc) return null;
+  const reason =
+    typeof doc.reason === "string" && doc.reason.trim() ? doc.reason.trim() : "update blocked";
+  return { reason };
 }
 
 /* One status phrase shared by the human and brief renderers: name the build the
  * service loaded first, then the deployed target, so neither reads as active. */
 function harnessStatus(o) {
   const deployed = o.harnessVersion || "?";
-  if (!o.harnessRestart) return `harness ${deployed}`;
+  if (!o.harnessRestart) {
+    if (!o.harnessBlocked) return `harness ${deployed}`;
+    const reason = o.harnessBlocked.reason === "update failed" ? "update failed" : "update blocked";
+    return `harness ${deployed} (${reason})`;
+  }
   const active = o.harnessRestart.active;
   return `harness ${active && active !== deployed ? `${active} → ` : ""}${deployed} (restart needed)`;
 }
@@ -632,6 +654,7 @@ function collectOrient(opts = {}) {
     harnessVersion: harnessVer,
     harnessUpdate: harnessUpdateCheck(root),
     harnessRestart: harnessRestart(root),
+    harnessBlocked: harnessBlocked(root),
   };
 }
 
@@ -803,6 +826,7 @@ module.exports = {
   featureWorktree,
   checkoutKind,
   harnessRestart,
+  harnessBlocked,
   harnessStatus,
   ownedFor,
   diagnosisState,

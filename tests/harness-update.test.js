@@ -51,6 +51,11 @@ function withNpm(version, marker, fn) {
   }
 }
 
+// Never read the developer's real ~/develop/agent-harness checkout in these
+// tests. A case that exercises the local checkout sets AGENT_HARNESS_HOME
+// explicitly; the default is an empty directory (no package.json).
+process.env.AGENT_HARNESS_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "no-harness-"));
+
 test("status reports behind only when the cache names a newer harness", () => {
   const dir = project("0.4.4");
   assert.strictEqual(upd.status(dir).state, "unknown", "no cache yet");
@@ -90,6 +95,42 @@ test("refresh caches the newest source (registry or a newer local harness checko
   );
   withNpm("0.5.0", null, () => upd.refresh(dir, true));
   assert.strictEqual(upd.status(dir).latest, "0.6.0");
+});
+
+test("refresh treats the machine's local harness checkout as the newest source (F-044)", () => {
+  // The reported failure: npm's latest was 0.5.1, LibraryOS was on 0.5.1, and
+  // the local checkout was already 0.5.2 — yet the badge had no ↑ because the
+  // project's package.json cannot name the harness. The machine's checkout is
+  // the same authoritative source the global freshness plugin applies from.
+  const dir = project("0.5.1");
+  const home = tmpdir();
+  fs.writeFileSync(
+    path.join(home, "package.json"),
+    JSON.stringify({ name: "opencode-agent-harness", version: "0.5.2" })
+  );
+  const prior = process.env.AGENT_HARNESS_HOME;
+  process.env.AGENT_HARNESS_HOME = home;
+  try {
+    withNpm("0.5.1", null, () => upd.refresh(dir, true));
+  } finally {
+    if (prior === undefined) delete process.env.AGENT_HARNESS_HOME;
+    else process.env.AGENT_HARNESS_HOME = prior;
+  }
+  assert.strictEqual(upd.status(dir).state, "behind", "the checkout leads the registry");
+  assert.strictEqual(upd.status(dir).latest, "0.5.2");
+  const doc = JSON.parse(fs.readFileSync(path.join(dir, ".serve", "harness-update.json"), "utf8"));
+  assert.strictEqual(doc.checkout, "0.5.2", "the checkout source is recorded");
+
+  // A project checkout (any other package name) is not a harness source.
+  fs.writeFileSync(path.join(home, "package.json"), JSON.stringify({ name: "LibraryOS", version: "9.9.9" }));
+  process.env.AGENT_HARNESS_HOME = home;
+  try {
+    withNpm("0.5.1", null, () => upd.refresh(dir, true));
+  } finally {
+    if (prior === undefined) delete process.env.AGENT_HARNESS_HOME;
+    else process.env.AGENT_HARNESS_HOME = prior;
+  }
+  assert.strictEqual(upd.status(dir).latest, "0.5.1", "a non-harness package is ignored");
 });
 
 test("refresh always re-probes the registry; --max-age is the opt-in throttle", () => {
@@ -292,6 +333,22 @@ test("[drift-guard] every freshness verdict names the process that wrote it (F-0
     /\.\.\.status/,
     "status-specific fields are written beside the provenance, not replaced by it"
   );
+});
+
+test("[drift-guard] a blocked update verdict keeps the cause, not only the stack tail (F-044)", () => {
+  // The reported failure wrote the last six lines of a Node stack — bare
+  // "at main (...)" frames — into `detail`, discarding the first line that
+  // named the two locally-modified files. The cause must survive.
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+    "utf8"
+  );
+  const at = src.indexOf('status: "blocked", reason: "update failed"');
+  assert.ok(at > 0, "the failed-update verdict exists");
+  const body = src.slice(Math.max(0, at - 1200), at);
+  assert.match(body, /lines\.slice\(0, 3\)/, "keeps the head (the error message)");
+  assert.match(body, /lines\.slice\(-2\)/, "keeps the bounded tail");
+  assert.doesNotMatch(body, /slice\(-6\)/, "no longer keeps only the last six stack lines");
 });
 
 test("the badge rejects a dead process's verdict on the reported tree shape (F-038)", async () => {

@@ -224,9 +224,13 @@ test("the badge renders restart-needed from the freshness verdict (H-44)", () =>
   const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
   const helper = fs.readFileSync(path.join(PLUGIN_DIR, "version.mjs"), "utf8");
   assert.match(tui, /readHarnessRestart\(directory\)/, "reads the freshness verdict");
-  assert.match(tui, /formatHarnessBadge\(\{ current, loaded, update, restart \}\)/, "delegates formatting to the tested helper");
+  assert.match(
+    tui,
+    /formatHarnessBadge\(\{ current, loaded, update, restart, blocked \}\)/,
+    "delegates formatting to the tested helper"
+  );
   assert.match(helper, /↻restart/, "marks a deployed-but-not-active harness");
-  assert.match(tui, /update \|\| restart/, "the restart marker also uses the warning colour");
+  assert.match(tui, /update \|\| restart \|\| blocked/, "the restart/blocked marker also uses the warning colour");
 });
 
 test("the badge re-reads the deployed version and verdicts on every render", () => {
@@ -234,7 +238,7 @@ test("the badge re-reads the deployed version and verdicts on every render", () 
   const start = tui.indexOf("const badge = () =>");
   assert.ok(start > 0, "the badge render function exists");
   const body = tui.slice(start, tui.indexOf("const home =", start));
-  for (const call of ["readHarnessVersion", "readHarnessUpdate", "readHarnessRestart"]) {
+  for (const call of ["readHarnessVersion", "readHarnessUpdate", "readHarnessRestart", "readHarnessBlocked"]) {
     assert.match(body, new RegExp(`${call}\\(directory\\)`), `${call} is read inside render, not setup`);
   }
   assert.match(body, /const directory = resolveDirectory\(\)/, "the badge's directory is resolved per render (F-038)");
@@ -273,4 +277,136 @@ test("the template ships both entrypoints and both footer slots", () => {
   assert.match(tui, /prompt\.footer\.status/, "badge on the session prompt footer");
   assert.match(tui, /readHarnessVersion\(directory\)/, "reads the checkout's deployed version");
   assert.match(tui, /if \(!loaded\) return/, "non-harness repos render nothing");
+});
+
+test("readHarnessBlocked returns the blocked verdict with its cause, and null otherwise (F-044)", async () => {
+  const { readHarnessBlocked } = await loadHelper();
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
+  const status = path.join(dir, ".serve", "harness-freshness.json");
+
+  fs.writeFileSync(
+    status,
+    JSON.stringify({ status: "blocked", have: "0.5.1", latest: "0.5.2", reason: "update failed", wrote: 1 })
+  );
+  assert.deepStrictEqual(
+    readHarnessBlocked(dir),
+    { have: "0.5.1", latest: "0.5.2", reason: "update failed" },
+    "a failed update keeps its cause"
+  );
+
+  fs.writeFileSync(status, JSON.stringify({ status: "blocked", have: "0.5.1", latest: "0.5.2", wrote: 1 }));
+  assert.strictEqual(readHarnessBlocked(dir).reason, "update blocked", "a reasonless verdict still reads as blocked");
+
+  for (const body of [
+    JSON.stringify({ status: "current", have: "0.5.1" }),
+    JSON.stringify({ status: "restart-needed", have: "0.5.1" }),
+    "not json",
+    "null",
+    "[]",
+    "{}",
+  ]) {
+    fs.writeFileSync(status, body);
+    assert.strictEqual(readHarnessBlocked(dir), null, `shape ${body}`);
+  }
+  assert.strictEqual(readHarnessBlocked(undefined), null, "no location");
+  assert.strictEqual(readHarnessBlocked(tmpdir()), null, "missing verdict");
+});
+
+test("a blocked verdict only renders for the current deploy and a live writer (F-044)", async () => {
+  const { readHarnessBlocked } = await loadHelper();
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
+  const cfg = path.join(dir, ".harness.json");
+  fs.writeFileSync(cfg, JSON.stringify({ version: "0.5.1" }));
+  const wrote = fs.statSync(cfg).mtimeMs;
+  const status = path.join(dir, ".serve", "harness-freshness.json");
+  const verdict = (extra) =>
+    fs.writeFileSync(
+      status,
+      JSON.stringify({
+        status: "blocked",
+        have: "0.5.1",
+        latest: "0.5.2",
+        reason: "update failed",
+        wrote,
+        ...extra,
+      })
+    );
+
+  verdict({ pid: process.pid });
+  assert.ok(readHarnessBlocked(dir), "current deploy + live writer renders");
+
+  verdict({ have: "0.5.0", latest: "0.5.1", pid: process.pid });
+  assert.strictEqual(readHarnessBlocked(dir), null, "a later deploy supersedes the verdict");
+
+  verdict({ wrote: wrote - 5000, pid: process.pid });
+  assert.strictEqual(readHarnessBlocked(dir), null, "the deploy is newer than the verdict");
+
+  const dead = spawnSync(process.execPath, ["-e", "0"]).pid;
+  verdict({ pid: dead });
+  assert.strictEqual(readHarnessBlocked(dir), null, "the writing process is gone");
+});
+
+test("the badge renders a blocked auto-update instead of the stale version as current (F-044)", async () => {
+  const { formatHarnessBadge } = await loadHelper();
+  assert.strictEqual(
+    formatHarnessBadge({
+      current: "0.5.1",
+      loaded: "0.5.1",
+      update: { deployed: "0.5.1", latest: "0.5.2" },
+      blocked: { have: "0.5.1", latest: "0.5.2", reason: "update failed" },
+    }),
+    "harness v0.5.1 ↑0.5.2 ⚠update failed"
+  );
+  assert.strictEqual(
+    formatHarnessBadge({
+      current: "0.5.1",
+      loaded: "0.5.1",
+      blocked: { have: "0.5.1", latest: null, reason: "update blocked" },
+    }),
+    "harness v0.5.1 ⚠update blocked",
+    "any other blocked reason still reads as blocked"
+  );
+  assert.strictEqual(
+    formatHarnessBadge({ current: "0.5.1", loaded: "0.5.1" }),
+    "harness v0.5.1",
+    "no verdict, no marker"
+  );
+});
+
+test("the footer reads the blocked verdict and colours it as a warning (F-044)", () => {
+  const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
+  assert.match(tui, /readHarnessBlocked\(directory\)/, "reads the blocked verdict per render");
+  assert.match(tui, /update \|\| restart \|\| blocked/, "the blocked marker uses the warning colour");
+});
+
+test("orient names a blocked auto-update instead of the stale version as current (F-044)", () => {
+  const { harnessStatus } = require("../templates/scripts/orient.js");
+  assert.strictEqual(
+    harnessStatus({ harnessVersion: "0.5.1", harnessBlocked: { reason: "update failed" } }),
+    "harness 0.5.1 (update failed)"
+  );
+  assert.strictEqual(
+    harnessStatus({ harnessVersion: "0.5.1", harnessBlocked: { reason: "branch diverged" } }),
+    "harness 0.5.1 (update blocked)",
+    "any other blocked reason is still surfaced"
+  );
+  assert.strictEqual(harnessStatus({ harnessVersion: "0.5.1", harnessBlocked: null }), "harness 0.5.1");
+});
+
+test("the deployed root mirrors the template byte-for-byte (F-044)", () => {
+  const repo = path.join(__dirname, "..");
+  for (const rel of [
+    "scripts/orient.js",
+    "scripts/harness-update.js",
+    ".opencode/plugins/harness-version/version.mjs",
+    ".opencode/plugins/harness-version/tui.tsx",
+  ]) {
+    assert.strictEqual(
+      fs.readFileSync(path.join(repo, rel), "utf8"),
+      fs.readFileSync(path.join(repo, "templates", rel), "utf8"),
+      `${rel} is the deployed template copy`
+    );
+  }
 });

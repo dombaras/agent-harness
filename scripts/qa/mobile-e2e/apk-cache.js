@@ -140,7 +140,10 @@ function nativeKey() {
 
 function bundleKey() {
   const manifest = {
-    v: 1,
+    // v2: v1 entries could hold a bundle whose URL did not match `apiUrl` (a
+    // stale Gradle createBundleReleaseJsAndAssets output; F-331). Invalidated
+    // so a poisoned cache entry is never reused.
+    v: 2,
     apiUrl: API_URL,
     entry: 1, // bump when the entry resolution changes
     trees: hashTree(JS_TREES, MOBILE),

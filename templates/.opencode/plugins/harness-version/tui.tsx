@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { formatHarnessBadge, readHarnessRestart, readHarnessUpdate, readHarnessVersion } from "./version.mjs"
+import { formatHarnessBadge, readHarnessBlocked, readHarnessRestart, readHarnessUpdate, readHarnessVersion } from "./version.mjs"
 
 // A constant "harness vX.Y.Z" badge in the two footer rows that already carry
 // version/model indicators:
@@ -46,9 +46,10 @@ export default Plugin.define({
       const current = readHarnessVersion(directory) || loaded
       const update = readHarnessUpdate(directory)
       const restart = readHarnessRestart(directory)
-      const text = formatHarnessBadge({ current, loaded, update, restart })
+      const blocked = readHarnessBlocked(directory)
+      const text = formatHarnessBadge({ current, loaded, update, restart, blocked })
       if (!text) return null
-      const color = update || restart
+      const color = update || restart || blocked
         ? ((context.theme as any)?.text?.warning ?? context.theme.text.muted)
         : context.theme.text.muted
       return <text fg={color}>{text}</text>

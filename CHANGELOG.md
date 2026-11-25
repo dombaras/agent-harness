@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.3 — 2026-11-25
+
+- A refused or failed harness auto-update is now visible instead of silent: the
+  footer badge renders the freshness plugin's `blocked` verdict (`⚠update failed`
+  / `⚠update blocked`), and `orient` says `harness 0.5.1 (update failed)`, so a
+  checkout the updater cannot refresh no longer advertises its stale version as
+  current. The update probe also compares the machine's local harness checkout
+  (`AGENT_HARNESS_HOME`, default `~/develop/agent-harness`) with the registry, so
+  a dev machine that leads npm shows `↑0.5.3` instead of treating the older
+  published release as latest. A blocked verdict keeps the first lines of the
+  updater's error (the cause) instead of only the tail of the stack. Reported
+  case: LibraryOS stayed on 0.5.1 with no indicator because two mobile-e2e fixes
+  were hand-edited in the project and `update` failed closed. (F-044)
+- The F-331 mobile-e2e APK-cache fixes now ship in the templates: `build-apk.sh`
+  verifies the APK's embedded `EXPO_PUBLIC_API_URL` before reusing a cached or
+  overlaid artifact (and deletes the stale generated bundle tree before Gradle),
+  and `apk-cache.js` bumps the bundle key to v2 so a poisoned v1 entry is never
+  reused. Those hand-edits had blocked LibraryOS's harness update.
+
 ## 0.5.2 — 2026-11-25
 
 - The harness version badge and `orient` now name the build the running service

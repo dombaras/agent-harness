@@ -26,6 +26,7 @@
  * AGENT_HARNESS_NO_UPDATE_CHECK=1 to disable the probe entirely (CI, air-gapped).
  */
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
@@ -68,6 +69,19 @@ function localHarnessVersion(root) {
   const pkg = readJson(path.join(root, "package.json"));
   if (!pkg || pkg.name !== PKG_NAME) return null;
   return typeof pkg.version === "string" && pkg.version.trim() ? pkg.version.trim() : null;
+}
+
+/* The machine's authoritative harness checkout (AGENT_HARNESS_HOME, default
+ * ~/develop/agent-harness). A project's own package.json cannot name the
+ * harness, so without this a dev machine that leads the registry reports npm's
+ * older release as "latest": LibraryOS showed no ↑ arrow while the local
+ * checkout was already ahead (F-044). Mirrors the global freshness plugin's
+ * source of truth. Null when this machine has no harness checkout. */
+function harnessCheckoutVersion() {
+  const home =
+    process.env.AGENT_HARNESS_HOME ||
+    path.join(os.homedir(), "develop", "agent-harness");
+  return localHarnessVersion(home);
 }
 
 /* Registry lookup, mirroring bin/agent-harness.js `publishedLatestVersion` so a
@@ -129,7 +143,8 @@ function refresh(root, force, maxAgeMs = 0) {
 
   const npm = npmLatest();
   const local = localHarnessVersion(root);
-  const latest = [npm, local].filter(Boolean).sort(compareVersions).pop() || null;
+  const checkout = harnessCheckoutVersion();
+  const latest = [npm, local, checkout].filter(Boolean).sort(compareVersions).pop() || null;
   // No source answered: keep the last good cache rather than downgrade it.
   if (!latest) return status(root);
 
@@ -140,6 +155,7 @@ function refresh(root, force, maxAgeMs = 0) {
     latest,
     npm,
     local,
+    checkout,
     command: COMMAND,
   };
   try {
