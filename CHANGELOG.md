@@ -8,6 +8,7 @@
 - Bug, incident, and fix QA plans now carry an `## Outcome oracle` covering the reported symptom, before red, after green, command, environment, and independent owner. (F-040)
 - `orient` and `checkpoint resume` surface diagnosis status, confidence, staleness, and open questions. (F-040)
 - [`docs/harness-lifecycle.md`](docs/harness-lifecycle.md) describes the inquiry loop end to end. (F-040)
+- The harness's own CI runs the diagnosis gate from its template source, because `/scripts` is generated and gitignored in this repository. (F-040)
 
 ## 0.4.19 — 2026-11-25
 

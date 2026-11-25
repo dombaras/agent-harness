@@ -18,7 +18,9 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm run lint
       - run: npm test
-      - run: npm run test:diagnosis
+      # `/scripts` is gitignored in this repo (the deployed copies are generated),
+      # so CI runs the gate from its template source.
+      - run: node templates/scripts/qa/check-diagnosis.js
       - run: npm run test:pack
 
   # ADR 0001: the board service (services/board) lives in this repo, so its CI
