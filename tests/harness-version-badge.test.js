@@ -13,6 +13,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { spawnSync } = require("node:child_process");
 
 const PLUGIN_DIR = path.join(
   __dirname,
@@ -122,6 +123,47 @@ test("readHarnessRestart returns the restart-needed verdict, and null otherwise"
   assert.strictEqual(readHarnessRestart(tmpdir()), null, "missing verdict");
 });
 
+test("a restart verdict only renders while it describes the current deploy and a live process (F-038)", async () => {
+  // The reported failure: a verdict written by a previous service process
+  // (have=0.4.17) survived a deploy to 0.4.18 and the restart that loaded it, so
+  // the badge read the fresh version with a permanent ↻restart.
+  const { readHarnessRestart } = await loadHelper();
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
+  const cfg = path.join(dir, ".harness.json");
+  fs.writeFileSync(cfg, JSON.stringify({ version: "0.4.18" }));
+  const wrote = fs.statSync(cfg).mtimeMs;
+  const status = path.join(dir, ".serve", "harness-freshness.json");
+  const verdict = (extra) =>
+    fs.writeFileSync(
+      status,
+      JSON.stringify({ status: "restart-needed", have: "0.4.18", latest: "0.4.18", wrote, ...extra })
+    );
+
+  verdict({ pid: process.pid, startedAt: Date.now() - 1000 });
+  assert.deepStrictEqual(readHarnessRestart(dir), { have: "0.4.18", latest: "0.4.18" }, "current deploy + live writer");
+
+  verdict({ have: "0.4.17", latest: "0.4.17", pid: process.pid });
+  assert.strictEqual(readHarnessRestart(dir), null, "a later deploy supersedes the verdict");
+
+  verdict({ wrote: wrote - 5000, pid: process.pid });
+  assert.strictEqual(readHarnessRestart(dir), null, "the deploy is newer than the verdict");
+
+  const dead = spawnSync(process.execPath, ["-e", "0"]).pid;
+  verdict({ pid: dead, startedAt: Date.now() - 1000 });
+  assert.strictEqual(readHarnessRestart(dir), null, "the writing process is gone");
+
+  verdict({ pid: "not-a-pid" });
+  assert.strictEqual(readHarnessRestart(dir), null, "unusable provenance is not trusted");
+
+  verdict({});
+  assert.deepStrictEqual(
+    readHarnessRestart(dir),
+    { have: "0.4.18", latest: "0.4.18" },
+    "a legacy verdict without provenance still renders (version/deploy checks apply)"
+  );
+});
+
 test("the badge renders the update arrow from the same cache", () => {
   const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
   assert.match(tui, /readHarnessUpdate\(directory\)/, "reads the cached verdict");
@@ -144,6 +186,12 @@ test("the badge re-reads the deployed version and verdicts on every render", () 
   for (const call of ["readHarnessVersion", "readHarnessUpdate", "readHarnessRestart"]) {
     assert.match(body, new RegExp(`${call}\\(directory\\)`), `${call} is read inside render, not setup`);
   }
+  assert.match(body, /const directory = resolveDirectory\(\)/, "the badge's directory is resolved per render (F-038)");
+  assert.doesNotMatch(
+    tui.slice(tui.indexOf("const setupDirectory ="), start),
+    /const directory = resolveDirectory\(\)/,
+    "setup keeps only the fallback directory"
+  );
   assert.doesNotMatch(
     tui.slice(tui.indexOf("const version ="), start),
     /readHarnessUpdate\(directory\)/,

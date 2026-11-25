@@ -274,6 +274,67 @@ test("a restart-needed verdict written by a previous process is replaced on sess
   assert.strictEqual(doc.have, "9.9.9", "the current on-disk version is recorded");
 });
 
+test("[drift-guard] every freshness verdict names the process that wrote it (F-038)", () => {
+  // A service restart leaves the verdict file behind. Without provenance the
+  // badge cannot tell a live verdict from a dead process's, so a
+  // `restart-needed` written before the restart outlives it (the reported
+  // permanent ↻restart). The writer records pid + start; the badge validates it.
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+    "utf8"
+  );
+  assert.match(src, /const PROCESS_PID = process\.pid/, "records the writing process");
+  const write = src.slice(src.indexOf("const writeStatus ="), src.indexOf("/* Apply through"));
+  assert.match(write, /pid: PROCESS_PID/, "every verdict carries the pid");
+  assert.match(write, /startedAt: PROCESS_START/, "every verdict carries the process start");
+  assert.match(
+    src,
+    /\.\.\.status/,
+    "status-specific fields are written beside the provenance, not replaced by it"
+  );
+});
+
+test("the badge rejects a dead process's verdict on the reported tree shape (F-038)", async () => {
+  // End-to-end read path: the plugin writes a real restart-needed verdict from a
+  // throwaway process, then that process exits. The badge must not render it,
+  // while the same verdict with a live writer must.
+  const { pathToFileURL } = require("node:url");
+  const { readHarnessRestart } = await import(
+    pathToFileURL(
+      path.join(__dirname, "..", "templates", ".opencode", "plugins", "harness-version", "version.mjs")
+    ).href
+  );
+  const tree = project("0.4.4");
+  const status = path.join(tree, ".serve", "harness-freshness.json");
+  fs.mkdirSync(path.join(tree, ".serve"), { recursive: true });
+  const wrote = fs.statSync(path.join(tree, ".harness.json")).mtimeMs;
+  const writer = spawnSync(process.execPath, ["-e", "0"]);
+  fs.writeFileSync(
+    status,
+    JSON.stringify({
+      status: "restart-needed",
+      have: "0.4.4",
+      latest: "0.4.4",
+      wrote,
+      pid: writer.pid,
+      startedAt: Date.now() - 1000,
+    })
+  );
+  assert.strictEqual(readHarnessRestart(tree), null, "a dead writer's verdict is dropped");
+  fs.writeFileSync(
+    status,
+    JSON.stringify({
+      status: "restart-needed",
+      have: "0.4.4",
+      latest: "0.4.4",
+      wrote,
+      pid: process.pid,
+      startedAt: Date.now() - 1000,
+    })
+  );
+  assert.deepStrictEqual(readHarnessRestart(tree), { have: "0.4.4", latest: "0.4.4" }, "a live writer's verdict renders");
+});
+
 test("[drift-guard] freshness re-evaluation is wired to activity and names the service restart (F-035)", () => {
   const src = fs.readFileSync(
     path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),

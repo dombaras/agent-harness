@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.19 — 2026-11-25
+
+- A `restart-needed` verdict can no longer outlive the deploy or process it
+  describes. Every verdict now records the writing process (`pid`, `startedAt`),
+  and the footer badge renders `↻restart` only while the verdict still matches
+  the checkout: its `have` equals the deployed `.harness.json` version, its
+  `wrote` is not older than the current `.harness.json` write, and the writer is
+  still alive. The badge also resolves its checkout directory on each render.
+  Reported case: a verdict written for 0.4.17 at 12:33Z survived the 0.4.18
+  deploy (13:01Z) and the service restart (13:35Z), so the footer read
+  `harness v0.4.18 ↻restart` indefinitely with no session activity to re-evaluate
+  it. Legacy verdicts without provenance still pass the version/deploy checks.
+  (F-038)
+
 ## 0.4.18 — 2026-11-25
 
 - A harness update that only rewrote deployment metadata (`.harness.json`) no

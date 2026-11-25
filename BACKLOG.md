@@ -47,7 +47,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-038 | ? | stale harness restart badge: .serve/harness-freshness.json from a dead process survives the service restart (publicvirtuallibrary verdict=restart-needed have=0.4.17 @12:33Z while .harness.json=0.4.18 @13:01Z); badge renders fresh 0.4.18 + stale ↻restart forever. Add verdict provenance (process/deploy id), ignore a verdict whose have != current version or older than the deploy, re-invalidate at process start, and resolve the badge directory per render. | .agents/handoffs/F-038.md (worktree: ../.worktrees/agent-harness/f-038; branch: f-038) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -121,6 +120,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-034 | ? | harness-freshness resolves the project tree from the top-level event.location (opencode 2.4 moved it out of event.data): a LibraryOS session showed no 0.4.15 update because the plugin fell back to the server cwd ($HOME) and skipped every project. Prefer event.location.directory, then data.location, then ctx.location; pin the order with a drift guard. | shipped |
 | F-035 | ? | harness-freshness: a restart-needed verdict written before an opencode service restart outlives it — the badge keeps showing ↻restart and the snippet stays stale because existing sessions never re-trigger session.created. Re-evaluate on session activity (context hook, once per session) so a post-restart message clears the verdict; also change the notice wording to 'opencode service restart' (not 'restart opencode'), which sent the user to the TUI twice. | shipped |
 | F-036 | ? | Fix the false 'restart needed' harness block: classify a post-start harness write by what it touched (metadata-only = current) and make a real restart-pending notice advisory; also drop/re-collect a stale context-guard orient brief when HEAD/version moves under it | shipped |
+| F-038 | ? | stale harness restart badge: .serve/harness-freshness.json from a dead process survives the service restart (publicvirtuallibrary verdict=restart-needed have=0.4.17 @12:33Z while .harness.json=0.4.18 @13:01Z); badge renders fresh 0.4.18 + stale ↻restart forever. Add verdict provenance (process/deploy id), ignore a verdict whose have != current version or older than the deploy, re-invalidate at process start, and resolve the badge directory per render. | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

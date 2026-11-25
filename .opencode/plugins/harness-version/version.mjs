@@ -44,11 +44,43 @@ export function readHarnessUpdate(directory) {
   }
 }
 
+function mtimeMs(p) {
+  try {
+    return fs.statSync(p).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+// A verdict carries the process that wrote it. A service restart leaves the
+// file behind, so a verdict whose writer is gone describes a process that no
+// longer exists (F-038). A missing pid is an older verdict: its version/deploy
+// checks still apply. A present-but-unusable pid is not trusted.
+function writerAlive(pid) {
+  if (pid === undefined || pid === null) return true
+  const n = Number(pid)
+  if (!Number.isInteger(n) || n <= 0) return false
+  if (n === process.pid) return true
+  try {
+    process.kill(n, 0)
+    return true
+  } catch (err) {
+    return err?.code === "EPERM"
+  }
+}
+
 // The global `harness-freshness` plugin's verdict (`.serve/harness-freshness.json`):
 // `restart-needed` means the on-disk harness is current but the running opencode
 // process predates the last write, so the server-side plugins in effect are the
 // OLD ones (H-44, deploy != activate). The badge reads it so the footer can say
 // "restart" instead of implying the deployed version is already active.
+//
+// The verdict explains ONE deploy and ONE process, so it is only rendered while
+// both still hold: if the checkout has moved to another version (a later deploy
+// rewrote `.harness.json`), or the verdict predates that write, or the writing
+// process is gone, the verdict cannot describe the running service and is
+// dropped. Without these checks a dead process's `restart-needed` file outlives
+// the restart that resolved it, and the badge says ↻restart forever (F-038).
 // A missing, stale, or malformed cache means "no marker", never a setup error.
 export function readHarnessRestart(directory) {
   if (typeof directory !== "string" || directory.length === 0) return null
@@ -58,6 +90,12 @@ export function readHarnessRestart(directory) {
     if (doc?.status !== "restart-needed") return null
     const have = typeof doc.have === "string" && doc.have.trim() ? doc.have.trim() : null
     const latest = typeof doc.latest === "string" && doc.latest.trim() ? doc.latest.trim() : null
+    const deployed = readHarnessVersion(directory)
+    if (deployed && deployed !== have) return null
+    const wrote = Number(doc.wrote)
+    const current = mtimeMs(path.join(directory, ".harness.json"))
+    if (Number.isFinite(wrote) && current !== null && current > wrote + 1000) return null
+    if (!writerAlive(doc.pid)) return null
     return { have, latest }
   } catch {
     return null

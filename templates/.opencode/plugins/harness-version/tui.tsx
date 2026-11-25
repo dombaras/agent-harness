@@ -19,21 +19,27 @@ export default Plugin.define({
   setup(context) {
     // `context.location` is set in a session; on the home screen fall back to
     // the active location so the badge also sits beside opencode's version.
-    let directory = context.location?.directory
-    if (!directory) {
+    // Resolved on every render too: the active location can become available
+    // (or change to a worktree) after setup, and a pinned directory would read
+    // another checkout's `.harness.json` and verdicts (F-038).
+    const resolveDirectory = () => {
+      const live = context.location?.directory
+      if (typeof live === "string" && live) return live
       try {
-        directory = context.data.location.default()?.directory
+        return context.data.location.default()?.directory
       } catch {
-        directory = undefined
+        return undefined
       }
     }
-    const version = readHarnessVersion(directory)
+    const setupDirectory = resolveDirectory()
+    const version = readHarnessVersion(setupDirectory)
     if (!version) return
     // Read the verdicts inside `badge`, not at setup: a new/cleared/compacted
     // session re-probes the registry and rewrites `.serve/harness-update.json`,
     // so the footer must pick up the fresh arrow/version on the next render
     // instead of pinning the verdict from process start.
     const badge = () => {
+      const directory = resolveDirectory() || setupDirectory
       const current = readHarnessVersion(directory) || version
       const update = readHarnessUpdate(directory)
       const restart = readHarnessRestart(directory)

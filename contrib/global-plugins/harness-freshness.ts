@@ -35,6 +35,12 @@ import { execFileSync, spawn } from "node:child_process"
 // outlive the very restart that resolved it (the footer badge keeps saying
 // ↻restart and the notice stays stale).
 //
+// Re-evaluation needs session activity, and an idle restored session produces
+// none — so a verdict also carries the writing process (pid + start) and the
+// deploy it explains (`have`, `wrote`). The badge rejects a verdict from a dead
+// process or one that names an older deploy, instead of waiting for activity
+// that may never come (F-038).
+//
 // Set AGENT_HARNESS_FRESHNESS=dry to detect+report without applying (testing).
 
 const HARNESS_HOME = process.env.AGENT_HARNESS_HOME || path.join(os.homedir(), "develop", "agent-harness")
@@ -47,6 +53,12 @@ const DRY = process.env.AGENT_HARNESS_FRESHNESS === "dry"
 // process loaded the OLD plugins/config — a deploy that has not yet activated.
 // The version compares "current" but the process is stale (F-19/H-44).
 const PROCESS_START = Date.now()
+
+/* A verdict describes the process that wrote it, so every verdict carries that
+ * process's identity. After a service restart the previous pid is gone: a
+ * `restart-needed` file left behind by a dead process must never keep the badge
+ * (or a notice) alive over a restart that already happened (F-038). */
+const PROCESS_PID = process.pid
 
 /* What opencode actually loads once at startup: config, instructions, plugins,
  * agents, commands, skills. A harness write that touched only metadata/docs
@@ -227,7 +239,10 @@ const HarnessFreshness: Plugin = {
       try {
         const dir = path.join(tree, ".serve")
         fs.mkdirSync(dir, { recursive: true })
-        fs.writeFileSync(path.join(dir, "harness-freshness.json"), JSON.stringify(status, null, 2) + "\n")
+        fs.writeFileSync(
+          path.join(dir, "harness-freshness.json"),
+          JSON.stringify({ pid: PROCESS_PID, startedAt: PROCESS_START, ...status }, null, 2) + "\n"
+        )
       } catch {
         /* observability only */
       }
