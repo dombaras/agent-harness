@@ -1,11 +1,11 @@
 {
-  "version": "0.4.14",
+  "version": "0.4.15",
   "projectName": "agent-harness",
   "projectDomain": "",
   "initializedAt": "2026-11-20T15:28:27.274Z",
-  "updatedAt": "2026-11-25T03:58:23.472Z",
+  "updatedAt": "2026-11-25T04:34:43.246Z",
   "files": {
-    "package.json": "341d50f0ecbc3bb25b3240360d862d09f6ee1c199428488942721172483c6e1e",
+    "package.json": "0cdf0641d2ad76f92103f2d7bebd3f3b2943eb940db01a3992686df453e1773e",
     ".gitattributes": "12c4d531af67b819a562126556e8fc3565594a3593f2db9e1640baa9a87a48f7",
     ".ignore": "fbe125871ea72e7ca387e954eefca50eec09a8ec1e9cd98b00e7cb488d486d2f",
     ".agents/AGENTS.md": "aa22099f4b61edcf939d7e91cb2df3b3a8613ae8f7273147962dcf8bc59d84cb",
@@ -67,7 +67,7 @@
     ".opencode/skills/bounded-explore/SKILL.md": "0cdf39d9e77e3b6688550af561a433ca983bc02688e5cc1f7d80df1ab7301999",
     ".opencode/skills/dev-loop/SKILL.md": "e7f173990aaf0803f999e21e53c17beb0598bcec1dbdd67aa5edd8993b46e493",
     "AGENTS.md": "71b03053a0ae8aae45b0d772adeef3e89367acfa989d3c1152683d115fff11a5",
-    "docs/gates.md": "56c78a153554dac96d52aed91a7017ba23de9fd41434d8d2f78995ecffc49e10",
+    "docs/gates.md": "61b8bd4bdcf34aa775455d02db7267916e2717725fe27b6f5a85b1692d651724",
     "docs/mcp-integrations.md": "6df890abc1289ea600d3ec3830b1551046b279f221fa434c9803f5c09ae4f458",
     "docs/mobile-testing.md": "8f403e10658e77dfff0d4d14c4cbf3e26c7c882a379c166880f99067bb795edb",
     "docs/nightly-testing.md": "d4ea5523ff05c113b5ece4a727ffc3b04f8284cdd43277df7af6daa22c88249d",
