@@ -545,6 +545,17 @@ function waitForQuiet(root, config, opts) {
 
 // ---------------------------------------------------------------- reconcile
 
+/* Best-effort feedback capture after the reconcile. Exit 1 means "needs work"
+ * (expected for a red night); only a usage/policy failure (exit 2) or a thrown
+ * spawn is surfaced as a note, and it never changes the nightly verdict. */
+function emitFeedback(root, reportFile) {
+  const script = path.join(root, "scripts", "feedback.js");
+  if (!fs.existsSync(script)) return "feedback capture skipped (scripts/feedback.js not found)";
+  const r = run(root, `${JSON.stringify(process.execPath)} ${JSON.stringify(script)} ingest --report ${JSON.stringify(reportFile)} --json`, 45000);
+  if (r.code === 2) return `feedback capture skipped — ${tail(r.output, 2)}`;
+  return null;
+}
+
 function boardRows(root) {
   const r = runNode(root, ["scripts/backlog.js", "list", "--all", "--json"], 30000);
   if (r.code !== 0) return null;
@@ -804,6 +815,12 @@ function cmdRun(opts) {
   if (!opts.dryRun) {
     writeReport(root, report);
     pruneOldReports(root, config.keepDays);
+    // Phase 1 (F-050): emit the normalized failures into the feedback ledger.
+    // The reconcile above owns product journey rows (the capture links to them);
+    // this step files only the ops rows the reconcile deliberately leaves alone,
+    // e.g. a harness-side (runner/tool) failure that is not a product signal.
+    const feedbackNote = emitFeedback(root, path.join(reportsDir(root), runStamp, "report.json"));
+    if (feedbackNote) notes.push(feedbackNote);
     if (config.notify) {
       const n = run(root, `${config.notify} ${path.join(reportsDir(root), runStamp, "report.json")}`, 30000);
       if (n.code !== 0) notes.push("notify command failed");

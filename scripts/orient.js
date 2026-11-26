@@ -228,6 +228,44 @@ function lastE2eRun(root) {
   );
 }
 
+/* Feedback inbox (F-050 Phase 1): the ledger is shared machine state in the main
+ * checkout, so a feature worktree reads the same inbox. Read-only and bounded —
+ * a missing or corrupt ledger degrades to a plain "unavailable" line. */
+function feedbackState(root) {
+  try {
+    const feedback = require("./feedback.js");
+    const lib = require("./qa/feedback-lib.js");
+    const items = feedback.readItems(feedback.ledgerDir(root, {}));
+    let policy = null;
+    try {
+      policy = feedback.loadPolicy(root);
+    } catch {
+      policy = null;
+    }
+    const m = lib.metrics(items, new Date().toISOString());
+    const open = items
+      .filter((i) => !["resolved", "ignored"].includes(i.state))
+      .sort((a, b) => String(a.first_seen).localeCompare(String(b.first_seen)));
+    const oldest = open[0] || null;
+    return {
+      open: m.open,
+      total: m.total,
+      observations: m.observations,
+      mode: policy ? policy.mode : null,
+      enabled: policy ? lib.loopEnabled(policy) : false,
+      oldest: oldest
+        ? {
+            id: oldest.id,
+            severity: oldest.severity,
+            ageHours: Math.max(0, Math.round((Date.now() - Date.parse(oldest.first_seen)) / 3600000)),
+          }
+        : null,
+    };
+  } catch (e) {
+    return { unavailable: true, error: e && e.message ? e.message : String(e) };
+  }
+}
+
 /* The last nightly E2E cycle verdict, from `.agents/qa-runs/nightly/latest.json`
  * (written by scripts/nightly.js). This is the morning signal: a red nightly has
  * already reconciled the board (validated fixes / reopened rows / new rows). */
@@ -818,6 +856,7 @@ function collectOrient(opts = {}) {
     memory: memoryDigest(root),
     lastE2e: lastE2eRun(root),
     nightly: latestNightly(root),
+    feedback: feedbackState(root),
     harnessVersion: harnessVer,
     harnessUpdate: harnessUpdateCheck(root),
     harnessRestart: harnessRestart(root),
@@ -923,6 +962,16 @@ function printHuman(o) {
     );
   } else {
     lines.push("nightly:  none recorded (run `node scripts/nightly.js run`)");
+  }
+  const fb = o.feedback;
+  if (fb && !fb.unavailable) {
+    lines.push(
+      fb.open
+        ? `feedback: ${fb.open} open / ${fb.total} item(s) · mode ${fb.mode}${fb.oldest ? ` · oldest ${fb.oldest.id} (${fb.oldest.ageHours}h, ${fb.oldest.severity})` : ""}`
+        : `feedback: inbox empty (${fb.total} captured) · mode ${fb.mode}`
+    );
+  } else {
+    lines.push("feedback: unavailable");
   }
   const mem = renderMemoryDigest(o.memory);
   if (mem.length) {

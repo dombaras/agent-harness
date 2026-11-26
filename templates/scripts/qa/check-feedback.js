@@ -24,6 +24,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const lib = require("./feedback-lib.js");
+const adapters = require("./feedback-adapters.js");
 
 const FIXTURES = path.join(__dirname, "feedback-fixtures.json");
 const NOW = "2026-11-25T12:00:00.000Z";
@@ -324,6 +325,69 @@ function checkBudgetsAndMetrics(fixtureDoc) {
   if (m.first_attempt_success !== 100) fail(`metrics: first_attempt_success expected 100, got ${m.first_attempt_success}`);
 }
 
+/* ------------------------------------------------------- capture adapters */
+
+/* Phase 1 contract: every red artifact maps to exactly one signal, and the
+ * board planner never files a second row for a signature it already owns. */
+function checkCaptureAdapters() {
+  const policy = lib.defaultPolicy({ mode: "auto" });
+  const signals = adapters.ciSignals([
+    {
+      id: 7,
+      name: "CI",
+      sha: "a".repeat(40),
+      url: "https://example/run/7",
+      verdict: "failed",
+      reason: "ran and failed: tests",
+      failedJobs: ["tests"],
+      fix: "gh run view 7 --log-failed",
+    },
+    {
+      id: 8,
+      name: "CI",
+      sha: "b".repeat(40),
+      verdict: "infra-block",
+      reason: "no runner was provisioned (0 steps, no runner_name) — NOT a test failure",
+      fix: "repair the payment method",
+    },
+    { id: 9, name: "CI", verdict: "green" },
+  ]);
+  if (signals.length !== 2) fail(`adapters: expected 2 signals from 3 runs, got ${signals.length}`);
+  const [product, infra] = signals.map((s) => lib.applyClassification(lib.normalizeSignal(s, { now: NOW }), policy));
+  if (product.class !== "product") fail(`adapters: a failed CI run must classify as product, got ${product.class}`);
+  if (infra.class !== "infra" || infra.route !== "ops") {
+    fail(`adapters: an infra-block run must be infra/ops, got ${infra.class}/${infra.route}`);
+  }
+  const marker = lib.boardMarker(product);
+  if (adapters.boardActionFor(product, []).action !== "add") fail("adapters: a new signature must add a row");
+  if (adapters.boardActionFor(product, [{ id: "F-1", section: "open", task: marker }]).action !== "link") {
+    fail("adapters: an existing marker must link, not add");
+  }
+  if (adapters.boardActionFor(product, [{ id: "F-2", section: "archive", task: marker }]).action !== "reopen") {
+    fail("adapters: an archived marker must reopen, not add");
+  }
+
+  const journeys = adapters
+    .nightlySignals({
+      failures: [
+        { flow: "checkout", phase: "e2e", reason: "AssertionError: expected 200 but got 500" },
+        { flow: "checkout", phase: "harness", reason: "missing tool: adb", side: "harness" },
+      ],
+    })
+    .map((s) => lib.applyClassification(lib.normalizeSignal(s, { now: NOW }), policy));
+  const rows = [{ id: "F-3", section: "open", task: "[nightly:flow=checkout] checkout e2e failed" }];
+  if (adapters.boardActionFor(journeys[0], rows).action !== "link") {
+    fail("adapters: a product nightly journey must link to the reconcile row");
+  }
+  if (adapters.boardActionFor(journeys[1], rows).action !== "add") {
+    fail("adapters: a harness-side nightly failure must get its own ops row");
+  }
+  if (journeys[1].class !== "infra") fail(`adapters: harness-side failure must be infra, got ${journeys[1].class}`);
+
+  if (lib.metrics([product], NOW).open !== 1) fail("metrics: open must count a queued item");
+  notes.push("adapters: CI/nightly capture + one-row board plan hold");
+}
+
 /* ------------------------------------------------------------ ledger peeking */
 
 function checkLedger(dir) {
@@ -390,6 +454,7 @@ function main(argv) {
   }
 
   checkRedaction();
+  checkCaptureAdapters();
   checkLedger(ledgerDir(root, flags));
 
   if (flags.json) {

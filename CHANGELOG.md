@@ -134,6 +134,17 @@
   policy safety floor, eight-fixture truth table, secret redaction,
   dedupe/reopen, state transitions, and budget rules offline. (F-050)
 
+- The feedback loop now captures the red signals automatically instead of waiting
+  for someone to file them: a failed landed CI run in `ship`, a red nightly cycle,
+  and UAT/gate failures all normalize into one ledger item, dedupe by signature,
+  and plan exactly one board row (`add` new, `link` known, `reopen` archived).
+  Harness-side breakage stays off the product board as its own ops row, while a
+  product nightly journey links to the row the nightly reconcile already owns.
+  `orient` prints a bounded feedback inbox line (open items, mode, oldest age) and
+  degrades to `unavailable` when the ledger or capture script is absent; the
+  `test:feedback` gate now also pins the CI/nightly adapters and the one-row board
+  plan. (F-050)
+
 ## 0.5.6 — 2026-11-25
 
 - Resuming or checkpointing a work unit now accepts lowercase and separator-variant

@@ -20,6 +20,8 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const lib = require("./qa/feedback-lib.js");
+const adapters = require("./qa/feedback-adapters.js");
+const triage = require("./qa/ci-triage.js");
 
 const BOOLEAN = new Set(["json", "start", "end", "help", "once", "open"]);
 const USAGE = `Usage: node scripts/feedback.js <command> [flags]
@@ -27,7 +29,9 @@ const USAGE = `Usage: node scripts/feedback.js <command> [flags]
   add --source ci|nightly|uat|gate|human --title "..." [--error "..."]
       [--test ...] [--repro ...] [--paths a,b] [--severity P1..P4]
       [--evidence-file <path>] [--sha ...] [--run ...] [--url ...]
-  ingest --report <file.json> [--source <source>]
+  ingest --report <file.json> [--source <source>] [--no-board]
+  ingest --source ci|uat [--run <id> | --sha <sha>] [--limit N]
+         [--runs-json <file>] [--jobs-json <file>] [--no-board]
   list [--state <state>] [--json]
   show <id> [--json]
   classify <id> [--json]
@@ -38,7 +42,7 @@ const USAGE = `Usage: node scripts/feedback.js <command> [flags]
   escalate <id> --reason "..."
   report [--since 14d] [--json]
   policy [--json]
-  watch [--once]                 (Phase 1 adapter)
+  watch [--once] [--interval 5m] [--max-polls N] [--source ci|uat] [--json]
 `;
 
 function parseArgs(argv) {
@@ -67,23 +71,135 @@ function git(root, args) {
   return r.status === 0 ? String(r.stdout || "").trim() : null;
 }
 
+/* The main checkout that owns the shared git dir: the board and the ledger both
+ * live there, never in a disposable feature worktree. */
+function mainCheckout(root) {
+  const common = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (common) {
+    const clean = common.replace(/[\\/]+$/, "");
+    return path.basename(clean) === ".git" ? path.dirname(clean) : clean;
+  }
+  return git(root, ["rev-parse", "--show-toplevel"]) || root;
+}
+
 /* One ledger for every worktree: resolve the shared git common dir, then the
  * main checkout that owns it. `--ledger` and AGENT_HARNESS_FEEDBACK_DIR are
  * test/operator overrides and never change classification or policy. */
 function ledgerDir(root, flags) {
   if (flags.ledger) return path.resolve(flags.ledger);
   if (process.env.AGENT_HARNESS_FEEDBACK_DIR) return path.resolve(process.env.AGENT_HARNESS_FEEDBACK_DIR);
-  const common = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  let base = root;
-  if (common) {
-    const clean = common.replace(/[\\/]+$/, "");
-    base = path.basename(clean) === ".git" ? path.dirname(clean) : clean;
-  } else {
-    const top = git(root, ["rev-parse", "--show-toplevel"]);
-    if (top) base = top;
-  }
-  return path.join(base, ".agents", "qa-runs", "feedback");
+  return path.join(mainCheckout(root), ".agents", "qa-runs", "feedback");
 }
+
+function tailText(text, lines = 3) {
+  return String(text || "").trim().split("\n").slice(-lines).join(" ");
+}
+
+function readJsonFile(file, label) {
+  try {
+    return JSON.parse(fs.readFileSync(path.resolve(String(file)), "utf8"));
+  } catch (e) {
+    throw new Error(`${label}: ${e.message}`);
+  }
+}
+
+/* Board rows for dedupe. The CLI is the canonical board writer (ADR 0001), so it
+ * runs from this harness copy against the MAIN checkout; an explicit --root
+ * pins the legacy file backend for tests and never reaches the shared service. */
+function boardRows(root) {
+  const script = path.join(__dirname, "backlog.js");
+  if (!fs.existsSync(script)) return { ok: false, rows: [], error: "scripts/backlog.js not found" };
+  const r = spawnSync(process.execPath, [script, "list", "--all", "--json", "--root", root], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 20000,
+  });
+  if (r.status !== 0) return { ok: false, rows: [], error: tailText(r.stderr) || `exit ${r.status}` };
+  try {
+    const doc = JSON.parse(r.stdout || "[]");
+    // `list --all --json` returns the board as sections; the planner wants one
+    // flat row list (id/section/task) exactly like nightly's reconcile snapshot.
+    if (Array.isArray(doc)) return { ok: true, rows: doc, error: null };
+    const rows = [];
+    for (const section of ["inprogress", "queued", "open", "frozen", "archive"]) {
+      for (const row of doc[section] || []) {
+        rows.push({ id: row.id, section, task: row.task || "", closed: row.closed || row.handoff || "" });
+      }
+    }
+    return { ok: true, rows, error: null };
+  } catch (e) {
+    return { ok: false, rows: [], error: `unreadable board: ${e.message}` };
+  }
+}
+
+/* Project one captured batch onto the board: one row per active signature. A
+ * board failure is reported, never allowed to mask the captured signal. */
+function applyBoard(results, ctx, flags) {
+  if (flags["no-board"]) return [];
+  const root = ctx.boardRoot;
+  const script = path.join(__dirname, "backlog.js");
+  const snapshot = boardRows(root);
+  if (!snapshot.ok) {
+    console.warn(`feedback: board unavailable (${snapshot.error}) — the ledger still holds the item(s)`);
+    return [];
+  }
+  const rows = snapshot.rows;
+  const applied = [];
+  for (const result of results) {
+    if (!result || !result.enabled || !result.item) continue;
+    const item = result.item;
+    const decision = adapters.boardActionFor(item, rows);
+    if (decision.action === "link" || decision.action === "none") {
+      applied.push({ ...decision, item: item.id });
+      continue;
+    }
+    const args =
+      decision.action === "add"
+        ? ["add", decision.task, "--p", decision.priority, "--evidence", decision.evidence]
+        : ["reopen", decision.id, "--reason", decision.reason, "--p", decision.priority || "P1"];
+    const r = spawnSync(process.execPath, [script, ...args, "--root", root], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30000,
+    });
+    const ok = r.status === 0;
+    const out = ok ? tailText(r.stdout, 2) : tailText(r.stderr, 3) || `exit ${r.status}`;
+    applied.push({ ...decision, ok, out, item: item.id });
+    if (ok && decision.action === "add") {
+      const id = (/(F-\d+)/.exec(out) || [])[1];
+      if (id) rows.push({ id, section: "open", task: decision.task });
+    }
+  }
+  return applied;
+}
+
+/* Live run reader for the CI/UAT adapters. The offline seams (--runs-json /
+ * --jobs-json) use the exact `ci-triage` row shape, so the mapping is tested
+ * without a network or a GitHub account. */
+function loadCiRows(flags, root) {
+  if (flags["runs-json"]) {
+    const doc = readJsonFile(flags["runs-json"], "ingest --runs-json");
+    const runs = Array.isArray(doc) ? doc : doc.runs || [];
+    const jobs = flags["jobs-json"] ? readJsonFile(flags["jobs-json"], "ingest --jobs-json") : {};
+    let rows = triage.triageRuns(runs, jobs);
+    if (flags.sha) rows = rows.filter((r) => String(r.sha || "").startsWith(String(flags.sha)));
+    return rows;
+  }
+  if (flags.run) {
+    const got = triage.fetchJobs(root, flags.run);
+    if (!got.ok) throw new Error(`ingest: could not read run ${flags.run} (${got.error})`);
+    const run = { databaseId: flags.run, name: flags.workflow || null, conclusion: "failure" };
+    return [triage.triageRun(run, got.jobs)];
+  }
+  const got = triage.fetchRuns(root, Number(flags.limit) || 10, flags.workflow);
+  if (!got.ok) throw new Error(`ingest: could not read CI runs (${got.error})`);
+  let rows = triage.triageRuns(got.runs, {});
+  if (flags.sha) rows = rows.filter((r) => String(r.sha || "").startsWith(String(flags.sha)));
+  return rows;
+}
+
 
 function loadPolicy(root) {
   const file = path.join(root, ".agents", "feedback.json");
@@ -255,19 +371,45 @@ function cmdAdd(flags, ctx) {
 }
 
 function cmdIngest(flags, ctx) {
-  if (flags.run || flags.sha) throw new Error("ingest: live gh ingestion arrives in Phase 1; use --report <file> offline");
-  const file = path.resolve(need(flags, "report", "ingest"));
-  const doc = JSON.parse(fs.readFileSync(file, "utf8"));
-  const list = Array.isArray(doc) ? doc : Array.isArray(doc.signals) ? doc.signals : [doc];
-  const results = list.map((signal) => {
-    const merged = { source: flags.source || signal.source, ...signal };
-    return capture(merged, ctx);
-  });
-  if (flags.json) console.log(JSON.stringify({ schema: "feedback-cli/1", command: "ingest", results }, null, 2));
+  const source = flags.source ? String(flags.source) : null;
+  let signals = [];
+  if (flags.report) {
+    const doc = readJsonFile(flags.report, "ingest --report");
+    if (doc && doc.schema === "nightly/1") {
+      // One adapter, one shape: a nightly report is a capture artifact, not a
+      // hand-written signal list. Product journeys link to the reconcile row;
+      // harness-side failures become infra items and get the ops row.
+      signals = adapters.nightlySignals(doc, {
+        evidencePointer: path.relative(ctx.root, path.resolve(String(flags.report))) || null,
+      });
+    } else {
+      const list = Array.isArray(doc) ? doc : Array.isArray(doc.signals) ? doc.signals : [doc];
+      signals = list.map((signal) => ({ source: source || signal.source, ...signal }));
+    }
+  } else if (flags.run || flags.sha || flags["runs-json"] || source === "ci" || source === "uat") {
+    const rows = loadCiRows(flags, ctx.root);
+    signals = adapters.ciSignals(rows, { source: source === "uat" ? "uat" : "ci", sha: flags.sha });
+    if (!signals.length) {
+      if (flags.json) console.log(JSON.stringify({ schema: "feedback-cli/1", command: "ingest", results: [], board: [] }, null, 2));
+      else console.log(`feedback ingest: no failing runs to capture${flags.sha ? ` for ${flags.sha}` : ""} (green or incomplete)`);
+      return 0;
+    }
+  } else {
+    throw new Error("ingest: pass --report <file>, --run <id>, --sha <sha>, or --runs-json <file>");
+  }
+  const results = signals.map((signal) => capture(signal, ctx));
+  const board = applyBoard(results, ctx, flags);
+  if (flags.json) console.log(JSON.stringify({ schema: "feedback-cli/1", command: "ingest", results, board }, null, 2));
   else {
     for (const r of results) {
       if (!r.enabled) console.log("feedback: loop disabled — nothing captured");
       else printItem(r.item);
+    }
+    for (const b of board) {
+      if (b.action === "link") console.log(`  board: ${b.item} -> ${b.id} (already tracked)`);
+      else if (b.action === "add" || b.action === "reopen") {
+        console.log(`  board: ${b.action} ${b.id || ""} ${b.ok ? "ok" : "FAILED"}${b.out ? ` — ${b.out}` : ""}`.replace(/\s+$/, ""));
+      }
     }
   }
   return results.some((r) => r.enabled && ["queued", "escalated", "quarantined"].includes(r.item.state)) ? 1 : 0;
@@ -478,6 +620,37 @@ function cmdReport(flags, ctx) {
   return 0;
 }
 
+/* Bounded poller: `--once` captures the current failing runs and exits; the
+ * loop form re-reads at most `--max-polls` times with a fixed interval, so a
+ * watch never becomes an unbounded background agent. */
+function parseInterval(value) {
+  const m = /^(\d+)([smh])$/.exec(String(value || "5m"));
+  if (!m) throw new Error(`watch: invalid --interval "${value}" (use 30s, 5m, 1h)`);
+  return Number(m[1]) * ({ s: 1000, m: 60000, h: 3600000 }[m[2]]);
+}
+
+function cmdWatch(flags, ctx) {
+  const interval = parseInterval(flags.interval || "5m");
+  const polls = flags.once ? 1 : Math.max(1, Number(flags["max-polls"]) || 12);
+  const source = flags.source === "uat" ? "uat" : "ci";
+  let needsWork = false;
+  for (let i = 0; i < polls; i++) {
+    const rows = loadCiRows(flags, ctx.root);
+    const signals = adapters.ciSignals(rows, { source });
+    const results = signals.map((signal) => capture(signal, ctx));
+    const board = applyBoard(results, ctx, flags);
+    if (results.some((r) => r.enabled && ["queued", "escalated", "quarantined"].includes(r.item.state))) needsWork = true;
+    if (flags.json) console.log(JSON.stringify({ schema: "feedback-cli/1", command: "watch", poll: i + 1, results, board }, null, 2));
+    else {
+      console.log(`feedback watch ${i + 1}/${polls}: ${results.length} failing run(s)`);
+      for (const r of results) if (r.enabled) printItem(r.item);
+      for (const b of board) if (b.action !== "link" && b.action !== "none") console.log(`  board: ${b.action} ${b.id || ""} ${b.ok ? "ok" : "FAILED"}`);
+    }
+    if (i + 1 < polls) spawnSync(process.execPath, ["-e", `setTimeout(()=>{},${interval})`], { timeout: interval + 5000 });
+  }
+  return needsWork ? 1 : 0;
+}
+
 function main(argv) {
   const parsed = parseArgs(argv);
   const flags = parsed.flags;
@@ -487,13 +660,21 @@ function main(argv) {
     console.log(USAGE);
     return flags.help ? 0 : 2;
   }
-  if (command === "watch") {
-    console.error("feedback watch: the bounded gh/UAT poller arrives in Phase 1; Phase 0 works offline");
-    return 2;
+  if (command === "watch" && flags.help) {
+    console.log(USAGE);
+    return 0;
   }
   const root = projectRoot(flags);
-  const ctx = { root, dir: ledgerDir(root, flags), policy: loadPolicy(root), now: nowIso() };
+  const ctx = {
+    root,
+    dir: ledgerDir(root, flags),
+    boardRoot: flags["board-root"] ? path.resolve(flags["board-root"]) : mainCheckout(root),
+    policy: loadPolicy(root),
+    now: nowIso(),
+  };
   switch (command) {
+    case "watch":
+      return cmdWatch(flags, ctx);
     case "add":
       return cmdAdd(flags, ctx);
     case "ingest":

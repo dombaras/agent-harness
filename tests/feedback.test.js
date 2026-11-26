@@ -362,8 +362,174 @@ test("CLI: report counts observations and cost", () => {
     const report = parseCli(runCli(ctx, ["report", "--json"]));
     assert.equal(report.total, 1);
     assert.equal(report.resolved, 1);
+    assert.equal(report.open, 0);
     assert.equal(report.attempts, 1);
     assert.equal(report.cost_usd, 1.5);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+/* ------------------------------------------------- Phase 1 capture plane */
+
+const ADAPTERS = require("../templates/scripts/qa/feedback-adapters.js");
+
+function boardProject() {
+  const ctx = tempProject();
+  const board = [
+    "# BACKLOG — canonical task list",
+    "",
+    "## Open",
+    "",
+    "| ID | P | Epic | Task | Evidence |",
+    "|---|---|---|---|---|",
+    "| F-099 | P3 | ? | pre-existing | fixture |",
+    "",
+    "## Archive (shipped · done)",
+    "",
+    "| ID | P | Epic | Task | Evidence | Closed |",
+    "|---|---|---|---|---|---|",
+    "",
+  ].join("\n");
+  fs.writeFileSync(path.join(ctx.root, "BACKLOG.md"), board, "utf8");
+  ctx.board = path.join(ctx.root, "BACKLOG.md");
+  return ctx;
+}
+
+function writeFixture(ctx, name, doc) {
+  const file = path.join(ctx.root, name);
+  fs.writeFileSync(file, JSON.stringify(doc, null, 2));
+  return file;
+}
+
+test("capture adapters map red artifacts and keep one board row per signature", () => {
+  const policy = autoPolicy();
+  const signals = ADAPTERS.ciSignals([
+    { id: 7, name: "CI", sha: "a".repeat(40), url: "https://example/run/7", verdict: "failed", reason: "ran and failed: tests", failedJobs: ["tests"], fix: "gh run view 7 --log-failed" },
+    { id: 8, name: "CI", sha: "b".repeat(40), verdict: "infra-block", reason: "no runner was provisioned (0 steps, no runner_name) — NOT a test failure", fix: "repair the payment method" },
+    { id: 9, name: "CI", verdict: "green" },
+  ]);
+  assert.equal(signals.length, 2, "green runs are not signals");
+  const [product, infra] = signals.map((s) => LIB.applyClassification(LIB.normalizeSignal(s, { now: NOW }), policy));
+  assert.equal(product.class, "product");
+  assert.equal(infra.class, "infra");
+  assert.equal(infra.route, "ops");
+
+  const marker = LIB.boardMarker(product);
+  assert.equal(ADAPTERS.boardActionFor(product, []).action, "add");
+  assert.equal(ADAPTERS.boardActionFor(product, [{ id: "F-900", section: "open", task: marker }]).action, "link");
+  assert.equal(ADAPTERS.boardActionFor(product, [{ id: "F-901", section: "archive", task: marker }]).action, "reopen");
+
+  const journeys = ADAPTERS.nightlySignals({
+    failures: [
+      { flow: "checkout", phase: "e2e", reason: "AssertionError: expected 200 but got 500" },
+      { flow: "checkout", phase: "harness", reason: "missing tool: adb", side: "harness" },
+    ],
+  }).map((s) => LIB.applyClassification(LIB.normalizeSignal(s, { now: NOW }), policy));
+  const rows = [{ id: "F-902", section: "open", task: "[nightly:flow=checkout] checkout e2e failed" }];
+  assert.equal(ADAPTERS.boardActionFor(journeys[0], rows).action, "link", "product journey links to the reconcile row");
+  assert.equal(ADAPTERS.boardActionFor(journeys[1], rows).action, "add", "harness failure gets an ops row");
+  assert.equal(journeys[1].class, "infra");
+});
+
+test("wiring: ship, nightly and orient surface the Phase 1 capture plane", () => {
+  const ship = fs.readFileSync(path.join(ROOT, "templates", "scripts", "ship.js"), "utf8");
+  assert.match(ship, /ingestFeedbackOnRed\(mainRoot, sha\)/);
+  assert.match(ship, /process\.exitCode = code;\n    return;/);
+  const nightly = fs.readFileSync(path.join(ROOT, "templates", "scripts", "nightly.js"), "utf8");
+  assert.match(nightly, /emitFeedback\(root, path\.join\(reportsDir\(root\), runStamp, "report\.json"\)\)/);
+  const orient = fs.readFileSync(path.join(ROOT, "templates", "scripts", "orient.js"), "utf8");
+  assert.match(orient, /feedback: feedbackState\(root\)/);
+});
+
+test("live ingest reuses the ci-triage transport exports", () => {
+  const triage = require("../templates/scripts/qa/ci-triage.js");
+  assert.equal(typeof triage.fetchRuns, "function");
+  assert.equal(typeof triage.fetchJobs, "function");
+});
+
+test("CLI: a red CI run captures once and files exactly one board row", () => {
+  const ctx = boardProject();
+  try {
+    const runs = writeFixture(ctx, "runs.json", [
+      { databaseId: 101, name: "CI", status: "completed", conclusion: "failure", headSha: "a".repeat(40), url: "https://example/run/101" },
+    ]);
+    const args = ["ingest", "--source", "ci", "--runs-json", runs, "--board-root", ctx.root, "--json"];
+    const first = parseCli(runCli(ctx, args));
+    assert.equal(first.results.length, 1);
+    const item = first.results[0].item;
+    assert.equal(item.class, "product");
+    assert.equal(first.board[0].action, "add");
+    const rows = (text) => (text.match(new RegExp(`\\[feedback:ci:${item.sig8}\\]`, "g")) || []).length;
+    assert.equal(rows(fs.readFileSync(ctx.board, "utf8")), 1);
+    assert.equal(parseCli(runCli(ctx, ["report", "--json"])).open, 1);
+
+    const second = parseCli(runCli(ctx, args));
+    assert.equal(second.results[0].duplicate, true);
+    assert.equal(second.results[0].item.id, item.id);
+    assert.equal(second.results[0].item.occurrences, 2);
+    assert.equal(second.board[0].action, "link");
+    assert.equal(rows(fs.readFileSync(ctx.board, "utf8")), 1, "re-observation never adds a second row");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("CLI: an infra-block signal becomes an ops row, never a product row", () => {
+  const ctx = boardProject();
+  try {
+    const report = writeFixture(ctx, "infra.json", {
+      signals: [
+        {
+          source: "ci",
+          title: "CI infra-block @ ddddddd",
+          error: "no runner was provisioned (0 steps, no runner_name) — NOT a test failure",
+          verdict: "infra-block",
+          sha: "d".repeat(40),
+          run: "303",
+        },
+      ],
+    });
+    const doc = parseCli(runCli(ctx, ["ingest", "--report", report, "--board-root", ctx.root, "--json"]));
+    const item = doc.results[0].item;
+    assert.equal(item.class, "infra");
+    assert.equal(item.route, "ops");
+    assert.equal(item.state, "escalated");
+    const board = fs.readFileSync(ctx.board, "utf8");
+    assert.match(board, /\(infra\/low\)/);
+    assert.doesNotMatch(board, /\(product\//);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("CLI: a nightly report links product journeys and files harness failures as ops", () => {
+  const ctx = boardProject();
+  try {
+    fs.writeFileSync(
+      ctx.board,
+      fs
+        .readFileSync(ctx.board, "utf8")
+        .replace("| F-099 | P3 | ? | pre-existing | fixture |", "| F-099 | P3 | ? | pre-existing | fixture |\n| F-100 | P2 | ? | [nightly:flow=checkout] checkout e2e failed | nightly |"),
+      "utf8"
+    );
+    const report = writeFixture(ctx, "nightly-report.json", {
+      schema: "nightly/1",
+      failures: [
+        { flow: "checkout", phase: "e2e", reason: "AssertionError: expected 200 but got 500" },
+        { flow: "checkout", phase: "harness", reason: "missing tool: adb", side: "harness" },
+      ],
+    });
+    const doc = parseCli(runCli(ctx, ["ingest", "--report", report, "--board-root", ctx.root, "--json"]));
+    assert.equal(doc.results.length, 2);
+    const [product, harness] = doc.results.map((r) => r.item);
+    assert.equal(product.class, "product");
+    assert.equal(harness.class, "infra");
+    assert.equal(doc.board.find((b) => b.item === product.id).action, "link");
+    assert.equal(doc.board.find((b) => b.item === harness.id).action, "add");
+    const board = fs.readFileSync(ctx.board, "utf8");
+    assert.equal((board.match(/\[nightly:flow=checkout\]/g) || []).length, 1, "no duplicate journey row");
+    assert.match(board, new RegExp(`\\[feedback:nightly:${harness.sig8}\\]`));
   } finally {
     ctx.cleanup();
   }

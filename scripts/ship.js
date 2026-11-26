@@ -540,11 +540,70 @@ function main() {
   // strand main's board behind (that is how it silently drifts stale).
   convergeMainCheckout(root, base, mainRoot);
   if (code !== 0) {
+    // Feedback loop (F-050 Phase 1): a red landed CI is a signal, not a dead end.
+    // Capture exactly one item (best effort, bounded) and print the next command;
+    // the original exit code is preserved so ingestion can never mask the failure.
+    const itemId = ingestFeedbackOnRed(mainRoot, sha);
+    if (itemId) {
+      console.log(
+        `\n[ship] CI red on ${sha.slice(0, 7)} — filed feedback ${itemId}\n` +
+          `      inspect: npm run feedback -- show ${itemId}\n` +
+          `      triage:  node scripts/qa/ci-triage.js --limit 10`
+      );
+    }
     process.exitCode = code;
     return;
   }
   console.log("\n[ship] landed + CI green.");
   pruneShippedWorktree(mainRoot, branch, root);
+}
+
+/* Capture a red landed CI run into the feedback ledger from the MAIN checkout
+ * (the ledger + board are shared machine state, never the disposable worktree).
+ * Best effort and bounded: a missing runner, an expired token, or a gh rate limit
+ * downgrades to a manual `add` signal, and any failure returns null instead of
+ * changing ship's exit code. */
+function ingestFeedbackOnRed(mainRoot, sha) {
+  const script = path.join(mainRoot, "scripts", "feedback.js");
+  if (!fs.existsSync(script)) return null;
+  const run = (args) =>
+    spawnSync(process.execPath, [script, ...args], {
+      cwd: mainRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 45000,
+    });
+  const tail = (text) => String(text || "").trim().split("\n").slice(-2).join(" ");
+  try {
+    const got = run(["ingest", "--source", "ci", "--sha", sha, "--limit", "10", "--json"]);
+    if (got.status === 0 || got.status === 1) {
+      const doc = JSON.parse(got.stdout || "{}");
+      const item = (doc.results || []).map((r) => r && r.item).find(Boolean);
+      if (item) return item.id;
+    }
+  } catch {
+    /* fall through to the manual signal */
+  }
+  try {
+    const got = run([
+      "add",
+      "--source",
+      "ci",
+      "--sha",
+      sha,
+      "--title",
+      `CI red on landed SHA ${String(sha).slice(0, 7)}`,
+      "--error",
+      "landed CI did not go green (run detail unavailable via gh)",
+      "--evidence",
+      `gh run list --commit ${sha}`,
+      "--json",
+    ]);
+    const doc = JSON.parse(got.stdout || "{}");
+    return doc.item ? doc.item.id : null;
+  } catch {
+    return null;
+  }
 }
 
 /* Remove the just-shipped feature's worktree now that its branch is landed and

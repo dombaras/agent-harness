@@ -663,6 +663,7 @@ module.exports = {
   STATES,
   TRANSITIONS,
   DEFAULT_POLICY,
+  DEFAULT_ENVIRONMENT,
   sha256,
   shortHash,
   stripControl,

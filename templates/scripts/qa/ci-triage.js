@@ -343,4 +343,6 @@ module.exports = {
   scheduleMinutes,
   preflightWorkflow,
   parseArgs,
+  fetchRuns,
+  fetchJobs,
 };
