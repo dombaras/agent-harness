@@ -6,6 +6,8 @@
   "max_attempts_per_day": 4,
   "max_active_attempts": 1,
   "cooldown_min": 30,
+  "flake_rerun_limit": 1,
+  "quarantine_days": 14,
   "recurrence_window": {
     "default_days": 14,
     "ci": "landed-sha",

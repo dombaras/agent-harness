@@ -1845,8 +1845,7 @@ function printUsage() {
       `                     # symlinks templates/ into the repo root; restart opencode\n` +
       `  agent-harness explain <gate>            # what a gate enforces + how to satisfy/waive it\n` +
       `  agent-harness run [--target <dir>] [--feature <id>] [--prompt <text>]\n` +
-      `                     [--max-phases <n>] [--max-context-resets <n>]\n` +
-      `                     [--opencode <path>] [--dry-run]\n` +
+      `                     [--max-phases <n>] [--max-context-resets <n>] [--opencode <path>] [--dry-run] [--feedback]\n` +
       `  agent-harness --version | -v\n` +
       `  agent-harness --help | -h\n`
   );
@@ -3039,6 +3038,74 @@ function maybePrewarm(target) {
  * phase cap, an empty queue, or a failed phase that did not land. The decision
  * core is pure (`templates/scripts/qa/run-loop.js`) and unit-tested; this
  * function owns only IO + the subprocess. */
+/* `run --feedback`: work exactly one eligible feedback item in bounded phases.
+ * The item is the spec; the runner seeds its diagnosis scaffold, verifies the
+ * same signal, and stops at the high-risk human-approval boundary. */
+function runFeedbackLoop(target, flags, opts) {
+  const { loop, opencode, maxPhases, dryRun } = opts;
+  const script = path.join(target, "scripts", "feedback.js");
+  if (!fs.existsSync(script)) {
+    console.error(`run --feedback: ${script} not found — deploy the feedback CLI first.`);
+    process.exitCode = 1;
+    return;
+  }
+  const call = (args) =>
+    spawnSync(process.execPath, [script, ...args, "--root", target], {
+      cwd: target,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30000,
+    });
+  const asJson = (args) => {
+    const r = call([...args, "--json"]);
+    if (r.status !== 0 && r.status !== 1) return null;
+    try {
+      return JSON.parse(r.stdout || "null");
+    } catch (_) {
+      return null;
+    }
+  };
+
+  console.log(`agent-harness run --feedback — target ${target} (max ${maxPhases} phase(s))`);
+  const first = asJson(["next"]);
+  if (!first || !first.eligible || !first.item) {
+    console.log("run --feedback: done — the inbox has no eligible item.");
+    return;
+  }
+  const itemId = first.item.id;
+  const prepared = call(["prepare", itemId]);
+  if (prepared.status !== 0) {
+    console.error(`run --feedback: could not seed the diagnosis scaffold: ${(prepared.stderr || "").trim() || `exit ${prepared.status}`}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`  item ${itemId}: ${first.item.severity} ${first.item.class}/${first.item.risk} — scaffold seeded`);
+
+  let item = first.item;
+  let phasesRun = 0;
+  let lastExit = null;
+  while (true) {
+    const decision = loop.decideFeedbackRun({ item, phasesRun, maxPhases, lastExit });
+    if (decision.action !== "resume") {
+      console.log(`\nrun --feedback: ${decision.action} — ${decision.reason}`);
+      if (decision.action === "stop" && !dryRun) process.exitCode = 1;
+      break;
+    }
+    const phase = phasesRun + 1;
+    console.log(`\n── feedback phase ${phase}/${maxPhases}: ${decision.reason} ──`);
+    if (dryRun) {
+      console.log(`  [dry-run] would run: ${opencode || "opencode"} run <prompt>`);
+      console.log(`  [dry-run] prompt: ${decision.prompt}`);
+    } else {
+      const r = spawnSync(opencode, ["run", decision.prompt], { cwd: target, stdio: "inherit" });
+      lastExit = r.status == null ? 1 : r.status;
+    }
+    const shown = asJson(["show", itemId]);
+    if (shown && shown.item) item = shown.item;
+    phasesRun = phase;
+  }
+}
+
 function runCommand(target, flags) {
   const loop = require(path.join(TEMPLATES_DIR, "scripts", "qa", "run-loop.js"));
   // F-067: the runner is an observed phase boundary too — it writes the fallback
@@ -3105,6 +3172,11 @@ function runCommand(target, flags) {
       return undefined;
     }
   };
+
+  if (flags["--feedback"]) {
+    runFeedbackLoop(target, flags, { loop, opencode, maxPhases, dryRun });
+    return;
+  }
 
   console.log(`agent-harness run — target ${target} (max ${maxPhases} phase(s), max ${maxContextResets} context reset(s))`);
   let feature = flags["--feature"] || null;
@@ -3240,7 +3312,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (valueFlags.has(a)) flags[a] = argv[++i];
-    else if (a === "--dry-run" || a === "--yes" || a === "-y" || a === "--force") flags[a] = true;
+    else if (a === "--dry-run" || a === "--yes" || a === "-y" || a === "--force" || a === "--feedback") flags[a] = true;
     else if (a === "--remove") flags[a] = true;
     else if (a === "--no-commit" || a === "--no-push" || a === "--allow-branch" || a === "--accept-harness" || a === "--commit" || a === "--push" || a === "--allow-dirty-templates")
       flags[a] = true;

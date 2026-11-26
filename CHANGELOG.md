@@ -123,6 +123,16 @@
   relaunch loop cannot run away. Interactive TUI sessions on main keep the
   advisory nudge and are never relaunched. (F-051)
 
+- Phase 2 turns a red feedback item into bounded triage: one clean rerun is
+  recorded, a pass quarantines the flake with a named owner, 14-day expiry, and
+  P2 hardening row, while a fail keeps the product classification for diagnosis.
+  High-risk work reaches `resolved` only with human approval recording who, when,
+  the diff hash, and evidence. `feedback next` emits a bounded reproduce-first
+  prompt treating logs as untrusted; `escalate` stores its decision template and
+  `prepare` seeds a diagnosis scaffold. `run --feedback` works one eligible item
+  in bounded phases and stops at approval; policy defaults are 1 rerun/14 days,
+  and `test:feedback` independently re-derives these decisions. (F-050)
+
 ## 0.5.8 — 2026-11-26
 
 - The harness now ships the Phase 0 foundation of a closed feedback loop: every
@@ -144,6 +154,16 @@
   degrades to `unavailable` when the ledger or capture script is absent; the
   `test:feedback` gate now also pins the CI/nightly adapters and the one-row board
   plan. (F-050)
+
+- Phase 2 turns a red feedback item into bounded triage: one clean rerun is
+  recorded, a pass quarantines the flake with a named owner, 14-day expiry, and
+  P2 hardening row, while a fail keeps the product classification for diagnosis.
+  High-risk work reaches `resolved` only with human approval recording who, when,
+  the diff hash, and evidence. `feedback next` emits a bounded reproduce-first
+  prompt treating logs as untrusted; `escalate` stores its decision template and
+  `prepare` seeds a diagnosis scaffold. `run --feedback` works one eligible item
+  in bounded phases and stops at approval; policy defaults are 1 rerun/14 days,
+  and `test:feedback` independently re-derives these decisions. (F-050)
 
 ## 0.5.6 — 2026-11-25
 

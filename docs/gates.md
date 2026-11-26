@@ -84,9 +84,12 @@ auto-fix, and auto mode requires a non-empty high-risk list. It replays the eigh
 `feedback-fixtures.json` signals through the deterministic classifier, route
 table, and frozen signature/marker drift guards, then checks secret redaction,
 dedupe/reopen, the state machine, budgets, metrics, and the ledger shape when one
-exists. A missing policy or ledger is a warning, not a failure. **Satisfy:** keep
-the policy within budget and the fixture truth table correct. **Waive:** none —
-the fixtures are the contract.
+exists. It also re-derives Phase 2 triage decisions: rerun-once flake quarantine
+(owner, expiry, and hardening row), the high-risk approval artifact, the bounded
+reproduce-first prompt, escalation template, diagnosis scaffold, and the
+`run --feedback` stop boundary. A missing policy or ledger is a warning, not a
+failure. **Satisfy:** keep the policy within budget and the fixture truth table
+correct. **Waive:** none — the fixtures are the contract.
 
 ## `test:concurrency` — cross-session working-tree guard
 `node scripts/qa/check-concurrency.js`

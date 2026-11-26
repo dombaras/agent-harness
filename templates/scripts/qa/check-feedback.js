@@ -25,6 +25,7 @@ const { spawnSync } = require("child_process");
 
 const lib = require("./feedback-lib.js");
 const adapters = require("./feedback-adapters.js");
+const loop = require("./run-loop.js");
 
 const FIXTURES = path.join(__dirname, "feedback-fixtures.json");
 const NOW = "2026-11-25T12:00:00.000Z";
@@ -388,6 +389,76 @@ function checkCaptureAdapters() {
   notes.push("adapters: CI/nightly capture + one-row board plan hold");
 }
 
+/* ---------------------------------------------------- Phase 2 triage + assist */
+
+/* Phase 2 contract: one clean rerun can quarantine a flake with an owner and an
+ * expiry; infra/security are never rerun; high-risk work cannot resolve without
+ * an approval artifact; the attempt prompt is bounded and deterministic; and
+ * the runner stops at the approval boundary instead of landing. */
+function checkTriageAssist(doc) {
+  const policy = lib.defaultPolicy({ mode: "auto" });
+  const base = doc && Array.isArray(doc.fixtures) ? doc.fixtures.find((f) => f.id === "ci-failed") : null;
+  if (!base) {
+    fail("triage: the ci-failed fixture is required");
+    return;
+  }
+  const product = lib.applyClassification(lib.normalizeSignal(base.signal, { now: NOW }), policy);
+  const rerun = lib.rerunDecision(product, policy);
+  if (!rerun.allowed || rerun.rule !== "ok") fail(`triage: a fresh product item must allow one rerun (rule=${rerun.rule})`);
+
+  const flake = lib.rerunRecord(product, "pass", { at: NOW, by: "gate", evidence: "clean rerun" });
+  if (flake.class !== "flake" || flake.route !== "quarantine" || flake.state !== "quarantined") {
+    fail(`triage: a clean rerun must classify flake/quarantine/quarantined, got ${flake.class}/${flake.route}/${flake.state}`);
+  }
+  const plan = lib.quarantinePlan(flake, policy, { owner: "qa-runner", at: NOW });
+  if (!plan.owner || !plan.expires_at || Date.parse(plan.expires_at) <= Date.parse(NOW)) {
+    fail("triage: quarantine must carry an owner and a future expiry");
+  }
+  if (!plan.marker.includes("hardening")) fail("triage: quarantine must plan a distinct hardening row");
+
+  const again = lib.rerunDecision({ ...flake, class: "product", route: "assist", state: "queued" }, policy);
+  if (again.allowed || again.rule !== "rerun-budget") fail(`triage: a second clean rerun must be refused (rule=${again.rule})`);
+  const infra = lib.applyClassification(
+    lib.normalizeSignal({ source: "ci", verdict: "infra-block", title: "no runner", error: "no runner was provisioned" }, { now: NOW }),
+    policy
+  );
+  if (lib.rerunDecision(infra, policy).rule !== "class") fail("triage: infra failures must never be rerun");
+  const security = lib.applyClassification(
+    lib.normalizeSignal({ source: "gate", title: "CVE-2026-0001", error: "vulnerable dependency" }, { now: NOW }),
+    policy
+  );
+  if (lib.rerunDecision(security, policy).rule !== "class") fail("triage: security findings must never be rerun");
+
+  const promptA = lib.triagePrompt(product, policy, { stats: { bySignature: 0 } });
+  const promptB = lib.triagePrompt(product, policy, { stats: { bySignature: 0 } });
+  if (promptA !== promptB) fail("triage: the attempt prompt must be deterministic");
+  for (const needle of ["Reproduce first", "untrusted", "Evidence", "Stop condition"]) {
+    if (!promptA.includes(needle)) fail(`triage: the attempt prompt is missing "${needle}"`);
+  }
+
+  const high = { ...product, risk: "high", state: "verifying" };
+  if (lib.approvalSatisfied(high)) fail("triage: a high-risk item must not be approved implicitly");
+  const approval = lib.approvalRecord(high, { by: "human", diff: "diff --git a/auth/x b/auth/x", at: NOW });
+  if (!lib.approvalSatisfied({ ...high, approval })) fail("triage: a recorded approval must satisfy the gate");
+
+  const escalation = lib.escalationTemplate(product, policy);
+  if (!escalation.includes("Decision needed")) fail("triage: the escalation template must name the decision needed");
+  const scaffold = lib.diagnosisScaffold(product);
+  for (const needle of ["Candidate A", "Candidate B", "Falsification", "Outcome oracle", "Guard"]) {
+    if (!scaffold.includes(needle)) fail(`triage: the diagnosis scaffold is missing "${needle}"`);
+  }
+
+  const resume = loop.decideFeedbackRun({ item: { ...product, state: "queued" }, phasesRun: 0, maxPhases: 4 });
+  if (resume.action !== "resume" || !resume.prompt.includes(product.id)) fail("triage: the runner must resume a queued item with its prompt");
+  const boundary = loop.decideFeedbackRun({ item: high, phasesRun: 1, maxPhases: 4 });
+  if (boundary.action !== "stop" || !/approval/i.test(boundary.reason)) {
+    fail(`triage: the runner must stop at the high-risk approval boundary (action=${boundary.action})`);
+  }
+  const done = loop.decideFeedbackRun({ item: { ...product, state: "resolved" }, phasesRun: 1, maxPhases: 4 });
+  if (done.action !== "done") fail("triage: a resolved item must end the runner");
+  notes.push("triage: rerun/quarantine, approval gate, bounded prompt, escalation + runner boundary hold");
+}
+
 /* ------------------------------------------------------------ ledger peeking */
 
 function checkLedger(dir) {
@@ -455,6 +526,7 @@ function main(argv) {
 
   checkRedaction();
   checkCaptureAdapters();
+  checkTriageAssist(fixtures);
   checkLedger(ledgerDir(root, flags));
 
   if (flags.json) {
