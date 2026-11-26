@@ -13,6 +13,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 
 const REPO = path.join(__dirname, "..");
@@ -200,11 +201,21 @@ test("the plugin is registered for the TUI loader in both configs", () => {
       `${rel} loads the context-resume plugin directory`
     );
   }
-  const deployed = path.join(REPO, ".opencode", "plugins", "context-resume");
   for (const rel of ["index.ts", "tui.tsx", "resume-plan.mjs"]) {
+    // Read the COMMITTED copy, not the working tree: a locally deployed but
+    // uncommitted file must not satisfy the repo contract (b513264 shipped
+    // template copies with no deployed copies and only CI's clean checkout
+    // noticed).
+    const relPath = `.opencode/plugins/context-resume/${rel}`;
+    let committed;
+    try {
+      committed = execFileSync("git", ["show", `:${relPath}`], { cwd: REPO, encoding: "utf8" });
+    } catch {
+      assert.fail(`${relPath} is not committed — a locally deployed copy is not enough`);
+    }
     assert.strictEqual(
-      fs.readFileSync(path.join(deployed, rel), "utf8"),
-      fs.readFileSync(path.join(PLUGIN_DIR, rel), "utf8"),
+      committed.replace(/\r\n/g, "\n"),
+      fs.readFileSync(path.join(PLUGIN_DIR, rel), "utf8").replace(/\r\n/g, "\n"),
       `${rel} is the deployed template copy`
     );
   }

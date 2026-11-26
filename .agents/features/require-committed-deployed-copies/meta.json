@@ -1,0 +1,8 @@
+{
+  "id": "F-053",
+  "kind": "fix",
+  "risk": "low",
+  "requiresDiagnosis": true,
+  "createdAt": "2026-11-26T21:12:15.858Z",
+  "symptom": "ci-red-clean-checkout"
+}

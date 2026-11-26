@@ -11,6 +11,10 @@
   never relaunches after a failed/interrupted run, and leaves main checkouts on
   the advisory nudge. (F-052)
 
+- The context-resume source-contract test now reads the deployed plugin copies
+  from git instead of the working tree, so a locally deployed but uncommitted
+  copy can no longer mask a missing commit — the gap that turned b513264's CI red.
+
 - A long feature run no longer stalls at the context ceiling waiting for a manual
   resume: when the guard records that a session in a feature worktree crossed its
   context limit, `agent-harness run` now treats that phase exit as a resumable
