@@ -48,7 +48,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | .agents/handoffs/F-050.md (worktree: ../.worktrees/agent-harness/f-050; branch: f-050) |
-| F-051 | ? | Auto clear-resume when a feature session reaches its context limit: detect the request-context ceiling, write the deterministic checkpoint, start a fresh bounded context seeded from that checkpoint, and continue the feature without a manual /resume. | .agents/handoffs/F-051.md (worktree: ../.worktrees/agent-harness/f-051; branch: f-051) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -133,6 +132,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-048 | ? | freshness applier must re-evaluate a live session after a bounded window so a mid-session harness release applies without a restart | shipped |
 | F-049 | ? | freshness test spawn must isolate XDG_STATE_HOME so it never writes the real project registry | shipped |
 | F-046 | ? | Make /resume deterministic in one pass: (1) one shared case/separator-insensitive feature resolver (board row -> existing handoff stem -> worktree dir/branch) used by checkpoint/orient/finalize/backlog, so --feature f-045 finds F-045.md and a lowercase write can never create a second handoff; (2) resume searches feature worktree + current root + main, returns canonical id and absolute path, and suggests near-miss ids; (3) /resume moves the session with tools.opencode.session.move (delete every mention of the nonexistent session_move) BEFORE reading the checkpoint, then re-orients to confirm the root; (4) orient brief with rootMismatch or a board-inferred feature prints the exact move call and never says 'Proceed from the checkpoint/next'; (5) tests: lowercase resume, lowercase write keeps one file, handoff-only-in-main, finalize lowercase, brief gating, command uses the real tool name. Supersedes F-037. | shipped |
+| F-051 | ? | Auto clear-resume when a feature session reaches its context limit: detect the request-context ceiling, write the deterministic checkpoint, start a fresh bounded context seeded from that checkpoint, and continue the feature without a manual /resume. | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
