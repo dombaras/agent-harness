@@ -1,0 +1,266 @@
+/* F-052 — auto clear-resume in the TUI.
+ *
+ * F-051's server guard writes `.agents/context-resume.json` when a primary
+ * session in a feature worktree crosses the request-context ceiling. The runner
+ * consumes that marker; an interactive TUI has no runner, so this TUI part is
+ * the consumer. When the marker's session finishes its execution, it:
+ *   1. re-reads the marker + checkpoint through `resume-plan.mjs`, which
+ *      delegates to run-loop.js's decision core (freshness, progress, cap);
+ *   2. creates a fresh session in the same worktree and queues the runner's
+ *      own resume/finalize prompt, seeded from the checkpoint only;
+ *   3. opens/focuses that session, so no manual `/resume` is typed.
+ *
+ * Safety rails: only a feature worktree (marker + branch agree) in the TUI's
+ * current location, only after `session.execution.succeeded` (never mid-step,
+ * never after a failure/interrupt), one action per marker, 3 resets per feature
+ * (durable via `storage.store`, reset once the row lands). A flat checkpoint or
+ * a cap stop surfaces a toast instead of relaunching. The server guard and the
+ * runner are untouched.
+ */
+import { Plugin } from "@opencode/plugin/tui"
+import fs from "node:fs"
+import path from "node:path"
+import {
+  DEFAULT_MAX_CONTEXT_RESETS,
+  RESUME_MARKER_REL,
+  STORAGE_KEY,
+  parseMarker,
+  planResume,
+} from "./resume-plan.mjs"
+
+type WorktreeState = {
+  feature: string | null
+  handled: string | null
+  resets: number
+}
+
+type ResumeDecision = {
+  action: "ignore" | "resume" | "stop"
+  reason: string
+  feature?: string
+  prompt?: string
+  key?: string
+  resets?: number
+  nextResets?: number
+  landed?: boolean
+}
+
+const readText = (file: string): string => {
+  try {
+    return fs.readFileSync(file, "utf8")
+  } catch {
+    return ""
+  }
+}
+
+export default Plugin.define({
+  id: "context-resume",
+  setup(context) {
+    const [state, updateState] = context.storage.store(STORAGE_KEY, {
+      initial: { worktrees: {} as Record<string, WorktreeState> },
+    })
+    // A session id is acted on once at a time; a second event queued behind an
+    // in-flight create must not create two fresh sessions.
+    const inflight = new Set<string>()
+
+    const resolveDirectory = (): string | undefined => {
+      const live = context.location?.directory
+      if (typeof live === "string" && live) return live
+      try {
+        const fallback = context.data.location.default()?.directory
+        return typeof fallback === "string" && fallback ? fallback : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    const sessionDirectory = (sessionID: string): string | undefined => {
+      try {
+        const info = context.data.session.get(sessionID)
+        const dir = info?.location?.directory
+        return typeof dir === "string" && dir ? dir : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    const sessionCreatedAt = (sessionID: string): number | undefined => {
+      try {
+        const created = Number(context.data.session.get(sessionID)?.time?.created)
+        return Number.isFinite(created) ? created : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    const branchAt = (directory: string): string | undefined => {
+      try {
+        const info = context.data.location.vcs.info({ directory })
+        const branch = info?.branch?.current
+        return typeof branch === "string" && branch ? branch : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    const entryFor = (directory: string, feature: string | null): WorktreeState => {
+      const prior = state.worktrees?.[directory]
+      // A reused worktree/branch starts a new feature: its cap starts over too.
+      if (prior && (!feature || prior.feature === feature)) return prior
+      return { feature, handled: null, resets: 0 }
+    }
+
+    const persist = async (directory: string, next: WorktreeState) => {
+      await updateState((draft) => {
+        const worktrees = draft.worktrees || (draft.worktrees = {})
+        worktrees[directory] = next
+      })
+    }
+
+    const consumeMarker = (directory: string) => {
+      try {
+        fs.unlinkSync(path.join(directory, RESUME_MARKER_REL))
+      } catch {
+        /* absent marker is fine: the runner may have consumed it */
+      }
+    }
+
+    const startFresh = async (
+      decision: ResumeDecision,
+      directory: string
+    ): Promise<string | undefined> => {
+      const prompt = String(decision.prompt || "")
+      if (!prompt) throw new Error("the runner produced no resume prompt")
+      const created = await context.client.session.create({ location: { directory } })
+      const sessionID = created?.id
+      if (!sessionID) throw new Error("session.create returned no session id")
+      // Show the fresh context immediately; the prompt queues asynchronously.
+      try {
+        context.ui.router.navigate({ type: "session", sessionID })
+      } catch {
+        /* a route change is best-effort; the toast still names the session */
+      }
+      try {
+        if (context.ui.tabs.enabled()) context.ui.tabs.focus(sessionID)
+      } catch {
+        /* tabs are optional */
+      }
+      await context.client.session.prompt({ sessionID, text: prompt })
+      context.ui.toast.show({
+        title: `${decision.feature || "Feature"} resumed`,
+        message: "Fresh context seeded from the checkpoint.",
+        variant: "success",
+      })
+      return sessionID
+    }
+
+    const handle = async (sessionID: string, idleKind: "succeeded" | "failed" | "interrupted") => {
+      if (!sessionID || inflight.has(sessionID)) return
+      inflight.add(sessionID)
+      try {
+        const directory = sessionDirectory(sessionID)
+        if (!directory) return
+        // Only the TUI's current location may navigate/focus. A session in
+        // another checkout (V2's event stream is process-wide) keeps its marker
+        // for its own TUI instance or a manual resume.
+        const current = resolveDirectory()
+        if (current && path.resolve(current) !== path.resolve(directory)) return
+
+        const marker = parseMarker(readText(path.join(directory, RESUME_MARKER_REL)))
+        if (!marker || marker.sessionID !== sessionID) return
+
+        const featureFromMarker = marker.feature ? String(marker.feature).toUpperCase() : null
+        const entry = entryFor(directory, featureFromMarker)
+        const decision: ResumeDecision = planResume({
+          marker,
+          idleSessionID: sessionID,
+          sessionCreatedAt: sessionCreatedAt(sessionID),
+          branch: branchAt(directory),
+          handoffText: featureFromMarker
+            ? readText(path.join(directory, ".agents", "handoffs", featureFromMarker + ".md"))
+            : "",
+          backlogText: readText(path.join(directory, "BACKLOG.md")),
+          handled: entry.handled,
+          resets: entry.resets,
+          maxResets: DEFAULT_MAX_CONTEXT_RESETS,
+        })
+        if (decision.action === "ignore") return
+
+        // Mark this crossing handled BEFORE the side effects: a re-entrant
+        // event, a TUI reload, or a second TUI instance must not resume twice.
+        const feature = decision.feature || featureFromMarker
+        await persist(directory, {
+          feature,
+          handled: decision.key || null,
+          resets: decision.resets ?? entry.resets,
+        })
+        consumeMarker(directory)
+
+        if (decision.action === "stop") {
+          await persist(directory, {
+            feature,
+            handled: decision.key || null,
+            resets: decision.landed ? 0 : decision.resets ?? entry.resets,
+          })
+          context.ui.toast.show({
+            title: decision.landed ? "Auto-resume not needed" : "Auto-resume stopped",
+            message: decision.reason,
+            variant: decision.landed ? "success" : "warning",
+          })
+          return
+        }
+
+        // A failed/interrupted execution is a real failure signal, not a clean
+        // context boundary: surface the manual path instead of relaunching.
+        if (idleKind !== "succeeded") {
+          context.ui.toast.show({
+            title: "Context boundary recorded",
+            message: "Resume manually with `/resume` (or `agent-harness run`) after inspecting the failure.",
+            variant: "warning",
+          })
+          return
+        }
+
+        await startFresh(decision, directory)
+        await persist(directory, {
+          feature,
+          handled: decision.key || null,
+          resets: decision.nextResets ?? entry.resets + 1,
+        })
+      } catch (error) {
+        context.ui.toast.show({
+          title: "Auto-resume failed",
+          message: error instanceof Error ? error.message : String(error),
+          variant: "error",
+        })
+      } finally {
+        inflight.delete(sessionID)
+      }
+    }
+
+    // `session.execution.succeeded` is V2's end-of-execution signal (the schema
+    // declares `session.idle`, but the server does not emit it). A step-level
+    // event is deliberately NOT used: resuming mid-session is never safe.
+    const stops = [
+      context.data.on("session.execution.succeeded", (event: any) => {
+        void handle(String(event?.data?.sessionID || ""), "succeeded")
+      }),
+      context.data.on("session.execution.failed", (event: any) => {
+        void handle(String(event?.data?.sessionID || ""), "failed")
+      }),
+      context.data.on("session.execution.interrupted", (event: any) => {
+        void handle(String(event?.data?.sessionID || ""), "interrupted")
+      }),
+    ]
+
+    return () => {
+      for (const stop of stops) {
+        try {
+          stop()
+        } catch {
+          /* already disposed */
+        }
+      }
+    }
+  },
+})

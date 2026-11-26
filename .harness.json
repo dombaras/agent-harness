@@ -1,11 +1,11 @@
 {
-  "version": "0.5.8",
+  "version": "0.5.9",
   "projectName": "agent-harness",
   "projectDomain": "",
   "initializedAt": "2026-11-20T15:28:27.274Z",
-  "updatedAt": "2026-11-26T17:52:01.092Z",
+  "updatedAt": "2026-11-26T21:06:25.870Z",
   "files": {
-    "package.json": "ca8d8c52f61096a19bf91ba579f0f71bfaf90a559883d68b80974016ea99210e",
+    "package.json": "a67f332455d2eee6f4d9fcedfdff8a9b7b5302201faf6555354a2427a777c3e6",
     ".gitattributes": "12c4d531af67b819a562126556e8fc3565594a3593f2db9e1640baa9a87a48f7",
     ".ignore": "fbe125871ea72e7ca387e954eefca50eec09a8ec1e9cd98b00e7cb488d486d2f",
     ".agents/AGENTS.md": "aa22099f4b61edcf939d7e91cb2df3b3a8613ae8f7273147962dcf8bc59d84cb",
@@ -55,7 +55,10 @@
     ".opencode/plugins/backlog-notify.ts": "38fa268756dc5a78caf30b31f5c1eab23b1f027485bcf9fda64ffe25f8fd4c58",
     ".opencode/plugins/backlog.ts": "b9e286b8052c0ab09a2224a040907cd6aa168dd372a8e4e452d40227ad749466",
     ".opencode/plugins/checkpoint.ts": "3bf1cccbdc426b56aa82ed104f80db4667de9aa9c2492691d87d7c5d9513c875",
-    ".opencode/plugins/context-guard.ts": "0cdc63fa985425ee8f18fb162f6a1e798849268f946ae79dcd7b1ff029a0b63e",
+    ".opencode/plugins/context-guard.ts": "997a8c03a9fc3ff6cd4a0e33dd75946ee84a87a1caac5be4283bccb163f959d0",
+    ".opencode/plugins/context-resume/index.ts": "e35691a2c1fcd6fa2ccb41ff49ed97e329682a279181f21718231a6d4d681915",
+    ".opencode/plugins/context-resume/resume-plan.mjs": "347737f8f88927ef16bd33298a8af593ed966077c00d8792fe32c37dacbffaba",
+    ".opencode/plugins/context-resume/tui.tsx": "634e403b52d06247bb944c1fe7665cf105c9cd79375b065093dc729e49da6c87",
     ".opencode/plugins/diff.ts": "96a84188226d53118edf2c484260a2c442dd24a869a90808a90d38f84c1872c6",
     ".opencode/plugins/dispatch.ts": "3e0029f8a926ffe93f7ab65f9c642774c6891064a2de25286e4d1a217ae6e220",
     ".opencode/plugins/gates.ts": "d4e6601f5d7df8f5f4378ac6e760143914d0a8d7065b67d92e862c3847819d2f",
@@ -111,7 +114,7 @@
     "scripts/qa/ci-usage-lib.js": "3a629b9e0be18c8a8f3b763b6c95d949500237b47223375313f6e35f98bbd635",
     "scripts/qa/ci-wait-lib.js": "a4c047812142adb18a22ddfd3e6d9f3020178a951fd7d5333a46307b92dcdbac",
     "scripts/qa/command-classifier.js": "858d35ff1f5691ab73a1f2e73b891c745b9d51f07128ed4a01361456e6670ecb",
-    "scripts/qa/context-guard-core.js": "066fe8416d64d749917e9ee89e5acb5432792c9f7931f7387e372a79d3e94d20",
+    "scripts/qa/context-guard-core.js": "636bd74ec3717e600e7c1faf0a92fb27ea89f79b69a3d61f184bf52aaf52cb88",
     "scripts/qa/diagnosis-lib.js": "2691368f93a5353fbe420999c79ab7874cd66b67c76dbda655c49b671543a1d2",
     "scripts/qa/diff.js": "712c1677c124bd290e138d3eb19d54c2fb43f5123142cdc99c463779c8f0c0c1",
     "scripts/qa/dispatch-log.js": "f2c62119e41b31df71128e34c9f03bfa52a3f526889130ed5be2e98e57a35435",
@@ -144,7 +147,7 @@
     "scripts/qa/provider-stats.js": "2247549172a0c95894e8386d288dac1c9a7ed7a6245f8bd9ab54ae4189ef3812",
     "scripts/qa/run-clean.js": "b715dfc6512fde678c2ed943e99ce8c3ba9c7237c1115fc60438e0dd06c15836",
     "scripts/qa/run-gates.js": "ca8818bf44649efc44d956192c5bcba67a20690e92874769c6c265853f451a2d",
-    "scripts/qa/run-loop.js": "ff8a044b92f36e7d3753dc61ecbe0646075b170fd543dafe16b029de78fb6d00",
+    "scripts/qa/run-loop.js": "2b900df4ed96bcc4eaa5436e1154ec788dc018cab099475b6d45256d1b8833b3",
     "scripts/qa/session-recon.js": "e62aa6dac7151d7b5230249ec0cf1c2af9d2ca4c8812a13c1d8119a4c159676b",
     "scripts/qa/store-lib.js": "f2042558027938143fc292acee1ae675163d8b0d7309a7dad0472a74f15da605",
     "scripts/qa/tool-lib.js": "7c7c38d5b48e11921ac5c2d42352b604b870e27476a7e6a8e8c76af5139d0eac",
@@ -159,9 +162,6 @@
     "scripts/switch-reasoning-model.sh": "4e3306c6177718af70d7426dcccf7a36a2c4e78d6ba9e56df2952ea3b636bbef",
     "scripts/wait-for.js": "e808f854f313df46f184c8f86aa815c04c7dfd5a5ebd80ee1745c8828c3a937c",
     "scripts/wsl-gpu.sh": "f6dbbb31563aa13826c8416116cdd79462be5db298d64d4fb19dfc842ccc0f31",
-    "scripts/wsl-tune.sh": "77c6a5f0b4f3e5b05479aee8739811eaf3e9e74ca9087efa4754136957f585b5",
-    ".opencode/plugins/context-resume/index.ts": "e35691a2c1fcd6fa2ccb41ff49ed97e329682a279181f21718231a6d4d681915",
-    ".opencode/plugins/context-resume/tui.tsx": "634e403b52d06247bb944c1fe7665cf105c9cd79375b065093dc729e49da6c87",
-    ".opencode/plugins/context-resume/resume-plan.mjs": "347737f8f88927ef16bd33298a8af593ed966077c00d8792fe32c37dacbffaba"
+    "scripts/wsl-tune.sh": "77c6a5f0b4f3e5b05479aee8739811eaf3e9e74ca9087efa4754136957f585b5"
   }
 }
