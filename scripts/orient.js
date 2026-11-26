@@ -693,7 +693,7 @@ function printHuman(o) {
     lines.push(
       `!! ROOT MISMATCH — ${o.feature} lives in the linked worktree ${o.featureWorktree.path} (branch ${o.featureWorktree.branch || "?"})`,
       `   This session is rooted in ${o.root}; status/tsc/tests run here describe a DIFFERENT tree.`,
-      "   Move the session there (session_move / `opencode -s <id> <worktree>`) and re-run orient before doing work.",
+      `   Move the session there with tools.opencode.session.move (directory: "${o.featureWorktree.path}") and re-run orient before doing work.`,
       ""
     );
   }
@@ -766,6 +766,7 @@ function printBrief(o) {
     lines.push(
       `!! ROOT MISMATCH — ${o.feature} lives in worktree ${o.featureWorktree.path}; move the session there BEFORE running anything (this root's tsc/status are a different tree).`
     );
+    lines.push(`   tools.opencode.session.move (directory: "${o.featureWorktree.path}"), then re-run orient.`);
   }
   if (o.feature) lines.push(`feature ${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`);
   if (o.checkpoint) lines.push(`checkpoint ${o.checkpoint.phase || "?"} · next: ${o.checkpoint.nextAction || "?"}`);
@@ -783,7 +784,15 @@ function printBrief(o) {
     lines.push("memory digest (open a file only for detail):");
     lines.push(...mem);
   }
-  lines.push("Proceed from the checkpoint/next; do not re-derive git/serve/capacity state by hand.");
+  // State is only confirmed when the session is rooted in the feature's tree and
+  // the feature id was not guessed from the board — never print a green "proceed".
+  if (o.rootMismatch) {
+    lines.push("DO NOT PROCEED from this root — move the session into the worktree above first.");
+  } else if (o.featureSource === "board") {
+    lines.push(`Feature ${o.feature} is inferred from the board's In-progress row — pass --feature <id> to confirm before touching files.`);
+  } else {
+    lines.push("Proceed from the checkpoint/next; do not re-derive git/serve/capacity state by hand.");
+  }
   lines.push("tools: gates (run a tier) · where (find a symbol) · orient — not `npm run … | tail` / shell grep.");
   return lines.join("\n");
 }

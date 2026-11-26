@@ -35,6 +35,16 @@ try {
   diagnosisLib = null;
 }
 
+/* One case/separator-insensitive feature resolver shared by checkpoint, orient,
+ * finalize and backlog (F-046). Optional so an older deploy still runs; when it
+ * is absent, `resolveHandoff` falls back to the legacy exact-name lookup. */
+let featureResolver = null;
+try {
+  featureResolver = require("./qa/feature-resolver.js");
+} catch (_) {
+  featureResolver = null;
+}
+
 /* The project root. Resolve from an explicit `--root <dir>` when given, else
  * `process.cwd()` when it looks like a project root, and only fall back to
  * `__dirname/..`. Under the harness dogfood the repo `scripts` dir is symlinked
@@ -125,9 +135,36 @@ function featureWorktreeRoot(feature) {
   return null;
 }
 
-function handoffPath(feature) {
+/* Resolve a requested feature id to its canonical spelling and the one handoff
+ * file across this repo's checkouts (its worktree, this checkout, then main).
+ * The resolver compares ids with case and separators ignored, so `f-045` finds
+ * `F-045.md` instead of interpolating a second, nonexistent filename. */
+function resolveHandoff(feature) {
+  if (featureResolver) return featureResolver.resolveFeature(root, feature);
   const base = featureWorktreeRoot(feature) || root;
-  return path.join(base, ".agents", "handoffs", feature + ".md");
+  const file = path.join(base, ".agents", "handoffs", feature + ".md");
+  const exists = fs.existsSync(file);
+  return {
+    input: feature,
+    id: feature,
+    source: null,
+    file: exists ? path.resolve(file) : null,
+    fileRoot: exists ? path.resolve(base) : null,
+    worktree: featureWorktreeRoot(feature) ? { path: featureWorktreeRoot(feature), branch: "" } : null,
+    roots: [base, root],
+    suggestions: [],
+  };
+}
+
+/* Where a write belongs: an existing handoff in any checkout wins (so a
+ * lowercase write updates `F-045.md` instead of creating a second file), else
+ * the feature's linked worktree (the state belongs where the work lives), else
+ * this checkout. Always the canonical filename. */
+function handoffPath(feature) {
+  const res = resolveHandoff(feature);
+  if (res.file) return path.resolve(res.file);
+  const base = (res.worktree && res.worktree.path) || root;
+  return path.join(base, ".agents", "handoffs", res.id + ".md");
 }
 
 /* Read-only diagnosis state carried by `resume` (F-040). The artifact is never
@@ -267,13 +304,17 @@ function renderBlock(args, feature, count) {
 }
 
 function writeCheckpoint(args) {
-  const feature = assertFeature(args.feature, "write");
+  const requested = assertFeature(args.feature, "write");
+  const resolved = resolveHandoff(requested);
+  const feature = resolved.id;
   const hasState =
     Object.values(args.scalars).some((v) => v != null && String(v).trim()) ||
     Object.values(args.lists).some((v) => v && v.length);
   if (!hasState) throw new Error("refusing to write an empty checkpoint — record at least one state field");
 
-  const file = handoffPath(feature);
+  const file = resolved.file
+    ? path.resolve(resolved.file)
+    : path.join((resolved.worktree && resolved.worktree.path) || root, ".agents", "handoffs", feature + ".md");
   const existed = fs.existsSync(file);
   const src = existed ? fs.readFileSync(file, "utf8") : "";
   const parts = splitCheckpoint(src);
@@ -323,21 +364,36 @@ function parseBlock(body) {
 }
 
 function readCheckpoint(args) {
-  const feature = assertFeature(args.feature, "resume");
-  const worktree = featureWorktreeRoot(feature);
-  const file = handoffPath(feature);
-  if (!fs.existsSync(file)) throw new Error(`no handoff found for "${feature}" (${path.relative(root, file)})`);
+  const requested = assertFeature(args.feature, "resume");
+  const resolved = resolveHandoff(requested);
+  const feature = resolved.id;
+  if (!resolved.file) {
+    const searched = (resolved.roots || [])
+      .map((dir) => path.join(dir, ".agents", "handoffs"))
+      .join(", ");
+    const suggestions = resolved.suggestions || [];
+    const hint = suggestions.length ? ` — did you mean ${suggestions.join(", ")}?` : "";
+    throw new Error(`no handoff found for "${requested}"${hint}${searched ? ` (searched ${searched})` : ""}`);
+  }
+  const file = path.resolve(resolved.file);
   const parts = splitCheckpoint(fs.readFileSync(file, "utf8"));
   if (!parts.body) throw new Error(`"${feature}" has no ## Checkpoint block yet — run checkpoint write first`);
+  const stateRoot = resolved.fileRoot || root;
   return {
+    input: requested,
     feature,
+    source: resolved.source,
+    suggestions: resolved.suggestions || [],
     file,
+    fileRoot: stateRoot,
     root,
-    worktree,
+    // The feature's linked worktree, when one exists — the tree its work (and
+    // therefore tsc/tests) belongs to, independent of where the handoff lives.
+    worktree: (resolved.worktree && resolved.worktree.path) || null,
     body: parts.body.trim(),
     state: parseBlock(parts.body),
     // Resolve the diagnosis where the feature actually lives, like the handoff.
-    diagnosis: diagnosisState(feature, worktree || root),
+    diagnosis: diagnosisState(feature, stateRoot),
   };
 }
 
@@ -361,7 +417,19 @@ function main() {
     if (args.json) {
       console.log(
         JSON.stringify(
-          { schema: SCHEMA, feature: r.feature, state: r.state, root: r.root, worktree: r.worktree, diagnosis: r.diagnosis },
+          {
+            schema: SCHEMA,
+            input: r.input,
+            feature: r.feature,
+            source: r.source,
+            file: r.file,
+            fileRoot: r.fileRoot,
+            suggestions: r.suggestions,
+            state: r.state,
+            root: r.root,
+            worktree: r.worktree,
+            diagnosis: r.diagnosis,
+          },
           null,
           2
         )
@@ -373,10 +441,15 @@ function main() {
     // then run tsc/tests against the wrong tree. Say which root the state belongs to.
     if (r.worktree && path.resolve(r.worktree) !== path.resolve(r.root)) {
       console.log(
-        `> ROOT MISMATCH — ${r.feature}'s checkpoint lives in ${r.worktree}, but this session is rooted in ${r.root}.\n` +
-          "> Move the session to that worktree (session_move) before running tsc/tests; this root is a different tree.\n"
+        `> ROOT MISMATCH — ${r.feature}'s work lives in ${r.worktree}, but this session is rooted in ${r.root}.\n` +
+          `> Move the session there with tools.opencode.session.move (directory: "${r.worktree}") before running tsc/tests; this root is a different tree.\n`
+      );
+    } else if (r.fileRoot && path.resolve(r.fileRoot) !== path.resolve(r.root)) {
+      console.log(
+        `> handoff lives in another checkout of this repo: ${r.fileRoot} — this session is rooted in ${r.root}.\n`
       );
     }
+    console.log(`> handoff: ${r.file}${r.input && r.input !== r.feature ? ` (resolved from "${r.input}")` : ""}`);
     console.log(r.body);
     const dLines = renderDiagnosisBrief(r.diagnosis);
     if (dLines.length) console.log("\n" + dLines.join("\n"));

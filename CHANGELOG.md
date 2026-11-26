@@ -2,6 +2,19 @@
 
 ## 0.5.6 — 2026-11-25
 
+- Resuming or checkpointing a work unit now accepts lowercase and separator-variant
+  feature ids without losing the canonical handoff: checkpoint, orient, finalize,
+  and backlog share one resolver, find handoffs in the feature worktree, current
+  checkout, or main checkout, and offer near-match suggestions when a lookup
+  misses. Readiness output now gives the real session-move command and avoids
+  claiming to proceed when the session is rooted in the wrong tree or the feature
+  id is only inferred from the board; the new regression coverage runs in
+  `test:quick`. (F-046)
+
+- The freshness badge test no longer depends on the wall clock: it pins the
+  F-038 verdict timestamp, so a run that crosses midnight cannot flip the
+  assertion. (F-039, 53bd9e3)
+
 - The freshness activity test no longer drives its plugin spawn against the
   developer's real project registry. That spawn lacked `XDG_STATE_HOME`, so its
   startup sweep stamped real checkouts with the fixture version `9.9.9`; it

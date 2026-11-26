@@ -326,10 +326,21 @@ function insertOpen(rows, newRow) {
   return out;
 }
 
+/* Case/separator-insensitive, like the shared feature resolver (F-046): a
+ * lowercase `f-046` must find the canonical `F-046` row instead of reporting
+ * "not found" on `take`/`archive`/`owns`. */
+function normalizeRowId(value) {
+  return String(value == null ? "" : value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
 function findRow(lines, id) {
+  const want = normalizeRowId(id);
   for (const key of ["open", "queued", "inprogress", "frozen", "archive"]) {
     for (const r of getRows(lines, key)) {
-      if ((r.cells[0] || "").trim() === id) return { key, cells: r.cells };
+      if (normalizeRowId(r.cells[0]) === want) return { key, cells: r.cells };
     }
   }
   return null;
@@ -2002,6 +2013,7 @@ module.exports = {
   findRoot,
   readBacklog,
   findSection,
+  findRow,
   tableBlock,
   dataRows,
   getRows,

@@ -67,6 +67,29 @@ function readIf(p) {
   }
 }
 
+/* One case/separator-insensitive resolver (F-046), loaded lazily so an older
+ * deploy without it still runs the legacy exact-name lookup. */
+let resolverMod;
+function featureResolver() {
+  if (resolverMod === undefined) {
+    try {
+      resolverMod = require(path.join(root, "scripts", "qa", "feature-resolver.js"));
+    } catch {
+      resolverMod = null;
+    }
+  }
+  return resolverMod;
+}
+
+/* Compare feature ids the way the resolver does (`f-045` === `F-045`). */
+function normalizeFeatureId(value) {
+  const resolver = featureResolver();
+  if (resolver) return resolver.normalizeId(value);
+  return String(value == null ? "" : value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
 /* The feature id from a branch name (`f-257` -> `F-257`, `feat/F-12-x` -> `F-12`). */
 function featureFromBranch(branch) {
   const m = String(branch || "").match(/(?:^|\/)[fF]-?([0-9]+)/);
@@ -89,6 +112,11 @@ function worktreePaths() {
  * same repo — the shared main checkout is where a checkpoint lands when the
  * session writes it BEFORE moving into its feature worktree. */
 function findHandoff(feature) {
+  const resolver = featureResolver();
+  if (resolver) {
+    const res = resolver.resolveFeature(root, feature);
+    if (res.file) return { file: path.resolve(res.file), local: path.resolve(res.fileRoot) === path.resolve(root) };
+  }
   const local = path.join(root, ".agents", "handoffs", feature + ".md");
   if (fs.existsSync(local)) return { file: local, local: true };
   for (const dir of worktreePaths()) {
@@ -173,7 +201,7 @@ function orphanHandoffs(feature) {
     .filter((l) => /^\?\?\s/.test(l))
     .map((l) => l.replace(/^\?\?\s+/, "").trim().replace(/^"|"$/g, ""))
     .filter((rel) => rel.toLowerCase().endsWith(".md") && path.basename(rel).toLowerCase() !== "readme.md")
-    .filter((rel) => path.basename(rel) !== `${feature}.md`);
+    .filter((rel) => normalizeFeatureId(path.basename(rel).replace(/\.md$/i, "")) !== normalizeFeatureId(feature));
 }
 
 /* The handoff's recorded outcome, if any (`## Session metadata` -> `- outcome:`). */
@@ -583,13 +611,16 @@ function main() {
     );
   }
 
-  const feature = args.feature || featureFromBranch(branch);
+  let feature = args.feature || featureFromBranch(branch);
   if (!feature) {
     return fail(
       `finalize: could not derive a feature id from branch "${branch}".\n` +
         "      Pass --feature <id> explicitly."
     );
   }
+  // Canonical spelling, whatever case/separators the caller used (`f-046` -> `F-046`).
+  const resolver = featureResolver();
+  if (resolver) feature = resolver.resolveFeature(root, feature).id || feature;
 
   const shipScript = path.join(root, "scripts", "ship.js");
   if (!fs.existsSync(shipScript)) {
