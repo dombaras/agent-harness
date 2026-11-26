@@ -48,7 +48,7 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | .agents/handoffs/F-050.md (worktree: ../.worktrees/agent-harness/f-050; branch: f-050) |
-| F-054 | ? | TUI plugin context-resume fails to load on OpenCode 2.4.2: ESM plugin graph named-imports from CJS scripts/qa/run-loop.js (export 'DEFAULT_MAX_CONTEXT_RESETS' not found) | .agents/handoffs/F-054.md |
+| F-054 | ? | TUI plugin context-resume fails to load on OpenCode 2.4.2: ESM plugin graph named-imports from CJS scripts/qa/run-loop.js (export 'DEFAULT_MAX_CONTEXT_RESETS' not found) | .agents/handoffs/F-054.md (worktree: ../.worktrees/agent-harness/f-054; branch: f-054) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
