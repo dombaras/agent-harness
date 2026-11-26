@@ -1,0 +1,193 @@
+{
+  "schema": "feedback-fixtures/1",
+  "description": "Deterministic classification truth table for the feedback loop. Each signal is passed through normalizeSignal + applyClassification with an explicit mode:auto policy so route expectations never depend on the local project policy. `expect.signature` and `expect.marker` are frozen drift guards: a normalization change that alters them must be a deliberate, reviewed edit.",
+  "policy": {
+    "mode": "auto"
+  },
+  "fixtures": [
+    {
+      "id": "ci-failed",
+      "description": "Deterministic product failure on CI: a test assertion, a runner, and a repro command exist.",
+      "signal": {
+        "source": "ci",
+        "environment": "ci",
+        "kind": "ci-run",
+        "title": "API tests failed on main",
+        "test": "tests/api.test.js > GET /health",
+        "error": "AssertionError: expected 200 but got 500",
+        "repro": "npm run test:api",
+        "sha": "3bac8ef000000000000000000000000000000000",
+        "run": "19123456789",
+        "url": "https://github.com/example/repo/actions/runs/19123456789",
+        "verdict": "failed"
+      },
+      "expect": {
+        "class": "product",
+        "risk": "low",
+        "route": "auto-fix",
+        "state": "queued",
+        "signature": "5f42bc279fbe518b",
+        "marker": "[feedback:ci:5f42bc27]"
+      }
+    },
+    {
+      "id": "ci-infra-block",
+      "description": "CI never executed the job: no runner. This must never become a product fix.",
+      "signal": {
+        "source": "ci",
+        "environment": "ci",
+        "kind": "ci-run",
+        "title": "CI job did not start",
+        "error": "No runner is available to pick up this job",
+        "verdict": "infra-block",
+        "run": "19123456790",
+        "repro": "npm run test:api"
+      },
+      "expect": {
+        "class": "infra",
+        "risk": "low",
+        "route": "ops",
+        "state": "escalated",
+        "signature": "1ec417cbf0846f3c",
+        "marker": "[feedback:ci:1ec417cb]"
+      }
+    },
+    {
+      "id": "nightly-journey",
+      "description": "A product journey failed in the local nightly battery: rerun with the same red signal.",
+      "signal": {
+        "source": "nightly",
+        "environment": "nightly",
+        "kind": "journey",
+        "journey": "checkout",
+        "side": "product",
+        "title": "Nightly journey checkout failed",
+        "test": "checkout > guest pays with card",
+        "error": "Expected cart total 42.00 but saw 0.00",
+        "repro": "node scripts/nightly.js run --journey checkout"
+      },
+      "expect": {
+        "class": "product",
+        "risk": "low",
+        "route": "auto-fix",
+        "state": "queued",
+        "signature": "5514162c5bd790d8",
+        "marker": "[feedback:nightly:5514162c]"
+      }
+    },
+    {
+      "id": "nightly-harness",
+      "description": "The nightly harness itself failed (missing driver). Harness-side failures are infra and never reopen a product row.",
+      "signal": {
+        "source": "nightly",
+        "environment": "nightly",
+        "kind": "nightly-run",
+        "side": "harness",
+        "title": "Nightly harness crashed before journeys",
+        "test": "nightly > driver boot",
+        "error": "harness: maestro: command not found",
+        "repro": "node scripts/nightly.js run"
+      },
+      "expect": {
+        "class": "infra",
+        "risk": "low",
+        "route": "ops",
+        "state": "escalated",
+        "signature": "4886c5a31572fb56",
+        "marker": "[feedback:nightly:4886c5a3]"
+      }
+    },
+    {
+      "id": "uat-500",
+      "description": "A UAT health probe returned 500. UAT is high risk: rollback-first and a human gate, never auto-fix.",
+      "signal": {
+        "source": "uat",
+        "environment": "uat",
+        "kind": "uat-health",
+        "title": "UAT health probe returned 500",
+        "error": "GET https://uat.example.test/api/health returned 500",
+        "http_status": 500,
+        "paths": [
+          "app/api/health/route.ts"
+        ],
+        "url": "https://uat.example.test/api/health",
+        "repro": "curl -fsS https://uat.example.test/api/health"
+      },
+      "expect": {
+        "class": "product",
+        "risk": "high",
+        "route": "assist",
+        "state": "queued",
+        "signature": "2dea69ea05db5ca5",
+        "marker": "[feedback:uat:2dea69ea]"
+      }
+    },
+    {
+      "id": "flaky-pass",
+      "description": "The same test passed on a clean rerun with no relevant diff: quarantine with an owner and expiry, never a product fix.",
+      "signal": {
+        "source": "ci",
+        "environment": "ci",
+        "kind": "ci-run",
+        "title": "API tests passed on rerun",
+        "test": "tests/ui.test.js > renders checkout",
+        "error": "TimeoutError: locator(text=Pay) timed out",
+        "rerun": "passed",
+        "verdict": "failed",
+        "run": "19123456791",
+        "repro": "npm run test:api"
+      },
+      "expect": {
+        "class": "flake",
+        "risk": "low",
+        "route": "quarantine",
+        "state": "quarantined",
+        "signature": "97ade34c31b7c086",
+        "marker": "[feedback:ci:97ade34c]"
+      }
+    },
+    {
+      "id": "security-finding",
+      "description": "A dependency vulnerability: security-engineer owns it and a human gates the change.",
+      "signal": {
+        "source": "gate",
+        "environment": "local",
+        "kind": "gate",
+        "category": "security",
+        "title": "npm audit reports a critical vulnerability",
+        "test": "npm run test:security",
+        "error": "CVE-2026-12345: vulnerable lodash < 4.17.22",
+        "repro": "npm run test:security",
+        "paths": [
+          "package-lock.json"
+        ]
+      },
+      "expect": {
+        "class": "security",
+        "risk": "high",
+        "route": "security-engineer",
+        "state": "escalated",
+        "signature": "4aa20dcf2ad0a8a0",
+        "marker": "[feedback:gate:4aa20dcf]"
+      }
+    },
+    {
+      "id": "unknown-signal",
+      "description": "No test, repro command, or error line: the deterministic plane refuses to guess and routes to a human.",
+      "signal": {
+        "source": "human",
+        "environment": "unknown",
+        "kind": "human",
+        "title": "Something feels slow after lunch"
+      },
+      "expect": {
+        "class": "unknown",
+        "risk": "low",
+        "route": "human",
+        "state": "escalated",
+        "signature": "ff3c4db066e1860c",
+        "marker": "[feedback:human:ff3c4db0]"
+      }
+    }
+  ]
+}

@@ -47,6 +47,7 @@ const PHASES = {
     ["test:diagnosis"],
     ["test:product"],
     ["test:docs"],
+    ["test:feedback"],
     ["test:prefix"],
     ["test:quality"],
   ],

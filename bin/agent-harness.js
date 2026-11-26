@@ -599,6 +599,7 @@ function deniedMcpServers(doc) {
 // These gates ship with the harness, so a deploy wires them up like opencode.json.
 const HARNESS_SCRIPTS = {
   backlog: "node scripts/backlog.js",
+  feedback: "node scripts/feedback.js",
   ship: "node scripts/ship.js",
   finalize: "node scripts/finalize.js",
   "test:dispatch": "node scripts/qa/check-dispatch-config.js",
@@ -608,6 +609,7 @@ const HARNESS_SCRIPTS = {
   "test:backlog": "node scripts/qa/check-backlog.js",
   "test:product": "node scripts/qa/check-product.js",
   "test:docs": "node scripts/qa/check-docs.js",
+  "test:feedback": "node scripts/qa/check-feedback.js",
   "test:concurrency": "node scripts/qa/check-concurrency.js",
   "test:integrate": "node scripts/qa/check-integrate.js",
   "test:quality": "node scripts/qa/check-quality.js",

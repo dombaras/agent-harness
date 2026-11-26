@@ -76,6 +76,18 @@ change under `bin/` or `templates/` also bumps `package.json` in the same commit
 the harness suite fails a template change that leaves the published version
 unchanged.
 
+## `test:feedback` — feedback-loop contract gate
+`node scripts/qa/check-feedback.js [--policy <path>] [--ledger <dir>]`
+Validates the `feedback-policy/1` document (mode, budgets, high-risk paths,
+kill switch) with an auto-mode safety floor: only the `product` class may
+auto-fix, and auto mode requires a non-empty high-risk list. It replays the eight
+`feedback-fixtures.json` signals through the deterministic classifier, route
+table, and frozen signature/marker drift guards, then checks secret redaction,
+dedupe/reopen, the state machine, budgets, metrics, and the ledger shape when one
+exists. A missing policy or ledger is a warning, not a failure. **Satisfy:** keep
+the policy within budget and the fixture truth table correct. **Waive:** none —
+the fixtures are the contract.
+
 ## `test:concurrency` — cross-session working-tree guard
 `node scripts/qa/check-concurrency.js`
 Fails when a dirty tree's files are attributed to two In-progress rows that own

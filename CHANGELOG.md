@@ -123,6 +123,17 @@
   relaunch loop cannot run away. Interactive TUI sessions on main keep the
   advisory nudge and are never relaunched. (F-051)
 
+## 0.5.8 — 2026-11-26
+
+- The harness now ships the Phase 0 foundation of a closed feedback loop: every
+  important failure signal (CI, nightly, UAT, gate, human) can be captured once,
+  normalized, deduplicated by signature, classified, and routed by a deterministic
+  policy instead of an improvised agent decision. A fix is only `resolved` after
+  the original signal is verified green, and recurrence reopens the item at P1.
+  `npm run feedback` exposes the CLI, while the new `test:feedback` gate pins the
+  policy safety floor, eight-fixture truth table, secret redaction,
+  dedupe/reopen, state transitions, and budget rules offline. (F-050)
+
 ## 0.5.6 — 2026-11-25
 
 - Resuming or checkpointing a work unit now accepts lowercase and separator-variant
