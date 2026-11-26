@@ -245,6 +245,7 @@
     { "action": "mcp.use", "resource": "*", "effect": "deny" }
   ],
   "plugins": [
-    "./.opencode/plugins/harness-version"
+    "./.opencode/plugins/harness-version",
+    "./.opencode/plugins/context-resume"
   ]
 }

@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.5.8 — 2026-11-26
+## 0.5.9 — 2026-11-26
+
+- A TUI session in a feature worktree now resumes itself at the context
+  ceiling: when the guard records the crossing and the session finishes its
+  execution, a TUI plugin opens and focuses a fresh session seeded from the
+  checkpoint instead of waiting for a manual `/resume`. It reuses the runner's
+  freshness, checkpoint-progress, and 3-reset gates (a flat checkpoint or a
+  spent cap surfaces a toast instead of relaunching), never acts mid-step,
+  never relaunches after a failed/interrupted run, and leaves main checkouts on
+  the advisory nudge. (F-052)
 
 - A long feature run no longer stalls at the context ceiling waiting for a manual
   resume: when the guard records that a session in a feature worktree crossed its

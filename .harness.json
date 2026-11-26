@@ -76,7 +76,7 @@
     "docs/mobile-testing.md": "8f403e10658e77dfff0d4d14c4cbf3e26c7c882a379c166880f99067bb795edb",
     "docs/nightly-testing.md": "d4ea5523ff05c113b5ece4a727ffc3b04f8284cdd43277df7af6daa22c88249d",
     "docs/wsl-optimizations.md": "e882f791f1c449a9cc0c49aea47e7ebeaa88d6eed563834dc77b3128ca3c24f6",
-    "opencode.json": "23d68aa6600d6da181792f8c282f7295a0d301c3d0106095d536416319ad09a5",
+    "opencode.json": "8ecb2f6cd9a9f20fb68f9b69b8dc59c99cddc0f0315378560625e87e8c5cd119",
     "scripts/agent-report.js": "41f0a278fec709fa4d1dd5abab94bbbbd98acbaf9b863e96ea5872c8695bfa6d",
     "scripts/agent-search.sh": "c7c127d53221161fcf6009ed687977733507e2e5214b1fb77ed1b9ced7bffe82",
     "scripts/backlog.js": "ad11f7a575c39d7dfc1535515a07b47db4f344d18ec0f0b5b35d69947c88013a",
@@ -159,6 +159,9 @@
     "scripts/switch-reasoning-model.sh": "4e3306c6177718af70d7426dcccf7a36a2c4e78d6ba9e56df2952ea3b636bbef",
     "scripts/wait-for.js": "e808f854f313df46f184c8f86aa815c04c7dfd5a5ebd80ee1745c8828c3a937c",
     "scripts/wsl-gpu.sh": "f6dbbb31563aa13826c8416116cdd79462be5db298d64d4fb19dfc842ccc0f31",
-    "scripts/wsl-tune.sh": "77c6a5f0b4f3e5b05479aee8739811eaf3e9e74ca9087efa4754136957f585b5"
+    "scripts/wsl-tune.sh": "77c6a5f0b4f3e5b05479aee8739811eaf3e9e74ca9087efa4754136957f585b5",
+    ".opencode/plugins/context-resume/index.ts": "e35691a2c1fcd6fa2ccb41ff49ed97e329682a279181f21718231a6d4d681915",
+    ".opencode/plugins/context-resume/tui.tsx": "634e403b52d06247bb944c1fe7665cf105c9cd79375b065093dc729e49da6c87",
+    ".opencode/plugins/context-resume/resume-plan.mjs": "347737f8f88927ef16bd33298a8af593ed966077c00d8792fe32c37dacbffaba"
   }
 }

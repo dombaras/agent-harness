@@ -454,6 +454,7 @@
     "directory": "../.worktrees/agent-harness"
   },
   "plugins": [
-    "./.opencode/plugins/harness-version"
+    "./.opencode/plugins/harness-version",
+    "./.opencode/plugins/context-resume"
   ]
 }
