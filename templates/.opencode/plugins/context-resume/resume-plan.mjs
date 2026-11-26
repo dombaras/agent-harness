@@ -3,20 +3,22 @@
  *
  * F-051's server guard writes `.agents/context-resume.json` when a primary
  * session in a FEATURE worktree crosses the `intervene` request level. The
- * runner (`agent-harness run`) consumes that marker in run-loop.js. A TUI
+ * runner (`agent-harness run`) consumes that marker in run-loop-core.mjs. A TUI
  * session has no runner, so this module lets the TUI plugin consume the SAME
  * marker through the SAME gates: freshness (the marker was written after the
  * session started), feature match, checkpoint progress past the marker's
  * `checkpoint_count`, and the durable reset cap. No rule is re-implemented
  * here — `decideRunLoop` is the single decision core.
  *
- * Pure and dependency-free (run-loop.js is pure), so every gate is testable
- * without the TUI, a live session, or a subprocess.
+ * Pure and dependency-free (run-loop-core.mjs is pure), and its entire import
+ * graph is ESM: the TUI plugin loader evaluates plugins as ESM-only, so a
+ * CommonJS `.js`/`.cjs` import here fails the whole plugin with
+ * `export '…' not found`.
  */
 import {
   decideRunLoop,
   DEFAULT_MAX_CONTEXT_RESETS,
-} from "../../../scripts/qa/run-loop.js"
+} from "../../../scripts/qa/run-loop-core.mjs"
 
 export const RESUME_SCHEMA = 1
 export const RESUME_MARKER_REL = ".agents/context-resume.json"

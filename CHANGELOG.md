@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.10 — 2026-11-27
+
+- TUI auto clear-resume loads again on OpenCode 2.4.2: the plugin's dependency on
+  the shared resume decision core is now a true ES module
+  (`scripts/qa/run-loop-core.mjs`) instead of the CommonJS runner script. OpenCode's
+  TUI loader evaluates the plugin graph as ESM-only, where a CommonJS dependency
+  exposes no exports and the whole plugin failed at read time with
+  `export 'DEFAULT_MAX_CONTEXT_RESETS' not found`. `scripts/qa/run-loop.js` remains
+  a synchronous CommonJS facade for `agent-harness run` and `scripts/finalize.js`,
+  so the runner is unchanged. A new `test:quick` guard walks every TUI plugin entry
+  and fails on a relative `.js`/`.cjs` import, with a negative fixture proving the
+  guard fires. The documented Node floor is now 20.19+, the first release that can
+  `require()` an ES module. (F-054)
+
 ## 0.5.9 — 2026-11-26
 
 - A TUI session in a feature worktree now resumes itself at the context

@@ -48,7 +48,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | .agents/handoffs/F-050.md (worktree: ../.worktrees/agent-harness/f-050; branch: f-050) |
-| F-054 | ? | TUI plugin context-resume fails to load on OpenCode 2.4.2: ESM plugin graph named-imports from CJS scripts/qa/run-loop.js (export 'DEFAULT_MAX_CONTEXT_RESETS' not found) | .agents/handoffs/F-054.md (worktree: ../.worktrees/agent-harness/f-054; branch: f-054) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -136,6 +135,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-051 | ? | Auto clear-resume when a feature session reaches its context limit: detect the request-context ceiling, write the deterministic checkpoint, start a fresh bounded context seeded from that checkpoint, and continue the feature without a manual /resume. | shipped |
 | F-052 | ? | Auto clear-resume in the TUI: a TUI-side plugin that, when a feature-worktree session crosses the context ceiling and its checkpoint advanced, opens and focuses a fresh session seeded from the checkpoint (no manual /resume), reusing the runner's freshness/progress gates and reset cap. | shipped |
 | F-053 | ? | Require committed deployed plugin copies: the context-resume source-contract test read the working tree, so a locally deployed but uncommitted copy masked b513264's CI failure (ENOENT in a clean checkout) | shipped |
+| F-054 | ? | TUI plugin context-resume fails to load on OpenCode 2.4.2: ESM plugin graph named-imports from CJS scripts/qa/run-loop.js (export 'DEFAULT_MAX_CONTEXT_RESETS' not found) | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

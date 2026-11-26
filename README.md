@@ -21,7 +21,7 @@ and QA gates — then deploys them into any project.
 
 - **OpenCode V2** (`opencode --version` >= 2.0.29). The harness ships V2 plugins
   and does not run on V1.
-- **Node.js >= 20** and **git**.
+- **Node.js >= 20.19** and **git**.
 - The default model routing targets the `opencode-go` provider. If you use a
   different provider, edit the `model:` lines in `.opencode/agents/*.md` and
   `opencode.json` after `init`; the routing policy is documented in

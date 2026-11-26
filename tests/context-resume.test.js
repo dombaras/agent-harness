@@ -12,6 +12,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
@@ -220,3 +221,92 @@ test("the plugin is registered for the TUI loader in both configs", () => {
     );
   }
 });
+
+/* F-054: OpenCode's TUI plugin loader evaluates the whole plugin graph as ESM.
+ * Relative `.js`/`.cjs` deps are invisible CJS there (no exports), even though
+ * Node/Bun interop loads them fine — so a passing unit import proves nothing.
+ * Walk the graph and reject any CommonJS hop. */
+const CJS_EXT = new Set([".js", ".cjs"]);
+
+function resolveRelativeImport(fromFile, spec) {
+  const base = path.resolve(path.dirname(fromFile), spec);
+  if (path.extname(base)) return fs.existsSync(base) ? base : null;
+  for (const ext of [".ts", ".tsx", ".mjs", ".js", ".cjs"]) {
+    if (fs.existsSync(base + ext)) return base + ext;
+  }
+  for (const ext of [".ts", ".tsx", ".mjs", ".js", ".cjs"]) {
+    const index = path.join(base, "index" + ext);
+    if (fs.existsSync(index)) return index;
+  }
+  return null;
+}
+
+function esmGraphViolations(entries) {
+  const visited = new Set();
+  const violations = [];
+  const visit = (file) => {
+    if (visited.has(file)) return;
+    visited.add(file);
+    const ext = path.extname(file);
+    if (CJS_EXT.has(ext)) {
+      violations.push(`${file} is CommonJS (${ext})`);
+      return;
+    }
+    const src = fs.readFileSync(file, "utf8");
+    const specs = [];
+    for (const m of src.matchAll(/(?:import|export)[\s\S]*?from\s*["']([^"']+)["']|import\s*["']([^"']+)["']/g)) {
+      specs.push(m[1] || m[2]);
+    }
+    for (const spec of specs) {
+      if (!spec.startsWith(".")) continue; // package / node: imports are not ours
+      if (CJS_EXT.has(path.extname(spec))) {
+        violations.push(`${file} imports CommonJS ${spec}`);
+        continue;
+      }
+      const resolved = resolveRelativeImport(file, spec);
+      if (!resolved) {
+        violations.push(`${file} has an unresolved relative import ${spec}`);
+        continue;
+      }
+      visit(resolved);
+    }
+  };
+  for (const entry of entries) visit(entry);
+  return { violations, visited: [...visited] };
+}
+
+test("the TUI plugin graph is ESM-only (never imports .js/.cjs)", () => {
+  const entries = ["tui.tsx", "index.ts"].map((rel) => path.join(PLUGIN_DIR, rel));
+  const { violations, visited } = esmGraphViolations(entries);
+  assert.deepStrictEqual(violations, [], violations.join("\n"));
+  assert.ok(
+    visited.some((file) => file.endsWith(path.join("scripts", "qa", "run-loop-core.mjs"))),
+    "the decision core is part of the TUI ESM graph"
+  );
+  assert.ok(
+    !visited.some((file) => file.endsWith(path.join("scripts", "qa", "run-loop.js"))),
+    "the CJS facade is not part of the TUI ESM graph"
+  );
+});
+
+test("the ESM-graph guard catches a CommonJS import (negative fixture)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "context-resume-esm-"));
+  try {
+    const entry = path.join(dir, "tui.tsx");
+    fs.writeFileSync(entry, 'import { x } from "./legacy.js"\n', "utf8");
+    fs.writeFileSync(path.join(dir, "legacy.js"), "module.exports = { x: 1 }\n", "utf8");
+    const { violations } = esmGraphViolations([entry]);
+    assert.strictEqual(violations.length, 1, "exactly the CJS hop is reported");
+    assert.match(violations[0], /imports CommonJS \.\/legacy\.js/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the decision core is real ESM with no CommonJS markers", () => {
+  const core = fs.readFileSync(path.join(REPO, "templates", "scripts", "qa", "run-loop-core.mjs"), "utf8");
+  assert.ok(!/^\s*module\.exports\b/m.test(core), "no module.exports");
+  assert.ok(!/\brequire\s*\(/.test(core), "no require()");
+  assert.match(core, /^export \{/m);
+});
+

@@ -1,8 +1,11 @@
-#!/usr/bin/env node
-"use strict";
 /*
- * run-loop — pure decision core for the end-to-end auto-resume runner
- * (`agent-harness run`).
+ * run-loop-core — pure ESM decision core for the end-to-end auto-resume runner
+ * (`agent-harness run`) and the TUI auto clear-resume plugin.
+ *
+ * ESM is load-bearing: OpenCode's TUI plugin loader evaluates its whole plugin
+ * graph as ESM-only, so a TUI entry must never reach a CommonJS `.js`/`.cjs`
+ * module (it sees no exports). The CJS facade `run-loop.js` re-exports this
+ * file for the runner and `scripts/finalize.js`.
  *
  * The problem it solves: a full agentic dev cycle (pick → plan → implement → QA
  * → gates → ship → land → UAT deploy) needs more turns than one bounded context
@@ -274,7 +277,7 @@ function decideRunLoop(input) {
   };
 }
 
-module.exports = {
+export {
   sectionText,
   firstRowId,
   inProgressFeature,

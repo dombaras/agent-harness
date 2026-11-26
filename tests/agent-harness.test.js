@@ -10865,7 +10865,7 @@ const finalizeModule = require(path.join(h.TEMPLATES_DIR, "scripts", "finalize.j
 function scaffoldFinalizeTarget() {
   const target = tmpdir();
   fs.mkdirSync(path.join(target, "scripts", "qa"), { recursive: true });
-  for (const rel of ["scripts/backlog.js", "scripts/finalize.js", "scripts/qa/run-loop.js"]) {
+  for (const rel of ["scripts/backlog.js", "scripts/finalize.js", "scripts/qa/run-loop.js", "scripts/qa/run-loop-core.mjs"]) {
     fs.copyFileSync(path.join(h.TEMPLATES_DIR, rel), path.join(target, rel));
   }
   copyBoardLib(target);
@@ -10911,7 +10911,7 @@ function scaffoldHandoffSyncTarget() {
   const main = tmpdir();
   const wt = main + "-wt";
   fs.mkdirSync(path.join(main, "scripts", "qa"), { recursive: true });
-  for (const rel of ["scripts/backlog.js", "scripts/finalize.js", "scripts/qa/run-loop.js"]) {
+  for (const rel of ["scripts/backlog.js", "scripts/finalize.js", "scripts/qa/run-loop.js", "scripts/qa/run-loop-core.mjs"]) {
     fs.copyFileSync(path.join(h.TEMPLATES_DIR, rel), path.join(main, rel));
   }
   copyBoardLib(main);
