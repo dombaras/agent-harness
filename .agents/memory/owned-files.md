@@ -8,4 +8,4 @@ not own the same file). Format: `- <ID>: <glob>[, <glob>...]`.
 - F-020: templates/scripts/backlog.js, tests/agent-harness.test.js, .agents/qa-plans/f-020-*.md, CHANGELOG.md
 - F-028: scripts/finalize.js, scripts/qa/governance.js, templates/scripts/finalize.js, templates/scripts/qa/governance.js, .github/workflows/deploy-libraryos.yml, tests/agent-harness.test.js
 - F-041: lib/wikidata.ts, scripts/qa/tests/wikidata-genres.test.ts
-- F-051: bin/agent-harness.js, templates/scripts/qa/run-loop.js, scripts/qa/run-loop.js, templates/scripts/qa/context-guard-core.js, scripts/qa/context-guard-core.js, templates/.opencode/plugins/context-guard.ts, .opencode/plugins/context-guard.ts, tests/agent-harness.test.js, .agents/qa-plans/F-051.md, .agents/features/f-051/intent.md
+- F-051: bin/agent-harness.js, templates/scripts/qa/run-loop.js, scripts/qa/run-loop.js, templates/scripts/qa/context-guard-core.js, scripts/qa/context-guard-core.js, templates/.opencode/plugins/context-guard.ts, .opencode/plugins/context-guard.ts, tests/agent-harness.test.js, package.json, .harness.json, CHANGELOG.md, .agents/qa-plans/F-051.md, .agents/features/f-051/intent.md
