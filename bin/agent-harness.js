@@ -1842,7 +1842,8 @@ function printUsage() {
       `                     # symlinks templates/ into the repo root; restart opencode\n` +
       `  agent-harness explain <gate>            # what a gate enforces + how to satisfy/waive it\n` +
       `  agent-harness run [--target <dir>] [--feature <id>] [--prompt <text>]\n` +
-      `                     [--max-phases <n>] [--opencode <path>] [--dry-run]\n` +
+      `                     [--max-phases <n>] [--max-context-resets <n>]\n` +
+      `                     [--opencode <path>] [--dry-run]\n` +
       `  agent-harness --version | -v\n` +
       `  agent-harness --help | -h\n`
   );
@@ -3041,6 +3042,9 @@ function runCommand(target, flags) {
   const backlogPath = path.join(target, "BACKLOG.md");
   const handoffDir = path.join(target, ".agents", "handoffs");
   const maxPhases = parseInt(flags["--max-phases"], 10) || 4;
+  const resetsRaw = parseInt(flags["--max-context-resets"], 10);
+  const maxContextResets =
+    Number.isFinite(resetsRaw) && resetsRaw >= 0 ? resetsRaw : loop.DEFAULT_MAX_CONTEXT_RESETS;
   const dryRun = !!flags["--dry-run"];
   const opencode = flags["--opencode"] || resolveOpencode();
   if (!dryRun && !opencode) {
@@ -3056,14 +3060,36 @@ function runCommand(target, flags) {
     }
   };
   const readHandoff = (feature) => (feature ? readIf(path.join(handoffDir, feature + ".md")) : "");
+  // Auto clear-resume handshake (F-051): the guard writes this marker when a
+  // primary session in a feature worktree crosses the `intervene` request level.
+  // The runner reads it after a phase and deletes it once consumed.
+  const markerPath = path.join(target, ".agents", "context-resume.json");
+  const readMarker = () => {
+    try {
+      return JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    } catch (_) {
+      return null;
+    }
+  };
+  const consumeMarker = () => {
+    try {
+      fs.unlinkSync(markerPath);
+    } catch (_) {
+      /* absent marker is the normal case */
+    }
+  };
 
-  console.log(`agent-harness run — target ${target} (max ${maxPhases} phase(s))`);
+  console.log(`agent-harness run — target ${target} (max ${maxPhases} phase(s), max ${maxContextResets} context reset(s))`);
   let feature = flags["--feature"] || null;
   let prompt = flags["--prompt"] || null;
   let phasesRun = 0;
   let lastExit = null;
+  let contextResets = 0;
+  let phaseStartedAt = 0;
+  let priorCheckpointCount = null;
 
   while (true) {
+    const marker = phasesRun > 0 ? readMarker() : null;
     const decision = loop.decideRunLoop({
       backlogText: readIf(backlogPath),
       handoffText: readHandoff(feature),
@@ -3071,7 +3097,13 @@ function runCommand(target, flags) {
       phasesRun,
       maxPhases,
       lastExit,
+      marker,
+      phaseStartedAt,
+      priorCheckpointCount,
+      contextResets,
+      maxContextResets,
     });
+    if (phasesRun > 0) consumeMarker();
     if (decision.action !== "resume") {
       console.log(`\nrun: ${decision.action} — ${decision.reason}`);
       // A dry-run that reaches the phase cap is a plan, not a failure.
@@ -3079,9 +3111,15 @@ function runCommand(target, flags) {
       break;
     }
     const phase = phasesRun + 1;
+    const phaseFeature = decision.feature || feature;
     // The first phase uses the explicit /next-style prompt; later phases resume.
     const message = phasesRun === 0 && prompt ? prompt : decision.prompt;
     console.log(`\n── phase ${phase}/${maxPhases}: ${decision.reason} ──`);
+    // The freshness + progress baseline for a guard marker written DURING this
+    // phase: anything older, or a checkpoint that did not advance, is not a
+    // resumable context boundary.
+    phaseStartedAt = Date.now();
+    priorCheckpointCount = loop.checkpointCount(readHandoff(phaseFeature));
     if (dryRun) {
       console.log(`  [dry-run] would run: ${opencode || "opencode"} run <prompt>`);
       console.log(`  [dry-run] prompt: ${message}`);
@@ -3089,7 +3127,8 @@ function runCommand(target, flags) {
       const r = spawnSync(opencode, ["run", message], { cwd: target, stdio: "inherit" });
       lastExit = r.status == null ? 1 : r.status;
     }
-    feature = decision.feature || feature;
+    contextResets = decision.contextReset ? contextResets + 1 : 0;
+    feature = phaseFeature;
     phasesRun = phase;
     prompt = decision.prompt;
   }
@@ -3128,6 +3167,7 @@ function parseArgs(argv) {
     "--feature",
     "--prompt",
     "--max-phases",
+    "--max-context-resets",
     "--opencode",
     "--dir",
     "--time",

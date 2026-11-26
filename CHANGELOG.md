@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.8 — 2026-11-26
+
+- A long feature run no longer stalls at the context ceiling waiting for a manual
+  resume: when the guard records that a session in a feature worktree crossed its
+  context limit, `agent-harness run` now treats that phase exit as a resumable
+  boundary and starts a fresh bounded context from the checkpoint. The marker is
+  trusted only when it was written during the phase, belongs to the same feature,
+  and the checkpoint actually advanced; a stale or no-progress marker stops the
+  run, and consecutive resets are capped (`--max-context-resets`, default 3) so a
+  relaunch loop cannot run away. Interactive TUI sessions on main keep the
+  advisory nudge and are never relaunched. (F-051)
+
 ## 0.5.6 — 2026-11-25
 
 - Resuming or checkpointing a work unit now accepts lowercase and separator-variant
@@ -13,7 +25,7 @@
 
 - The freshness badge test no longer depends on the wall clock: it pins the
   F-038 verdict timestamp, so a run that crosses midnight cannot flip the
-  assertion. (F-039, 53bd9e3)
+  assertion. (F-039, `53bd9e3`)
 
 - The freshness activity test no longer drives its plugin spawn against the
   developer's real project registry. That spawn lacked `XDG_STATE_HOME`, so its

@@ -1630,7 +1630,49 @@ function resetGateRuns(state) {
   state.gateRuns = new Map();
 }
 
+/* ------------------------------------------------- auto clear-resume (F-051)
+ *
+ * The guard cannot relaunch a session, and the runner cannot see a session's
+ * request context. The handshake is a small marker file in the feature
+ * worktree: when a PRIMARY session crosses the `intervene` request level, the
+ * plugin writes `.agents/context-resume.json`; `agent-harness run` reads it
+ * after the phase and decides (in run-loop.js) whether the exit was a genuine
+ * context boundary with recorded progress. A main checkout never writes one, so
+ * an interactive TUI session keeps the advisory nudge and is never killed.
+ */
+const CONTEXT_RESUME_SCHEMA = 1;
+const CONTEXT_RESUME_REL = ".agents/context-resume.json";
+
+/* Harness worktree branch -> feature id (`f-051` -> `F-051`), or null. Only the
+ * harness's own branch shape counts, so a docs branch (`docs/f-239-...`) never
+ * fabricates a feature for the runner. */
+function featureFromBranch(branch) {
+  const m = String(branch || "").trim().match(/^[fF]-(\d+)\b/);
+  return m ? "F-" + m[1] : null;
+}
+
+/* Normalize the marker payload. Unknown/missing fields are never invented: an
+ * absent token count or checkpoint count stays null/0, and the runner's
+ * freshness + progress gates make a thin marker useless rather than dangerous. */
+function contextResumeMarker(fields) {
+  const f = fields || {};
+  const tokens = Number(f.tokens);
+  const count = Number(f.checkpointCount);
+  return {
+    schema: CONTEXT_RESUME_SCHEMA,
+    feature: f.feature ? String(f.feature) : null,
+    sessionID: f.sessionID ? String(f.sessionID) : null,
+    tokens: Number.isFinite(tokens) ? tokens : null,
+    at: f.at ? String(f.at) : new Date().toISOString(),
+    checkpoint_count: Number.isFinite(count) ? count : 0,
+  };
+}
+
 module.exports = {
+  CONTEXT_RESUME_SCHEMA,
+  CONTEXT_RESUME_REL,
+  featureFromBranch,
+  contextResumeMarker,
   DEFAULT_TURNS,
   DEFAULT_STUCK,
   DEFAULT_REQUEST,

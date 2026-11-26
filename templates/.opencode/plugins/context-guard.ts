@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { execFileSync, spawn } from "node:child_process"
 import guard from "../../scripts/qa/context-guard-core.js"
+import runLoop from "../../scripts/qa/run-loop.js"
 import capacity from "../../scripts/qa/capacity-lib.js"
 import leases from "../../scripts/qa/lease-lib.js"
 import toolLib from "../../scripts/qa/tool-lib.js"
@@ -356,6 +357,48 @@ export default {
     }
   }
 
+  /* ------------------------------------------------- auto clear-resume (F-051)
+   * The runner (`agent-harness run`) relaunches a fresh bounded context instead
+   * of stopping mid-feature, but it cannot see this session's request context.
+   * The guard records the crossing: a marker in the feature worktree carries the
+   * feature id and the checkpoint count a fresh context would resume from. Only
+   * a linked (feature) worktree writes one — an interactive session on main
+   * keeps the advisory nudge and is never killed — and the runner deletes the
+   * marker once it has consumed it. */
+  const writeContextResume = (sessionID: string, tokens: number | null) => {
+    try {
+      const root = rootOf(sessionID)
+      if (checkoutKind(root) !== "linked") return
+      const feature = guard.featureFromBranch(gitOut(root, ["branch", "--show-current"]))
+      if (!feature) return
+      let handoff = ""
+      try {
+        handoff = fs.readFileSync(path.join(root, ".agents", "handoffs", feature + ".md"), "utf8")
+      } catch {
+        /* no checkpoint yet — the crossing is still recorded */
+      }
+      const marker = guard.contextResumeMarker({
+        feature,
+        sessionID,
+        tokens,
+        checkpointCount: runLoop.checkpointCount(handoff),
+        at: new Date().toISOString(),
+      })
+      const file = path.join(root, guard.CONTEXT_RESUME_REL)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify(marker, null, 2) + "\n", "utf8")
+      logEvent({
+        kind: "context-resume",
+        sessionID,
+        feature,
+        tokens: marker.tokens,
+        checkpointCount: marker.checkpoint_count,
+      })
+    } catch {
+      /* best-effort handshake — the runner stops when no marker exists */
+    }
+  }
+
   /* Trimmed stdout of a git command run in `cwd`, or null on ANY failure (git
    * absent, not a repo, bad ref). null is "unknown": the caller stays
    * conservative and blocks, so a missing git binary can never open a hole. */
@@ -686,6 +729,9 @@ export default {
               level: note.requestLevel,
               tokens: note.requestTokens,
             })
+            // Auto clear-resume handshake: record the crossing for `agent-harness
+            // run` (feature worktrees only; pure decision in run-loop.js).
+            if (note.requestLevel === "intervene") writeContextResume(sid, note.requestTokens)
           }
           if (note.noStateChanged) {
             logEvent({

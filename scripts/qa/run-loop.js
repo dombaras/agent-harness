@@ -115,6 +115,46 @@ function checkpointNextAction(handoffText) {
   return m ? m[1].trim() : null;
 }
 
+/* The checkpoint's monotonic counter (`checkpoint_count`, written by
+ * scripts/checkpoint.js). It is how the runner tells "the fresh context
+ * recorded the state it just reached" from "the context died without progress". */
+function checkpointCount(handoffText) {
+  const block = sectionText(handoffText, "Checkpoint");
+  const m = block.match(/^-\s*checkpoint_count:\s*(\d+)\s*$/im);
+  return m ? Number(m[1]) : null;
+}
+
+/* ---------------------------------------------------- context-reset handshake
+ *
+ * A primary session cannot relaunch itself at the context ceiling, so the guard
+ * writes `.agents/context-resume.json` when a session in a FEATURE worktree
+ * crosses the `intervene` request level (see context-guard-core.js
+ * `contextResumeMarker`). The marker is only a *claim* that the phase ended at a
+ * context boundary rather than on a real failure: the runner accepts it only
+ * when it is FRESH (written after the phase started), matches the feature, and
+ * the phase made progress (the checkpoint advanced or a next_action exists).
+ * Pure, so every rule is unit-testable without the plugin or a subprocess. */
+const DEFAULT_MAX_CONTEXT_RESETS = 3;
+
+function contextResetStatus(input) {
+  const marker = input?.marker && typeof input.marker === "object" ? input.marker : null;
+  if (!marker) return { marker: null, fresh: false, featureMatch: false, progressed: false };
+  const at = Date.parse(String(marker.at || ""));
+  const started = Number(input?.phaseStartedAt);
+  const fresh = Number.isFinite(at) && Number.isFinite(started) && at >= started;
+  const wanted = input?.feature ? String(input.feature) : null;
+  const claimed = marker.feature ? String(marker.feature) : null;
+  // With no feature known yet (phase 0 claimed one), the marker supplies it.
+  const featureMatch =
+    claimed != null && (wanted == null || wanted.toUpperCase() === claimed.toUpperCase());
+  const priorRaw = input?.priorCheckpointCount;
+  const prior = priorRaw == null || priorRaw === "" ? null : Number(priorRaw);
+  const current = checkpointCount(input?.handoffText);
+  const advanced = Number.isFinite(current) && (Number.isFinite(prior) ? current > prior : current > 0);
+  const progressed = advanced || !!checkpointNextAction(input?.handoffText);
+  return { marker, fresh, featureMatch, progressed, feature: claimed, from: prior, to: current };
+}
+
 /* True when the checkpoint shows only the deterministic tail remains: the phase
  * names a verify/finalize/ship state, or next_action points at archive/ship. */
 function finalizationReady(handoffText) {
@@ -146,6 +186,12 @@ function decideRunLoop(input) {
   const feature = input && input.feature ? String(input.feature) : null;
   const phasesRun = Number(input && input.phasesRun) || 0;
   const maxPhases = Number(input && input.maxPhases) || 4;
+  const resetsRun = Number(input && input.contextResets) || 0;
+  const maxResetsRaw = Number(input && input.maxContextResets);
+  const maxContextResets =
+    Number.isFinite(maxResetsRaw) && maxResetsRaw >= 0 ? maxResetsRaw : DEFAULT_MAX_CONTEXT_RESETS;
+  const reset = contextResetStatus(input || {});
+  const boundaryFeature = reset.feature || feature;
 
   if (feature && isArchived(input.backlogText, feature)) {
     return { action: "done", reason: `${feature} is archived on the board (landed)`, feature };
@@ -159,8 +205,29 @@ function decideRunLoop(input) {
     return { action: "stop", reason: `phase cap reached (${maxPhases}) before landing`, feature };
   }
 
-  // A failed phase stops the loop unless the board/handoff above proved landing.
-  if (Number.isFinite(input.lastExit) && input.lastExit !== 0) {
+  // A guard marker only turns the phase exit into a resumable context boundary
+  // when it is fresh, matches the feature, and the phase recorded progress.
+  // Same-length checkpoints (a re-write that adds nothing) mean the context died
+  // without advancing the work — never relaunch that loop.
+  const boundary = reset.fresh && reset.featureMatch && reset.progressed;
+  if (reset.fresh && reset.featureMatch && !reset.progressed) {
+    return {
+      action: "stop",
+      reason: `context boundary for ${boundaryFeature} did not advance the checkpoint — no progress to resume from`,
+      feature: boundaryFeature,
+    };
+  }
+  if (boundary && resetsRun >= maxContextResets) {
+    return {
+      action: "stop",
+      reason: `context reset cap reached (${maxContextResets}) on ${boundaryFeature} before landing — inspect instead of relaunching`,
+      feature: boundaryFeature,
+    };
+  }
+
+  // A failed phase stops the loop unless the board/handoff above proved landing
+  // or the guard recorded a genuine context boundary with recorded progress.
+  if (Number.isFinite(input.lastExit) && input.lastExit !== 0 && !boundary) {
     return {
       action: "stop",
       reason: `phase exited ${input.lastExit} and the work is not landed — inspect before resuming`,
@@ -184,7 +251,7 @@ function decideRunLoop(input) {
         };
   }
 
-  const next = feature || inProgressFeature(input.backlogText);
+  const next = feature || boundaryFeature || inProgressFeature(input.backlogText);
   if (!next) {
     return {
       action: "stop",
@@ -193,13 +260,17 @@ function decideRunLoop(input) {
     };
   }
   const finalizing = finalizationReady(input.handoffText);
+  const reason = finalizing
+    ? `finalizing ${next} in a fresh bounded context (implementation complete)`
+    : boundary
+      ? `context boundary after checkpoint ${reset.to ?? "?"} — resuming ${next} in a fresh bounded context`
+      : `resuming ${next} in a fresh bounded context`;
   return {
     action: "resume",
-    reason: finalizing
-      ? `finalizing ${next} in a fresh bounded context (implementation complete)`
-      : `resuming ${next} in a fresh bounded context`,
+    reason,
     feature: next,
     prompt: finalizing ? finalizePrompt(next) : resumePrompt(next),
+    contextReset: boundary,
   };
 }
 
@@ -214,6 +285,9 @@ module.exports = {
   finalizePrompt,
   checkpointPhase,
   checkpointNextAction,
+  checkpointCount,
+  DEFAULT_MAX_CONTEXT_RESETS,
+  contextResetStatus,
   finalizationReady,
   initialPrompt,
   decideRunLoop,

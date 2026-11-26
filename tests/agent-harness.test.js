@@ -10721,6 +10721,107 @@ test("run-loop resume prompt never depends on the TUI command surface", () => {
   assert.doesNotMatch(prompt, /^\/resume/, "run mode receives a message, not a slash command");
 });
 
+test("run-loop drives auto clear-resume from a fresh, progressing context marker", () => {
+  const handoff = (count, next) =>
+    ["# handoff", "", "## Checkpoint (resume)", "", "- feature: F-256", `- checkpoint_count: ${count}`, `- next_action: ${next || ""}`, ""].join("\n");
+  assert.strictEqual(runLoop.checkpointCount(handoff(2, "x")), 2);
+  assert.strictEqual(runLoop.checkpointCount("## Checkpoint\n\n- phase: implementing\n"), null);
+
+  const now = Date.now();
+  const start = now - 60_000;
+  const marker = {
+    schema: 1,
+    feature: "F-256",
+    sessionID: "ses_test",
+    tokens: 161000,
+    at: new Date(now - 30_000).toISOString(),
+    checkpoint_count: 3,
+  };
+  const status = (patch) =>
+    runLoop.contextResetStatus({ marker, phaseStartedAt: start, feature: "F-256", priorCheckpointCount: 2, handoffText: handoff(3, "carry on"), ...patch });
+
+  const fresh = status({});
+  assert.strictEqual(fresh.fresh, true);
+  assert.strictEqual(fresh.featureMatch, true);
+  assert.strictEqual(fresh.progressed, true);
+  assert.strictEqual(status({ phaseStartedAt: now }).fresh, false, "a marker from before the phase is stale");
+  assert.strictEqual(status({ feature: "F-050" }).featureMatch, false, "another feature's marker is never consumed");
+  assert.strictEqual(status({ handoffText: handoff(3, ""), priorCheckpointCount: 3 }).progressed, false, "a same-count checkpoint with no next_action is no progress");
+
+  // A fresh, matching marker with a non-zero phase exit resumes instead of stopping.
+  const resumed = runLoop.decideRunLoop({
+    backlogText: RUN_BACKLOG,
+    handoffText: handoff(3, "continue"),
+    feature: "F-256",
+    phasesRun: 1,
+    lastExit: 137,
+    marker,
+    phaseStartedAt: start,
+    priorCheckpointCount: 2,
+  });
+  assert.strictEqual(resumed.action, "resume");
+  assert.strictEqual(resumed.contextReset, true);
+  assert.match(resumed.reason, /context boundary/);
+
+  // Phase 0 claimed the row: the marker supplies the feature the runner lacks.
+  const adopted = runLoop.decideRunLoop({
+    backlogText: RUN_BACKLOG,
+    handoffText: handoff(1, "continue"),
+    feature: null,
+    phasesRun: 1,
+    lastExit: 0,
+    marker: { ...marker, at: new Date().toISOString() },
+    phaseStartedAt: start,
+    priorCheckpointCount: null,
+  });
+  assert.strictEqual(adopted.feature, "F-256");
+  assert.strictEqual(adopted.contextReset, true);
+
+  // No progress stops even when the marker is fresh and matching.
+  const stalled = runLoop.decideRunLoop({
+    backlogText: RUN_BACKLOG,
+    handoffText: handoff(3, ""),
+    feature: "F-256",
+    phasesRun: 1,
+    lastExit: 0,
+    marker,
+    phaseStartedAt: start,
+    priorCheckpointCount: 3,
+  });
+  assert.strictEqual(stalled.action, "stop");
+  assert.match(stalled.reason, /did not advance/);
+
+  // The reset cap bounds a relaunch loop.
+  const capped = runLoop.decideRunLoop({
+    backlogText: RUN_BACKLOG,
+    handoffText: handoff(4, "continue"),
+    feature: "F-256",
+    phasesRun: 2,
+    lastExit: 0,
+    marker,
+    phaseStartedAt: start,
+    priorCheckpointCount: 3,
+    contextResets: 3,
+    maxContextResets: 3,
+  });
+  assert.strictEqual(capped.action, "stop");
+  assert.match(capped.reason, /context reset cap/);
+
+  // A stale marker never blesses a failed phase.
+  const failed = runLoop.decideRunLoop({
+    backlogText: RUN_BACKLOG,
+    handoffText: handoff(4, "continue"),
+    feature: "F-256",
+    phasesRun: 1,
+    lastExit: 2,
+    marker,
+    phaseStartedAt: now,
+    priorCheckpointCount: 3,
+  });
+  assert.strictEqual(failed.action, "stop");
+  assert.match(failed.reason, /exited 2/);
+});
+
 test("run-loop sends an implementation-complete checkpoint straight to finalization", () => {
   const complete = [
     "# handoff",
@@ -10997,6 +11098,47 @@ test("[drift-guard] LibraryOS auto-deploy publishes a side branch and never writ
   assert.match(src, /update --target "\$PWD" --no-push/, "the update never pushes from its own commit path");
   assert.match(src, /refs\/heads\/harness\/auto-update/, "the update is published to a side branch");
   assert.doesNotMatch(src, /git push[^\n]*(HEAD:main|origin main)/, "no CI write to LibraryOS main");
+});
+
+test("context-guard describes the auto clear-resume marker (F-051)", () => {
+  const CG = require(path.join(h.TEMPLATES_DIR, "scripts", "qa", "context-guard-core.js"));
+  assert.strictEqual(CG.featureFromBranch("f-051"), "F-051");
+  assert.strictEqual(CG.featureFromBranch("F-512\n"), "F-512");
+  assert.strictEqual(CG.featureFromBranch("main"), null);
+  assert.strictEqual(CG.featureFromBranch(""), null);
+  assert.strictEqual(CG.featureFromBranch("docs/f-239-record-landing"), null, "a docs branch is not a feature worktree");
+  assert.strictEqual(CG.CONTEXT_RESUME_REL, ".agents/context-resume.json");
+
+  const m = CG.contextResumeMarker({
+    feature: "F-051",
+    sessionID: "ses_test",
+    tokens: 161234,
+    checkpointCount: 2,
+    at: "2026-11-26T10:05:00.000Z",
+  });
+  assert.deepStrictEqual(m, {
+    schema: CG.CONTEXT_RESUME_SCHEMA,
+    feature: "F-051",
+    sessionID: "ses_test",
+    tokens: 161234,
+    at: "2026-11-26T10:05:00.000Z",
+    checkpoint_count: 2,
+  });
+  const thin = CG.contextResumeMarker({});
+  assert.strictEqual(thin.feature, null);
+  assert.strictEqual(thin.tokens, null);
+  assert.strictEqual(thin.checkpoint_count, 0);
+  assert.match(thin.at, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("context-guard plugin writes the context-resume marker only from a feature worktree (F-051)", () => {
+  const src = read(path.join(h.TEMPLATES_DIR, ".opencode", "plugins", "context-guard.ts"));
+  assert.match(src, /writeContextResume/, "the primary crossing records the marker");
+  assert.match(src, /guard\.contextResumeMarker/, "the payload shape lives in the pure core");
+  assert.match(src, /featureFromBranch/, "the feature comes from the worktree branch");
+  assert.match(src, /checkoutKind\(root\) !== "linked"/, "a main checkout never writes one (the interactive TUI keeps the advisory nudge)");
+  assert.match(src, /note\.requestLevel === "intervene"/, "only an intervene crossing arms it");
+  assert.match(src, /CONTEXT_RESUME_REL/, "the runner and the guard share one marker path");
 });
 
 test("context-guard carries the finalization carve-out (run finalize, do not stop)", () => {
