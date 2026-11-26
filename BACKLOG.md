@@ -47,6 +47,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
+| F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | .agents/handoffs/F-050.md (worktree: ../.worktrees/agent-harness/f-050; branch: f-050) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -67,7 +68,6 @@ Sorted by priority (P1 → P4).
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
 | F-041 | P2 | ? | Prune the feature worktree automatically at task completion: after finalize archives the landed row and CI is green, remove the shipped worktree (or schedule worktree-prune) instead of printing "feature worktree left in place — clean up when this session ends". Never prune an unmerged or dirty worktree, or the session's own checkout; report what was kept and why. | F-040 finalize/ship output: "[ship] feature worktree left in place. Clean up when this session ends"; /home/ronen/develop/.worktrees/agent-harness/f-040 remains after a green-CI landing; scripts/ship.js tail; scripts/finalize.js archive step; docs: .agents/AGENTS.md §7.6 | ? |
-| F-050 | P2 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | Discovery 2026-11-26: ship.js:533-546 detects red CI then only exits; nightly.js reconciles local failures only; uat-health.yml notifies only; run-loop.js:162-169 stops on a failed phase; no automatic retry. Plan: .agents/features/feedback-loop/plan.md | ? |
 | F-016 | P4 | ? | Document the 2.3.2 CLI/config additions the harness docs miss: `opencode plugin` (list/add/check/update/remove), `opencode stats` (--tools/--cost/--json), the top-level `plugins` config key, and the MCP server `protocol` field. | docs/opencode-v2.3-compat-scan.md §G4; `opencode plugin --help`; `opencode stats --help`; @opencode/schema@2.3.2 config.plugin | ? |
 | F-017 | P4 | ? | Cross-check agent-report/store-lib against `opencode stats --json` as an independent oracle: the CLI now emits per-tool reliability + cost/token stats, so a parity assertion would catch store-shape drift the direct-DB reader silently misses. | docs/opencode-v2.3-compat-scan.md §G5; `opencode stats --help` | ? |
 
