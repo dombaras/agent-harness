@@ -49,7 +49,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | .agents/handoffs/F-050.md (worktree: ../.worktrees/agent-harness/f-050; branch: f-050) |
-| F-056 | ? | Resume discovery loses the checkpoint when the board row declares a slug handoff or several rows are In progress — resolver must honor the Handoff cell, and orient/checkpoint_resume must list resumable checkpoints instead of `none` | .agents/handoffs/F-056.md |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -143,6 +142,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-052 | ? | Auto clear-resume in the TUI: a TUI-side plugin that, when a feature-worktree session crosses the context ceiling and its checkpoint advanced, opens and focuses a fresh session seeded from the checkpoint (no manual /resume), reusing the runner's freshness/progress gates and reset cap. | shipped |
 | F-053 | ? | Require committed deployed plugin copies: the context-resume source-contract test read the working tree, so a locally deployed but uncommitted copy masked b513264's CI failure (ENOENT in a clean checkout) | shipped |
 | F-054 | ? | TUI plugin context-resume fails to load on OpenCode 2.4.2: ESM plugin graph named-imports from CJS scripts/qa/run-loop.js (export 'DEFAULT_MAX_CONTEXT_RESETS' not found) | shipped |
+| F-056 | ? | Resume discovery loses the checkpoint when the board row declares a slug handoff or several rows are In progress — resolver must honor the Handoff cell, and orient/checkpoint_resume must list resumable checkpoints instead of `none` | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
