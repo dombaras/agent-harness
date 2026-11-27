@@ -92,9 +92,12 @@ function parseArgs(argv) {
   const scalarFlags = new Set(["objective", "phase", "next-action", "session"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--feature") out.feature = argv[++i];
-    else if (a === "--root") out.root = argv[++i];
+    if (a === "--feature") {
+      out.feature = argv[++i];
+      out.featureSet = true;
+    } else if (a === "--root") out.root = argv[++i];
     else if (a === "--json") out.json = true;
+    else if (a === "--list") out.list = true;
     else if (a.startsWith("--") && listFlags.has(a.slice(2))) {
       const key = a.slice(2);
       if (!out.lists[key]) out.lists[key] = [];
@@ -397,6 +400,84 @@ function readCheckpoint(args) {
   };
 }
 
+/* The state of one handoff, or null when it has no checkpoint block. */
+function summaryOf(feature, file) {
+  let text = "";
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (_) {
+    return null;
+  }
+  const parts = splitCheckpoint(text);
+  if (!parts.body) return null;
+  const state = parseBlock(parts.body);
+  let updated = 0;
+  try {
+    updated = fs.statSync(file).mtimeMs;
+  } catch (_) {
+    updated = 0;
+  }
+  return {
+    feature,
+    file: path.resolve(file),
+    phase: state.phase || null,
+    nextAction: state.next_action || null,
+    count: Number(state.checkpoint_count) || 0,
+    updated,
+  };
+}
+
+/* Resumable checkpoints, most actionable first: the board's In-progress rows
+ * (honoring a declared slug handoff) and, when the board is unavailable or
+ * empty, the most recently written handoffs that carry a checkpoint block.
+ * This is the anti-guessing surface for a fresh context that does not know the
+ * feature id — it answers "which checkpoint?" without a 250-file glob. */
+function listResumable(limit = 10) {
+  const out = [];
+  const seen = new Set();
+  const add = (feature, file) => {
+    if (!file) return;
+    const abs = path.resolve(file);
+    if (seen.has(abs)) return;
+    const row = summaryOf(feature, abs);
+    if (!row) return;
+    seen.add(abs);
+    out.push(row);
+  };
+
+  const rows = featureResolver && typeof featureResolver.boardRows === "function" ? featureResolver.boardRows(root) : [];
+  for (const row of rows) {
+    const resolved = resolveHandoff(row.id);
+    if (resolved.file) add(row.id, resolved.file);
+  }
+
+  if (!out.length) {
+    const roots =
+      featureResolver && typeof featureResolver.rootsFor === "function"
+        ? featureResolver.rootsFor("", root)
+        : [root];
+    const hs = featureResolver && typeof featureResolver.handoffs === "function" ? featureResolver.handoffs(roots) : [];
+    for (const h of hs) {
+      const summary = summaryOf(h.id, h.file);
+      if (summary) summary.updated = summary.updated || 0;
+      if (summary) add(h.id, h.file);
+    }
+    out.sort((a, b) => b.updated - a.updated || a.feature.localeCompare(b.feature));
+  }
+
+  return out.slice(0, Math.max(1, Number(limit) || 10));
+}
+
+function renderResumable(rows) {
+  const lines = [`resumable checkpoints (${rows.length}):`];
+  for (const r of rows) {
+    const rel = path.relative(root, r.file).split(path.sep).join("/");
+    lines.push(`  ${r.feature} · phase ${r.phase || "?"} · next: ${r.nextAction || "?"} [${rel}]`);
+  }
+  lines.push("resume one: node scripts/checkpoint.js resume --feature <id>");
+  return lines.join("\n");
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
@@ -413,6 +494,15 @@ function main() {
     return;
   }
   if (cmd === "resume") {
+    if (args.list || !args.featureSet) {
+      const rows = listResumable();
+      if (args.json) {
+        console.log(JSON.stringify({ schema: "checkpoint-list/1", root, checkpoints: rows }, null, 2));
+        return;
+      }
+      console.log(renderResumable(rows));
+      return;
+    }
     const r = readCheckpoint(args);
     if (args.json) {
       console.log(
@@ -459,7 +549,8 @@ function main() {
     "Usage: node scripts/checkpoint.js write --feature <id> [--objective ...] [--phase ...]\n" +
       "         [--completed item]... [--active item]... [--files-changed path]... [--contracts item]...\n" +
       "         [--facts item]... [--decisions item]... [--risks item]... [--next-action ...] [--session <ses_...>]\n" +
-      "       node scripts/checkpoint.js resume --feature <id> [--json]"
+      "       node scripts/checkpoint.js resume --feature <id> [--json]\n" +
+      "       node scripts/checkpoint.js resume --list [--json]"
   );
   process.exitCode = 1;
 }
@@ -480,6 +571,8 @@ module.exports = {
   parseBlock,
   writeCheckpoint,
   readCheckpoint,
+  listResumable,
+  summaryOf,
   handoffPath,
   assertFeature,
   diagnosisState,

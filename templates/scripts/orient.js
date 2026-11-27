@@ -621,6 +621,26 @@ function collectOrient(opts = {}) {
         count: ck.state && ck.state.checkpoint_count,
       }
     : null;
+  /* Two live work units are routine (a device run + a review). Refusing to
+   * infer one is correct — silently hiding both checkpoints is not: a fresh
+   * context then reports "ckpt: none" and has to guess an id. List every
+   * In-progress row that actually has a checkpoint, bounded. */
+  const checkpointCandidates = [];
+  if (!checkpointState) {
+    for (const row of (board && board.inprogress) || []) {
+      const r = safe(() => readCheckpoint({ feature: row.id }), null);
+      if (!r || checkpointCandidates.some((c) => path.resolve(c.file) === path.resolve(r.file))) continue;
+      checkpointCandidates.push({
+        id: row.id,
+        feature: r.feature,
+        file: r.file,
+        phase: r.state && r.state.phase,
+        nextAction: r.state && r.state.next_action,
+        count: r.state && r.state.checkpoint_count,
+      });
+      if (checkpointCandidates.length >= 5) break;
+    }
+  }
   // The inquiry loop's artifact for the active feature: status/confidence, a
   // staleness verdict against this HEAD/harness, and the next action.
   const harnessVer = harnessVersion(root);
@@ -663,6 +683,7 @@ function collectOrient(opts = {}) {
       : null,
     ownedFiles: owned,
     checkpoint: checkpointState,
+    checkpointCandidates,
     diagnosis,
     capacity: cap,
     personas: personaRows(root, opts),
@@ -704,6 +725,12 @@ function printHuman(o) {
   if (o.checkpoint) {
     lines.push(`ckpt:    ${path.basename(o.checkpoint.file)} · phase ${o.checkpoint.phase || "?"} · count ${o.checkpoint.count || 0}`);
     if (o.checkpoint.nextAction) lines.push(`next:    ${o.checkpoint.nextAction}`);
+  } else if (o.checkpointCandidates && o.checkpointCandidates.length) {
+    lines.push(`ckpt:    ${o.checkpointCandidates.length} resumable checkpoint(s) — pick one with --feature <id>`);
+    for (const c of o.checkpointCandidates) {
+      const file = path.basename(c.file);
+      lines.push(`         ${c.id} · phase ${c.phase || "?"} · next: ${c.nextAction || "?"} [${file}]`);
+    }
   } else {
     lines.push("ckpt:    none (fresh work unit or feature has no checkpoint yet)");
   }
@@ -770,6 +797,7 @@ function printBrief(o) {
   }
   if (o.feature) lines.push(`feature ${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`);
   if (o.checkpoint) lines.push(`checkpoint ${o.checkpoint.phase || "?"} · next: ${o.checkpoint.nextAction || "?"}`);
+  else for (const c of (o.checkpointCandidates || []).slice(0, 4)) lines.push(`checkpoint ${c.id}: ${c.nextAction || "?"}`);
   lines.push(...renderDiagnosisLines(o.diagnosis));
   if (o.board) {
     const ip = o.board.inprogress.map((r) => r.id).join(", ") || "none";

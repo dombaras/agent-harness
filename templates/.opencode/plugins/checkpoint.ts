@@ -131,13 +131,14 @@ export default {
       editor.add({
         name: "checkpoint_resume",
         description:
-          "Print a session's checkpoint block — the bounded state a fresh context resumes from (never the transcript). Fails loudly when the feature has no checkpoint yet.",
+          "Print a session's checkpoint block — the bounded state a fresh context resumes from (never the transcript). Omit `feature` to list the resumable checkpoints (the board's In-progress rows first) when a fresh context does not know the id. Fails loudly when a named feature has no checkpoint yet.",
         input: {
           type: "object",
           properties: {
             feature: {
               type: "string",
-              description: "BACKLOG row ID or slug naming the handoff file, e.g. F-001",
+              description:
+                "BACKLOG row ID or slug naming the handoff file, e.g. F-001 (omit to list)",
             },
             json: {
               type: "boolean",
@@ -145,12 +146,11 @@ export default {
                 "print the parsed state as JSON instead of markdown (optional)",
             },
           },
-          required: ["feature"],
           additionalProperties: false,
         },
         async execute(input, context) {
-          const feature = requireFeature(input.feature, "resume")
-          const argv = ["resume", "--feature", feature]
+          const raw = String(input.feature ?? "").trim()
+          const argv = raw ? ["resume", "--feature", requireFeature(raw, "resume")] : ["resume", "--list"]
           if (input.json) argv.push("--json")
           return { content: run(h(context), argv) }
         },

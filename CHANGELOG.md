@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.11 — 2026-11-27
+
+- Resuming a work unit no longer loses its checkpoint when the board row points
+  at a slug-named handoff (`.agents/handoffs/platform-review-2026-11.md`) or when
+  several rows are In progress. Resume now honors the row's declared `Handoff`
+  cell, writes through to that same file instead of creating an id-named
+  duplicate, and `checkpoint resume` with no feature (or `--list`) prints every
+  resumable checkpoint with its phase and next action. `orient` lists each
+  In-progress checkpoint instead of reporting `ckpt: none`, and the
+  `checkpoint_resume` tool accepts an omitted feature. An explicit empty or
+  sentinel `--feature` still fails loudly. (F-056)
+
 ## 0.5.10 — 2026-11-27
 
 - TUI auto clear-resume loads again on OpenCode 2.4.2: the plugin's dependency on

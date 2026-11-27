@@ -99,20 +99,67 @@ function rootsFor(feature, root, git) {
   return out;
 }
 
-/* Board row ids from a checkout's BACKLOG.md (the read-only fallback for a
- * project using the file board; the shared service syncs it). */
-function boardIds(root) {
-  try {
-    const src = fs.readFileSync(path.join(root, "BACKLOG.md"), "utf8");
-    const ids = [];
-    for (const line of String(src).split(/\r?\n/)) {
-      const m = line.match(/^\|\s*([A-Za-z]+-\d+)\s*\|/);
-      if (m) ids.push(m[1].toUpperCase());
+/* The handoff a board row declares may be a feature id (`F-372.md`) or a slug
+ * (`platform-review-2026-11.md`). Strip the directory and the worktree suffix
+ * so the resolver can match it against a real handoff stem. */
+function handoffStem(cell) {
+  const m = /\.agents[\\/]handoffs[\\/]([^)\s]+?)(?:\.md)?(?:\s|$|\))/i.exec(String(cell || ""));
+  if (!m) return "";
+  const stem = m[1].replace(/\.md$/i, "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(stem) ? stem : "";
+}
+
+/* Every board row that declares a handoff: [{ id, handoff: stem }]. The
+ * checkout-local BACKLOG.md is the cheap fallback; a project with the shared
+ * board service is read through the same client the CLI uses, because
+ * service-backed boards are authoritative and may not be synced to the file.
+ * Read-only and fail-open: a missing board or unreachable service returns []. */
+const boardRowsCache = new Map();
+function boardRows(root) {
+  const key = path.resolve(root);
+  if (boardRowsCache.has(key)) return boardRowsCache.get(key);
+  const rows = [];
+  const push = (id, cell) => {
+    const value = String(id || "").trim();
+    const handoff = handoffStem(cell);
+    if (!value) return;
+    const prior = rows.find((r) => normalizeId(r.id) === normalizeId(value));
+    if (prior) {
+      if (!prior.handoff && handoff) prior.handoff = handoff;
+      return;
     }
-    return ids;
+    rows.push({ id: value.toUpperCase(), handoff });
+  };
+
+  try {
+    const src = fs.readFileSync(path.join(key, "BACKLOG.md"), "utf8");
+    for (const line of String(src).split(/\r?\n/)) {
+      const cells = line.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|");
+      const id = (cells[0] || "").trim();
+      if (!/^[A-Za-z]+-\d+$/.test(id)) continue;
+      push(id, cells[3]);
+    }
   } catch (_) {
-    return [];
+    /* no file board in this checkout */
   }
+
+  try {
+    const boardClient = require("./board-client.js");
+    if (boardClient.enabled(key)) {
+      const board = boardClient.getBoard(key);
+      for (const row of (board && board.inprogress) || []) push(row.id, row.handoff);
+    }
+  } catch (_) {
+    /* service unreachable/unconfigured: the file board (if any) is the fallback */
+  }
+
+  boardRowsCache.set(key, rows);
+  return rows;
+}
+
+/* Board row ids from a checkout (kept for callers that only need the ids). */
+function boardIds(root) {
+  return boardRows(root).map((r) => r.id);
 }
 
 /* Every handoff file in the given checkouts: [{ id: stem, file, root }]. */
@@ -181,17 +228,20 @@ function resolveFeature(root, raw, opts = {}) {
   const git = opts.git;
   const wt = worktreeFor(input, base, git);
   const roots = rootsFor(input, base, git);
-  const ids = [];
+  const rows = [];
   for (const dir of [base, ...roots]) {
-    for (const id of boardIds(dir)) if (!ids.includes(id)) ids.push(id);
+    for (const row of boardRows(dir)) {
+      if (!rows.some((r) => normalizeId(r.id) === normalizeId(row.id))) rows.push(row);
+    }
   }
+  const ids = rows.map((r) => r.id);
   const hs = handoffs(roots);
 
   let id = null;
   let source = null;
-  const boardHit = ids.find((x) => normalizeId(x) === normalizeId(input));
+  const boardHit = rows.find((x) => normalizeId(x.id) === normalizeId(input));
   if (boardHit) {
-    id = boardHit;
+    id = boardHit.id;
     source = "board";
   }
   if (!id) {
@@ -207,7 +257,13 @@ function resolveFeature(root, raw, opts = {}) {
   }
   if (!id) id = canonicalId(input);
 
-  const hit = hs.find((x) => normalizeId(x.id) === normalizeId(id));
+  /* A board row may point at a slug-named handoff (`F-372` ->
+   * `platform-review-2026-11.md`). The declared handoff wins over the
+   * id-named file, otherwise the feature is unfindable by its own row id. */
+  const declared = boardHit && boardHit.handoff ? boardHit.handoff : null;
+  const hit =
+    (declared && hs.find((x) => normalizeId(x.id) === normalizeId(declared))) ||
+    hs.find((x) => normalizeId(x.id) === normalizeId(id));
   const suggestions = hit
     ? []
     : nearMisses(input, [
@@ -220,6 +276,7 @@ function resolveFeature(root, raw, opts = {}) {
     input,
     id,
     source,
+    declaredHandoff: declared,
     file: hit ? path.resolve(hit.file) : null,
     fileRoot: hit ? path.resolve(hit.root) : null,
     worktree: wt,
@@ -235,7 +292,9 @@ module.exports = {
   listWorktrees,
   worktreeFor,
   rootsFor,
+  boardRows,
   boardIds,
+  handoffStem,
   handoffs,
   nearMisses,
   resolveFeature,

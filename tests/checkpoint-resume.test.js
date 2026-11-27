@@ -206,3 +206,79 @@ test("orient brief never reports an unconfirmed state as ready to proceed", () =
   assert.match(boardGuessed, /inferred from the board/);
   assert.doesNotMatch(boardGuessed, /Proceed from the checkpoint/);
 });
+
+/* LibraryOS F-372: the board row's Handoff cell points at a slug-named file
+ * (`.agents/handoffs/platform-review-2026-11.md`), so resolving the row id used
+ * to miss the checkpoint and suggest unrelated numeric ids instead. */
+function writeFileBoard(root, rows) {
+  fs.writeFileSync(
+    path.join(root, ".harness.json"),
+    JSON.stringify({ board: { backend: "file", project: "Fixtures" } }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(root, "BACKLOG.md"),
+    [
+      "## In progress",
+      "",
+      "| ID | Epic | Task | Handoff |",
+      "| --- | --- | --- | --- |",
+      ...rows,
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+}
+
+test("a board row's declared slug handoff is resolved by the feature id", () => {
+  const root = project("resume-board-handoff");
+  const slug = path.join(root, ".agents", "handoffs", "platform-review-2026-11.md");
+  const w = cp(
+    root,
+    "write",
+    "--feature", "platform-review-2026-11",
+    "--phase", "plan complete",
+    "--next-action", "run Phase 0"
+  );
+  assert.strictEqual(w.status, 0, w.stderr);
+  writeFileBoard(root, ["| F-372 | audits | full-stack review | .agents/handoffs/platform-review-2026-11.md |"]);
+
+  const r = cp(root, "resume", "--feature", "F-372");
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^- phase: plan complete$/m);
+  assert.match(r.stdout, /^- next_action: run Phase 0$/m);
+  assert.ok(r.stdout.includes(slug), "the declared slug file is the handoff");
+
+  const json = JSON.parse(cp(root, "resume", "--feature", "F-372", "--json").stdout);
+  assert.strictEqual(json.file, slug);
+  assert.strictEqual(json.feature, "F-372");
+
+  // A write through the row id updates the declared file, never a second F-372.md.
+  const w2 = cp(root, "write", "--feature", "F-372", "--phase", "executing");
+  assert.strictEqual(w2.status, 0, w2.stderr);
+  assert.ok(!fs.existsSync(path.join(root, ".agents", "handoffs", "F-372.md")), "no id-named duplicate");
+  assert.match(fs.readFileSync(slug, "utf8"), /- phase: executing/);
+});
+
+test("resume --list names the In-progress checkpoints when the id is unknown", () => {
+  const root = project("resume-list");
+  writeCheckpoint(root); // F-045, phase testing, next action recorded
+  cp(root, "write", "--feature", "platform-review-2026-11", "--phase", "plan", "--next-action", "start Phase 0");
+  writeFileBoard(root, [
+    "| F-045 | ? | first work unit | .agents/handoffs/F-045.md |",
+    "| F-372 | audits | review | .agents/handoffs/platform-review-2026-11.md |",
+  ]);
+
+  const r = cp(root, "resume", "--list");
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /resumable checkpoints \(2\)/);
+  assert.match(r.stdout, /F-045 · phase testing · next: resume from a lowercase id/);
+  assert.match(r.stdout, /F-372 · phase plan · next: start Phase 0/);
+  assert.match(r.stdout, /resume --feature <id>/);
+
+  // `resume` with no feature is the same listing, and --json is machine-readable.
+  assert.strictEqual(cp(root, "resume").status, 0);
+  const json = JSON.parse(cp(root, "resume", "--list", "--json").stdout);
+  assert.strictEqual(json.schema, "checkpoint-list/1");
+  assert.deepStrictEqual(json.checkpoints.map((c) => c.feature), ["F-045", "F-372"]);
+});

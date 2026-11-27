@@ -13169,6 +13169,45 @@ test("orient: explicit > checkout > board feature inference", () => {
   );
 });
 
+test("orient: two In-progress rows list each checkpoint instead of reporting none", () => {
+  const dir = tmpdir();
+  const board = { inprogress: [{ id: "F-331" }, { id: "F-372" }], queued: [] };
+  const ck = {
+    "F-331": {
+      feature: "F-331",
+      file: path.join(dir, ".agents", "handoffs", "F-331.md"),
+      state: { phase: "impl", next_action: "land the staged fix" },
+    },
+    "F-372": {
+      feature: "F-372",
+      file: path.join(dir, ".agents", "handoffs", "platform-review-2026-11.md"),
+      state: { phase: "plan", next_action: "start Phase 0" },
+    },
+  };
+  const git = (args) => {
+    const key = args.join(" ");
+    if (key === "rev-parse --abbrev-ref HEAD") return "main";
+    if (key === "rev-parse --short HEAD") return "abc1234";
+    if (key === "status --porcelain") return "";
+    return null;
+  };
+  const o = orient.collectOrient({
+    root: dir,
+    git,
+    run: () => JSON.stringify(board),
+    readCheckpoint: ({ feature }) => ck[feature],
+  });
+  assert.strictEqual(o.feature, null, "two live rows stay ambiguous");
+  assert.strictEqual(o.checkpoint, null);
+  assert.deepStrictEqual(o.checkpointCandidates.map((c) => c.id), ["F-331", "F-372"]);
+
+  const human = orient.printHuman(o);
+  assert.match(human, /2 resumable checkpoint\(s\)/);
+  assert.match(human, /F-331 · phase impl · next: land the staged fix/);
+  assert.match(human, /F-372 · phase plan · next: start Phase 0/);
+  assert.match(orient.printBrief(o), /checkpoint F-331: land the staged fix/);
+});
+
 test("orient: reports where the feature id came from so a resume can override it", () => {
   assert.strictEqual(orient.inferFeatureSource("f-42", "main", "/x", null), "explicit");
   assert.strictEqual(orient.inferFeatureSource(null, "f-28", "/x", null), "branch");
