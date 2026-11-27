@@ -75,7 +75,7 @@ Date: <YYYY-MM-DD>
 ```
 
 ## Rules
-- Update this at session end even if the user doesn't ask, per the DoD in `.agents/AGENTS.md` §8.
+- Update this at session end even if the user doesn't ask, per the DoD in `.agents/rulebook.md` §8.
 - Keep it under ~40 lines. Code is the source of truth; the handoff is a pointer, not a spec.
 - **Lead with value, not tech.** After the dispatch log, the file opens with `## Value shipped` (plain language — what the user now gets, why it matters) then `## How` (the main approach). File/test/commit detail lives below and is never the headline. Explain at the reader's level: behavior in plain terms first, a code identifier only when precision needs it.
 - The `## Dispatch log` must open the file and carry at least one entry (`subagent → model → shipped/deferred`) — `npm run test:governance` enforces this. When the log has 5+ entries, include the `## Fan-out justification` (or a `dispatch_justification:` line) — the gate also enforces that for handoffs dated `2026-09-12`+ (older/undated history is grandfathered).

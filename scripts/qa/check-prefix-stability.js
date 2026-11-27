@@ -9,8 +9,11 @@
  * against. Under V2 only the root `AGENTS.md` is auto-loaded:
  * `.agents/AGENTS.md` is discovered lazily (it is an `AGENTS.md`), and
  * `.agents/rules/00-operating.md` is never auto-loaded (the root file links it).
- * So this set is a budget proxy for the context the rules *deliberately* pull
- * in, not a byte-for-byte copy of the live prefix. At ~97% cache-read share, one
+ * `.agents/AGENTS.md` is therefore a deliberately tiny shim: reading any
+ * `.agents/**` file injects it, so the full rulebook lives at
+ * `.agents/rulebook.md` and is loaded only by an explicit read. This set is a
+ * budget proxy for the context the rules *deliberately* pull in, not a
+ * byte-for-byte copy of the live prefix. At ~97% cache-read share, one
  * volatile byte in that context (a clock timestamp, a machine-specific path, a
  * session id) breaks cache locality for every following turn — a silent,
  * recurring cost. This gate fails when a volatile value is found in a prefix file.
@@ -50,15 +53,20 @@ const strict = process.env.AGENT_PREFIX_STRICT !== "0";
  * the dedupe cannot silently regrow.
  * 0.4.1: raised the AGENTS.md ceiling 11 -> 12 KiB so an ordinary sentence no
  * longer trips it, and wired the gate into the ship/pre-push battery so a
- * breach fails before landing; AGENTS.md documents the trim-or-ask path. */
+ * breach fails before landing; AGENTS.md documents the trim-or-ask path.
+ * 0.5.13 (F-057): split the old 28 KiB `.agents/AGENTS.md` rulebook ceiling into
+ * a 1 KiB shim (auto-injected on every `.agents/**` read) plus the 28 KiB
+ * `.agents/rulebook.md` itself (explicit read only), so the rulebook text cannot
+ * silently return to the auto-injected path. */
 const SIZE_BUDGET = {
   "AGENTS.md": 12288,
-  ".agents/AGENTS.md": 28672,
+  ".agents/AGENTS.md": 1024,
+  ".agents/rulebook.md": 28672,
   ".agents/rules/00-operating.md": 30720,
 };
 /* Combined harness-owned ceiling (the sum of the per-file ceilings);
  * `AGENT_PREFIX_MAX_BYTES` overrides. */
-const DEFAULT_TOTAL_BUDGET = 71680; // = 12 + 28 + 30 KiB
+const DEFAULT_TOTAL_BUDGET = 72704; // = 12 + 1 + 28 + 30 KiB
 const totalBudget = (() => {
   const n = Number(process.env.AGENT_PREFIX_MAX_BYTES);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_TOTAL_BUDGET;
@@ -76,6 +84,7 @@ const totalBudget = (() => {
 const PREFIX_FILES = [
   { rel: "AGENTS.md" },
   { rel: ".agents/AGENTS.md" },
+  { rel: ".agents/rulebook.md" },
   { rel: ".agents/rules/00-operating.md" },
   { rel: ".agents/memory/locations.md", allowMachinePaths: true },
   { rel: ".agents/memory/model-routing.md" },
