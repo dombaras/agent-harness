@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3 — 2026-11-27
+
+- Resource-aware parallel feature orchestrator Phase 0+1: dry-run planner, detached landing queue, single-lander lock with heartbeat/TTL, durable journal with remote-truth reconcile, and `finalize --defer-archive`; the feature flag defaults off. (`14dfeae`, F-068)
+
 ## 0.6.2 — 2026-11-27
 
 - Harness version bumped to 0.6.2 so the F-071 lease-release fix deploys as a versioned build (no additional behavior). (F-072)
@@ -13,6 +17,7 @@
 - Feedback items are triaged reproduce-first: one clean rerun is recorded (a pass quarantines the flake with a named owner, 14-day expiry, and P2 hardening row), a fix closes only after the original signal verifies green, and a verified high-risk patch stops for human approval. `feedback next` emits a bounded reproduce-first prompt treating logs as untrusted; `run --feedback` works one eligible item in bounded phases and stops at approval. (F-050)
 
 - The feedback loop now runs a bounded fix loop that retries only while attempts make progress, stops and escalates on consecutive same-failure attempts, limits auto mode to low-risk product-class items with a small attempt budget, and verifies a fix only inside a bounded window after a passing attempt; before landing, a test-integrity guard blocks deleted or skipped tests, inflated timeouts, and weakened assertions, UAT/deploy items require a rollback plan before closing, and the kill switch refuses in-flight verification. (`9098140`, F-050)
+- Restored feedback runner exports and shipped bounded feedback fix-loop safeguards. (`20fc14b`, `e184664`, F-050)
 
 ## 0.6.1 — 2026-11-27
 
