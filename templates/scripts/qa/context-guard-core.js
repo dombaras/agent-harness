@@ -1433,7 +1433,7 @@ const READ_TEXTS = Object.freeze({
   reread:
     "TOOL GUARD — you already read this file in this session. Do not re-read it whole; it is already in context. Re-read only a specific changed region with `offset`/`limit`, or use `Grep` to locate the needed lines.",
   whole:
-    "TOOL GUARD — a large file was read whole. Search first (`Grep`/`Glob`), then read a targeted `offset`/`limit` range — never read a big file blind (`.agents/AGENTS.md` §5).",
+    "TOOL GUARD — a large file was read whole. Search first (`Grep`/`Glob`), then read a targeted `offset`/`limit` range — never read a big file blind (`.agents/rulebook.md` §5).",
   missing:
     "TOOL GUARD — that path does not exist (a guessed path). If you meant a session checkpoint, do NOT guess a filename: handoffs are `.agents/handoffs/<feature-id>.md` (named for the FEATURE id — never `next.md`/`pending.md`/`auto.md`), and the supported way to load one is the `checkpoint_resume` tool (or `/resume <feature-id>`). Otherwise `Glob` the real path (e.g. `Glob .agents/handoffs/*.md`) or read `.agents/memory/locations.md` (the canonical locations index) before reading again — never re-hunt or guess.",
 });

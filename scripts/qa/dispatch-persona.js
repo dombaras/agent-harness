@@ -288,7 +288,7 @@ function buildPrompt(opts = {}) {
       (description ? ` Persona contract: ${description}` : "")
   );
   fields.push(
-    `## Shared contracts\n${contracts.length ? contracts.join("\n") : "The feature plan.md owns/consumes list when present; otherwise the project rulebook (.agents/AGENTS.md)."}`
+    `## Shared contracts\n${contracts.length ? contracts.join("\n") : "The feature plan.md owns/consumes list when present; otherwise the project rulebook (.agents/rulebook.md)."}`
   );
   fields.push(`## Done =\n${opts.done || DEFAULT_DONE}`);
   fields.push(

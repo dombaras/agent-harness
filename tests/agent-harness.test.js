@@ -144,6 +144,7 @@ test("listFiles enumerates the full template tree", () => {
   assert.ok(rels.includes("AGENTS.md"));
   assert.ok(rels.includes("BACKLOG.md"));
   assert.ok(rels.includes(".agents/AGENTS.md"));
+  assert.ok(rels.includes(".agents/rulebook.md"));
   assert.ok(rels.includes(".agents/rules/00-operating.md"));
   assert.ok(rels.includes(".opencode/agents/planner.md"));
   assert.ok(rels.includes("opencode.json"));
@@ -1084,7 +1085,7 @@ test("operating rules encode bounded lifecycle + retry/gate/web discipline refer
   assert.match(rules, /Patch\/apply failures/);
   assert.match(rules, /Web\/network failures/);
 
-  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "rulebook.md"));
   assert.match(rulebook, /checkpoint/i);
   assert.match(rulebook, /work_type/);
   assert.match(rulebook, /termination_reason/);
@@ -1122,12 +1123,33 @@ test("operating rules encode bounded lifecycle + retry/gate/web discipline refer
   assert.match(governance, /Fan-out justification/);
 });
 
+test("[drift-guard] nested .agents/AGENTS.md is a tiny rulebook shim, not the 28 KB rulebook", async () => {
+  // opencode V2 lazily injects the nearest nested AGENTS.md on any read under
+  // `.agents/`. Keeping the full rulebook there added ~28 KB (~7.4K tokens) to
+  // every handoff/plan/review read; the text now lives at rulebook.md.
+  const shim = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  const shimBytes = Buffer.byteLength(shim, "utf8");
+  assert.ok(shimBytes <= 1024, `.agents/AGENTS.md shim is ${shimBytes} bytes (budget 1024) — move rulebook text to .agents/rulebook.md`);
+  assert.match(shim, /\.agents\/rulebook\.md/, "the shim names the canonical rulebook path");
+  assert.doesNotMatch(shim, /^## /m, "the shim carries no rulebook sections");
+
+  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "rulebook.md"));
+  assert.match(rulebook, /The canonical rulebook/);
+  assert.match(rulebook, /checkpoint/i);
+
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const deployedShim = read(path.join(target, ".agents", "AGENTS.md"));
+  assert.ok(Buffer.byteLength(deployedShim, "utf8") <= 1024, "the deployed shim stays tiny");
+  assert.ok(exists(path.join(target, ".agents", "rulebook.md")), "the full rulebook is deployed");
+});
+
 test("agent output explains at the reader's level (behavior-level prose, not raw symbols)", () => {
   const rules = read(path.join(h.TEMPLATES_DIR, ".agents", "rules", "00-operating.md"));
   assert.match(rules, /Explain at the reader's level/);
   assert.match(rules, /only when precision needs it/);
 
-  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "rulebook.md"));
   assert.match(rulebook, /Explain at the reader's level/);
   assert.match(rulebook, /knows the product but not the codebase/);
 
@@ -3416,7 +3438,7 @@ test("rules encode the environment data boundary + deploy-to-UAT finalize step",
   assert.match(rules, /test:data-hygiene/);
   assert.match(rules, /environments\.md/);
 
-  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "rulebook.md"));
   assert.match(rulebook, /Deploy to UAT/);
   assert.match(rulebook, /no `pg_dump`\/restore\/copy/);
   assert.match(rulebook, /environments\.md/);
@@ -5539,7 +5561,7 @@ test("qa-architect persona carries the T1–T10 checklist and QA-plan record sec
   assert.match(planReadme, /## Oracle & owner/);
   assert.match(planReadme, /## Test-design self-check/);
 
-  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  const rulebook = read(path.join(h.TEMPLATES_DIR, ".agents", "rulebook.md"));
   assert.match(rulebook, /test:wiring/);
   assert.match(rulebook, /test-design-parameters\.md/);
   assert.match(rulebook, /Test quality & economics rule/);
@@ -8375,6 +8397,13 @@ test("test:prefix enforces a size budget on the harness-owned prefix files", asy
   assert.ok(agentsLine, "the deployed AGENTS.md reports its budget");
   const budget = agentsLine.match(/\((\d+) \/ (\d+) budget/);
   assert.ok(Number(budget[2]) - Number(budget[1]) >= 256, `AGENTS.md keeps deliberate headroom (${budget[1]}/${budget[2]})`);
+
+  // The lazy-injected shim and the explicitly read rulebook are budgeted apart:
+  // the shim stays tiny while the full 28 KiB rulebook keeps its own ceiling.
+  const shimLine = clean.stdout.split("\n").find((l) => l.includes("\u2713 .agents/AGENTS.md ("));
+  assert.match(shimLine || "", /\((\d+) \/ 1024 budget/, "the auto-injected shim is budgeted at 1 KiB");
+  const rulebookLine = clean.stdout.split("\n").find((l) => l.includes("\u2713 .agents/rulebook.md ("));
+  assert.match(rulebookLine || "", /\/ 28672 budget/, "the rulebook keeps its 28 KiB ceiling");
 
   // Inflating a harness-owned prefix file past its budget fails the gate.
   const agents = path.join(target, ".agents", "AGENTS.md");
@@ -14078,7 +14107,7 @@ test("[drift-guard] the nightly cycle ships orchestrator, config, timer setup, a
   assert.ok(exists(path.join(h.TEMPLATES_DIR, ".agents", "nightly.json")), "project config template");
   const wf = read(path.join(h.TEMPLATES_DIR, ".github", "workflows", "nightly.yml"));
   assert.match(wf, /schedule:/, "cloud half is scheduled");
-  const rules = read(path.join(h.TEMPLATES_DIR, ".agents", "AGENTS.md"));
+  const rules = read(path.join(h.TEMPLATES_DIR, ".agents", "rulebook.md"));
   assert.match(rules, /nightly:flow=/, "rules document the journey marker");
   assert.match(rules, /NIGHTLY, not part of the day loop/, "device tier moved to nightly");
   const doc = read(path.join(h.TEMPLATES_DIR, "docs", "nightly-testing.md"));
