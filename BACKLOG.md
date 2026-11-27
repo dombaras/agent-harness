@@ -49,7 +49,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | .agents/handoffs/F-050.md (worktree: ../.worktrees/agent-harness/f-050; branch: f-050) |
-| F-067 | ? | Always write a checkpoint before a session stops (observed succeeded/failed/interrupted/phase-exit; heartbeat for hard kills) and auto-resume every non-purely-technical stop. Exclude only infrastructure/environment failures: network/DNS/TLS/timeout, provider 5xx/429/overloaded, auth, OOM/kill/ENOSPC, process crash, power/machine loss; plus funds/quota (hard pause) and user interrupts (manual). Fallback checkpoint must preserve prior state, refresh files_changed, mark auto:true, never overwrite a newer model checkpoint. | .agents/handoffs/F-067.md (worktree: ../.worktrees/agent-harness/f-067; branch: f-067) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -150,6 +149,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-064 | ? | TUI auto clear-resume did not fire on context fill: stale ESM dep (run-loop.js) kept the context-resume TUI plugin unloaded; linked-worktree markers also resume only with checkpoint progress and only in the TUI's current location | shipped |
 | F-065 | ? | Harness update visibility must survive a TUI-only restart: (1) the footer badge drops ↻restart when the TUI process reloaded after the deploy, even though the shared service still runs the old build; (2) the global freshness plugin's 24h npm cache can publish a stale `latest`; (3) the startup sweep can overwrite another process's restart-needed verdict with `current`; (4) the update notice is async/one-shot and can miss the turn that triggered the update. Add regression coverage for the badge/service split, cross-process verdict ownership, and a fresh npm probe; make the notice deliverable on the triggering turn. | investigation-complete |
 | F-066 | ? | Auto clear-resume must arm at the checkpoint band: write .agents/context-resume.json when a primary session reaches checkpoint (120K), not only intervene (160K), so a session that stops at the checkpoint boundary is resumed automatically instead of stalling. | verification-complete |
+| F-067 | ? | Always write a checkpoint before a session stops (observed succeeded/failed/interrupted/phase-exit; heartbeat for hard kills) and auto-resume every non-purely-technical stop. Exclude only infrastructure/environment failures: network/DNS/TLS/timeout, provider 5xx/429/overloaded, auth, OOM/kill/ENOSPC, process crash, power/machine loss; plus funds/quota (hard pause) and user interrupts (manual). Fallback checkpoint must preserve prior state, refresh files_changed, mark auto:true, never overwrite a newer model checkpoint. | checkpoint |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
