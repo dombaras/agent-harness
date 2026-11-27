@@ -249,6 +249,19 @@ function boardSnapshot(root, run) {
   return safe(() => JSON.parse(r), null);
 }
 
+/* An In-progress row's Handoff cell becomes
+ * ".agents/handoffs/F-062.md (worktree: ../.worktrees/x/f-062; branch: f-062)"
+ * when `backlog.js worktree` pinned it to an isolated tree. Split it so the
+ * session-start brief can name the row's title + where it lives: printing ids
+ * only made a cleared session spend seven discovery calls before any work
+ * (2026-11-27), even though orient had already read this cell. */
+function parseHandoffCell(cell) {
+  const raw = String(cell == null ? "" : cell).trim();
+  const m = /^(.*?)\s*\(worktree:\s*([^;)]+?);\s*branch:\s*([^)]+?)\)\s*$/.exec(raw);
+  if (!m) return { handoff: raw, worktree: null, branch: null };
+  return { handoff: (m[1] || "").trim(), worktree: m[2].trim(), branch: m[3].trim() };
+}
+
 function ownedFor(root, feature) {
   if (!feature) return null;
   const p = path.join(root, ".agents", "memory", "owned-files.md");
@@ -688,8 +701,18 @@ function collectOrient(opts = {}) {
     rootMismatch: Boolean(worktree),
     board: board
       ? {
-          inprogress: (board.inprogress || []).map((r) => ({ id: r.id, task: r.task, handoff: r.handoff })),
-          nextQueued: (board.queued || []).slice(0, 3).map((r) => ({ id: r.id, task: r.task, dependsOn: r.dependsOn })),
+          inprogress: (board.inprogress || []).map((r) => ({
+            id: r.id,
+            epic: r.epic,
+            task: r.task,
+            ...parseHandoffCell(r.handoff),
+          })),
+          nextQueued: (board.queued || []).slice(0, 3).map((r) => ({
+            id: r.id,
+            epic: r.epic,
+            task: r.task,
+            dependsOn: r.dependsOn,
+          })),
         }
       : null,
     ownedFiles: owned,
@@ -710,6 +733,23 @@ function collectOrient(opts = {}) {
 
 function fmt(v, label) {
   return v == null || v === "" ? `${label}: unavailable` : `${label}: ${v}`;
+}
+
+/* One board row as a single line: id, epic, title, and the pointers a cleared
+ * session would otherwise fetch with `backlog_list` / `git worktree list`. */
+function boardRowLine(r, taskMax) {
+  const epic = r.epic && r.epic !== "?" ? ` [${r.epic}]` : "";
+  const wt = r.worktree ? ` · worktree ${r.worktree}${r.branch ? ` (${r.branch})` : ""}` : "";
+  const ho = r.handoff && r.handoff !== "?" ? ` · handoff ${r.handoff}` : "";
+  return `${r.id}${epic} ${clipText(r.task || "?", taskMax)}${wt}${ho}`;
+}
+
+/* The title of the row this session is on (the brief names the feature id but
+ * used to omit what it is, which sent the agent to `backlog_list`). */
+function boardTaskFor(o, id) {
+  const rows = [...((o.board && o.board.inprogress) || []), ...((o.board && o.board.nextQueued) || [])];
+  const row = rows.find((r) => r.id === id);
+  return row && row.task ? row.task : null;
 }
 
 function printHuman(o) {
@@ -755,8 +795,9 @@ function printHuman(o) {
   }
   lines.push(...renderDiagnosisLines(o.diagnosis));
   if (o.board) {
-    const ip = o.board.inprogress.map((r) => r.id).join(", ") || "none";
-    lines.push(`board:   In progress [${ip}]`);
+    const ip = o.board.inprogress || [];
+    lines.push(`board:   In progress${ip.length ? "" : " none"}`);
+    for (const r of ip) lines.push(`         ${boardRowLine(r, 120)}`);
     if (o.board.nextQueued.length) {
       lines.push(`         next queued: ${o.board.nextQueued.map((r) => `${r.id} (${r.task || ""})`).join("; ")}`);
     }
@@ -792,7 +833,7 @@ function printHuman(o) {
   // 1129 shell greps): name them where the model actually reads, not only in a
   // buried AGENTS.md bullet.
   lines.push(
-    "tools:   gates (run a tier: `gates --phase=quick`) · where (find a symbol: `where <term>`) · orient (re-orient) — prefer these over `npm run … | tail` and shell grep/find"
+    "tools:   gates (run a tier: `gates --phase=quick`) · where (find a symbol: `where <term>`) · orient (re-orient) · backlog_list (board rows) — prefer these over `npm run … | tail` and shell grep/find"
   );
   return lines.join("\n");
 }
@@ -814,7 +855,12 @@ function printBrief(o) {
     );
     lines.push(`   tools.opencode.session.move (directory: "${o.featureWorktree.path}"), then re-run orient.`);
   }
-  if (o.feature) lines.push(`feature ${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`);
+  if (o.feature) {
+    const task = boardTaskFor(o, o.feature);
+    lines.push(
+      `feature ${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}${task ? ` · ${clipText(task, 120)}` : ""}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`
+    );
+  }
   if (o.checkpoint)
     lines.push(
       `checkpoint ${o.checkpoint.phase || "?"} · next: ${clipText(o.checkpoint.nextAction || "?", 400)}` +
@@ -823,8 +869,16 @@ function printBrief(o) {
   else for (const c of (o.checkpointCandidates || []).slice(0, 4)) lines.push(`checkpoint ${c.id}: ${clipText(c.nextAction || "?", 240)}`);
   lines.push(...renderDiagnosisLines(o.diagnosis));
   if (o.board) {
-    const ip = o.board.inprogress.map((r) => r.id).join(", ") || "none";
-    lines.push(`board In progress [${ip}]${o.board.nextQueued.length ? ` · next ${o.board.nextQueued.map((r) => r.id).join(", ")}` : ""}`);
+    const ip = o.board.inprogress || [];
+    if (ip.length) {
+      lines.push("board In progress:");
+      for (const r of ip) lines.push(`  ${boardRowLine(r, 96)}`);
+    } else {
+      lines.push("board In progress none");
+    }
+    if (o.board.nextQueued.length) {
+      lines.push(`next queued: ${o.board.nextQueued.map((r) => `${r.id} ${clipText(r.task || "", 64)}`).join("; ")}`);
+    }
   }
   if (o.capacity) lines.push(`capacity ${o.capacity.ok ? "ok" : "EXCEEDED: " + o.capacity.reasons.join("; ")} · serves ${o.capacity.serves.join(", ") || "none"}`);
   lines.push(...renderPersonasBlock(o.personas, PERSONA_BRIEF_MAX));
@@ -844,7 +898,7 @@ function printBrief(o) {
   } else {
     lines.push("Proceed from the checkpoint/next; do not re-derive git/serve/capacity state by hand.");
   }
-  lines.push("tools: gates (run a tier) · where (find a symbol) · orient — not `npm run … | tail` / shell grep.");
+  lines.push("tools: gates (run a tier) · where (find a symbol) · orient · backlog_list (board rows) — not `npm run … | tail` / shell grep.");
   return lines.join("\n");
 }
 
@@ -923,6 +977,8 @@ module.exports = {
   lastE2eRun,
   latestNightly,
   boardSnapshot,
+  parseHandoffCell,
+  boardTaskFor,
   gitRunner,
   parseArgs,
   printHuman,

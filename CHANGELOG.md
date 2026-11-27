@@ -14,6 +14,7 @@
   `.agents/rules/00-operating.md` / `.agents/rulebook.md`, and lowered the
   `test:prefix` ceiling from 12 KiB to 11 KiB (combined 72,704 -> 71,680 bytes) so
   the detail cannot quietly return to the always-loaded prefix. (F-060)
+- Session-start `orient --brief` now names each In-progress row's title, epic, worktree path and branch, and handoff path; the active feature line also includes the row title, with bounded title clipping to keep the brief compact. (F-062)
 
 ## 0.5.14 — 2026-11-27
 

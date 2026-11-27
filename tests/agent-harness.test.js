@@ -13320,6 +13320,71 @@ test("orient: the brief marks a board-inferred feature as overridable", () => {
   assert.match(brief, /feature F-25 \(from board\) — pass --feature <id> to override/);
 });
 
+test("orient: the brief carries board row titles + worktree/handoff pointers", () => {
+  const cell = ".agents/handoffs/F-059.md (worktree: ../.worktrees/agent-harness/f-059; branch: f-059)";
+  assert.deepStrictEqual(orient.parseHandoffCell(cell), {
+    handoff: ".agents/handoffs/F-059.md",
+    worktree: "../.worktrees/agent-harness/f-059",
+    branch: "f-059",
+  });
+  // A plain handoff cell (no worktree pin) is preserved verbatim.
+  assert.deepStrictEqual(orient.parseHandoffCell(".agents/handoffs/F-2.md"), {
+    handoff: ".agents/handoffs/F-2.md",
+    worktree: null,
+    branch: null,
+  });
+
+  const dir = tmpdir();
+  const board = {
+    inprogress: [
+      {
+        id: "F-59",
+        epic: "context-economy",
+        task: "Progressive disclosure for large state docs",
+        handoff: cell,
+      },
+    ],
+    queued: [{ id: "F-60", task: "Audit the fixed session-start prefix", priority: "P2" }],
+  };
+  const git = (args) => {
+    const key = args.join(" ");
+    if (key === "rev-parse --abbrev-ref HEAD") return "f-59";
+    if (key === "rev-parse --short HEAD") return "abc1234";
+    if (key === "status --porcelain") return "";
+    return null;
+  };
+  const o = orient.collectOrient({
+    root: dir,
+    git,
+    run: () => JSON.stringify(board),
+    readCheckpoint: () => null,
+  });
+  assert.strictEqual(o.feature, "F-59");
+  assert.deepStrictEqual(o.board.inprogress[0], {
+    id: "F-59",
+    epic: "context-economy",
+    task: "Progressive disclosure for large state docs",
+    handoff: ".agents/handoffs/F-059.md",
+    worktree: "../.worktrees/agent-harness/f-059",
+    branch: "f-059",
+  });
+
+  const brief = orient.printBrief(o);
+  assert.match(brief, /feature F-59 \(from branch\) · Progressive disclosure/);
+  assert.match(brief, /board In progress:/);
+  assert.match(
+    brief,
+    /F-59 \[context-economy\] Progressive disclosure.*worktree \.\.\/\.worktrees\/agent-harness\/f-059 \(f-059\).*handoff \.agents\/handoffs\/F-059\.md/
+  );
+  assert.match(brief, /next queued: F-60 Audit the fixed/);
+  assert.match(brief, /backlog_list/);
+  assert.ok(brief.length < 6000, "brief stays bounded with board pointers");
+
+  const human = orient.printHuman(o);
+  assert.match(human, /board:   In progress/);
+  assert.match(human, /F-59 \[context-economy\] Progressive disclosure/);
+});
+
 test("orient: detects a feature worktree when the session is rooted in the main checkout", () => {
   const dir = tmpdir();
   fs.mkdirSync(path.join(dir, ".git"));
