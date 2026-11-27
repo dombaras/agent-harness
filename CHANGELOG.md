@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The feedback loop captures red signals automatically: a failed landed CI run in `ship`, a red nightly cycle, and UAT/gate failures normalize into one ledger item, dedupe by signature, and plan exactly one board row (`add` new, `link` known, `reopen` archived). Harness-side breakage stays off the product board as its own ops row, and `orient` prints a bounded feedback inbox line. (F-050)
+
+- Feedback items are triaged reproduce-first: one clean rerun is recorded (a pass quarantines the flake with a named owner, 14-day expiry, and P2 hardening row), a fix closes only after the original signal verifies green, and a verified high-risk patch stops for human approval. `feedback next` emits a bounded reproduce-first prompt treating logs as untrusted; `run --feedback` works one eligible item in bounded phases and stops at approval. (F-050)
+
+- The feedback loop now runs a bounded fix loop that retries only while attempts make progress, stops and escalates on consecutive same-failure attempts, limits auto mode to low-risk product-class items with a small attempt budget, and verifies a fix only inside a bounded window after a passing attempt; before landing, a test-integrity guard blocks deleted or skipped tests, inflated timeouts, and weakened assertions, UAT/deploy items require a rollback plan before closing, and the kill switch refuses in-flight verification. (`9098140`, F-050)
+
 ## 0.6.1 — 2026-11-27
 
 - Fixed the F-067 deploy so the plugins load again: the fallback checkpoint writer now ships in the live `scripts/qa/` tree (not only `templates/`), and the TUI dynamic import points at `../../../scripts/qa/checkpoint-fallback.mjs`. Without both, `context-guard.ts` failed to load after a service restart because its static import resolved to a missing module (`plugin operation failed`). A deploy drift-guard test now pins deployed/template parity and both import resolutions.
