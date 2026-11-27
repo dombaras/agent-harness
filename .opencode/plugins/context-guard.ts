@@ -1029,6 +1029,13 @@ export default {
           const sid = d.sessionID
           if (typeof sid !== "string" || sid.length === 0 || !isPrimary(sid)) return
           writeStopCheckpoint(sid, type === "session.execution.succeeded" ? "succeeded" : "interrupted")
+          // F-071: an observed execution end releases this session's lease. V2
+          // never emits `session.deleted` for a finished run, so a lease cleared
+          // only on delete stays "live" (shared server pid + fresh heartbeat)
+          // for the whole 4h window and blocks the next auto-resume's
+          // single-live-session gate. `reconcileLease` re-arms it on the next
+          // activity if the session is resumed.
+          clearLease(sid)
           return
         }
 
@@ -1042,8 +1049,12 @@ export default {
           const sid = d.sessionID
           if (typeof sid !== "string" || sid.length === 0) return
           // A step failure is not the end of the session. Only the execution
-          // failure is an observed stop that needs the fallback checkpoint.
-          if (type === "session.execution.failed" && isPrimary(sid)) writeStopCheckpoint(sid, "failed")
+          // failure is an observed stop that needs the fallback checkpoint and
+          // releases the lease (F-071; same reason as a clean stop above).
+          if (type === "session.execution.failed" && isPrimary(sid)) {
+            writeStopCheckpoint(sid, "failed")
+            clearLease(sid)
+          }
           const text = JSON.stringify(d.error ?? d)
           if (!guard.fundsError(text)) return
           const label = guard.modelLabel(d.error) || sessionModel.get(sid) || null

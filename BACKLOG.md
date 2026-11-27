@@ -50,7 +50,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-068 | parallel-orchestration | Add a resource-aware parallel feature orchestrator: deterministic control plane (queue, admission, leases, single lander) over LLM workers. Workers commit+enqueue in isolated worktrees; one lander rebases/gates/FF-pushes/waits CI/deploys; admission from capacity-lib RAM/swap/PSI + heavy lock; conflict control via owned files/contracts/trial merge; rollout Phase 1 detached landing -> Phase 2 scout -> Phase 3 two builders. | .agents/handoffs/F-068.md (worktree: ../.worktrees/agent-harness/f-068; branch: f-068) |
-| F-071 | ? | fix(context-resume): release a session's lease on every OBSERVED execution stop. The guard only clears leases on session.deleted, but V2 ends a run with session.execution.succeeded/failed/interrupted; the finished session's lease keeps the server pid + a fresh heartbeat for up to 4h. That stale 'live' lease makes writeMainContextResume skip the marker ('another live session shares the main checkout') and makes the TUI's per-worktree gate refuse the resume — the F-068 restart failed exactly this way after a session finished 7 minutes earlier. | .agents/handoffs/F-071.md (worktree: ../.worktrees/agent-harness/f-071; branch: f-071) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -155,6 +154,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-067 | ? | Always write a checkpoint before a session stops (observed succeeded/failed/interrupted/phase-exit; heartbeat for hard kills) and auto-resume every non-purely-technical stop. Exclude only infrastructure/environment failures: network/DNS/TLS/timeout, provider 5xx/429/overloaded, auth, OOM/kill/ENOSPC, process crash, power/machine loss; plus funds/quota (hard pause) and user interrupts (manual). Fallback checkpoint must preserve prior state, refresh files_changed, mark auto:true, never overwrite a newer model checkpoint. | checkpoint |
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | deferred (phase 2 complete/committed at 3b840b1; phases 3-4 remain) |
 | F-070 | ? | fix(context-resume): never duplicate an auto-resume — ignore subagent idles, add a live-sibling worktree lease gate, and pin the harness default model for the fresh session | shipped |
+| F-071 | ? | fix(context-resume): release a session's lease on every OBSERVED execution stop. The guard only clears leases on session.deleted, but V2 ends a run with session.execution.succeeded/failed/interrupted; the finished session's lease keeps the server pid + a fresh heartbeat for up to 4h. That stale 'live' lease makes writeMainContextResume skip the marker ('another live session shares the main checkout') and makes the TUI's per-worktree gate refuse the resume — the F-068 restart failed exactly this way after a session finished 7 minutes earlier. | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

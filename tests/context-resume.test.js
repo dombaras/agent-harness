@@ -829,6 +829,18 @@ test("every observed stop reaches the fallback writer before idle (F-067)", () =
   }
   assert.match(guard, /writeStopCheckpoint\(sid, type === "session\.execution\.succeeded" \? "succeeded" : "interrupted"\)/);
   assert.match(guard, /writeStopCheckpoint\(sid, "failed"\)/);
+  // F-071: a finished run must release its lease, or the server pid + fresh
+  // heartbeat keep it "live" for 4h and block the next auto-resume.
+  assert.match(
+    guard,
+    /writeStopCheckpoint\(sid, type === "session\.execution\.succeeded" \? "succeeded" : "interrupted"\)[\s\S]{0,1200}clearLease\(sid\)/,
+    "a clean end releases the session lease"
+  );
+  assert.match(
+    guard,
+    /writeStopCheckpoint\(sid, "failed"\)[\s\S]{0,120}clearLease\(sid\)/,
+    "a failed end releases the session lease"
+  );
   assert.match(guard, /fallback\.writeHeartbeat\(/);
   assert.match(guard, /stopReason,/);
 

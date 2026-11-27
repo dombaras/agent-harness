@@ -9,7 +9,7 @@ When a primary session in a feature worktree stops, the context guard writes
 marker, checks the checkpoint advanced, and creates a fresh session seeded with
 the runner's resume or finalize prompt.
 
-## The three guards
+## The guards
 
 1. **Subagents never trigger a resume.** A session with a `parentID` is a child
    (QA author, explore, planner, …). Its idle event is task completion, not a
@@ -24,6 +24,12 @@ the runner's resume or finalize prompt.
    and the global config) and passes `{ providerID, modelID }` to
    `session.prompt`. An auto-launch no longer inherits whatever model the TUI is
    on — including free fallbacks.
+4. **A finished run releases its lease.** Every observed execution end
+   (`session.execution.succeeded|failed|interrupted`) clears the session's
+   `.serve/sessions/<id>.json`. V2 never emits `session.deleted` for a normal
+   run, so a lease cleared only on delete would keep the shared server pid and
+   a fresh heartbeat "live" for the 4h window — enough to block the next
+   resume's single-live-session gate.
 
 ## Code pointers
 
