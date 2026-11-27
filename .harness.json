@@ -1,11 +1,11 @@
 {
-  "version": "0.6.3",
+  "version": "0.6.4",
   "projectName": "agent-harness",
   "projectDomain": "",
   "initializedAt": "2026-11-20T15:28:27.274Z",
-  "updatedAt": "2026-11-27T18:57:19.374Z",
+  "updatedAt": "2026-11-27T20:38:59.769Z",
   "files": {
-    "package.json": "cf05057546c953939d06e68df82dcfa497b16e5c9201fdaaca4bd5da4712b9be",
+    "package.json": "27843a25b5598a8be3091496b0c23c5d5eb6dee1a3b9a2276bd9d89b3d747e48",
     ".gitattributes": "12c4d531af67b819a562126556e8fc3565594a3593f2db9e1640baa9a87a48f7",
     ".ignore": "fbe125871ea72e7ca387e954eefca50eec09a8ec1e9cd98b00e7cb488d486d2f",
     ".agents/AGENTS.md": "0cfc077f3cd8da8178d379343b59f08ffceb0ef01f8fe88ed867445e1e8cb034",
