@@ -3,10 +3,11 @@
 ## 0.6.1 — 2026-11-27
 
 - Fixed the F-067 deploy so the plugins load again: the fallback checkpoint writer now ships in the live `scripts/qa/` tree (not only `templates/`), and the TUI dynamic import points at `../../../scripts/qa/checkpoint-fallback.mjs`. Without both, `context-guard.ts` failed to load after a service restart because its static import resolved to a missing module (`plugin operation failed`). A deploy drift-guard test now pins deployed/template parity and both import resolutions.
+- The harness restart verdict and update notice now survive a TUI restart instead of being lost with the previous plugin state (`e95f38d`, F-065).
 
 ## 0.6.0 — 2026-11-27
 
-- Every observed session stop now writes a deterministic fallback checkpoint before the session is treated as idle — preserving the prior objective/progress/decisions/risks, refreshing changed files, recording the stop reason, incrementing the count, staying idempotent per session and never overwriting a newer model checkpoint (F-067).
+- Every observed session stop now writes a deterministic fallback checkpoint before the session is treated as idle — preserving the prior objective/progress/decisions/risks, refreshing changed files, recording the stop reason, incrementing the count, staying idempotent per session and never overwriting a newer model checkpoint (`4b25758`, F-067).
 - Auto-resume now covers every non-technical stop (context band, early clean stop, context overflow, logical/work failures) under the existing freshness/progress/3-reset/landed gates, while network, provider, auth, resource, funds/quota and user-interrupt stops still hard-pause. A file-backed heartbeat lets `orient` flag an unobserved prior session.
 
 ## 0.5.19 — 2026-11-27
