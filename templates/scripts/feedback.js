@@ -23,7 +23,7 @@ const lib = require("./qa/feedback-lib.js");
 const adapters = require("./qa/feedback-adapters.js");
 const triage = require("./qa/ci-triage.js");
 
-const BOOLEAN = new Set(["json", "start", "end", "help", "once", "open", "force", "no-board"]);
+const BOOLEAN = new Set(["json", "start", "end", "help", "once", "open", "force", "no-board", "auto"]);
 const USAGE = `Usage: node scripts/feedback.js <command> [flags]
 
   add --source ci|nightly|uat|gate|human --title "..." [--error "..."]
@@ -35,12 +35,14 @@ const USAGE = `Usage: node scripts/feedback.js <command> [flags]
   list [--state <state>] [--json]
   show <id> [--json]
   classify <id> [--json]
-  next [--json]
+  next [--auto] [--json]
+  guard --diff <file|-> [--json]      # block a fix that deletes/skips/weakens tests
   attempt <id> --start --strategy "..." [--feature F-1] | --end --outcome pass|fail-same|fail-different|blocked
   rerun <id> --result pass|fail [--evidence ...] [--owner <name>] [--days N] [--no-board]
   quarantine <id> --owner <name> [--days N] [--reason ...] [--no-board]
   approve <id> --by <who> --diff <verified-diff> [--evidence ...]
   prepare <id> [--slug <slug>] [--force]
+  rollback <id> --plan "..." [--evidence ...]   # required before a UAT/deploy item can land
   verify <id> --signal ci|nightly|uat-health|gate --result pass|fail [--evidence ...]
   resolve <id> --evidence "..."
   escalate <id> --reason "..."
@@ -463,6 +465,25 @@ function cmdClassify(flags, ctx) {
 function cmdNext(flags, ctx) {
   const items = readItems(ctx.dir);
   const maybe = lib.nextEligible(items, ctx.policy, ctx.now);
+  if (flags.auto) {
+    const decision = maybe ? lib.autoDecision(maybe.item, ctx.policy, items, ctx.now) : null;
+    if (!maybe || !decision.allowed) {
+      const rule = maybe ? decision.rule : "empty";
+      const reason = maybe ? decision.reason : "no eligible item";
+      if (flags.json) console.log(JSON.stringify({ schema: "feedback-cli/1", command: "next", auto: true, eligible: false, item: maybe ? maybe.item : null, decision }, null, 2));
+      else console.log(`feedback: not auto-eligible (${rule}): ${reason}`);
+      return 1;
+    }
+    const prompt = lib.triagePrompt(maybe.item, ctx.policy, decision);
+    if (flags.json) console.log(JSON.stringify({ schema: "feedback-cli/1", command: "next", auto: true, eligible: true, prompt, item: maybe.item, decision }, null, 2));
+    else {
+      printItem(maybe.item);
+      console.log(`  auto: ${decision.reason}`);
+      console.log("  prompt:");
+      for (const line of prompt.split("\n")) console.log(`    ${line}`);
+    }
+    return 1;
+  }
   const prompt = maybe ? lib.triagePrompt(maybe.item, ctx.policy, maybe.decision) : null;
   if (flags.json) console.log(JSON.stringify({ schema: "feedback-cli/1", command: "next", eligible: !!maybe, prompt, ...(maybe || {}) }, null, 2));
   else if (!maybe) console.log("feedback: no eligible item (empty inbox, or every open item is escalated/budget-blocked)");
@@ -473,6 +494,40 @@ function cmdNext(flags, ctx) {
     for (const line of prompt.split("\n")) console.log(`    ${line}`);
   }
   return maybe ? 1 : 0;
+}
+
+/* Test-integrity guard: run before committing a fix. Exit 2 blocks the patch. */
+function cmdGuard(flags, ctx) {
+  if (!flags.diff) throw new Error("guard: --diff <file|-> is required");
+  const text = flags.diff === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(flags.diff), "utf8");
+  const result = lib.testIntegrity(text);
+  if (flags.json) console.log(JSON.stringify({ schema: "feedback-cli/1", command: "guard", ...result }, null, 2));
+  else if (result.ok) console.log("guard: diff preserves test coverage");
+  else {
+    console.log("guard: diff is blocked");
+    for (const v of result.violations) console.log(`  x ${v.rule} ${v.file} — ${v.detail}`);
+  }
+  return result.ok ? 0 : 2;
+}
+
+/* Rollback-first: a deploy/UAT item records how to undo the change before it can
+ * close. The plan is evidence, not an executed action. */
+function cmdRollback(flags, ctx) {
+  const items = readItems(ctx.dir);
+  const item = idMatch(items, targetId(flags, "rollback"));
+  const at = nowIso();
+  const next = lib.rollbackRecord(item, {
+    plan: need(flags, "plan", "rollback"),
+    by: flags.by || "feedback",
+    at,
+    evidence: flags.evidence,
+  });
+  next.next_action = "rollback plan recorded — verify the original signal, then resolve";
+  writeItem(ctx.dir, next);
+  audit(ctx.dir, { at, actor: "feedback", action: "rollback", item_id: item.id, signature: item.signature, policy: {}, evidence_hash: null });
+  if (flags.json) console.log(JSON.stringify({ schema: "feedback-cli/1", command: "rollback", item: next }, null, 2));
+  else console.log(`${item.id}: rollback plan recorded`);
+  return 0;
 }
 
 /* File a single additive board row (the quarantine hardening row). A board
@@ -676,7 +731,8 @@ function cmdVerify(flags, ctx) {
   const result = need(flags, "result", "verify");
   if (!["pass", "fail"].includes(result)) throw new Error("verify: --result must be pass|fail");
   const at = nowIso();
-  if (item.state !== "verifying") throw new Error(`verify: ${item.id} is ${item.state}, not verifying — a fix is not done until the original signal is green`);
+  const window = lib.verifyDecision(item, ctx.policy, ctx.now);
+  if (!window.allowed) throw new Error(`verify refused (${window.rule}): ${window.reason}`);
   let next;
   if (result === "pass") {
     next = lib.transition(item, "resolved", { at, by: "feedback", reason: "original signal green" });
@@ -697,6 +753,10 @@ function cmdResolve(flags, ctx) {
   const items = readItems(ctx.dir);
   const item = idMatch(items, targetId(flags, "resolve"));
   if (item.state !== "verifying") throw new Error(`resolve: ${item.id} is ${item.state}, not verifying — a fix is not done until the original signal is green`);
+  if (!lib.loopEnabled(ctx.policy)) throw new Error("resolve: feedback loop is off — an in-flight attempt cannot land");
+  if (lib.rollbackRequired(item) && !lib.rollbackSatisfied(item)) {
+    throw new Error(`resolve: ${item.id} is a UAT/deploy signal — record the rollback plan first: feedback rollback ${item.id} --plan "..."`);
+  }
   if (!lib.approvalSatisfied(item)) throw new Error(`resolve: high-risk item requires an approval artifact — run ${lib.approvalCommand(item)}`);
   const at = nowIso();
   const next = lib.transition(item, "resolved", { at, by: "feedback", reason: "resolved with evidence" });
@@ -818,6 +878,10 @@ function main(argv) {
       return cmdClassify(flags, ctx);
     case "next":
       return cmdNext(flags, ctx);
+    case "guard":
+      return cmdGuard(flags, ctx);
+    case "rollback":
+      return cmdRollback(flags, ctx);
     case "attempt":
       return cmdAttempt(flags, ctx);
     case "rerun":

@@ -1,7 +1,13 @@
 {
   "schema": "feedback-policy/1",
   "mode": "auto",
-  "sources": ["ci", "nightly", "uat", "gate", "human"],
+  "sources": [
+    "ci",
+    "nightly",
+    "uat",
+    "gate",
+    "human"
+  ],
   "max_attempts_per_signature": 2,
   "max_attempts_per_day": 4,
   "max_active_attempts": 1,
@@ -31,8 +37,13 @@
     "**/payments/**",
     "**/billing/**"
   ],
-  "auto_fix_classes": ["product"],
+  "auto_fix_classes": [
+    "product"
+  ],
   "max_cost_per_item": 5,
   "max_cost_per_day": 20,
-  "kill_switch": false
+  "kill_switch": false,
+  "verification_window_min": 120,
+  "no_progress_limit": 2,
+  "auto_max_attempts": 2
 }

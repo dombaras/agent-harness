@@ -136,6 +136,9 @@ test("the shipped policy scaffold is valid and within the approved budgets", () 
   assert.equal(checked.policy.quarantine_days, 14);
   assert.deepEqual(checked.policy.auto_fix_classes, ["product"]);
   assert.equal(checked.policy.kill_switch, false);
+  assert.equal(checked.policy.verification_window_min, 120);
+  assert.equal(checked.policy.no_progress_limit, 2);
+  assert.equal(checked.policy.auto_max_attempts, 2);
 });
 
 test("policy validation rejects unknown keys and unsafe autonomy values", () => {
@@ -872,4 +875,280 @@ test("wiring: run --feedback and the Phase 2 CLI are exposed", () => {
   assert.match(bin, /if \(flags\["--feedback"\]\)/);
   assert.match(bin, /a === "--feedback"/);
   assert.match(bin, /\[--dry-run\] \[--feedback\]/);
+});
+
+/* ------------------------------------------------------ Phase 3: bounded loop */
+
+function endedAttempt(n, outcome, endedAt = "2026-11-25T10:00:00.000Z") {
+  return {
+    n,
+    signature: productItem().signature,
+    strategy: `hypothesis ${n}`,
+    strategy_hash: `h${n}`,
+    started_at: endedAt,
+    ended_at: endedAt,
+    outcome,
+    cost_usd: null,
+  };
+}
+
+test("bounded loop: consecutive fail-same attempts stop retrying, progress reopens the loop", () => {
+  const policy = autoPolicy({ max_attempts_per_signature: 5 });
+  const item = productItem();
+  const stalledItem = { ...item, attempts: [endedAttempt(1, "fail-same"), endedAttempt(2, "fail-same")] };
+
+  const decision = LIB.attemptDecision(stalledItem, policy, [stalledItem], NOW);
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.rule, "no-progress");
+  assert.match(decision.reason, /2 consecutive fail-same/);
+
+  assert.deepEqual(LIB.noProgress({ ...item, attempts: [endedAttempt(1, "fail-same")] }, policy), {
+    stalled: false,
+    reason: "progress",
+  });
+  assert.equal(LIB.noProgress({ ...item, attempts: [1, 2, 3].map((n) => endedAttempt(n, "fail-same")) }, policy).stalled, true);
+  assert.equal(LIB.noProgress({ ...item, attempts: [endedAttempt(1, "fail-same")] }, autoPolicy({ no_progress_limit: 3 })).stalled, false);
+
+  const progressed = { ...item, attempts: [endedAttempt(1, "fail-same"), endedAttempt(2, "fail-different")] };
+  assert.equal(LIB.attemptDecision(progressed, policy, [progressed], NOW).allowed, true);
+
+  // A declared numeric budget is the harder stop and is reported first.
+  assert.equal(LIB.attemptDecision(stalledItem, autoPolicy(), [stalledItem], NOW).rule, "signature-budget");
+});
+
+test("bounded loop: auto is allowed only for a low-risk allowed class inside the auto budget", () => {
+  const policy = autoPolicy();
+  const item = productItem();
+  assert.equal(LIB.autoDecision(item, policy, [item], NOW).allowed, true);
+  assert.equal(LIB.autoDecision(item, policy, [item], NOW).rule, "ok");
+
+  assert.equal(LIB.autoDecision(item, autoPolicy({ mode: "assist" }), [item], NOW).rule, "mode");
+  assert.equal(LIB.autoDecision(item, autoPolicy({ kill_switch: true }), [item], NOW).rule, "kill-switch");
+  assert.equal(LIB.autoDecision(highRiskItem(), policy, [highRiskItem()], NOW).rule, "risk");
+  assert.equal(LIB.autoDecision({ ...item, class: "flake" }, policy, [{ ...item, class: "flake" }], NOW).rule, "class");
+  assert.equal(LIB.autoDecision(item, autoPolicy({ auto_fix_classes: [] }), [item], NOW).rule, "class");
+
+  const spentItem = { ...item, attempts: [endedAttempt(1, "fail-different"), endedAttempt(2, "fail-different")] };
+  const capped = LIB.autoDecision(spentItem, autoPolicy({ max_attempts_per_signature: 5, auto_max_attempts: 2 }), [spentItem], NOW);
+  assert.equal(capped.allowed, false);
+  assert.equal(capped.rule, "auto-budget");
+  assert.equal(LIB.autoDecision(spentItem, autoPolicy({ max_attempts_per_signature: 5, auto_max_attempts: 3 }), [spentItem], NOW).allowed, true);
+
+  assert.ok(LIB.validatePolicy({ schema: LIB.POLICY_SCHEMA, auto_max_attempts: -1 }).errors.some((e) => /auto_max_attempts/.test(e)));
+});
+
+test("bounded loop: verification needs a recent passing attempt and the loop on", () => {
+  const policy = autoPolicy();
+  const verifying = { ...productItem(), state: "verifying" };
+  assert.equal(LIB.verifyDecision(verifying, policy, NOW).rule, "no-pass-attempt");
+
+  const fresh = { ...verifying, attempts: [endedAttempt(1, "pass", "2026-11-25T11:30:00.000Z")] };
+  const open = LIB.verifyDecision(fresh, policy, NOW);
+  assert.equal(open.allowed, true);
+  assert.equal(open.attempt, 1);
+
+  const stale = { ...verifying, attempts: [endedAttempt(1, "pass", "2026-11-25T09:00:00.000Z")] };
+  assert.equal(LIB.verifyDecision(stale, policy, NOW).rule, "verification-window");
+
+  assert.equal(LIB.verifyDecision({ ...productItem(), state: "fixing" }, policy, NOW).rule, "state");
+  assert.equal(LIB.verifyDecision(fresh, autoPolicy({ kill_switch: true }), NOW).rule, "kill-switch");
+});
+
+test("test-integrity: deleting, skipping, inflating timeouts and weakening assertions block a patch", () => {
+  const clean = ["--- a/src/api.js", "+++ b/src/api.js", "@@ -1 +1 @@", "-const status = 500;", "+const status = 200;"].join("\n");
+  assert.deepEqual(LIB.testIntegrity(clean), { ok: true, violations: [] });
+  assert.deepEqual(LIB.testIntegrity(""), { ok: true, violations: [] });
+
+  const deleted = ["--- a/tests/api.test.js", "+++ /dev/null", "@@ -1,1 +0,0 @@", "-test('health', () => {});"].join("\n");
+  assert.equal(LIB.testIntegrity(deleted).violations[0].rule, "test-deletion");
+
+  const skipped = ["--- a/tests/api.test.js", "+++ b/tests/api.test.js", "@@", "+test.skip('health', () => {});"].join("\n");
+  assert.equal(LIB.testIntegrity(skipped).violations[0].rule, "test-skip");
+
+  const timeout = ["--- a/tests/api.test.js", "+++ b/tests/api.test.js", "@@", "+it('health', fn, { timeout: 5000 });"].join("\n");
+  assert.equal(LIB.testIntegrity(timeout).violations[0].rule, "timeout-inflation");
+
+  const weakened = [
+    "--- a/tests/api.test.js",
+    "+++ b/tests/api.test.js",
+    "@@",
+    "-expect(a).toBe(1);",
+    "-expect(b).toBe(2);",
+    "+const check = 1;",
+  ].join("\n");
+  assert.equal(LIB.testIntegrity(weakened).violations[0].rule, "weakened-assertion");
+
+  const net = [
+    "--- a/tests/api.test.js",
+    "+++ b/tests/api.test.js",
+    "@@",
+    ...Array.from({ length: 25 }, (_, i) => `-old coverage line ${i}`),
+  ].join("\n");
+  assert.equal(LIB.testIntegrity(net).violations[0].rule, "test-deletion");
+
+  // Only test files are guarded: a non-test skip marker is not a violation.
+  const nonTest = ["--- a/src/widget.js", "+++ b/src/widget.js", "@@", "+thing.skip('not a test');"].join("\n");
+  assert.equal(LIB.testIntegrity(nonTest).ok, true);
+});
+
+test("rollback-first: UAT/deploy items need a recorded undo plan before they close", () => {
+  const policy = autoPolicy();
+  const uat = LIB.applyClassification(
+    LIB.normalizeSignal(fixtureDoc().fixtures.find((f) => f.id === "uat-500").signal, { now: NOW }),
+    policy
+  );
+  assert.equal(uat.environment, "uat");
+  assert.equal(LIB.rollbackRequired(uat), true);
+  assert.equal(LIB.rollbackSatisfied(uat), false);
+  assert.equal(LIB.rollbackRequired(productItem()), false);
+  assert.equal(LIB.rollbackRequired(productItem({ environment: "production" })), true);
+
+  assert.throws(() => LIB.rollbackRecord(uat, {}), /--plan/);
+  const recorded = LIB.rollbackRecord(uat, { plan: "revert the deploy to the previous SHA", by: "ronen", at: NOW, evidence: "deploy 41" });
+  assert.equal(recorded.rollback.at, NOW);
+  assert.equal(recorded.rollback.by, "ronen");
+  assert.equal(recorded.rollback.evidence, "deploy 41");
+  assert.equal(LIB.rollbackSatisfied(recorded), true);
+  assert.equal(recorded.state, "queued", "recording a plan does not move the state");
+  assert.equal(LIB.rollbackRecord(uat, { plan: "x".repeat(600) }).rollback.plan.length, 500);
+});
+
+test("CLI: guard exits 2 on a test-weakening diff and 0 on a clean one", () => {
+  const ctx = tempProject();
+  try {
+    const clean = path.join(ctx.root, "clean.diff");
+    const bad = path.join(ctx.root, "bad.diff");
+    const badDiff = ["--- a/tests/api.test.js", "+++ b/tests/api.test.js", "@@", "+test.skip('health', () => {});"].join("\n");
+    fs.writeFileSync(clean, ["--- a/src/api.js", "+++ b/src/api.js", "@@", "-const x = 1;", "+const x = 2;"].join("\n"));
+    fs.writeFileSync(bad, badDiff);
+
+    const ok = runCli(ctx, ["guard", "--diff", clean, "--json"]);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(parseCli(ok).ok, true);
+
+    const blocked = runCli(ctx, ["guard", "--diff", bad, "--json"]);
+    assert.equal(blocked.status, 2);
+    const doc = parseCli(blocked);
+    assert.equal(doc.ok, false);
+    assert.equal(doc.violations[0].rule, "test-skip");
+    assert.match(doc.violations[0].file, /tests\/api\.test\.js/);
+
+    const viaStdin = spawnSync(process.execPath, [CLI, "guard", "--diff", "-", "--json"], {
+      cwd: ctx.root,
+      input: badDiff,
+      encoding: "utf8",
+      env: { ...process.env, AGENT_HARNESS_FEEDBACK_DIR: ctx.ledger, AGENT_HARNESS_FEEDBACK: "" },
+    });
+    assert.equal(viaStdin.status, 2);
+    assert.equal(JSON.parse(viaStdin.stdout).violations[0].rule, "test-skip");
+
+    const missing = runCli(ctx, ["guard"]);
+    assert.equal(missing.status, 2);
+    assert.match(missing.stderr, /--diff/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("CLI: next --auto refuses a high-risk item and names the refusing rule", () => {
+  const ctx = tempProject();
+  try {
+    const item = parseCli(
+      runCli(ctx, ["add", "--source", "ci", "--title", "API tests failed", "--test", "tests/api.test.js", "--error", "AssertionError: expected 200 but got 500", "--repro", "npm run test:api", "--json"])
+    ).item;
+    const auto = runCli(ctx, ["next", "--auto", "--json"]);
+    assert.equal(auto.status, 1, "an auto-eligible item needs work");
+    const doc = parseCli(auto);
+    assert.equal(doc.eligible, true);
+    assert.equal(doc.decision.rule, "ok");
+    assert.match(doc.prompt, /Reproduce first/);
+    assert.equal(doc.item.id, item.id);
+  } finally {
+    ctx.cleanup();
+  }
+
+  const assist = tempProject();
+  try {
+    const high = parseCli(
+      runCli(assist, ["add", "--source", "uat", "--title", "UAT health probe returned 500", "--error", "GET https://uat.example.test/api/health returned 500", "--json"])
+    ).item;
+    assert.equal(high.risk, "high");
+    const refused = runCli(assist, ["next", "--auto", "--json"]);
+    assert.equal(refused.status, 1);
+    const doc = parseCli(refused);
+    assert.equal(doc.eligible, false);
+    assert.equal(doc.decision.rule, "risk");
+    assert.equal(doc.item.id, high.id);
+  } finally {
+    assist.cleanup();
+  }
+});
+
+test("CLI: verify refuses while the kill switch is on", () => {
+  const ctx = tempProject();
+  try {
+    fs.mkdirSync(ctx.ledger, { recursive: true });
+    const item = parseCli(
+      runCli(ctx, ["add", "--source", "ci", "--title", "API tests failed", "--test", "tests/api.test.js", "--error", "AssertionError: expected 200 but got 500", "--json"])
+    ).item;
+    assert.equal(runCli(ctx, ["attempt", item.id, "--start", "--strategy", "guard the health handler", "--json"]).status, 0);
+    assert.equal(runCli(ctx, ["attempt", item.id, "--end", "--outcome", "pass", "--json"]).status, 0);
+
+    fs.writeFileSync(
+      path.join(ctx.root, ".agents", "feedback.json"),
+      JSON.stringify({ schema: LIB.POLICY_SCHEMA, mode: "auto", kill_switch: true }, null, 2)
+    );
+    const refused = runCli(ctx, ["verify", item.id, "--result", "pass"]);
+    assert.equal(refused.status, 2);
+    assert.match(refused.stderr, /kill-switch/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("CLI: a UAT item cannot resolve before its rollback plan is recorded", () => {
+  const ctx = tempProject();
+  try {
+    const item = parseCli(
+      runCli(ctx, ["add", "--source", "uat", "--title", "UAT health probe returned 500", "--error", "GET https://uat.example.test/api/health returned 500", "--json"])
+    ).item;
+    assert.equal(LIB.rollbackRequired(item), true);
+    assert.equal(runCli(ctx, ["attempt", item.id, "--start", "--strategy", "restore the health contract", "--json"]).status, 0);
+    const ended = runCli(ctx, ["attempt", item.id, "--end", "--outcome", "pass", "--json"]);
+    assert.equal(ended.status, 0, ended.stderr);
+    assert.equal(parseCli(ended).item.state, "verifying");
+
+    const noPlan = runCli(ctx, ["resolve", item.id, "--evidence", "UAT probe green"]);
+    assert.equal(noPlan.status, 2);
+    assert.match(noPlan.stderr, /rollback plan/);
+
+    const rollback = runCli(ctx, ["rollback", item.id, "--plan", "revert deployment 41 to the previous SHA", "--json"]);
+    assert.equal(rollback.status, 0, rollback.stderr);
+    assert.match(parseCli(rollback).item.rollback.plan, /previous SHA/);
+
+    const noApproval = runCli(ctx, ["resolve", item.id, "--evidence", "UAT probe green"]);
+    assert.equal(noApproval.status, 2);
+    assert.match(noApproval.stderr, /approval artifact/, "the rollback gate must pass before approval is checked");
+
+    assert.equal(runCli(ctx, ["approve", item.id, "--by", "ronen", "--diff", "diff --git a/app/health b/app/health", "--json"]).status, 0);
+    const resolved = runCli(ctx, ["resolve", item.id, "--evidence", "UAT probe green", "--json"]);
+    assert.equal(resolved.status, 0, resolved.stderr);
+    const closed = parseCli(resolved).item;
+    assert.equal(closed.state, "resolved");
+    assert.match(closed.rollback.plan, /previous SHA/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("wiring: the Phase 3 CLI surface and policy keys are exposed", () => {
+  const usage = spawnSync(process.execPath, [CLI, "--help"], { cwd: ROOT, encoding: "utf8" });
+  assert.equal(usage.status, 0);
+  for (const command of ["next [--auto]", "guard --diff", "rollback <id> --plan"]) {
+    assert.ok(usage.stdout.includes(command), `usage missing "${command}"`);
+  }
+  const policy = JSON.parse(fs.readFileSync(POLICY_SCAFFOLD, "utf8"));
+  for (const key of ["verification_window_min", "no_progress_limit", "auto_max_attempts"]) {
+    assert.equal(typeof policy[key], "number", `policy scaffold missing ${key}`);
+  }
 });

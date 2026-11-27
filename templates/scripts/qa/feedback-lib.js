@@ -72,6 +72,9 @@ const DEFAULT_POLICY = {
   cooldown_min: 30,
   flake_rerun_limit: 1,
   quarantine_days: 14,
+  verification_window_min: 120,
+  no_progress_limit: 2,
+  auto_max_attempts: 2,
   recurrence_window: {
     default_days: 14,
     ci: "landed-sha",
@@ -233,7 +236,7 @@ function validatePolicy(doc) {
     if (!Array.isArray(doc.sources) || doc.sources.some((s) => !SOURCES.includes(s))) errors.push("sources must be a subset of " + SOURCES.join(","));
     else policy.sources = doc.sources.slice();
   }
-  for (const key of ["max_attempts_per_signature", "max_attempts_per_day", "max_active_attempts", "cooldown_min", "flake_rerun_limit", "quarantine_days"]) {
+  for (const key of ["max_attempts_per_signature", "max_attempts_per_day", "max_active_attempts", "cooldown_min", "flake_rerun_limit", "quarantine_days", "verification_window_min", "no_progress_limit", "auto_max_attempts"]) {
     if (doc[key] != null) {
       if (!Number.isInteger(doc[key]) || doc[key] < 0) errors.push(`${key} must be a non-negative integer`);
       else policy[key] = doc[key];
@@ -602,6 +605,8 @@ function attemptDecision(item, policy, items, now) {
       return { allowed: false, rule: "cooldown", reason: `wait ${Math.ceil(p.cooldown_min - ageMin)} more min after the last attempt` };
     }
   }
+  const stalled = noProgress(item, p);
+  if (stalled.stalled) return { allowed: false, rule: "no-progress", reason: stalled.reason };
   return { allowed: true, rule: "ok", reason: "budget available", stats };
 }
 
@@ -609,6 +614,147 @@ function attemptDecision(item, policy, items, now) {
 function sameStrategy(item, strategy) {
   const hash = shortHash(String(strategy || "").trim());
   return (item.attempts || []).some((a) => a && a.strategy_hash === hash && a.outcome === "fail-same");
+}
+
+/* No-progress detection: a different strategy that produces the same failure
+ * (fail-same) is not progress. After the configured run of fail-same outcomes
+ * the loop stops retrying and escalates instead of burning more budget. */
+function noProgress(item, policy) {
+  const p = policy || defaultPolicy();
+  const limit = Number.isInteger(p.no_progress_limit) ? p.no_progress_limit : 2;
+  const ended = ((item && item.attempts) || []).filter((a) => a && a.ended_at);
+  let same = 0;
+  for (let i = ended.length - 1; i >= 0; i -= 1) {
+    if (ended[i].outcome !== "fail-same") break;
+    same += 1;
+  }
+  return same >= limit
+    ? { stalled: true, reason: `${same} consecutive fail-same attempt(s) — the failure has not moved; escalate with the attempt table` }
+    : { stalled: false, reason: "progress" };
+}
+
+/* Auto mode is deliberately narrow: only a low-risk item in an allowed class,
+ * with the kill switch off and the per-signature auto budget unspent, may run
+ * without a human in the loop. Everything else stays assist/observe. */
+function autoDecision(item, policy, items, now) {
+  const p = policy || defaultPolicy();
+  if (!loopEnabled(p)) return { allowed: false, rule: "kill-switch", reason: "feedback loop is off" };
+  if (p.mode !== "auto") return { allowed: false, rule: "mode", reason: `mode is ${p.mode}; auto needs mode: auto` };
+  if (!item) return { allowed: false, rule: "state", reason: "missing item" };
+  if (item.risk !== "low") return { allowed: false, rule: "risk", reason: "high-risk items never run unattended" };
+  if (!(p.auto_fix_classes || []).includes(item.class)) {
+    return { allowed: false, rule: "class", reason: `${item.class} is outside auto_fix_classes — human triage` };
+  }
+  const at = now || new Date().toISOString();
+  const stats = attemptStats(items, item.signature, at);
+  const cap = Number.isInteger(p.auto_max_attempts) ? p.auto_max_attempts : 2;
+  if (stats.bySignature >= cap) {
+    return { allowed: false, rule: "auto-budget", reason: `${stats.bySignature}/${cap} auto attempt(s) used for this signature — escalate` };
+  }
+  return attemptDecision(item, p, items, at);
+}
+
+/* A fix is only verified inside a bounded window after the last successful
+ * attempt. A stale verification is not evidence that the current tree is fixed. */
+function verifyDecision(item, policy, now) {
+  const p = policy || defaultPolicy();
+  if (!loopEnabled(p)) return { allowed: false, rule: "kill-switch", reason: "feedback loop is off — an in-flight attempt cannot land" };
+  if (!item || item.state !== "verifying") return { allowed: false, rule: "state", reason: `item is ${item ? item.state : "missing"}, not verifying` };
+  const passed = ((item.attempts || []).filter((a) => a && a.ended_at && a.outcome === "pass"));
+  const last = passed[passed.length - 1];
+  if (!last) return { allowed: false, rule: "no-pass-attempt", reason: "no successful attempt recorded — reproduce and fix first" };
+  const windowMin = Number.isInteger(p.verification_window_min) ? p.verification_window_min : 120;
+  const ageMin = (Date.parse(now || new Date().toISOString()) - Date.parse(last.ended_at)) / 60000;
+  if (Number.isFinite(ageMin) && ageMin > windowMin) {
+    return { allowed: false, rule: "verification-window", reason: `last successful attempt is ${Math.round(ageMin)} min old (> ${windowMin}) — rerun the fix before verifying` };
+  }
+  return { allowed: true, rule: "ok", reason: "verification window is open", attempt: last.n };
+}
+
+/* Test-integrity guard: a fix must not land by deleting a test, skipping it, or
+ * weakening assertions. Pure over a unified diff so it runs before any commit. */
+function testIntegrity(diffText) {
+  const text = String(diffText || "");
+  const added = new Map();
+  const removed = new Map();
+  const files = new Map();
+  const bump = (map, key, by = 1) => map.set(key, (map.get(key) || 0) + by);
+  const isTest = (f) => /(^|\/)(tests?|__tests__|spec)\//.test(f) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(f);
+  let oldPath = null;
+  let current = null;
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.startsWith("--- ")) {
+      oldPath = raw.slice(4).trim().replace(/^a\//, "");
+      continue;
+    }
+    if (raw.startsWith("+++ ")) {
+      const next = raw.slice(4).trim();
+      if (next === "/dev/null") {
+        if (oldPath && isTest(oldPath)) files.set(oldPath, { deleted: true });
+        current = null;
+      } else {
+        current = next.replace(/^b\//, "");
+        if (!files.has(current)) files.set(current, { deleted: false });
+      }
+      continue;
+    }
+    if (!current) continue;
+    const body = raw.slice(1);
+    if (raw.startsWith("+")) {
+      bump(added, current);
+      if (/\.(skip|todo|only)\(|\b(xit|xdescribe|fit|fdescribe)\s*\(|@pytest\.mark\.(skip|xfail)|\bt\.Skip\(/.test(body)) {
+        files.set(current, { ...(files.get(current) || {}), skip: (files.get(current)?.skip || 0) + 1 });
+      }
+      if (/\btimeout\s*[(:]\s*\d{4,}/.test(body)) {
+        files.set(current, { ...(files.get(current) || {}), timeout: (files.get(current)?.timeout || 0) + 1 });
+      }
+    } else if (raw.startsWith("-")) {
+      bump(removed, current);
+      if (/\b(assert|expect|assertEqual|assertDeepEqual|should)\b/.test(body)) bump(removed, `${current}#assert`);
+    }
+  }
+  const violations = [];
+  for (const [file, meta] of files) {
+    if (meta.deleted) {
+      violations.push({ rule: "test-deletion", file, detail: "test file deleted" });
+      continue;
+    }
+    if (!isTest(file)) continue;
+    if (meta.skip) violations.push({ rule: "test-skip", file, detail: `${meta.skip} added skip/only marker(s)` });
+    if (meta.timeout) violations.push({ rule: "timeout-inflation", file, detail: `${meta.timeout} added timeout(s) >= 1000ms` });
+    if ((removed.get(`${file}#assert`) || 0) > (added.get(`${file}#assert`) || 0)) {
+      violations.push({ rule: "weakened-assertion", file, detail: "more assertion lines removed than added" });
+    }
+    if ((removed.get(file) || 0) > (added.get(file) || 0) + 20) {
+      violations.push({ rule: "test-deletion", file, detail: `net ${removed.get(file) - added.get(file)} test lines removed` });
+    }
+  }
+  return { ok: violations.length === 0, violations };
+}
+
+/* Deploy/UAT signals are rollback-first: the plan to undo the change must exist
+ * before the item can close, even when the fix verified green. */
+function rollbackRequired(item) {
+  if (!item) return false;
+  return item.source === "uat" || ["uat", "production"].includes(item.environment);
+}
+
+function rollbackSatisfied(item) {
+  return !!(item && item.rollback && item.rollback.plan && item.rollback.at);
+}
+
+function rollbackRecord(item, meta = {}) {
+  const plan = String(meta.plan || "").trim();
+  if (!plan) throw new Error("rollback: --plan is required");
+  return {
+    ...item,
+    rollback: {
+      at: meta.at || new Date().toISOString(),
+      by: String(meta.by || "feedback"),
+      plan: plan.slice(0, 500),
+      evidence: meta.evidence ? String(meta.evidence).slice(0, 500) : null,
+    },
+  };
 }
 
 function nextEligible(items, policy, now) {
@@ -901,6 +1047,13 @@ module.exports = {
   attemptStats,
   attemptDecision,
   sameStrategy,
+  noProgress,
+  autoDecision,
+  verifyDecision,
+  testIntegrity,
+  rollbackRequired,
+  rollbackSatisfied,
+  rollbackRecord,
   nextEligible,
   metrics,
   reproCommand,
