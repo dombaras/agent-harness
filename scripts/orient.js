@@ -49,6 +49,13 @@ function safe(fn, fallback = null) {
   }
 }
 
+/* Orientation must stay bounded even when a checkpoint records a long next
+ * action: the full text lives in the handoff (F-058). */
+function clipText(value, max) {
+  const s = String(value == null ? "" : value);
+  return s.length > max ? s.slice(0, Math.max(0, max - 1)).replace(/\s+$/, "") + "…" : s;
+}
+
 /* `git -C <root> <args>` trimmed stdout, or null. Injected for tests. */
 function gitRunner(root) {
   return (args) => {
@@ -619,6 +626,10 @@ function collectOrient(opts = {}) {
         phase: ck.state && ck.state.phase,
         nextAction: ck.state && ck.state.next_action,
         count: ck.state && ck.state.checkpoint_count,
+        // A resolved handoff without a formal block still yields a bounded
+        // best-effort excerpt; say so instead of reporting `none` (F-058).
+        hasBlock: ck.hasCheckpoint != null ? ck.hasCheckpoint : ck.checkpoint !== false,
+        headings: ck.headings || [],
       }
     : null;
   /* Two live work units are routine (a device run + a review). Refusing to
@@ -723,13 +734,21 @@ function printHuman(o) {
   lines.push(`feature: ${o.feature ? `${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}` : "(none inferred — pass --feature <id>)"}`);
   lines.push(`owned:   ${o.ownedFiles || "unavailable"}`);
   if (o.checkpoint) {
-    lines.push(`ckpt:    ${path.basename(o.checkpoint.file)} · phase ${o.checkpoint.phase || "?"} · count ${o.checkpoint.count || 0}`);
-    if (o.checkpoint.nextAction) lines.push(`next:    ${o.checkpoint.nextAction}`);
+    const noBlock = o.checkpoint.hasBlock === false ? " · no ## Checkpoint block (best-effort excerpt)" : "";
+    lines.push(
+      `ckpt:    ${path.basename(o.checkpoint.file)} · phase ${o.checkpoint.phase || "?"} · count ${o.checkpoint.count || 0}${noBlock}`
+    );
+    if (o.checkpoint.nextAction) lines.push(`next:    ${clipText(o.checkpoint.nextAction, 600)}`);
+    const sections = (o.checkpoint.headings || [])
+      .filter((h) => h && h.level <= 2)
+      .slice(0, 8)
+      .map((h) => h.name);
+    if (sections.length) lines.push(`sections: ${sections.join(" · ")}`);
   } else if (o.checkpointCandidates && o.checkpointCandidates.length) {
     lines.push(`ckpt:    ${o.checkpointCandidates.length} resumable checkpoint(s) — pick one with --feature <id>`);
     for (const c of o.checkpointCandidates) {
       const file = path.basename(c.file);
-      lines.push(`         ${c.id} · phase ${c.phase || "?"} · next: ${c.nextAction || "?"} [${file}]`);
+      lines.push(`         ${c.id} · phase ${c.phase || "?"} · next: ${clipText(c.nextAction || "?", 180)} [${file}]`);
     }
   } else {
     lines.push("ckpt:    none (fresh work unit or feature has no checkpoint yet)");
@@ -796,8 +815,12 @@ function printBrief(o) {
     lines.push(`   tools.opencode.session.move (directory: "${o.featureWorktree.path}"), then re-run orient.`);
   }
   if (o.feature) lines.push(`feature ${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`);
-  if (o.checkpoint) lines.push(`checkpoint ${o.checkpoint.phase || "?"} · next: ${o.checkpoint.nextAction || "?"}`);
-  else for (const c of (o.checkpointCandidates || []).slice(0, 4)) lines.push(`checkpoint ${c.id}: ${c.nextAction || "?"}`);
+  if (o.checkpoint)
+    lines.push(
+      `checkpoint ${o.checkpoint.phase || "?"} · next: ${clipText(o.checkpoint.nextAction || "?", 400)}` +
+        (o.checkpoint.hasBlock === false ? " (no ## Checkpoint block — best-effort excerpt)" : "")
+    );
+  else for (const c of (o.checkpointCandidates || []).slice(0, 4)) lines.push(`checkpoint ${c.id}: ${clipText(c.nextAction || "?", 240)}`);
   lines.push(...renderDiagnosisLines(o.diagnosis));
   if (o.board) {
     const ip = o.board.inprogress.map((r) => r.id).join(", ") || "none";

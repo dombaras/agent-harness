@@ -7,8 +7,8 @@
  * §Context budget & lifecycle (objective/phase, completed + active dispatches,
  * files changed, contracts, known facts, decisions, risks, next_action) into
  * `.agents/handoffs/<feature>.md`, replacing only its own `## Checkpoint`
- * section. `resume` prints that block alone — the bounded context a fresh
- * session reads instead of replaying the transcript.
+ * section. `resume` prints a bounded (<=3 KB) excerpt — the state plus a
+ * heading outline — instead of the whole handoff or the transcript (F-058).
  *
  * Deterministic: no timestamps, stable ordering, `unknown` for anything not
  * recorded (never invented). Writing identical state is a no-op; changing it
@@ -366,6 +366,110 @@ function parseBlock(body) {
   return state;
 }
 
+/* Resume output is an orientation aid, not a transcript: never hand a fresh
+ * context the whole handoff. 3 KiB covers the checkpoint state plus a heading
+ * outline; the caller opens one section for detail (F-058). */
+const EXCERPT_MAX_BYTES = 3072;
+const OUTLINE_MAX = 12;
+
+function byteLen(value) {
+  return Buffer.byteLength(String(value || ""), "utf8");
+}
+
+function clipBytes(text, maxBytes) {
+  const src = String(text || "");
+  if (byteLen(src) <= maxBytes) return { text: src, truncated: false };
+  const note = "\n… [excerpt truncated — read the handoff for detail]\n";
+  const room = Math.max(0, maxBytes - byteLen(note));
+  const cut = Buffer.from(src, "utf8").subarray(0, room).toString("utf8").replace(/\s+$/, "");
+  return { text: cut + note, truncated: true };
+}
+
+/* The `#`/`##`/`###` outline a resumer can use to open only the section it
+ * needs, skipping the machine-written checkpoint block. Bounded in count and
+ * label length so a pathological handoff cannot bloat the excerpt. */
+function headingOutline(before, after, max = OUTLINE_MAX) {
+  const out = [];
+  for (const text of [before, after]) {
+    for (const raw of String(text || "").split(/\r?\n/)) {
+      const m = raw.match(/^(#{1,3})\s+(.+?)\s*$/);
+      if (!m) continue;
+      const name = m[2].trim();
+      out.push({
+        level: m[1].length,
+        name: name.length > 90 ? name.slice(0, 87) + "..." : name,
+      });
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
+}
+
+function fieldValue(text, name) {
+  const re = new RegExp("^\\s*-\\s*" + name + ":\\s*(.+)$", "im");
+  const m = String(text || "").match(re);
+  return m ? m[1].trim() : null;
+}
+
+function sectionLead(text, headingRe) {
+  const lines = String(text || "").split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const h = lines[i].match(/^#{2,3}\s+(.+?)\s*$/);
+    if (!h || !headingRe.test(h[1])) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^#{1,3}\s/.test(lines[j])) break;
+      const t = lines[j].trim().replace(/^[-*+]\s+/, "");
+      if (t) return t;
+    }
+  }
+  return null;
+}
+
+/* Best-effort phase/next when a handoff predates the checkpoint block: read the
+ * fields anywhere in the file, then the obvious section headings. Never throws. */
+function fallbackState(src) {
+  return {
+    phase: fieldValue(src, "phase") || sectionLead(src, /^(status|phase)\b/i) || null,
+    next_action:
+      fieldValue(src, "next[ _-]?action") ||
+      sectionLead(src, /^(next action|next step|resume|where we stopped)\b/i) ||
+      null,
+  };
+}
+
+function buildExcerpt({ feature, file, body, state, headings, fileBytes, maxBytes = EXCERPT_MAX_BYTES }) {
+  const outline = headings.length
+    ? ["## Handoff outline", ...headings.map((h) => `${"  ".repeat(Math.max(0, h.level - 1))}- ${h.name}`)]
+    : [];
+  const footer = `> full handoff: ${file} (${fileBytes} B) — open a section only when this excerpt is insufficient`;
+  // Reserve room for the outline + footer so a huge checkpoint block cannot
+  // truncate the section index away — the index is what makes bounded reading
+  // actionable.
+  const reserve = byteLen(outline.join("\n")) + byteLen(footer) + 8;
+  const bodyBudget = Math.max(256, maxBytes - reserve);
+  let bodyText = body;
+  let cut = false;
+  if (body && byteLen(bodyText) > bodyBudget) {
+    bodyText =
+      Buffer.from(bodyText, "utf8").subarray(0, bodyBudget).toString("utf8").replace(/\s+$/, "") +
+      "\n… [checkpoint block truncated]";
+    cut = true;
+  }
+  if (!bodyText) {
+    bodyText = [
+      "## Checkpoint excerpt (no `## Checkpoint` block found)",
+      `- feature: ${feature}`,
+      `- phase: ${state.phase || "?"}`,
+      `- next_action: ${state.next_action || "?"}`,
+    ].join("\n");
+  }
+  const lines = [bodyText];
+  if (outline.length) lines.push("", ...outline);
+  lines.push("", footer);
+  const capped = clipBytes(lines.join("\n").replace(/\n{3,}/g, "\n\n") + "\n", maxBytes);
+  return { text: capped.text, truncated: cut || capped.truncated };
+}
+
 function readCheckpoint(args) {
   const requested = assertFeature(args.feature, "resume");
   const resolved = resolveHandoff(requested);
@@ -379,8 +483,15 @@ function readCheckpoint(args) {
     throw new Error(`no handoff found for "${requested}"${hint}${searched ? ` (searched ${searched})` : ""}`);
   }
   const file = path.resolve(resolved.file);
-  const parts = splitCheckpoint(fs.readFileSync(file, "utf8"));
-  if (!parts.body) throw new Error(`"${feature}" has no ## Checkpoint block yet — run checkpoint write first`);
+  const src = fs.readFileSync(file, "utf8");
+  const parts = splitCheckpoint(src);
+  const body = parts.body ? parts.body.trim() : "";
+  // A resolved handoff without a formal block is still resumable: return a
+  // best-effort phase/next + outline instead of forcing a whole-file read.
+  const state = body ? parseBlock(body) : fallbackState(src);
+  const headings = headingOutline(parts.before, parts.after);
+  const fileBytes = byteLen(src);
+  const excerpt = buildExcerpt({ feature, file, body, state, headings, fileBytes });
   const stateRoot = resolved.fileRoot || root;
   return {
     input: requested,
@@ -393,8 +504,15 @@ function readCheckpoint(args) {
     // The feature's linked worktree, when one exists — the tree its work (and
     // therefore tsc/tests) belongs to, independent of where the handoff lives.
     worktree: (resolved.worktree && resolved.worktree.path) || null,
-    body: parts.body.trim(),
-    state: parseBlock(parts.body),
+    body,
+    state,
+    checkpoint: Boolean(body),
+    hasCheckpoint: Boolean(body),
+    headings,
+    excerpt: excerpt.text,
+    truncated: excerpt.truncated,
+    fileBytes,
+    bodyBytes: byteLen(body),
     // Resolve the diagnosis where the feature actually lives, like the handoff.
     diagnosis: diagnosisState(feature, stateRoot),
   };
@@ -516,6 +634,12 @@ function main() {
             fileRoot: r.fileRoot,
             suggestions: r.suggestions,
             state: r.state,
+            checkpoint: r.checkpoint,
+            hasCheckpoint: r.hasCheckpoint,
+            headings: r.headings,
+            excerpt: r.excerpt,
+            truncated: r.truncated,
+            fileBytes: r.fileBytes,
             root: r.root,
             worktree: r.worktree,
             diagnosis: r.diagnosis,
@@ -540,7 +664,11 @@ function main() {
       );
     }
     console.log(`> handoff: ${r.file}${r.input && r.input !== r.feature ? ` (resolved from "${r.input}")` : ""}`);
-    console.log(r.body);
+    console.log(
+      `> excerpt: ${byteLen(r.excerpt)} B of ${r.fileBytes} B handoff${r.truncated ? " (truncated)" : ""}` +
+        (r.checkpoint ? "" : " — no ## Checkpoint block; best-effort phase/next")
+    );
+    console.log(r.excerpt);
     const dLines = renderDiagnosisBrief(r.diagnosis);
     if (dLines.length) console.log("\n" + dLines.join("\n"));
     return;
@@ -566,9 +694,12 @@ if (require.main === module) {
 
 module.exports = {
   SCHEMA,
+  EXCERPT_MAX_BYTES,
   splitCheckpoint,
   renderBlock,
   parseBlock,
+  headingOutline,
+  buildExcerpt,
   writeCheckpoint,
   readCheckpoint,
   listResumable,

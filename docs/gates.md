@@ -144,7 +144,7 @@ prefix file (root dispatcher, rulebook, operating rules, session-start memory).
 ---
 
 ## Non-test harness commands referenced by the rules
-- `node scripts/orient.js` — one-call session orientation (tree/feature/checkpoint/board/serves/capacity/last-E2E) **plus a bounded digest of the session-start memory files** (`--brief` for session-start injection).
+- `node scripts/orient.js` — one-call session orientation (tree/feature/checkpoint/board/serves/capacity/last-E2E) **plus a bounded digest of the session-start memory files** (`--brief` for session-start injection). The checkpoint line is a bounded excerpt: phase, next action, and the top-level heading outline; `checkpoint resume` itself is capped at 3 KB and never prints the whole handoff.
 - `node scripts/qa/run-gates.js` — run the gate battery in ONE call (`npm run gates [-- --phase=pre-push|process|quick|all] [--base=<ref>] [--continue]`). Phases run in order, stop at the first failure, and skip a gate the project has not wired. **The pre-push hook delegates here** (`gates --phase=pre-push`), so the hook and the `gates` tool share one gate list.
 - `node scripts/qa/where.js` — bounded symbol/owner lookup (`npm run where -- <term>`): index-first `file:line` hits annotated with the backlog row(s) owning each file, plus `--owner <glob>`. Use it instead of shell `grep` for locating a symbol.
 - `node scripts/qa/feature-scaffold.js` — write the per-feature doc-tree skeletons (intent/scope/plan/tests) + the QA-plan stub in one call (`npm run feature:scaffold -- --id <F-n> --slug <slug> [--risk high]`), so the author personas fill a `test:product`-shaped structure instead of a blank page. Write-if-missing; authors no content.

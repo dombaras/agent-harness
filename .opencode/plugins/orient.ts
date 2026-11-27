@@ -31,7 +31,7 @@ export default {
       editor.add({
         name: "orient",
         description:
-          "One-call session orientation: git tree/branch/HEAD/dirty, the active feature, its checkpoint (phase + next action), board In-progress + next-queued rows, owned files, live serve jobs + machine-capacity verdict, the last mobile-E2E run, and the harness version. Use it at session start / resume instead of a pile of `git rev-parse`/`status`, `serve.js list`, `test:capacity`, and memory reads. Read-only; missing sources are reported `unavailable`.",
+          "One-call session orientation: git tree/branch/HEAD/dirty, the active feature, its checkpoint (bounded excerpt: phase + next action + top-level sections), board In-progress + next-queued rows, owned files, live serve jobs + machine-capacity verdict, the last mobile-E2E run, and the harness version. Use it at session start / resume instead of a pile of `git rev-parse`/`status`, `serve.js list`, `test:capacity`, and memory reads. Read-only; missing sources are reported `unavailable`.",
         input: {
           type: "object",
           properties: {

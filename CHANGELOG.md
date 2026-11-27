@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.12 — 2026-11-27
+
+- Resuming a large handoff no longer dumps the whole file into a fresh context.
+  `checkpoint resume` and the `checkpoint_resume` tool now return a bounded
+  (<= 3 KB) excerpt — objective/phase/next action plus a heading outline — and
+  `orient` prints the same bounded next action with the top-level sections.
+  A handoff that predates the `## Checkpoint` block yields a best-effort
+  phase/next excerpt instead of failing or forcing a whole-file read; a truly
+  missing handoff still fails loudly. (F-058)
+
 ## 0.5.11 — 2026-11-27
 
 - Resuming a work unit no longer loses its checkpoint when the board row points

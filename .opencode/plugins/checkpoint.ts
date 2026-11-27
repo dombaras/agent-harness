@@ -131,7 +131,7 @@ export default {
       editor.add({
         name: "checkpoint_resume",
         description:
-          "Print a session's checkpoint block — the bounded state a fresh context resumes from (never the transcript). Omit `feature` to list the resumable checkpoints (the board's In-progress rows first) when a fresh context does not know the id. Fails loudly when a named feature has no checkpoint yet.",
+          "Print a bounded (<=3 KB) resume excerpt — objective/phase/next action plus a heading outline of the handoff, never the whole file or the transcript. A handoff without a `## Checkpoint` block yields a best-effort phase/next excerpt rather than failing. Omit `feature` to list the resumable checkpoints (the board's In-progress rows first). Fails loudly when no handoff exists for a named feature.",
         input: {
           type: "object",
           properties: {
