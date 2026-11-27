@@ -3039,6 +3039,11 @@ function maybePrewarm(target) {
  * function owns only IO + the subprocess. */
 function runCommand(target, flags) {
   const loop = require(path.join(TEMPLATES_DIR, "scripts", "qa", "run-loop.js"));
+  // F-067: the runner is an observed phase boundary too — it writes the fallback
+  // checkpoint and a logical-failure stop marker, and classifies a technical
+  // failure so a broken provider/network is never relaunched.
+  const fallback = require(path.join(TEMPLATES_DIR, "scripts", "qa", "checkpoint-fallback.js"));
+  const featureResolver = require(path.join(TEMPLATES_DIR, "scripts", "qa", "feature-resolver.js"));
   const { resolveOpencode } = require(path.join(TEMPLATES_DIR, "scripts", "qa", "provider-stats.js"));
   const backlogPath = path.join(target, "BACKLOG.md");
   const handoffDir = path.join(target, ".agents", "handoffs");
@@ -3079,6 +3084,25 @@ function runCommand(target, flags) {
       /* absent marker is the normal case */
     }
   };
+  // A logical failure has no context-band marker, so the runner writes one as
+  // the observable claim "this stop is resumable"; a technical failure never
+  // gets one (the classifier gate must stop the loop).
+  const writeMarker = (doc) => {
+    try {
+      fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+      fs.writeFileSync(markerPath, JSON.stringify(doc, null, 2) + "\n", "utf8");
+    } catch (_) {
+      /* best-effort handshake */
+    }
+  };
+  const handoffPathFor = (feature) => {
+    try {
+      const resolved = featureResolver.resolveFeature(target, feature);
+      return resolved && resolved.file ? resolved.file : undefined;
+    } catch (_) {
+      return undefined;
+    }
+  };
 
   console.log(`agent-harness run — target ${target} (max ${maxPhases} phase(s), max ${maxContextResets} context reset(s))`);
   let feature = flags["--feature"] || null;
@@ -3088,6 +3112,7 @@ function runCommand(target, flags) {
   let contextResets = 0;
   let phaseStartedAt = 0;
   let priorCheckpointCount = null;
+  let technicalFailure = false;
 
   while (true) {
     const marker = phasesRun > 0 ? readMarker() : null;
@@ -3101,6 +3126,7 @@ function runCommand(target, flags) {
       marker,
       phaseStartedAt,
       priorCheckpointCount,
+      technicalFailure,
       contextResets,
       maxContextResets,
     });
@@ -3125,8 +3151,44 @@ function runCommand(target, flags) {
       console.log(`  [dry-run] would run: ${opencode || "opencode"} run <prompt>`);
       console.log(`  [dry-run] prompt: ${message}`);
     } else {
-      const r = spawnSync(opencode, ["run", message], { cwd: target, stdio: "inherit" });
+      const r = spawnSync(opencode, ["run", message], {
+        cwd: target,
+        stdio: ["inherit", "inherit", "pipe"],
+        maxBuffer: 4 * 1024 * 1024,
+      });
       lastExit = r.status == null ? 1 : r.status;
+      // F-067: the phase stderr is the only oracle for a technical failure; it
+      // still reaches the operator, bounded so a huge log cannot bloat the run.
+      const errText = String(r.stderr || "") + (r.error ? "\n" + String(r.error.message || r.error) : "");
+      if (errText) process.stderr.write(errText);
+      technicalFailure = !!r.error || (lastExit !== 0 && loop.isTechnicalFailure(errText));
+      // Every phase boundary leaves a resume state, even when the model never
+      // checkpointed. A logical failure additionally writes the stop marker so
+      // the next iteration can resume it within the existing reset cap.
+      try {
+        const fb = fallback.writeFallbackCheckpoint({
+          root: target,
+          feature: phaseFeature,
+          handoffPath: handoffPathFor(phaseFeature),
+          sessionID: `agent-harness-run:phase-${phase}`,
+          stopReason: lastExit === 0 ? "phase-exit" : technicalFailure ? "failed-technical" : "failed",
+          baselineCount: priorCheckpointCount,
+          sessionStartedAt: phaseStartedAt,
+          filesChanged: fallback.gitFilesChanged(target),
+        });
+        if (lastExit !== 0 && !technicalFailure) {
+          writeMarker({
+            schema: 1,
+            feature: phaseFeature,
+            sessionID: "agent-harness-run",
+            at: new Date().toISOString(),
+            checkpoint_count: fb.count,
+            reason: "auto-checkpoint",
+          });
+        }
+      } catch (error) {
+        process.stderr.write(`run: fallback checkpoint failed: ${error && error.message ? error.message : error}\n`);
+      }
     }
     contextResets = decision.contextReset ? contextResets + 1 : 0;
     feature = phaseFeature;

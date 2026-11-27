@@ -25,10 +25,60 @@ const HELPER = path.join(PLUGIN_DIR, "resume-plan.mjs");
 const MARKER_AT = "2026-11-26T12:00:00.000Z";
 const SESSION_START = Date.parse(MARKER_AT) - 60_000;
 
+const FALLBACK = path.join(REPO, "templates", "scripts", "qa", "checkpoint-fallback.mjs");
+
 let mod;
 async function helper() {
   if (!mod) mod = await import(pathToFileURL(HELPER).href);
   return mod;
+}
+
+let fallbackMod;
+async function fallback() {
+  if (!fallbackMod) fallbackMod = await import(pathToFileURL(FALLBACK).href);
+  return fallbackMod;
+}
+
+/* A real handoff + real `git status` root: the writer's files_changed refresh
+ * must go through the same porcelain parse the deployed writer uses. */
+function fallbackHandoff(count = 2) {
+  return [
+    "# Where we stopped (handoff) — F-067",
+    "",
+    "## Checkpoint (resume)",
+    "",
+    "<!-- agent-harness checkpoint — machine-written; edit via scripts/checkpoint.js -->",
+    "",
+    "- feature: F-067",
+    "- objective: keep the state",
+    "- phase: implementing",
+    "- next_action: continue the work",
+    "- completed:",
+    "  - did A",
+    "- active:",
+    "  - doing B",
+    "- contracts:",
+    "  - contract one",
+    "- known_facts:",
+    "  - fact one",
+    "- decisions:",
+    "  - decision one",
+    "- risks:",
+    "  - risk one",
+    `- checkpoint_count: ${count}`,
+    "",
+  ].join("\n");
+}
+
+function fallbackRoot({ count = 2 } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "f067-fallback-"));
+  execFileSync("git", ["init", "-q", "-b", "f-067"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: root });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: root });
+  const handoff = path.join(root, ".agents", "handoffs", "F-067.md");
+  fs.mkdirSync(path.dirname(handoff), { recursive: true });
+  fs.writeFileSync(handoff, fallbackHandoff(count), "utf8");
+  return { root, handoff };
 }
 
 function marker(overrides = {}) {
@@ -378,7 +428,7 @@ test("an execution end in another checkout resumes in place without stealing foc
   assert.ok(src.includes("open that session to continue"), "the off-screen resume names the directory");
 });
 
-test("a context-length failure resumes only through the fresh/progressed marker (F-064)", async () => {
+test("a failed execution resumes unless its text names a technical failure (F-067)", async () => {
   const { resumeAfterIdle, contextOverflow } = await helper();
   const resume = { action: "resume" };
   const stop = { action: "stop" };
@@ -394,16 +444,321 @@ test("a context-length failure resumes only through the fresh/progressed marker 
     "provider-specific overflow code"
   );
   assert.strictEqual(
+    resumeAfterIdle("failed", resume, "1 test failed"),
+    true,
+    "a logical/work failure resumes within the reset cap"
+  );
+  assert.strictEqual(
+    resumeAfterIdle("failed", resume, ""),
+    true,
+    "unknown/unreadable text is not a technical failure under F-067"
+  );
+  assert.strictEqual(
     resumeAfterIdle("failed", resume, "ECONNRESET: socket hang up"),
     false,
-    "an unrelated failure never relaunches, even with a fresh marker"
+    "a technical failure never relaunches, even with a fresh marker"
   );
-  assert.strictEqual(resumeAfterIdle("failed", resume, ""), false, "an unreadable failure is not a boundary");
+  assert.strictEqual(resumeAfterIdle("failed", resume, "insufficient balance"), false, "funds/quota is a hard pause");
+  assert.strictEqual(resumeAfterIdle("failed", resume, "502 Bad Gateway"), false, "provider 5xx never relaunches");
   assert.strictEqual(resumeAfterIdle("interrupted", resume, "context length"), false, "an interrupt never relaunches");
   assert.strictEqual(resumeAfterIdle("succeeded", stop), false);
   assert.strictEqual(resumeAfterIdle("failed", stop, "context length"), false);
   assert.strictEqual(resumeAfterIdle("failed", null, "context length"), false);
   assert.strictEqual(contextOverflow("prompt is too long: 210000 tokens"), true);
+});
+
+test("the technical-failure classifier separates infra from logical work (F-067)", async () => {
+  const { isTechnicalFailure } = await import(
+    pathToFileURL(path.join(REPO, "templates", "scripts", "qa", "run-loop-core.mjs")).href
+  );
+  const technical = [
+    "ECONNRESET: socket hang up",
+    "ECONNREFUSED",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "getaddrinfo ENOTFOUND api.openai.com",
+    "EAI_AGAIN",
+    "unable to verify the first certificate",
+    "ERR_TLS_CERT_ALTNAME_INVALID",
+    "ETIMEDOUT",
+    "The operation was aborted due to timeout",
+    "503 Service Unavailable",
+    "502 Bad Gateway",
+    "500 Internal Server Error",
+    "529 Overloaded",
+    "429 Too Many Requests",
+    "rate limit exceeded",
+    "401 Unauthorized",
+    "403 Forbidden",
+    "Incorrect API key provided",
+    "JavaScript heap out of memory",
+    "SIGKILL",
+    "ENOSPC: no space left on device",
+    "insufficient balance",
+    "402 Payment Required",
+    "usage limit exceeded",
+    "credits exhausted",
+  ];
+  for (const text of technical) assert.strictEqual(isTechnicalFailure(text), true, `technical: ${text}`);
+
+  const resumable = [
+    "AI_APICallError: input exceeds the context window",
+    "context_length_exceeded",
+    "prompt is too long",
+    "TypeError: Cannot read properties of undefined",
+    "SyntaxError: Unexpected token",
+    "1 test failed",
+    "lint error: unused variable",
+    "ENOENT: no such file or directory src/foo.ts",
+    "",
+    null,
+  ];
+  for (const text of resumable) assert.strictEqual(isTechnicalFailure(text), false, `resumable: ${text}`);
+});
+
+test("the fallback writer preserves prior state, refreshes files, and increments once (F-067)", async () => {
+  const fb = await fallback();
+  const { root, handoff } = fallbackRoot();
+  try {
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    fs.writeFileSync(path.join(root, "src", "new-file.js"), "export const x = 1\n", "utf8");
+    const input = {
+      root,
+      feature: "F-067",
+      sessionID: "ses_stop",
+      stopReason: "failed",
+      baselineCount: 2,
+      sessionStartedAt: Date.now() - 60_000,
+      filesChanged: null,
+    };
+    const first = fb.writeFallbackCheckpoint(input);
+    assert.strictEqual(first.written, true);
+    assert.strictEqual(first.count, 3);
+    const text = fs.readFileSync(handoff, "utf8");
+    const state = fb.parseBlock(fb.splitCheckpoint(text).body);
+    assert.strictEqual(state.objective, "keep the state");
+    assert.strictEqual(state.phase, "implementing");
+    assert.strictEqual(state.session, "ses_stop");
+    assert.strictEqual(state.stop_reason, "failed");
+    assert.strictEqual(state.auto, "true");
+    assert.strictEqual(state.next_action, fb.DEFAULT_NEXT_ACTION);
+    assert.deepStrictEqual(state.completed, ["did A"]);
+    assert.deepStrictEqual(state.active, ["doing B"]);
+    assert.deepStrictEqual(state.decisions, ["decision one"]);
+    assert.deepStrictEqual(state.risks, ["risk one"]);
+    assert.strictEqual(state.checkpoint_count, 3);
+    assert.ok(
+      state.files_changed.includes(path.join("src", "new-file.js")),
+      `files changed: ${state.files_changed.join(", ")}`
+    );
+
+    const before = fs.readFileSync(handoff, "utf8");
+    const again = fb.writeFallbackCheckpoint(input);
+    assert.strictEqual(again.written, false);
+    assert.match(again.reason, /already written/);
+    assert.strictEqual(again.count, 3);
+    assert.strictEqual(fs.readFileSync(handoff, "utf8"), before, "idempotent: no second block");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the fallback writer never overwrites a newer model checkpoint (F-067)", async () => {
+  const fb = await fallback();
+  const { root, handoff } = fallbackRoot({ count: 2 });
+  try {
+    fs.writeFileSync(handoff, fallbackHandoff(3), "utf8");
+    const before = fs.readFileSync(handoff, "utf8");
+    const result = fb.writeFallbackCheckpoint({
+      root,
+      feature: "F-067",
+      sessionID: "ses_stop",
+      stopReason: "succeeded",
+      baselineCount: 2,
+    });
+    assert.strictEqual(result.written, false);
+    assert.match(result.reason, /newer checkpoint/);
+    assert.strictEqual(result.count, 3);
+    assert.strictEqual(fs.readFileSync(handoff, "utf8"), before, "the model checkpoint is byte-identical");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the fallback writer refuses another session's newer checkpoint and its own model checkpoint (F-067)", async () => {
+  const fb = await fallback();
+  const { root, handoff } = fallbackRoot({ count: 1 });
+  try {
+    fs.writeFileSync(
+      handoff,
+      fallbackHandoff(1).replace("- next_action: continue the work", "- session: ses_model\n- next_action: continue the work"),
+      "utf8"
+    );
+    const other = fb.writeFallbackCheckpoint({
+      root,
+      feature: "F-067",
+      sessionID: "ses_stop",
+      stopReason: "interrupted",
+      baselineCount: null,
+      sessionStartedAt: Date.now() - 60_000,
+    });
+    assert.strictEqual(other.written, false);
+    assert.match(other.reason, /another session/);
+
+    fs.writeFileSync(
+      handoff,
+      fallbackHandoff(1).replace("- next_action: continue the work", "- session: ses_stop\n- next_action: continue the work"),
+      "utf8"
+    );
+    const own = fb.writeFallbackCheckpoint({
+      root,
+      feature: "F-067",
+      sessionID: "ses_stop",
+      stopReason: "succeeded",
+      baselineCount: null,
+    });
+    assert.strictEqual(own.written, false);
+    assert.match(own.reason, /already covers this session/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the fallback block is the same checkpoint schema checkpoint.js reads (F-067)", async () => {
+  const fb = await fallback();
+  const checkpoint = require(path.join(REPO, "scripts", "checkpoint.js"));
+  const { root, handoff } = fallbackRoot({ count: 2 });
+  try {
+    fb.writeFallbackCheckpoint({
+      root,
+      feature: "F-067",
+      sessionID: "ses_stop",
+      stopReason: "succeeded",
+      baselineCount: 2,
+      filesChanged: [],
+    });
+    const split = checkpoint.splitCheckpoint(fs.readFileSync(handoff, "utf8"));
+    assert.ok(split.body, "the shared parser finds the block");
+    const state = checkpoint.parseBlock(split.body);
+    assert.strictEqual(state.feature, "F-067");
+    assert.strictEqual(state.checkpoint_count, 3);
+    assert.strictEqual(state.auto, "true");
+    assert.strictEqual(state.next_action, fb.DEFAULT_NEXT_ACTION);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the CJS bridge re-exports the ESM fallback writer (F-067)", async () => {
+  const fb = await fallback();
+  const bridge = require(path.join(REPO, "templates", "scripts", "qa", "checkpoint-fallback.js"));
+  assert.strictEqual(bridge.writeFallbackCheckpoint, fb.writeFallbackCheckpoint);
+  assert.strictEqual(bridge.heartbeatStatus, fb.heartbeatStatus);
+  assert.ok(!/module\.exports/.test(fs.readFileSync(FALLBACK, "utf8")), "the core stays ESM");
+});
+
+test("the heartbeat marks an unobserved end and a clean stop clears it (F-067)", async () => {
+  const fb = await fallback();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "f067-heartbeat-"));
+  try {
+    assert.strictEqual(fb.heartbeatStatus(root).state, "none", "no file is clean");
+    const doc = fb.writeHeartbeat({
+      root,
+      sessionID: "ses_x",
+      feature: "F-067",
+      pid: 4242,
+      activity: "turn 3",
+      now: 1000,
+    });
+    assert.strictEqual(doc.schema, fb.HEARTBEAT_SCHEMA);
+    assert.strictEqual(doc.session, "ses_x");
+    assert.strictEqual(doc.feature, "F-067");
+    assert.strictEqual(doc.activity, "turn 3");
+    assert.strictEqual(fb.heartbeatStatus(root, { now: 2000, isAlive: () => false }).state, "unclean");
+    assert.strictEqual(fb.heartbeatStatus(root, { now: 2000, isAlive: () => true }).state, "live");
+    assert.strictEqual(
+      fb.heartbeatStatus(root, { now: 1000 + fb.HEARTBEAT_MAX_AGE_MS + 1, isAlive: () => true }).state,
+      "unclean",
+      "a stale stamp is not a live session"
+    );
+    fb.writeHeartbeat({ root, sessionID: "ses_x", stopReason: "succeeded", now: 1000 });
+    assert.strictEqual(fb.heartbeatStatus(root, { now: 2000, isAlive: () => true }).state, "none", "a clean stop never surfaces");
+
+    fb.writeHeartbeat({ root, sessionID: "ses_other", pid: 4243, now: 1000 });
+    assert.strictEqual(fb.clearHeartbeat(root, "ses_x"), false, "another session's heartbeat is left alone");
+    assert.strictEqual(fb.heartbeatStatus(root, { now: 1000, isAlive: () => true }).state, "live");
+    assert.strictEqual(fb.clearHeartbeat(root, "ses_other"), true);
+    assert.strictEqual(fb.heartbeatStatus(root).state, "none");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("orient surfaces only an unclean heartbeat (F-067 drift-guard)", async () => {
+  const fb = await fallback();
+  const orient = require(path.join(REPO, "templates", "scripts", "orient.js"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "f067-orient-heartbeat-"));
+  const collect = () =>
+    orient.collectOrient({ root, feature: "F-067", git: () => null, readCheckpoint: () => null, query: () => [] });
+  try {
+    assert.strictEqual(collect().heartbeat, null, "no heartbeat file is clean");
+
+    // A live pid is another running session: never surfaced.
+    fb.writeHeartbeat({ root, sessionID: "ses_live", feature: "F-067", pid: process.pid, activity: "turn 4", now: Date.now() });
+    const live = collect();
+    assert.strictEqual(live.heartbeat, null, "a live prior session stays hidden");
+    assert.doesNotMatch(orient.printHuman(live), /UNCLEAN/);
+    assert.doesNotMatch(orient.printBrief(live), /UNCLEAN/);
+
+    // A dead pid is an unobserved end: surfaced in JSON + both renderers.
+    fb.writeHeartbeat({
+      root,
+      sessionID: "ses_dead",
+      feature: "F-067",
+      pid: 2147483647,
+      activity: "edit orient.js",
+      now: Date.now(),
+    });
+    const unclean = collect();
+    assert.ok(unclean.heartbeat, "the JSON payload carries the unclean heartbeat");
+    assert.strictEqual(unclean.heartbeat.session, "ses_dead");
+    assert.strictEqual(unclean.heartbeat.feature, "F-067");
+    assert.strictEqual(unclean.heartbeat.activity, "edit orient.js");
+    assert.match(orient.printHuman(unclean), /heartbeat: UNCLEAN prior session ses_dead \(F-067\) ended unobserved · last activity: edit orient\.js/);
+    assert.match(orient.printBrief(unclean), /heartbeat UNCLEAN — prior session ses_dead \(F-067\) ended unobserved/);
+
+    // An observed/clean stop clears the warning.
+    fb.writeHeartbeat({ root, sessionID: "ses_dead", stopReason: "succeeded", now: Date.now() });
+    const clean = collect();
+    assert.strictEqual(clean.heartbeat, null, "a clean stop never surfaces");
+    assert.doesNotMatch(orient.printHuman(clean), /UNCLEAN/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("every observed stop reaches the fallback writer before idle (F-067)", () => {
+  const guard = fs.readFileSync(path.join(PLUGIN_DIR, "..", "context-guard.ts"), "utf8");
+  assert.match(guard, /import fallback from "\.\.\/\.\.\/scripts\/qa\/checkpoint-fallback\.js"/);
+  for (const event of [
+    '"session.execution.succeeded"',
+    '"session.execution.failed"',
+    '"session.execution.interrupted"',
+  ]) {
+    assert.ok(guard.includes(event), `${event} reachable`);
+  }
+  assert.match(guard, /writeStopCheckpoint\(sid, type === "session\.execution\.succeeded" \? "succeeded" : "interrupted"\)/);
+  assert.match(guard, /writeStopCheckpoint\(sid, "failed"\)/);
+  assert.match(guard, /fallback\.writeHeartbeat\(/);
+  assert.match(guard, /stopReason,/);
+
+  const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
+  const writeAt = tui.indexOf("fallback.writeFallbackCheckpoint(");
+  const planAt = tui.indexOf("plan.planResume(");
+  assert.ok(writeAt > 0, "the TUI writes the fallback checkpoint");
+  assert.ok(planAt > writeAt, "the checkpoint is written before the resume decision");
+  assert.match(tui, /const fallback = await loadFallback\(\)/);
+  assert.match(tui, /idleKind === "interrupted"/, "an interrupt never seeds a synthetic marker");
 });
 
 test("a hot import re-evaluates a module rewritten on disk (F-064)", async () => {
@@ -552,10 +907,12 @@ function esmGraphViolations(entries) {
 
 test("the TUI plugin graph is ESM-only (never imports .js/.cjs)", () => {
   // `tui.tsx` loads the decision module dynamically (F-064), so the decision
-  // graph is walked from its own entry as well as the plugin entries.
-  const entries = ["tui.tsx", "index.ts", "resume-plan.mjs"].map((rel) =>
-    path.join(PLUGIN_DIR, rel)
-  );
+  // graph is walked from its own entry as well as the plugin entries. The F-067
+  // fallback writer is another dynamic entry: it must stay pure ESM.
+  const entries = [
+    ...["tui.tsx", "index.ts", "resume-plan.mjs"].map((rel) => path.join(PLUGIN_DIR, rel)),
+    path.join(REPO, "templates", "scripts", "qa", "checkpoint-fallback.mjs"),
+  ];
   const { violations, visited } = esmGraphViolations(entries);
   assert.deepStrictEqual(violations, [], violations.join("\n"));
   assert.ok(
@@ -565,6 +922,14 @@ test("the TUI plugin graph is ESM-only (never imports .js/.cjs)", () => {
   assert.ok(
     !visited.some((file) => file.endsWith(path.join("scripts", "qa", "run-loop.js"))),
     "the CJS facade is not part of the TUI ESM graph"
+  );
+  assert.ok(
+    visited.some((file) => file.endsWith(path.join("scripts", "qa", "checkpoint-fallback.mjs"))),
+    "the F-067 fallback writer is pure ESM and in the graph"
+  );
+  assert.ok(
+    !visited.some((file) => file.endsWith(path.join("scripts", "qa", "checkpoint-fallback.js"))),
+    "the CJS fallback bridge is not reachable from the TUI entries"
   );
   const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
   assert.ok(

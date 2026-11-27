@@ -43,6 +43,16 @@ type ResumePlan = {
   parseMarker: (text: string) => any
   planResume: (input: any) => ResumeDecision
   resumeAfterIdle: (idleKind: string, decision: ResumeDecision, failureText: string) => boolean
+  featureFromBranch: (branch: string | undefined) => string | null
+}
+
+/* F-067 fallback writer. Loaded fresh like the decision core, so a deploy is
+ * picked up on the next stop and an import error becomes a toast, never a dead
+ * plugin. ESM only (the module has no CJS dependency). */
+type FallbackPlan = {
+  writeFallbackCheckpoint: (input: any) => { written: boolean; reason: string; count: number }
+  gitFilesChanged: (root: string) => string[]
+  clearHeartbeat: (root: string, sessionID: string) => boolean
 }
 
 /* Bounded text of a failed execution: the provider/error message is the
@@ -223,6 +233,10 @@ export default Plugin.define({
       return (await importFresh("./resume-plan.mjs", import.meta.url)) as ResumePlan
     }
 
+    const loadFallback = async (): Promise<FallbackPlan> => {
+      return (await importFresh("../../scripts/qa/checkpoint-fallback.mjs", import.meta.url)) as FallbackPlan
+    }
+
     const startFresh = async (
       decision: ResumeDecision,
       directory: string,
@@ -270,6 +284,7 @@ export default Plugin.define({
         // be stale, and a broken copy must surface here instead of killing the
         // plugin at load time (F-064).
         const plan = await loadPlan()
+        const fallback = await loadFallback()
         const directory = sessionDirectory(sessionID)
         if (!directory) return
         // V2's event stream covers every session of this server. A session in
@@ -278,17 +293,69 @@ export default Plugin.define({
         const current = resolveDirectory()
         const here = !!current && path.resolve(current) === path.resolve(directory)
 
-        const marker = plan.parseMarker(readText(path.join(directory, RESUME_MARKER_REL)))
-        if (!marker || marker.sessionID !== sessionID) return
-
         const kind = checkoutKind(directory)
+        const branch = branchAt(directory)
+        const branchFeature = plan.featureFromBranch(branch)
+        let marker = plan.parseMarker(readText(path.join(directory, RESUME_MARKER_REL)))
+        if (marker && marker.sessionID !== sessionID) marker = null
+
+        // F-067: ALWAYS leave a resume state before the session is treated idle —
+        // marker or not, clean or failed. The writer is idempotent and refuses to
+        // overwrite a model checkpoint written during this session.
+        const featureForCheckpoint =
+          (marker && marker.feature ? String(marker.feature).toUpperCase() : null) || branchFeature
+        let stopCount: number | null = null
+        if (featureForCheckpoint) {
+          try {
+            const written = fallback.writeFallbackCheckpoint({
+              root: directory,
+              feature: featureForCheckpoint,
+              sessionID,
+              stopReason: idleKind,
+              // The TUI cannot know the session-start count; the writer's mtime +
+              // session rules keep a newer model checkpoint safe.
+              baselineCount: null,
+              sessionStartedAt: sessionCreatedAt(sessionID) ?? null,
+              filesChanged: fallback.gitFilesChanged(directory),
+            })
+            stopCount = written.count
+          } catch (error) {
+            context.ui.toast.show({
+              title: "Fallback checkpoint failed",
+              message: error instanceof Error ? error.message : String(error),
+              variant: "error",
+            })
+          }
+          try {
+            fallback.clearHeartbeat(directory, sessionID)
+          } catch {
+            /* best-effort */
+          }
+        }
+
+        // An early stop with no context-band marker is still resumable: the
+        // fallback just written becomes a stop marker with a `reason` (F-067).
+        // An interrupt stays manual by policy; no branch feature means no safe
+        // feature to seed from.
+        if (!marker) {
+          if (idleKind === "interrupted" || !branchFeature || stopCount == null) return
+          marker = {
+            schema: 1,
+            feature: branchFeature,
+            sessionID,
+            at: new Date().toISOString(),
+            checkpoint_count: stopCount,
+            reason: "auto-checkpoint",
+          }
+        }
+
         const featureFromMarker = marker.feature ? String(marker.feature).toUpperCase() : null
         const entry = entryFor(directory, featureFromMarker)
         const decision: ResumeDecision = plan.planResume({
           marker,
           idleSessionID: sessionID,
           sessionCreatedAt: sessionCreatedAt(sessionID),
-          branch: branchAt(directory),
+          branch,
           checkoutKind: kind,
           // Only a main checkout needs the lease gate; a linked worktree marker
           // keeps the F-051 path and does no extra IO.

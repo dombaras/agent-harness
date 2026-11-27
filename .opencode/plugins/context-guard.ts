@@ -6,6 +6,7 @@ import { execFileSync, spawn } from "node:child_process"
 import guard from "../../scripts/qa/context-guard-core.js"
 import runLoop from "../../scripts/qa/run-loop.js"
 import checkpoint from "../../scripts/checkpoint.js"
+import fallback from "../../scripts/qa/checkpoint-fallback.js"
 import featureResolver from "../../scripts/qa/feature-resolver.js"
 import capacity from "../../scripts/qa/capacity-lib.js"
 import leases from "../../scripts/qa/lease-lib.js"
@@ -74,6 +75,11 @@ export default {
    * resume selector uses it to accept a checkpoint written during THIS session
    * even when the plugin missed the session's earlier turns (a reload). */
   const sessionStarts = new Map<string, number>()
+  /* F-067: the feature and checkpoint_count each primary session started from.
+   * The fallback writer needs the baseline to prove the model did NOT checkpoint
+   * during the session (a newer checkpoint must never be overwritten). */
+  const sessionFeatures = new Map<string, string | null>()
+  const sessionCheckpointBase = new Map<string, number | null>()
   const rootOf = (sessionID: string) => sessionRoots.get(sessionID) || directory
   /* Both sides known -> strict (normalized) comparison, with the Windows
    * case-insensitive rule; `guard.ownsLocation` is the one home for that rule. */
@@ -360,6 +366,90 @@ export default {
       return ids.length === 1 ? ids[0] : null
     } catch {
       return null
+    }
+  }
+
+  /* ------------------------------------------------- auto checkpoint (F-067)
+   * Every observed stop leaves a deterministic resume state, even when the model
+   * never called `checkpoint write`. A linked worktree names its feature on the
+   * branch; the shared main checkout only when exactly one In-progress row
+   * exists. No feature means no handoff to attach — never guess one. */
+  const readText = (file: string | null): string => {
+    if (!file) return ""
+    try {
+      return fs.readFileSync(file, "utf8")
+    } catch {
+      return ""
+    }
+  }
+  const handoffFileFor = (root: string, feature: string): string | null => {
+    try {
+      const resolved = featureResolver.resolveFeature(root, feature)
+      return resolved && resolved.file ? resolved.file : null
+    } catch {
+      return null
+    }
+  }
+  const fallbackFeature = (sessionID: string): string | null => {
+    try {
+      const root = rootOf(sessionID)
+      if (checkoutKind(root) === "linked") {
+        return guard.featureFromBranch(gitOut(root, ["branch", "--show-current"]))
+      }
+      return inferBoardFeature(sessionID)
+    } catch {
+      return null
+    }
+  }
+  const writeStopCheckpoint = (sessionID: string, stopReason: string) => {
+    const feature = sessionFeatures.get(sessionID) || fallbackFeature(sessionID)
+    if (!feature) {
+      logEvent({ kind: "auto-checkpoint-skip", sessionID, reason: "no feature (linked branch/unique In-progress row)" })
+      return
+    }
+    const root = rootOf(sessionID)
+    const handoff = handoffFileFor(root, feature)
+    try {
+      const result = fallback.writeFallbackCheckpoint({
+        root,
+        feature,
+        handoffPath: handoff || undefined,
+        sessionID,
+        stopReason,
+        baselineCount: sessionCheckpointBase.get(sessionID) ?? null,
+        sessionStartedAt: sessionStarts.get(sessionID) || null,
+        filesChanged: fallback.gitFilesChanged(root),
+      })
+      logEvent({
+        kind: "auto-checkpoint",
+        sessionID,
+        feature,
+        stopReason,
+        written: result.written,
+        count: result.count,
+        reason: result.reason,
+      })
+    } catch (error: any) {
+      void report(`auto-checkpoint failed: ${error?.message || error}`)
+    }
+    // An observed stop is not an unobserved kill: no heartbeat may survive it.
+    try {
+      fallback.clearHeartbeat(root, sessionID)
+    } catch {
+      /* best-effort */
+    }
+  }
+  const beat = (sessionID: string, activity: string) => {
+    try {
+      fallback.writeHeartbeat({
+        root: rootOf(sessionID),
+        sessionID,
+        feature: sessionFeatures.get(sessionID) || fallbackFeature(sessionID),
+        pid: process.pid,
+        activity,
+      })
+    } catch {
+      /* heartbeat is best-effort */
     }
   }
 
@@ -795,6 +885,15 @@ export default {
               : directory
           refreshHarnessUpdate(root)
           void collectOrient(sid, root)
+          // F-067 baseline: the feature and checkpoint count this session starts
+          // from, so a mid-session model checkpoint is provable at stop time.
+          const feature = fallbackFeature(sid)
+          sessionFeatures.set(sid, feature)
+          sessionCheckpointBase.set(
+            sid,
+            feature ? runLoop.checkpointCount(readText(handoffFileFor(root, feature))) : null
+          )
+          beat(sid, "session start")
           return
         }
 
@@ -833,12 +932,21 @@ export default {
           const id = d.sessionID
           if (id) {
             clearLease(id)
+            // An explicit delete is an observed end: never leave a heartbeat
+            // that would later read as a hard kill.
+            try {
+              fallback.clearHeartbeat(rootOf(id), id)
+            } catch {
+              /* best-effort */
+            }
             childSessions.delete(id)
             childParent.delete(id)
             sessionModel.delete(id)
             sessions.delete(id)
             sessionRoots.delete(id)
             sessionStarts.delete(id)
+            sessionFeatures.delete(id)
+            sessionCheckpointBase.delete(id)
             storeDirs.delete(id)
             // Auto-close this session's long-lived serves (dev server/emulator):
             // the harness must not leave them orphaned after the session ends.
@@ -877,6 +985,9 @@ export default {
             },
             loadThresholds()
           )
+          // F-067 heartbeat: every material turn bounds the gap a hard kill
+          // (SIGKILL/OOM/power loss) could otherwise leave unrecorded.
+          beat(sid, `turn ${note.turns}`)
           // Not gated on `newTurn`: a token-band crossing must be logged whenever it
           // actually changes.
           if (note.bandChanged && note.band) {
@@ -910,6 +1021,17 @@ export default {
           return
         }
 
+        // F-067: an observed end always leaves a fallback checkpoint and clears
+        // the heartbeat BEFORE the session is treated idle. The TUI and the
+        // guard both receive the event; the writer's idempotency makes the
+        // second call a no-op.
+        if (type === "session.execution.succeeded" || type === "session.execution.interrupted") {
+          const sid = d.sessionID
+          if (typeof sid !== "string" || sid.length === 0 || !isPrimary(sid)) return
+          writeStopCheckpoint(sid, type === "session.execution.succeeded" ? "succeeded" : "interrupted")
+          return
+        }
+
         // V2 renamed `session.error`. The structured failure carries no
         // provider/model (`SessionStructuredError` is `{ type, message, status?,
         // response? }`), so the label comes from the per-session model observed
@@ -919,6 +1041,9 @@ export default {
         if (type === "session.execution.failed" || type === "session.step.failed") {
           const sid = d.sessionID
           if (typeof sid !== "string" || sid.length === 0) return
+          // A step failure is not the end of the session. Only the execution
+          // failure is an observed stop that needs the fallback checkpoint.
+          if (type === "session.execution.failed" && isPrimary(sid)) writeStopCheckpoint(sid, "failed")
           const text = JSON.stringify(d.error ?? d)
           if (!guard.fundsError(text)) return
           const label = guard.modelLabel(d.error) || sessionModel.get(sid) || null

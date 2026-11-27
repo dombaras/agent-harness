@@ -148,6 +148,49 @@ function hasResumableCheckpoint(handoffText) {
  * Pure, so every rule is unit-testable without the plugin or a subprocess. */
 const DEFAULT_MAX_CONTEXT_RESETS = 3;
 
+/* --------------------------------------------------- technical-failure policy
+ *
+ * F-067: every observed stop gets a fallback checkpoint, but only a stop that MADE
+ * PROGRESS may relaunch a fresh context. A pure infrastructure failure — network,
+ * provider availability/rate limit, auth, memory/disk/process, funds/quota —
+ * relaunching would burn budget against a broken environment. A logical/work
+ * failure (failing test, lint/type error, bad edit, tool error) IS resumable and
+ * is bounded by the same 3-context-reset cap as the checkpoint bands.
+ *
+ * Conservative on purpose: only a recognised signature is technical; an unknown
+ * failure text stays resumable, so a classifier gap cannot silently disable the
+ * loop. A context-window overflow is a boundary, never technical (the caller
+ * checks `contextOverflow` first where that distinction matters).
+ *
+ * Status codes are anchored to an HTTP/status context: a bare `500` is a
+ * plausible token count, so the classifier never reads it as a provider error.
+ */
+const TECHNICAL_FAILURE_PATTERNS = [
+  // Network / DNS / TLS / transport.
+  /\b(?:econnreset|econnrefused|econnaborted|etimedout|enotfound|eai_again|epipe|ehostunreach|enetunreach|ehostdown|esockettimedout|enetdown)\b/i,
+  /\b(?:socket hang ?up|connection (?:reset|refused|closed|timed out|lost)|network (?:error|failure|unreachable|down)|dns (?:error|lookup|resolution)|getaddrinfo|err_(?:tls|ssl)[a-z_]*|unable to verify (?:the first |peer )?certificate|tls (?:handshake|certificate)|ssl (?:error|handshake|certificate)|certificate (?:error|expired|invalid)|timed out|timeout|fetch failed)\b/i,
+  // Provider availability / rate limiting.
+  /\b(?:http|status|code|error|response)\b[^\n]{0,16}\b(?:429|5\d\d)\b/i,
+  /\b(?:429|too many requests|rate[- ]?limit(?:ed|ing)?)\b/i,
+  /\b(?:internal server error|bad gateway|service unavailable|gateway timeout|overloaded)\b/i,
+  // Auth.
+  /\b(?:unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication (?:error|failed)|permission denied|access denied|token (?:expired|invalid)|not authenticated)\b/i,
+  /\b(?:http|status|code|error|response)\b[^\n]{0,16}\b40[13]\b/i,
+  // Resource / process crash.
+  /\b(?:enomem|oom|out of memory|heap out of memory|enospc|no space left|cannot allocate memory|killed|sigkill|sigterm|sigsegv|sigabrt|sigbus|segmentation fault|core dumped)\b/i,
+  // Funds / quota: a hard pause; the user must top up first.
+  /\b(?:insufficient (?:balance|funds|credits?|quota)|funds? (?:error|exhausted)|quota (?:exceeded|exhausted)|credits? (?:exhausted|expired|insufficient)|usage limit|billing (?:error|issue)|payment required|top[- ]?up)\b/i,
+  /\b(?:http|status|code|error|response)\b[^\n]{0,16}\b402\b/i,
+];
+
+/* True when `text` names a pure infrastructure/provider/resource failure. The
+ * empty/unknown text is never technical: the caller keeps the resumable path. */
+function isTechnicalFailure(text) {
+  const src = String(text == null ? "" : text);
+  if (!src.trim()) return false;
+  return TECHNICAL_FAILURE_PATTERNS.some((re) => re.test(src));
+}
+
 function contextResetStatus(input) {
   const marker = input?.marker && typeof input.marker === "object" ? input.marker : null;
   if (!marker) return { marker: null, fresh: false, featureMatch: false, progressed: false };
@@ -211,6 +254,17 @@ function decideRunLoop(input) {
   const outcome = handoffOutcome(input.handoffText);
   if (feature && outcome && DONE_OUTCOMES.has(outcome)) {
     return { action: "done", reason: `${feature} handoff outcome is \`${outcome}\``, feature };
+  }
+
+  // F-067: a technical/infrastructure failure stops even when a fresh, matching,
+  // progressed context marker exists. The fallback checkpoint is already written,
+  // so the work is resumable manually once the environment recovers.
+  if (input && input.technicalFailure === true) {
+    return {
+      action: "stop",
+      reason: `phase failed on a technical/infrastructure error${feature ? ` for ${feature}` : ""} — checkpoint recorded; resume manually after the environment recovers (never auto-relaunch against a broken provider/network/disk)`,
+      feature,
+    };
   }
 
   if (phasesRun >= maxPhases) {
@@ -300,6 +354,7 @@ export {
   checkpointCount,
   hasResumableCheckpoint,
   DEFAULT_MAX_CONTEXT_RESETS,
+  isTechnicalFailure,
   contextResetStatus,
   finalizationReady,
   initialPrompt,

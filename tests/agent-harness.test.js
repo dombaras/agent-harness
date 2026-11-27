@@ -10886,6 +10886,60 @@ test("run-loop drives auto clear-resume from a fresh, progressing context marker
   assert.match(failed.reason, /exited 2/);
 });
 
+test("run-loop stops on a technical phase failure even with a resumable marker (F-067)", () => {
+  const handoff = [
+    "# handoff",
+    "",
+    "## Checkpoint (resume)",
+    "",
+    "- feature: F-256",
+    "- checkpoint_count: 3",
+    "- next_action: continue",
+    "",
+  ].join("\n");
+  const now = Date.now();
+  const start = now - 60_000;
+  const marker = {
+    schema: 1,
+    feature: "F-256",
+    sessionID: "ses_test",
+    tokens: 161000,
+    at: new Date(now - 30_000).toISOString(),
+    checkpoint_count: 3,
+  };
+  const base = {
+    backlogText: RUN_BACKLOG,
+    handoffText: handoff,
+    feature: "F-256",
+    phasesRun: 1,
+    lastExit: 1,
+    marker,
+    phaseStartedAt: start,
+    priorCheckpointCount: 2,
+  };
+
+  const technical = runLoop.decideRunLoop({ ...base, technicalFailure: true });
+  assert.strictEqual(technical.action, "stop");
+  assert.match(technical.reason, /technical\/infrastructure/);
+
+  const logical = runLoop.decideRunLoop({ ...base, technicalFailure: false });
+  assert.strictEqual(logical.action, "resume", "a logical failure still resumes via the marker");
+  assert.strictEqual(logical.contextReset, true);
+
+  const clean = runLoop.decideRunLoop({ ...base, lastExit: 0, technicalFailure: false });
+  assert.strictEqual(clean.action, "resume", "phase exit 0 is unchanged");
+
+  const landed = runLoop.decideRunLoop({
+    backlogText: RUN_BACKLOG,
+    handoffText: "",
+    feature: "F-255",
+    phasesRun: 1,
+    lastExit: 1,
+    technicalFailure: true,
+  });
+  assert.strictEqual(landed.action, "done", "landed wins over the technical-failure gate");
+});
+
 test("run-loop sends an implementation-complete checkpoint straight to finalization", () => {
   const complete = [
     "# handoff",

@@ -38,6 +38,16 @@ try {
   diagnosisLib = null;
 }
 
+/* F-067: the fallback writer also owns the heartbeat (`.agents/auto-checkpoint.json`)
+ * — the only evidence an unobserved end (SIGKILL/OOM/power loss) leaves behind.
+ * Optional on purpose: an older deploy must still orient. */
+let fallbackLib = null;
+try {
+  fallbackLib = require("./qa/checkpoint-fallback.js");
+} catch (_) {
+  fallbackLib = null;
+}
+
 const SCHEMA = "orient/1";
 
 function safe(fn, fallback = null) {
@@ -736,6 +746,36 @@ function collectOrient(opts = {}) {
     cap = null;
   }
 
+  /* Only the actionable state is surfaced: a live heartbeat belongs to another
+   * running session, and an observed/clean stop removes the file. */
+  let heartbeat = null;
+  if (fallbackLib) {
+    const status = safe(
+      () =>
+        fallbackLib.heartbeatStatus(root, {
+          isAlive: (pid) => {
+            try {
+              process.kill(pid, 0);
+              return true;
+            } catch (_) {
+              return false;
+            }
+          },
+        }),
+      null
+    );
+    if (status && status.state === "unclean") {
+      const doc = status.heartbeat || {};
+      heartbeat = {
+        session: doc.session || null,
+        feature: doc.feature || null,
+        activity: doc.activity || null,
+        at: doc.at || null,
+        ageMs: status.ageMs,
+      };
+    }
+  }
+
   return {
     schema: SCHEMA,
     root,
@@ -773,6 +813,7 @@ function collectOrient(opts = {}) {
     checkpointCandidates,
     diagnosis,
     capacity: cap,
+    heartbeat,
     personas: personaRows(root, opts),
     memory: memoryDigest(root),
     lastE2e: lastE2eRun(root),
@@ -865,6 +906,12 @@ function printHuman(o) {
   } else {
     lines.push("capacity: unavailable");
   }
+  if (o.heartbeat) {
+    const who = o.heartbeat.session || "?";
+    const feat = o.heartbeat.feature ? ` (${o.heartbeat.feature})` : "";
+    const act = o.heartbeat.activity ? ` · last activity: ${clipText(o.heartbeat.activity, 80)}` : "";
+    lines.push(`heartbeat: UNCLEAN prior session ${who}${feat} ended unobserved${act} — inspect the working tree before continuing`);
+  }
   lines.push(...renderPersonasBlock(o.personas));
   lines.push(
     `last e2e: ${o.lastE2e ? `${o.lastE2e.failed || 0} failed / ${o.lastE2e.total != null ? o.lastE2e.total : "?"} (${o.lastE2e.at || "?"})` : "none recorded"}`
@@ -936,6 +983,11 @@ function printBrief(o) {
     }
   }
   if (o.capacity) lines.push(`capacity ${o.capacity.ok ? "ok" : "EXCEEDED: " + o.capacity.reasons.join("; ")} · serves ${o.capacity.serves.join(", ") || "none"}`);
+  if (o.heartbeat) {
+    const who = o.heartbeat.session || "?";
+    const feat = o.heartbeat.feature ? ` (${o.heartbeat.feature})` : "";
+    lines.push(`heartbeat UNCLEAN — prior session ${who}${feat} ended unobserved; inspect the working tree before continuing`);
+  }
   lines.push(...renderPersonasBlock(o.personas, PERSONA_BRIEF_MAX));
   if (o.lastE2e) lines.push(`last e2e ${o.lastE2e.failed || 0} failed / ${o.lastE2e.total != null ? o.lastE2e.total : "?"}`);
   if (o.nightly) lines.push(`nightly ${(o.nightly.verdict || "?").toUpperCase()} — ${o.nightly.failed} failing, ${o.nightly.reopened} reopened, ${o.nightly.added} new`);

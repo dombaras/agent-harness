@@ -17,6 +17,7 @@
  */
 import {
   decideRunLoop,
+  isTechnicalFailure,
   DEFAULT_MAX_CONTEXT_RESETS,
 } from "../../../scripts/qa/run-loop-core.mjs"
 
@@ -93,17 +94,17 @@ export function contextOverflow(text) {
 
 /* Which execution ends may relaunch a fresh context.
  *
- * A user interrupt is never a resume signal. A `failed` end may be the
- * context-fill path: when a request overflows the window the provider call
- * fails, and the guard's fresh, progressed marker proves the end was the
- * boundary. The failure TEXT is the discriminator — a real failure with an
- * unrelated error (network, auth, tool crash) keeps the manual path, even with
- * a marker present (F-064, falsifier). `planResume` already applied the
- * freshness/progress/cap gates. */
+ * F-067 policy: an observed `succeeded` end resumes (the fallback checkpoint
+ * makes even an early clean stop resumable), and a `failed` end resumes unless
+ * its text names a pure technical/infrastructure failure (network, provider,
+ * auth, memory/disk/process, funds/quota). A logical/work failure — failing
+ * test, lint/type error, bad edit, tool error — resumes within the same reset
+ * cap. A user interrupt is never a resume signal. `planResume` already applied
+ * the freshness/progress/cap gates. */
 export function resumeAfterIdle(idleKind, decision, failureText = "") {
   if (!decision || decision.action !== "resume") return false
   if (idleKind === "succeeded") return true
-  if (idleKind === "failed") return contextOverflow(failureText)
+  if (idleKind === "failed") return !isTechnicalFailure(failureText)
   return false
 }
 
