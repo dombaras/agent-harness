@@ -127,6 +127,15 @@ function checkpointCount(handoffText) {
   return m ? Number(m[1]) : null;
 }
 
+/* True when a handoff carries a checkpoint a fresh context can seed from: a
+ * positive checkpoint_count, or a recorded next_action (the runner's progress
+ * predicate). A context boundary without one can NEVER be resumed — writing a
+ * marker for it only produces a silent no-op (F-064). */
+function hasResumableCheckpoint(handoffText) {
+  const count = checkpointCount(handoffText)
+  return (Number.isFinite(count) && count > 0) || !!checkpointNextAction(handoffText);
+}
+
 /* ---------------------------------------------------- context-reset handshake
  *
  * A primary session cannot relaunch itself at the context ceiling, so the guard
@@ -216,7 +225,7 @@ function decideRunLoop(input) {
   if (reset.fresh && reset.featureMatch && !reset.progressed) {
     return {
       action: "stop",
-      reason: `context boundary for ${boundaryFeature} did not advance the checkpoint — no progress to resume from`,
+      reason: `context boundary for ${boundaryFeature} did not advance the checkpoint — no resumable checkpoint was recorded, so a fresh context has nothing to seed from`,
       feature: boundaryFeature,
     };
   }
@@ -289,6 +298,7 @@ export {
   checkpointPhase,
   checkpointNextAction,
   checkpointCount,
+  hasResumableCheckpoint,
   DEFAULT_MAX_CONTEXT_RESETS,
   contextResetStatus,
   finalizationReady,

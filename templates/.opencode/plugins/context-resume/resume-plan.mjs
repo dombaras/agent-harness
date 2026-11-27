@@ -82,6 +82,31 @@ export function featureFromBranch(branch) {
   return m ? "F-" + m[1] : null
 }
 
+/* Provider error signatures for a request that overflowed the context window.
+ * Conservative on purpose: an UNRECOGNISED failure is never a boundary. */
+const CONTEXT_OVERFLOW_RE =
+  /context[\s_-]*(length|window|overflow)|context_length_exceeded|maximum context|too many tokens|prompt is too long|input is too long|exceeds? the (context|maximum)/i
+
+export function contextOverflow(text) {
+  return CONTEXT_OVERFLOW_RE.test(String(text || ""))
+}
+
+/* Which execution ends may relaunch a fresh context.
+ *
+ * A user interrupt is never a resume signal. A `failed` end may be the
+ * context-fill path: when a request overflows the window the provider call
+ * fails, and the guard's fresh, progressed marker proves the end was the
+ * boundary. The failure TEXT is the discriminator — a real failure with an
+ * unrelated error (network, auth, tool crash) keeps the manual path, even with
+ * a marker present (F-064, falsifier). `planResume` already applied the
+ * freshness/progress/cap gates. */
+export function resumeAfterIdle(idleKind, decision, failureText = "") {
+  if (!decision || decision.action !== "resume") return false
+  if (idleKind === "succeeded") return true
+  if (idleKind === "failed") return contextOverflow(failureText)
+  return false
+}
+
 /* Parse the marker file text. A malformed file is "no marker", never a throw
  * inside the TUI event loop. */
 export function parseMarker(text) {

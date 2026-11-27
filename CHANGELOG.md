@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.18 — 2026-11-27
+
+- TUI auto clear-resume now survives a deploy and fires on the context-fill path (F-064): the plugin entry no longer statically imports its decision module (a stale CJS hop made opencode log `plugin operation failed` and never retry, so the marker was never consumed); it evaluates `resume-plan.mjs` through a cache-busted dynamic import on every execution end. A context-window `failed` execution now resumes through the same fresh/progressed/cap gates instead of only `succeeded`, a marker for a background worktree/tab resumes in its own directory without stealing focus, and the guard no longer writes a linked marker when the handoff has no resumable checkpoint.
+
 ## 0.5.17 — 2026-11-27
 
 - Session-start `orient` and `orient --brief` now name the active feature's doc chain: they locate `.agents/features/<dir>/` by directory name or the `id` in `meta.json` and render one bounded `docs:` line listing intent/scope/plan/tests present versus missing (or `none` when no feature directory exists), so a cleared session reads the docs instead of globbing for them. (F-063)

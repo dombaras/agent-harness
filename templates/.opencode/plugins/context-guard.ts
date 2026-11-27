@@ -381,7 +381,20 @@ export default {
     try {
       handoff = fs.readFileSync(path.join(root, ".agents", "handoffs", feature + ".md"), "utf8")
     } catch {
-      /* no checkpoint yet — the crossing is still recorded */
+      /* no checkpoint yet — the crossing cannot be resumed (F-064) */
+    }
+    /* No checkpoint => nothing to seed a fresh context from: the marker would
+     * only make the TUI consume it and stop with "did not advance the
+     * checkpoint". Record the skip instead, so the absence is observable and
+     * the advisory nudge stays the only action. */
+    if (!runLoop.hasResumableCheckpoint(handoff)) {
+      logEvent({
+        kind: "context-resume-skip",
+        sessionID,
+        feature,
+        reason: "no resumable checkpoint (no checkpoint_count/next_action in the handoff)",
+      })
+      return
     }
     const marker = guard.contextResumeMarker({
       feature,

@@ -49,7 +49,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | .agents/handoffs/F-050.md (worktree: ../.worktrees/agent-harness/f-050; branch: f-050) |
-| F-064 | ? | TUI auto clear-resume did not fire on context fill: stale ESM dep (run-loop.js) kept the context-resume TUI plugin unloaded; linked-worktree markers also resume only with checkpoint progress and only in the TUI's current location | .agents/handoffs/F-064.md (worktree: ../.worktrees/agent-harness/f-064; branch: f-064) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -147,6 +146,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-062 | context-economy | Session-start brief should carry the board rows it already reads: per-row title + handoff/worktree pointer (and the active feature's title) so a cleared session needs zero discovery calls to find a named feature | shipped |
 | F-059 | context-economy | Progressive disclosure for large state docs: add a markdown outline/headings mode and an oversized-read guard for `.agents/**` so review registers are read by section, not whole | shipped |
 | F-063 | context-economy | Session-start brief should name the active feature's doc chain (intent/scope/plan/tests present vs missing, or none) so a cleared session does not glob/hunt for feature docs after orient | shipped |
+| F-064 | ? | TUI auto clear-resume did not fire on context fill: stale ESM dep (run-loop.js) kept the context-resume TUI plugin unloaded; linked-worktree markers also resume only with checkpoint progress and only in the TUI's current location | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

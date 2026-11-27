@@ -353,11 +353,96 @@ test("the TUI source consumes only clean execution ends and the shared gates", (
     "context.ui.tabs.focus(",
     "context.ui.toast.show(",
     "context.storage.store(",
-    "./resume-plan.mjs",
+    'importFresh("./resume-plan.mjs"',
   ]) {
     assert.ok(src.includes(call), `${call} used`);
   }
-  assert.ok(src.includes("idleKind !== \"succeeded\""), "a failed execution never relaunches");
+  assert.ok(
+    src.includes("resumeAfterIdle(idleKind, decision, errorText)"),
+    "the failed-vs-interrupted decision lives in the pure module"
+  );
+  assert.ok(
+    !/from\s+["']\.\/resume-plan\.mjs["']/.test(src),
+    "the decision module is NOT a static import (a broken copy must not kill the plugin)"
+  );
+});
+
+test("an execution end in another checkout resumes in place without stealing focus (F-064)", () => {
+  const src = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
+  assert.ok(
+    !/if \(current && path\.resolve\(current\) !== path\.resolve\(directory\)\) return/.test(src),
+    "a background worktree/tab is no longer dropped"
+  );
+  assert.match(src, /const here = !!current && path\.resolve\(current\) === path\.resolve\(directory\)/);
+  assert.match(src, /await startFresh\(decision, directory, here\)/, "same-directory gating is explicit");
+  assert.ok(src.includes("open that session to continue"), "the off-screen resume names the directory");
+});
+
+test("a context-length failure resumes only through the fresh/progressed marker (F-064)", async () => {
+  const { resumeAfterIdle, contextOverflow } = await helper();
+  const resume = { action: "resume" };
+  const stop = { action: "stop" };
+  assert.strictEqual(resumeAfterIdle("succeeded", resume), true);
+  assert.strictEqual(
+    resumeAfterIdle("failed", resume, "AI_APICallError: input exceeds the context window"),
+    true,
+    "the context-fill path"
+  );
+  assert.strictEqual(
+    resumeAfterIdle("failed", resume, "context_length_exceeded"),
+    true,
+    "provider-specific overflow code"
+  );
+  assert.strictEqual(
+    resumeAfterIdle("failed", resume, "ECONNRESET: socket hang up"),
+    false,
+    "an unrelated failure never relaunches, even with a fresh marker"
+  );
+  assert.strictEqual(resumeAfterIdle("failed", resume, ""), false, "an unreadable failure is not a boundary");
+  assert.strictEqual(resumeAfterIdle("interrupted", resume, "context length"), false, "an interrupt never relaunches");
+  assert.strictEqual(resumeAfterIdle("succeeded", stop), false);
+  assert.strictEqual(resumeAfterIdle("failed", stop, "context length"), false);
+  assert.strictEqual(resumeAfterIdle("failed", null, "context length"), false);
+  assert.strictEqual(contextOverflow("prompt is too long: 210000 tokens"), true);
+});
+
+test("a hot import re-evaluates a module rewritten on disk (F-064)", async () => {
+  const { freshUrl, importFresh } = await import(pathToFileURL(path.join(PLUGIN_DIR, "hot-import.mjs")).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "context-resume-hot-"));
+  try {
+    const file = path.join(dir, "dep.mjs");
+    fs.writeFileSync(file, 'export const version = "old"\n', "utf8");
+    const href = pathToFileURL(file).href;
+    const urlBefore = freshUrl(href);
+    const first = await importFresh(href);
+    assert.strictEqual(first.version, "old");
+
+    fs.writeFileSync(file, 'export const version = "fixed"\n', "utf8");
+    const future = new Date(Date.now() + 5000);
+    fs.utimesSync(file, future, future);
+    assert.notStrictEqual(freshUrl(href), urlBefore, "the stamp changed");
+    const second = await importFresh(href);
+    assert.strictEqual(second.version, "fixed", "the deployed fix is evaluated again");
+    assert.notStrictEqual(first, second, "a distinct module instance, not the cached one");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a handoff without a resumable checkpoint is never a resume seed (F-064)", () => {
+  const core = require(path.join(REPO, "templates", "scripts", "qa", "run-loop-core.mjs"));
+  assert.strictEqual(core.hasResumableCheckpoint(""), false);
+  assert.strictEqual(core.hasResumableCheckpoint("# h\n\n## Checkpoint\n\n- checkpoint_count: 0\n"), false);
+  assert.strictEqual(
+    core.hasResumableCheckpoint("# h\n\n## Checkpoint\n\n- checkpoint_count: 0\n- next_action: continue\n"),
+    true,
+    "a recorded next_action is a seed even before the counter advances"
+  );
+  assert.strictEqual(core.hasResumableCheckpoint(handoff({ count: 2 })), true);
+
+  const guard = fs.readFileSync(path.join(PLUGIN_DIR, "..", "context-guard.ts"), "utf8");
+  assert.match(guard, /runLoop\.hasResumableCheckpoint\(handoff\)/, "the guard requires a seed");
+  assert.match(guard, /"context-resume-skip"/, "the skip is observable");
 });
 
 test("the TUI consumes a main marker in the SAME checkout behind the lease gate (F-061)", () => {
@@ -379,7 +464,7 @@ test("the TUI consumes a main marker in the SAME checkout behind the lease gate 
   assert.match(src, /leases:/, "the plan sees the leases");
   assert.match(src, /isAlive: pidAlive/, "liveness is proven with process.kill(pid, 0)");
   assert.match(src, /process\.kill\(pid, 0\)/, "the pid probe is real");
-  assert.ok(src.includes('idleKind !== "succeeded"'), "a failed execution keeps the manual path");
+  assert.match(src, /resumeAfterIdle\(idleKind, decision, errorText\)/, "a failed execution keeps the manual path");
   assert.match(src, /maxResets: DEFAULT_MAX_CONTEXT_RESETS/, "the 3-reset cap is unchanged");
   assert.ok(!src.includes("lease-lib.js"), "the CJS lease lib never enters the TUI ESM graph");
 });
@@ -392,7 +477,7 @@ test("the plugin is registered for the TUI loader in both configs", () => {
       `${rel} loads the context-resume plugin directory`
     );
   }
-  for (const rel of ["index.ts", "tui.tsx", "resume-plan.mjs"]) {
+  for (const rel of ["index.ts", "tui.tsx", "resume-plan.mjs", "hot-import.mjs"]) {
     // Read the COMMITTED copy, not the working tree: a locally deployed but
     // uncommitted file must not satisfy the repo contract (b513264 shipped
     // template copies with no deployed copies and only CI's clean checkout
@@ -466,7 +551,11 @@ function esmGraphViolations(entries) {
 }
 
 test("the TUI plugin graph is ESM-only (never imports .js/.cjs)", () => {
-  const entries = ["tui.tsx", "index.ts"].map((rel) => path.join(PLUGIN_DIR, rel));
+  // `tui.tsx` loads the decision module dynamically (F-064), so the decision
+  // graph is walked from its own entry as well as the plugin entries.
+  const entries = ["tui.tsx", "index.ts", "resume-plan.mjs"].map((rel) =>
+    path.join(PLUGIN_DIR, rel)
+  );
   const { violations, visited } = esmGraphViolations(entries);
   assert.deepStrictEqual(violations, [], violations.join("\n"));
   assert.ok(
@@ -477,6 +566,12 @@ test("the TUI plugin graph is ESM-only (never imports .js/.cjs)", () => {
     !visited.some((file) => file.endsWith(path.join("scripts", "qa", "run-loop.js"))),
     "the CJS facade is not part of the TUI ESM graph"
   );
+  const tui = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
+  assert.ok(
+    visited.some((file) => file.endsWith(path.join("context-resume", "hot-import.mjs"))),
+    "the loader plumbing is part of the entry graph"
+  );
+  assert.ok(!/from\s+["'][^"']+\.(js|cjs)["']/.test(tui), "the entry itself never imports a CJS file");
 });
 
 test("the ESM-graph guard catches a CommonJS import (negative fixture)", () => {

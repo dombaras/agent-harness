@@ -27,13 +27,36 @@ import { Plugin } from "@opencode/plugin/tui"
 import fs from "node:fs"
 import path from "node:path"
 import process from "node:process"
-import {
-  DEFAULT_MAX_CONTEXT_RESETS,
-  RESUME_MARKER_REL,
-  STORAGE_KEY,
-  parseMarker,
-  planResume,
-} from "./resume-plan.mjs"
+import { importFresh } from "./hot-import.mjs"
+
+/* Contract values pinned by tests/context-resume.test.js. Deliberately NOT
+ * imported from `resume-plan.mjs`: the TUI entry keeps no static import of the
+ * decision graph (F-064). A stale or broken helper in a statically imported
+ * graph makes the whole plugin fail to LOAD for the process lifetime, and the
+ * loader never retries — so the decision module is evaluated on demand through
+ * `importFresh`, which also picks up a deployed fix on the next event. */
+const STORAGE_KEY = "context-resume"
+const RESUME_MARKER_REL = ".agents/context-resume.json"
+const DEFAULT_MAX_CONTEXT_RESETS = 3
+
+type ResumePlan = {
+  parseMarker: (text: string) => any
+  planResume: (input: any) => ResumeDecision
+  resumeAfterIdle: (idleKind: string, decision: ResumeDecision, failureText: string) => boolean
+}
+
+/* Bounded text of a failed execution: the provider/error message is the
+ * discriminator between a context-window overflow (resumable) and a real
+ * failure (manual), so never discard it (F-064 falsifier). */
+const failureText = (event: any): string => {
+  const data = event?.data || {}
+  const raw = [data.error?.message, data.error?.name, data.error, data.message, data.reason]
+  return raw
+    .filter((part) => part != null && part !== "")
+    .map((part) => (typeof part === "string" ? part : JSON.stringify(part)))
+    .join(" ")
+    .slice(0, 4000)
+}
 
 type WorktreeState = {
   feature: string | null
@@ -194,54 +217,74 @@ export default Plugin.define({
       }
     }
 
+    const loadPlan = async (): Promise<ResumePlan> => {
+      // Cache-busted: the running TUI evaluates the file as it is NOW, so a
+      // deployed wiring fix lands on the next execution end without a restart.
+      return (await importFresh("./resume-plan.mjs", import.meta.url)) as ResumePlan
+    }
+
     const startFresh = async (
       decision: ResumeDecision,
-      directory: string
+      directory: string,
+      navigate: boolean
     ): Promise<string | undefined> => {
       const prompt = String(decision.prompt || "")
       if (!prompt) throw new Error("the runner produced no resume prompt")
       const created = await context.client.session.create({ location: { directory } })
       const sessionID = created?.id
       if (!sessionID) throw new Error("session.create returned no session id")
-      // Show the fresh context immediately; the prompt queues asynchronously.
-      try {
-        context.ui.router.navigate({ type: "session", sessionID })
-      } catch {
-        /* a route change is best-effort; the toast still names the session */
-      }
-      try {
-        if (context.ui.tabs.enabled()) context.ui.tabs.focus(sessionID)
-      } catch {
-        /* tabs are optional */
+      // Focus only when this TUI is looking at that checkout; a background
+      // worktree/tab is resumed in place, never yanked to the foreground.
+      if (navigate) {
+        try {
+          context.ui.router.navigate({ type: "session", sessionID })
+        } catch {
+          /* a route change is best-effort; the toast still names the session */
+        }
+        try {
+          if (context.ui.tabs.enabled()) context.ui.tabs.focus(sessionID)
+        } catch {
+          /* tabs are optional */
+        }
       }
       await context.client.session.prompt({ sessionID, text: prompt })
       context.ui.toast.show({
         title: `${decision.feature || "Feature"} resumed`,
-        message: "Fresh context seeded from the checkpoint.",
+        message: navigate
+          ? "Fresh context seeded from the checkpoint."
+          : `Fresh context seeded in ${directory} — open that session to continue.`,
         variant: "success",
       })
       return sessionID
     }
 
-    const handle = async (sessionID: string, idleKind: "succeeded" | "failed" | "interrupted") => {
+    const handle = async (
+      sessionID: string,
+      idleKind: "succeeded" | "failed" | "interrupted",
+      errorText = ""
+    ) => {
       if (!sessionID || inflight.has(sessionID)) return
       inflight.add(sessionID)
       try {
+        // Loaded before any IO: the decision module is the ONLY part allowed to
+        // be stale, and a broken copy must surface here instead of killing the
+        // plugin at load time (F-064).
+        const plan = await loadPlan()
         const directory = sessionDirectory(sessionID)
         if (!directory) return
-        // Only the TUI's current location may navigate/focus. A session in
-        // another checkout (V2's event stream is process-wide) keeps its marker
-        // for its own TUI instance or a manual resume.
+        // V2's event stream covers every session of this server. A session in
+        // another checkout is still this TUI's: resume it in ITS directory and
+        // only navigate/focus when that checkout is the one on screen (F-064).
         const current = resolveDirectory()
-        if (current && path.resolve(current) !== path.resolve(directory)) return
+        const here = !!current && path.resolve(current) === path.resolve(directory)
 
-        const marker = parseMarker(readText(path.join(directory, RESUME_MARKER_REL)))
+        const marker = plan.parseMarker(readText(path.join(directory, RESUME_MARKER_REL)))
         if (!marker || marker.sessionID !== sessionID) return
 
         const kind = checkoutKind(directory)
         const featureFromMarker = marker.feature ? String(marker.feature).toUpperCase() : null
         const entry = entryFor(directory, featureFromMarker)
-        const decision: ResumeDecision = planResume({
+        const decision: ResumeDecision = plan.planResume({
           marker,
           idleSessionID: sessionID,
           sessionCreatedAt: sessionCreatedAt(sessionID),
@@ -285,9 +328,10 @@ export default Plugin.define({
           return
         }
 
-        // A failed/interrupted execution is a real failure signal, not a clean
-        // context boundary: surface the manual path instead of relaunching.
-        if (idleKind !== "succeeded") {
+        // A clean end resumes. A failed end resumes ONLY when its error is a
+        // context-window overflow AND the same fresh/progressed/cap gates pass
+        // (F-064). Any other failure or an interrupt keeps the manual path.
+        if (!plan.resumeAfterIdle(idleKind, decision, errorText)) {
           context.ui.toast.show({
             title: "Context boundary recorded",
             message: "Resume manually with `/resume` (or `agent-harness run`) after inspecting the failure.",
@@ -296,7 +340,7 @@ export default Plugin.define({
           return
         }
 
-        await startFresh(decision, directory)
+        await startFresh(decision, directory, here)
         await persist(directory, {
           feature,
           handled: decision.key || null,
@@ -321,7 +365,7 @@ export default Plugin.define({
         void handle(String(event?.data?.sessionID || ""), "succeeded")
       }),
       context.data.on("session.execution.failed", (event: any) => {
-        void handle(String(event?.data?.sessionID || ""), "failed")
+        void handle(String(event?.data?.sessionID || ""), "failed", failureText(event))
       }),
       context.data.on("session.execution.interrupted", (event: any) => {
         void handle(String(event?.data?.sessionID || ""), "interrupted")
