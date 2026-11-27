@@ -21,6 +21,13 @@
 const crypto = require("crypto");
 const feedback = require("./feedback-lib.js");
 const kpi = require("./kpi-lib.js");
+const {
+  PLAYBOOK_SCHEMA,
+  PLAYBOOK_ACTIONS,
+  commandToArgv,
+  playbookHash,
+  parsePlaybook,
+} = require("./heal-playbook.js");
 
 const SCHEMA = "heal/1";
 const POLICY_SCHEMA = "heal/1";
@@ -615,8 +622,14 @@ function eligible(item, policy, state = {}, now = Date.now()) {
   if (last != null && at - last < p.budgets.cooldown_min * 60 * 1000) return fail("cooldown active");
 
   const recent = items.filter((it) => ["closed", "reverted"].includes(it.state)).slice(-p.breaker.failure_rate_window);
-  if (state.consecutive_failures >= p.breaker.consecutive_failures) return fail("breaker open: consecutive failures");
-  if (state.breaker_until && at < Date.parse(state.breaker_until)) return fail("breaker cooldown active");
+  const breakerUntil = state.breaker_until ? Date.parse(state.breaker_until) : null;
+  /* The breaker is half-open after its cooldown: a fresh failure re-opens it,
+   * a success resets the counter. Without the cooldown test a threshold hit
+   * would disable repair forever. */
+  if (state.consecutive_failures >= p.breaker.consecutive_failures && !(breakerUntil && at >= breakerUntil)) {
+    return fail("breaker open: consecutive failures");
+  }
+  if (breakerUntil && at < breakerUntil) return fail("breaker cooldown active");
   if (recent.length >= 3) {
     const failures = recent.filter((it) => it.state === "reverted" || it.outcome === "failed").length;
     if (failures / recent.length > p.breaker.failure_rate_threshold) return fail("breaker open: failure-rate window");
@@ -655,11 +668,159 @@ function selectAction(item, policy = DEFAULT_POLICY) {
   const tier = item.tier || riskTier(item, policy);
   for (const rule of actionTable(policy)) {
     if (rule.match(item)) {
-      const action = rule.action === "patch" && !tierAllowed(tier, policy) ? "escalate" : rule.action;
-      return { action, tier: action === "escalate" ? (tier === "T0" ? "T3" : tier) : rule.tier, reason: action === "escalate" ? "no permitted deterministic action" : `playbook:${rule.action}` };
+      /* The action table names the deterministic action; whether it may run is
+       * `eligible`/`repairDecision`'s job. In particular, assist must still see
+       * `patch` for a T1 item even when T1 is not in auto_tiers. */
+      return { action: rule.action, tier: rule.tier, reason: `playbook:${rule.action}` };
     }
   }
   return { action: "escalate", tier: "T2", reason: "no playbook matched" };
+}
+
+/* Playbook parsing/validation lives in heal-playbook.js (re-exported below). */
+/* The pure repair decision. It answers "may this item act, and how" without
+ * touching IO, a model, or a clock. `auto` executes allowlisted T0 playbooks;
+ * `assist` only prepares a T1 isolated worktree + handoff; T2/T3 never act. */
+function repairDecision(item, policy = DEFAULT_POLICY, state = {}, now = Date.now(), playbooks = {}) {
+  const selected = selectAction(item, policy);
+  const tier = item.tier || selected.tier;
+  const decision = {
+    id: item.id || null,
+    action: selected.action,
+    tier,
+    eligible: false,
+    kind: "none",
+    playbook: null,
+    reason: selected.reason,
+  };
+  if (selected.action === "escalate") {
+    decision.reason = `escalated: ${selected.reason}`;
+    return decision;
+  }
+  if (selected.action === "quarantine") {
+    const el = eligible(item, policy, state, now);
+    decision.eligible = el.ok;
+    if (!el.ok) {
+      decision.reason = el.reason;
+      return decision;
+    }
+    decision.kind = "quarantine";
+    decision.reason = "deterministic quarantine";
+    return decision;
+  }
+  if (T0_ACTIONS.includes(selected.action)) {
+    const el = eligible(item, policy, state, now);
+    decision.eligible = el.ok;
+    if (!el.ok) {
+      decision.reason = el.reason;
+      return decision;
+    }
+    if (policy.mode !== "auto") {
+      decision.reason = `assist mode: ${selected.action} waits for auto`;
+      return decision;
+    }
+    const playbook = playbooks[selected.action] || null;
+    if (!playbook || playbook.enabled !== true) {
+      decision.reason = playbook
+        ? `playbook ${selected.action} disabled: ${playbook.disabled_reason}`
+        : `no playbook for ${selected.action} (add .agents/playbooks/${selected.action}.md)`;
+      return decision;
+    }
+    decision.kind = "command";
+    decision.playbook = playbook;
+    decision.reason = `playbook:${selected.action}`;
+    return decision;
+  }
+  if (selected.action === "patch") {
+    if (tier !== "T1") {
+      decision.reason = `tier ${tier} never auto-patches`;
+      return decision;
+    }
+    /* Assist preparation is allowed even when T1 is not in auto_tiers: it writes
+     * no product code, only an isolated worktree + a bounded prompt. */
+    const preparePolicy = {
+      ...policy,
+      risk: { ...policy.risk, auto_tiers: [...new Set([...(policy.risk?.auto_tiers || []), "T1"])] },
+    };
+    const el = eligible(item, preparePolicy, state, now);
+    decision.eligible = el.ok;
+    if (!el.ok) {
+      decision.reason = el.reason;
+      return decision;
+    }
+    decision.kind = "prepare";
+    decision.reason = "isolated worktree + reproduce handoff (no auto-land)";
+    return decision;
+  }
+  decision.reason = `no executor for action ${selected.action}`;
+  return decision;
+}
+
+function breakerNext(state = {}, policy = DEFAULT_POLICY, now = Date.now(), ok = true) {
+  const at = typeof now === "number" ? now : Date.parse(now);
+  const previous = Number(state.consecutive_failures) || 0;
+  if (ok) return { consecutive_failures: 0, breaker_until: null, open: false };
+  const consecutive = previous + 1;
+  const open = consecutive >= (policy.breaker?.consecutive_failures || 1);
+  return {
+    consecutive_failures: consecutive,
+    breaker_until: open ? new Date(at + (policy.breaker?.cooldown_min || 0) * 60000).toISOString() : state.breaker_until || null,
+    open,
+  };
+}
+
+/* A bounded, human/agent-readable handoff for a T1 item. It carries no product
+ * code and names the deny paths and gates from policy, so the worker inherits
+ * the same limits the loop would enforce. */
+function handoffMarkdown(item, opts = {}) {
+  const policy = opts.policy || DEFAULT_POLICY;
+  const lines = [
+    `# heal handoff — ${item.id || "signal"}`,
+    "",
+    `- signature: \`${item.signature || "unknown"}\``,
+    `- source: ${item.source || "unknown"}/${item.environment || "unknown"}`,
+    `- class/risk: ${item.class || "unknown"}/${item.tier || "unknown"}`,
+    `- worktree: \`${opts.worktree || "(not created)"}\``,
+    `- branch: \`${opts.branch || "(none)"}\``,
+    "",
+    "## Reproduce first",
+    "",
+    item.repro || reproducePrompt(item),
+    "",
+    "## Limits (from .agents/heal.json)",
+    "",
+    `- max files: ${policy.risk?.max_files ?? "?"}`,
+    `- max diff lines: ${policy.risk?.max_diff_lines ?? "?"}`,
+    `- deny paths: ${(policy.risk?.deny_paths || []).join(", ") || "none declared"}`,
+    `- never edit: .agents/heal.json, evaluator/gate scripts, CI workflows, secrets`,
+    "",
+    "## Done",
+    "",
+    "The named check is green, gates pass, the test-integrity guard reports no block, and the diff stays inside the limits. Open a PR for a human; the loop never merges T1.",
+  ];
+  return lines.join("\n").slice(0, 4000);
+}
+
+/* BFS over the total state machine: callers may request a destination without
+ * hand-coding every intermediate state, and an impossible path still throws. */
+function advance(from, to) {
+  if (from === to) return [from];
+  if (!STATES.includes(from)) throw new Error(`unknown state: ${from}`);
+  if (!STATES.includes(to)) throw new Error(`unknown next state: ${to}`);
+  const queue = [[from]];
+  const seen = new Set([from]);
+  while (queue.length) {
+    const path = queue.shift();
+    const last = path[path.length - 1];
+    for (const next of TRANSITIONS[last] || []) {
+      if (seen.has(next)) continue;
+      const candidate = [...path, next];
+      if (next === to) return candidate;
+      seen.add(next);
+      queue.push(candidate);
+    }
+  }
+  throw new Error(`no transition path: ${from} -> ${to}`);
 }
 
 function canTransition(from, to) {
@@ -746,9 +907,18 @@ module.exports = {
   STATES,
   TRANSITIONS,
   T0_ACTIONS,
+  PLAYBOOK_SCHEMA,
+  PLAYBOOK_ACTIONS,
   NEVER_AUTO_PATHS,
   DEFAULT_POLICY,
   validatePolicy,
+  parsePlaybook,
+  commandToArgv,
+  playbookHash,
+  repairDecision,
+  breakerNext,
+  handoffMarkdown,
+  advance,
   dedupeKey,
   normalizeSignal,
   normalizeSignals,

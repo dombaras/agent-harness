@@ -1,9 +1,9 @@
 {
-  "version": "0.6.4",
+  "version": "0.6.5",
   "projectName": "agent-harness",
   "projectDomain": "",
   "initializedAt": "2026-11-20T15:28:27.274Z",
-  "updatedAt": "2026-11-27T21:11:10.679Z",
+  "updatedAt": "2026-11-27T22:03:03.527Z",
   "files": {
     ".agents/AGENTS.md": "0cfc077f3cd8da8178d379343b59f08ffceb0ef01f8fe88ed867445e1e8cb034",
     ".agents/feedback.json": "7b62c55c7a58cbff9e6f3b85c846b3eb41976606b6749878604636ac581e45f1",
@@ -83,7 +83,7 @@
     "docs/nightly-testing.md": "d4ea5523ff05c113b5ece4a727ffc3b04f8284cdd43277df7af6daa22c88249d",
     "docs/wsl-optimizations.md": "118d9d260ea5adc02cfc34e93da0dcc078ef1f0cb05fda06bc85bebd5e7e004a",
     "opencode.json": "8ecb2f6cd9a9f20fb68f9b69b8dc59c99cddc0f0315378560625e87e8c5cd119",
-    "package.json": "27843a25b5598a8be3091496b0c23c5d5eb6dee1a3b9a2276bd9d89b3d747e48",
+    "package.json": "131cfd0149daf617b70c7f638dacb58deb9c82b3d8594f767cb4d645cecf1091",
     "scripts/agent-report.js": "41f0a278fec709fa4d1dd5abab94bbbbd98acbaf9b863e96ea5872c8695bfa6d",
     "scripts/agent-search.sh": "c7c127d53221161fcf6009ed687977733507e2e5214b1fb77ed1b9ced7bffe82",
     "scripts/backlog.js": "ad11f7a575c39d7dfc1535515a07b47db4f344d18ec0f0b5b35d69947c88013a",

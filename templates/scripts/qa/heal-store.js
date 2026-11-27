@@ -208,6 +208,31 @@ function severityMax(a, b) {
   return (SEVERITY_ORDER[a] ?? 9) <= (SEVERITY_ORDER[b] ?? 9) ? a : b;
 }
 
+/* Upsert a state transition without counting a new observation. recordItem is
+ * for detection (occurrences + severity); updateItem is for the repair loop's
+ * own transitions (attempting/verified/closed/escalated). */
+function updateItem(root, item, opts = {}) {
+  if (!item || typeof item !== "object") throw new Error("item must be an object");
+  if (!item.signature) throw new Error("item.signature is required");
+  const at = opts.now ? isoNow(opts.now) : item.last_seen || isoNow();
+  const next = { ...item, last_seen: item.last_seen || at };
+  appendEvent(root, { type: "item", at, item: next }, opts);
+  const state = readState(root, opts);
+  state.items = state.items.filter((it) => itemKey(it) !== itemKey(next)).concat(next);
+  writeJsonAtomic(storePaths(root, opts).state, { ...state, schema: STATE_SCHEMA, generated_at: at });
+  return next;
+}
+
+function recordBreaker(root, breaker, opts = {}) {
+  return appendEvent(root, {
+    type: "breaker",
+    at: isoNow(opts.now),
+    consecutive_failures: Number(breaker?.consecutive_failures) || 0,
+    until: breaker?.until || breaker?.breaker_until || null,
+    open: breaker?.open === true,
+  }, opts);
+}
+
 function mergeEvidence(a, b) {
   const seen = new Set();
   const out = [];
@@ -259,6 +284,9 @@ function rebuildState(events, opts = {}) {
   const samples = [];
   let redMain = false;
   let errorBudgetFrozen = false;
+  let breakerUntil = null;
+  let breakerSeen = false;
+  let breakerFailures = null;
   const safety = [];
 
   for (const e of events) {
@@ -271,6 +299,10 @@ function rebuildState(events, opts = {}) {
       redMain = e.red === true;
     } else if (e.type === "error_budget") {
       errorBudgetFrozen = e.frozen === true;
+    } else if (e.type === "breaker") {
+      breakerFailures = Number(e.consecutive_failures) || 0;
+      breakerUntil = e.until || null;
+      breakerSeen = true;
     } else if (e.type === "safety") {
       safety.push({ id: e.id || null, reason: e.reason || "safety violation", at: e.at });
     }
@@ -286,6 +318,9 @@ function rebuildState(events, opts = {}) {
     if (!["escalated", "reverted"].includes(ordered[i].state)) break;
     consecutiveFailures += 1;
   }
+  /* An explicit breaker event (Phase 2) is authoritative: it can reset the
+   * counter after a success and carries the cooldown timestamp. */
+  if (breakerSeen) consecutiveFailures = breakerFailures;
 
   return {
     schema: STATE_SCHEMA,
@@ -295,6 +330,7 @@ function rebuildState(events, opts = {}) {
     red_main: redMain,
     error_budget_frozen: errorBudgetFrozen,
     consecutive_failures: consecutiveFailures,
+    breaker_until: breakerUntil,
     safety,
   };
 }
@@ -395,7 +431,9 @@ module.exports = {
   writeJsonAtomic,
   appendEvent,
   recordItem,
+  updateItem,
   recordSample,
+  recordBreaker,
   appendAudit,
   rebuildState,
   readState,

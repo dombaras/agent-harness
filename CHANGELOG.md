@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Self-healing now supports bounded T0 repair and T1 assist preparation with an audit trail, a consecutive-failure breaker, and an in-flight kill switch; it does not auto-merge. (F-078)
+
 - Self-healing loop Phase 1 (detect & route): `heal watch` (and one pass of `heal run`) reads the nightly report, gate ledger, and doctor/drift facts, normalizes and dedupes by source+environment+signature, classifies and routes one deterministic playbook or `escalate`, and writes a bounded reproduce-first prompt. Exactly one board row per signature (`[heal:<source>:<sig8>]`, link on repeat, reopen an archived signature), `--no-board` for ledger-only, and the kill switch is checked before every poll. Still read-only: no repair, no auto-land, no product-code write. (F-077)
 
 - Self-healing loop Phase 0 (observe): `heal status` answers "is the harness healthy / what is red / what is blocked" in one bounded call; `heal run` records KPI samples from nightly/feedback/gate/doctor artifacts; `heal report` writes a 14-day-baseline HHI report and names the top burn driver; `pause`/`resume` engage the kill switch. The pure decision core (risk tiers T0–T3, eligibility, budgets, breaker, state machine) ships read-only, with `watch` (phase 1) and `improve` (phase 4) refusing loudly. (F-076)

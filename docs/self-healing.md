@@ -1,16 +1,18 @@
-# Self-healing loop (F-076, Phases 0–1)
+# Self-healing loop (F-076, Phases 0–2)
 
-The harness answers one bounded health question, builds a measured baseline, and
-now turns a red signal into one deduped, classified, reproducible work item —
-without repairing anything:
+The harness answers one bounded health question, builds a measured baseline,
+turns a red signal into one deduped, classified, reproducible work item, and —
+only where policy and evidence allow — performs a bounded repair:
 
 ```sh
 node scripts/heal.js status          # healthy? what is red / fixing / blocked
 node scripts/heal.js watch --once    # detect & route red signals (one pass)
 node scripts/heal.js watch           # resident loop (one pass every poll)
-node scripts/heal.js run             # ingest KPIs + one detect pass
+node scripts/heal.js run             # ingest KPIs + one repair pass
+node scripts/heal.js run --no-repair # ingest + detect only
 node scripts/heal.js report          # 14-day baseline, HHI, top burn driver
 node scripts/heal.js plan            # the one permitted action per open signal
+node scripts/heal.js playbook list|validate|show
 node scripts/heal.js pause|resume    # kill switch
 ```
 
@@ -33,8 +35,14 @@ node scripts/heal.js pause|resume    # kill switch
 - `watch` is bounded: `--once` is one poll, `--max-polls` caps a resident run,
   and the kill switch is checked before every poll (a mid-run pause stops the
   loop).
-- `observe` remains the default: no repair, no auto-land, no product-code write.
-  `watch` works the same in `assist`/`auto` until Phase 2 adds the repair path.
+- **Bounded repair (Phase 2).** Project-owned playbooks use validated frontmatter
+  and argv commands without a shell. `observe`/`off` detect only; `auto` executes
+  T0 playbooks only, while `assist` prepares an isolated worktree and
+  reproduce-first handoff. T2/T3 signals never execute, and there is no
+  auto-merge path. Attempts and quarantine outcomes are audited; the
+  consecutive-failure breaker and in-flight kill-switch polling bound retries
+  and interruption (`templates/scripts/qa/heal-lib.js`,
+  `templates/scripts/qa/heal-act.js`).
 
 ## Policy
 
@@ -44,6 +52,7 @@ with exit 2. `templates/.agents/heal.json` is the seeded default.
 
 ## What comes next
 
-Phases 2–5 (bounded T0/T1 repair, deployed-repo mode, continuous improvement,
-fleet governance) are tracked on the board. The loop keeps earning trust in
-order: no repair, no auto-land, no telemetry before the evidence exists.
+The remaining phases are deployed-repo observe/drift repair, continuous
+improvement, and fleet governance. The loop keeps earning trust in order:
+bounded repair first, then broader deployment and learning; no auto-land or
+telemetry before the evidence exists.

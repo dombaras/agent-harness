@@ -30,6 +30,7 @@ const { spawnSync } = require("child_process");
 const healLib = require("./qa/heal-lib.js");
 const kpiLib = require("./qa/kpi-lib.js");
 const store = require("./qa/heal-store.js");
+const healAct = require("./qa/heal-act.js");
 
 const POLICY_REL = path.join(".agents", "heal.json");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -42,6 +43,7 @@ function parseArgs(argv) {
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--no-write") args.noWrite = true;
     else if (a === "--no-board") args.noBoard = true;
+    else if (a === "--no-repair") args.noRepair = true;
     else if (a === "--once") args.once = true;
     else if (a.startsWith("--interval=")) args.interval = a.slice(11);
     else if (a === "--interval") args.interval = argv[++i];
@@ -424,7 +426,100 @@ function watchOnce(root, policy, args, now = Date.now()) {
   return { refused: null, items: recorded, created, board: applyBoard(recorded, root, args) };
 }
 
-function cmdWatch(root, args) {
+/* ------------------------------------------------- Phase 2: bounded repair */
+
+/* A policy that turns invalid mid-attempt is a safe abort: we cannot prove the
+ * kill switch is off, so we stop. */
+function repairShouldAbort(root) {
+  return () => {
+    try {
+      return loadPolicy(root).policy.kill_switch === true;
+    } catch (_) {
+      return true;
+    }
+  };
+}
+
+function burnFreeze(report, policy) {
+  const burn = report && report.top_driver ? Number(report.top_driver.burn) : null;
+  return !!(
+    policy.error_budget?.freeze_auto_land &&
+    report && report.unobserved !== true &&
+    burn != null && Number.isFinite(burn) &&
+    burn > policy.error_budget.burn_rate_freeze
+  );
+}
+
+/* One bounded repair pass: re-read state, respect the error budget, choose the
+ * highest-value eligible item, and take exactly one action. T0 commands run
+ * only in `auto`; T1 becomes an isolated worktree + handoff; T2/T3 never act. */
+async function repairPass(root, policy, args, now = Date.now()) {
+  if (args.noRepair) return { status: "disabled", reason: "--no-repair" };
+  if (policy.mode === "off" || policy.mode === "observe") return { status: "read-only", reason: `mode ${policy.mode} never repairs` };
+  if (policy.kill_switch) return { status: "refused", reason: "kill switch is engaged" };
+
+  let state = store.readState(root, storeOpts(args));
+  const open = state.items.filter((it) => !["closed", "quarantined"].includes(it.state));
+  if (!open.length) return { status: "idle", reason: "no open signals" };
+
+  const report = buildReport(root, args, { now });
+  const frozen = burnFreeze(report, policy);
+  if (frozen !== state.error_budget_frozen && !args.dryRun) {
+    store.appendEvent(root, {
+      type: "error_budget",
+      at: new Date(now).toISOString(),
+      frozen,
+      reason: frozen ? `burn ${report.top_driver.burn}× > ${policy.error_budget.burn_rate_freeze}×` : "burn under the freeze threshold",
+    }, storeOpts(args));
+    state = store.readState(root, storeOpts(args));
+  }
+  if (args.dryRun) return { status: "dry-run", frozen, reason: "no action taken" };
+
+  const books = healAct.loadPlaybooks(root, policy);
+  const tierRank = { T0: 0, T1: 1, T2: 2, T3: 3 };
+  const sevRank = { P1: 0, P2: 1, P3: 2, P4: 3 };
+  const ordered = [...open].sort((a, b) =>
+    (tierRank[a.tier] ?? 9) - (tierRank[b.tier] ?? 9) || (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9));
+
+  let lastReason = "no eligible action";
+  for (const candidate of ordered) {
+    const item = state.items.find((it) => it.id === candidate.id) || candidate;
+    const decision = healLib.repairDecision(item, policy, state, now, books.byAction);
+    if (decision.kind === "none") {
+      lastReason = `${item.id}: ${decision.reason}`;
+      continue;
+    }
+    if (decision.kind === "command") {
+      const result = await healAct.attempt(root, item, decision.playbook, policy, {
+        ...storeOpts(args), now, state, shouldAbort: repairShouldAbort(root),
+      });
+      if (result.refused) return { status: "refused", reason: result.refused, decision };
+      return {
+        status: "attempted",
+        action: decision.action,
+        outcome: result.item.outcome,
+        item: result.item.id,
+        exit_code: result.attempt.exit_code,
+        duration_ms: result.attempt.duration_ms,
+        breaker: result.breaker,
+        playbook_errors: books.errors,
+      };
+    }
+    if (decision.kind === "prepare") {
+      const result = healAct.prepareT1(root, item, policy, { ...storeOpts(args), now });
+      if (result.refused) return { status: "refused", reason: result.refused, decision };
+      return { status: "prepared", action: "patch", item: result.item.id, worktree: result.worktree, handoff: result.handoff, error: result.error };
+    }
+    if (decision.kind === "quarantine") {
+      const result = healAct.quarantine(root, item, decision.reason, { ...storeOpts(args), now });
+      if (result.refused) return { status: "refused", reason: result.refused, decision };
+      return { status: "quarantined", action: "quarantine", item: result.item.id };
+    }
+  }
+  return { status: "blocked", reason: lastReason, playbook_errors: books.errors };
+}
+
+async function cmdWatch(root, args) {
   const loaded = loadPolicy(root);
   if (loaded.policy.kill_switch) return { code: 2, out: "heal watch refused: kill switch is engaged" };
   if (loaded.policy.mode === "off") return { code: 2, out: "heal watch refused: mode is off (add .agents/heal.json or `heal resume`)" };
@@ -432,16 +527,25 @@ function cmdWatch(root, args) {
   const polls = args.once ? 1 : Math.max(1, Number(args.maxPolls) || Math.max(1, Math.ceil((60 * 60 * 1000) / interval)));
   const events = [];
   let needsWork = false;
+  let refused = null;
   for (let i = 0; i < polls; i += 1) {
     const current = loadPolicy(root).policy;
     if (current.kill_switch) {
       events.push({ poll: i + 1, refused: "kill switch engaged mid-watch", items: [], created: 0, board: [] });
       needsWork = true;
+      refused = "kill switch engaged mid-watch";
       break;
     }
     const pass = watchOnce(root, current, args, Date.now());
-    events.push({ poll: i + 1, ...pass });
+    const repair = pass.refused ? { status: "refused", reason: pass.refused } : await repairPass(root, current, args, Date.now());
+    events.push({ poll: i + 1, ...pass, repair });
     if (pass.items.length) needsWork = true;
+    if (repair.status === "attempted" && repair.outcome !== "resolved") needsWork = true;
+    if (repair.status === "refused" || repair.outcome === "aborted") {
+      needsWork = true;
+      refused = repair.reason || repair.outcome;
+      break;
+    }
     if (i + 1 < polls) spawnSync(process.execPath, ["-e", `setTimeout(()=>{},${interval})`], { timeout: interval + 5000 });
   }
   const summary = {
@@ -513,10 +617,11 @@ function cmdReport(root, args) {
   return { code: 0, out: report.markdown };
 }
 
-function cmdRun(root, args) {
+async function cmdRun(root, args) {
   const { policy } = loadPolicy(root);
   const ingestResult = ingest(root, args);
   const detected = watchOnce(root, policy, args);
+  const repair = await repairPass(root, policy, args, Date.now());
   const state = store.readState(root, storeOpts(args));
   const pruned = args.dryRun ? null : store.prune(root, policy, storeOpts(args));
   const report = buildReport(root, { ...args, since: args.since });
@@ -534,18 +639,26 @@ function cmdRun(root, args) {
     pruned,
     hhi: report.hhi,
     top_driver: report.top_driver,
-    repair: "disabled in phase 1 (detect & route only)",
+    repair,
   };
-  if (args.json) return { code: 0, out: JSON.stringify(out, null, 2) };
+  const code = repair.status === "refused" ? 2 : repair.status === "attempted" && repair.outcome !== "resolved" ? 1 : 0;
+  if (args.json) return { code, out: JSON.stringify(out, null, 2) };
+  const repairLine = repair.status === "attempted"
+    ? `  repair: ${repair.action} ${repair.outcome} (exit ${repair.exit_code}, ${repair.duration_ms}ms)`
+    : repair.status === "prepared"
+      ? `  repair: T1 prepared — ${repair.worktree || repair.error}`
+      : repair.status === "quarantined"
+        ? `  repair: quarantined ${repair.item}`
+        : `  repair: ${repair.status} — ${repair.reason || ""}`;
   return {
-    code: 0,
+    code,
     out: [
       `heal run — ${policy.mode}${args.dryRun ? " (dry-run)" : ""}`,
       `  samples: ${out.samples_written}/${out.samples_seen} written`,
       `  signals: ${out.signals_detected} detected, ${out.signals_new} new${out.detection !== "ok" ? ` (${out.detection})` : ""}`,
       `  open signals: ${out.items_open}`,
       `  HHI: ${out.hhi == null ? "unobserved" : out.hhi}${out.top_driver ? ` · top driver: ${out.top_driver.label} (${out.top_driver.infinite ? "∞" : out.top_driver.burn + "×"})` : ""}`,
-      "  repair: disabled in phase 1 (detect & route only)",
+      repairLine,
     ].join("\n"),
   };
 }
@@ -553,17 +666,25 @@ function cmdRun(root, args) {
 function cmdPlan(root, args) {
   const { policy } = loadPolicy(root);
   const state = store.readState(root, storeOpts(args));
+  const books = healAct.loadPlaybooks(root, policy);
   const open = state.items.filter((it) => !["closed", "quarantined"].includes(it.state));
   const plan = open.map((item) => {
-    const action = healLib.selectAction(item, policy);
-    const decision = healLib.eligible(item, policy, state, Date.now());
-    return { id: item.id, tier: item.tier, state: item.state, action: action.action, eligible: decision.ok, reason: decision.ok ? action.reason : decision.reason };
+    const decision = healLib.repairDecision(item, policy, state, Date.now(), books.byAction);
+    return {
+      id: item.id,
+      tier: item.tier,
+      state: item.state,
+      action: decision.action,
+      kind: decision.kind,
+      eligible: decision.eligible,
+      reason: decision.reason,
+    };
   });
-  if (args.json) return { code: plan.length ? 1 : 0, out: JSON.stringify({ schema: "heal-plan/1", mode: policy.mode, items: plan }, null, 2) };
+  if (args.json) return { code: plan.length ? 1 : 0, out: JSON.stringify({ schema: "heal-plan/1", mode: policy.mode, items: plan, playbook_errors: books.errors }, null, 2) };
   if (!plan.length) return { code: 0, out: "heal plan — no open signals" };
   return {
     code: 1,
-    out: ["heal plan", ...plan.map((p) => `  ${p.id} [${p.tier}] ${p.action} — ${p.eligible ? p.reason : `blocked: ${p.reason}`}`)].join("\n"),
+    out: ["heal plan", ...plan.map((p) => `  ${p.id} [${p.tier}] ${p.action}/${p.kind} — ${p.eligible ? p.reason : `blocked: ${p.reason}`}`)].join("\n"),
   };
 }
 
@@ -576,15 +697,29 @@ function setKillSwitch(root, args, value) {
 }
 
 function cmdPlaybook(root, args) {
-  const dir = path.join(root, ".agents", "playbooks");
-  let files = [];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith(".md")).sort();
-  } catch (_) {
-    files = [];
+  const { policy } = loadPolicy(root);
+  const loaded = healAct.loadPlaybooks(root, policy);
+  const sub = args._[1] || "list";
+  if (sub === "validate") {
+    if (loaded.errors.length) {
+      return { code: 2, out: ["heal playbook validate — refused", ...loaded.errors.map((e) => `  ${e.file}: ${e.error}`)].join("\n") };
+    }
+    return { code: 0, out: `heal playbook validate — ${loaded.playbooks.length} valid (${loaded.dir})` };
   }
-  if (args.json) return { code: 0, out: JSON.stringify({ schema: "heal-playbooks/1", dir, files }, null, 2) };
-  return { code: 0, out: files.length ? files.map((f) => path.join(dir, f)).join("\n") : `heal playbook — none (${dir})` };
+  if (sub === "show") {
+    const action = args._[2];
+    const playbook = action ? loaded.byAction[action] : null;
+    if (!playbook) return { code: 2, out: `heal playbook show — no playbook for ${action || "(missing action)"}` };
+    return { code: 0, out: args.json ? JSON.stringify(playbook, null, 2) : [`${playbook.name} — ${playbook.action}${playbook.enabled ? "" : ` (disabled: ${playbook.disabled_reason})`}`, `  command: ${playbook.command.join(" ") || "—"}`, `  timeout: ${playbook.timeout_sec}s · verify: ${playbook.verify}`, playbook.description ? `  ${playbook.description}` : ""].filter(Boolean).join("\n") };
+  }
+  if (args.json) return { code: loaded.errors.length ? 2 : 0, out: JSON.stringify({ schema: "heal-playbooks/1", dir: loaded.dir, playbooks: loaded.playbooks, errors: loaded.errors }, null, 2) };
+  const lines = [`heal playbook — ${loaded.dir}`];
+  if (!loaded.playbooks.length) lines.push("  none (add <action>.md with a frontmatter command)");
+  for (const pb of loaded.playbooks) {
+    lines.push(`  ${pb.action.padEnd(16)} ${pb.enabled ? "enabled " : "disabled"} ${pb.command.join(" ") || pb.disabled_reason || ""}`);
+  }
+  for (const e of loaded.errors) lines.push(`  INVALID ${e.file}: ${e.error}`);
+  return { code: loaded.errors.length ? 2 : 0, out: lines.join("\n") };
 }
 
 function help() {
@@ -598,24 +733,24 @@ function help() {
     "  kpi        KPI rows vs a 14-day baseline (read-only)",
     "  report     write a local KPI report under .agents/qa-runs/heal/reports/",
     "  run        one bounded pass: ingest KPIs + detect & route signals",
-    "  watch      resident detect & route loop (--once for a timer)",
+    "  watch      resident detect + repair loop (--once for a timer)",
     "  plan       show the selected action per open signal (no action taken)",
     "  pause      engage the kill switch",
     "  resume     release the kill switch",
-    "  playbook   list .agents/playbooks/*.md",
+    "  playbook   list|validate|show .agents/playbooks/*.md",
     "",
-    "Phase 1 is read-only: detect, dedupe, route, and file one board row per",
-    "signature. No repair, no auto-land, no product-code write.",
+    "Auto repair executes allowlisted T0 playbook commands only. Assist prepares",
+    "an isolated T1 worktree + handoff. T2/T3 never act; the loop never auto-lands.",
     "Not yet implemented (documented refusal): improve (phase 4).",
-    "Flags: --json --dry-run --no-write --once --interval=5m --max-polls=N",
+    "Flags: --json --dry-run --no-write --no-repair --once --interval=5m --max-polls=N",
     "       --no-board --board-root <dir> --root <dir> --heal-dir <dir> --since=14d",
     "Exit: 0 handled/healthy, 1 needs work, 2 invalid/refused.",
   ].join("\n");
 }
 
-function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
-  if (args.version) return { code: 0, out: "heal 0.1.0 (phase 0)" };
+  if (args.version) return { code: 0, out: "heal 0.2.0 (phase 2)" };
   if (args.help || !args._.length) return { code: args._.length ? 0 : 2, out: help() };
   const command = args._[0];
   const root = projectRoot(args);
@@ -624,12 +759,12 @@ function main(argv = process.argv.slice(2)) {
       case "status": return cmdStatus(root, args);
       case "kpi": return cmdKpi(root, args);
       case "report": return cmdReport(root, args);
-      case "run": return cmdRun(root, args);
+      case "run": return await cmdRun(root, args);
       case "plan": return cmdPlan(root, args);
       case "pause": return setKillSwitch(root, args, true);
       case "resume": return setKillSwitch(root, args, false);
       case "playbook": return cmdPlaybook(root, args);
-      case "watch": return cmdWatch(root, args);
+      case "watch": return await cmdWatch(root, args);
       case "improve": return { code: 2, out: "heal improve — not implemented (phase 4: eval-backed improvement proposal)" };
       default: return { code: 2, out: `unknown command: ${command}\n\n${help()}` };
     }
@@ -640,9 +775,13 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  const result = main();
-  if (result.out) process.stdout.write(result.out + (result.out.endsWith("\n") ? "" : "\n"));
-  process.exit(result.code);
+  main().then((result) => {
+    if (result.out) process.stdout.write(result.out + (result.out.endsWith("\n") ? "" : "\n"));
+    process.exit(result.code);
+  }).catch((e) => {
+    process.stderr.write(`heal refused: ${e && e.message ? e.message : e}\n`);
+    process.exit(2);
+  });
 }
 
 module.exports = {
@@ -655,6 +794,8 @@ module.exports = {
   ingest,
   readSourceSignals,
   watchOnce,
+  repairPass,
+  burnFreeze,
   parseInterval,
   boardRows,
   applyBoard,
