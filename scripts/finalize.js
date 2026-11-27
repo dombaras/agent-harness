@@ -562,6 +562,7 @@ function parseArgs(argv) {
     else if (a === "--no-rebase") args["no-rebase"] = true;
     else if (a === "--no-gate") args["no-gate"] = true;
     else if (a === "--no-ci-wait") args["no-ci-wait"] = true;
+    else if (a === "--defer-archive") args["defer-archive"] = true;
     else if (a === "--include-blocked") args["include-blocked"] = true;
     else if (a === "--help" || a === "-h") args.help = true;
     else args._.push(a);
@@ -574,7 +575,8 @@ function usage() {
     "finalize — archive + commit + land + confirm CI in one deterministic step (no LLM)\n\n" +
       '  node scripts/finalize.js --feature <id> [--closed "<note>"] [--base main]\n' +
       "                           [--root <dir>] [--dry-run]\n" +
-      "                           [--no-rebase] [--no-gate] [--no-ci-wait]\n\n" +
+      "                           [--no-rebase] [--no-gate] [--no-ci-wait]\n" +
+      "                           [--defer-archive]\n\n" +
       "Collapses the finalization tail into one blocking command: archive the row,\n" +
       "commit the board + CHANGELOG + handoff, then `ship` (rebase, gates, direct\n" +
       "land on the integration branch, and a bounded wait for green CI). The deploy\n" +
@@ -629,6 +631,7 @@ function main() {
 
   const closed = args.closed || handoffOutcome(feature) || "shipped";
   const archived = isArchived(feature);
+  const deferArchive = !!args["defer-archive"];
   // A shared checkout must not stage another live session's WIP. Refuse BEFORE
   // the archive/commit so nothing is written when the tree cannot be separated.
   const preflight = args["include-blocked"] ? { others: [], foreign: [] } : foreignWip(feature);
@@ -644,7 +647,10 @@ function main() {
     if (preflight.others.length) {
       console.log(`  shared:   ${preflight.others.length} other live session(s) — ${preflight.foreign.length} foreign WIP path(s)`);
     }
-    console.log("  plan:     archive -> commit -> ship (rebase, gates, land, confirm CI)");
+    console.log(
+      "  plan:     " +
+        (args["defer-archive"] ? "commit -> ship (rebase, gates, land, confirm CI) -> archive" : "archive -> commit -> ship (rebase, gates, land, confirm CI)")
+    );
     return;
   }
 
@@ -677,11 +683,15 @@ function main() {
 
   // 1. Archive the row (idempotent). The archive runs from inside the worktree,
   //    so it moves the row in THIS board and skips removing this checkout.
-  if (!archived) {
+  //    `--defer-archive` (orchestrator lander) moves the board write AFTER the
+  //    CI-green confirmation, so a red landing never closes the row.
+  if (!archived && !deferArchive) {
     if (!fs.existsSync(backlogScript)) return fail(`finalize: ${path.relative(root, backlogScript)} not found.`);
     if (!run(process.execPath, [backlogScript, "archive", feature, "--closed", closed], { cwd: root })) {
       return fail(`finalize: could not archive ${feature} — fix the board error above, then re-run.`);
     }
+  } else if (deferArchive && !archived) {
+    console.log(`[finalize] ${feature}: archive deferred until CI is green.`);
   } else {
     console.log(`[finalize] ${feature} is already archived — skipping the board write.`);
   }
@@ -716,7 +726,20 @@ function main() {
     );
   }
 
-  // 4. Close the loop that used to be a session-ending remark: converge the
+  // 4. Deferred archive: CI is green, so the row may now close. This is a board
+  //    service write (no file commit), which is why it can safely happen after
+  //    the landing push.
+  if (deferArchive && !archived) {
+    if (!fs.existsSync(backlogScript)) return fail(`finalize: ${path.relative(root, backlogScript)} not found.`);
+    if (!run(process.execPath, [backlogScript, "archive", feature, "--closed", closed], { cwd: root })) {
+      return fail(
+        `finalize: landed + CI green, but archiving ${feature} failed — fix the board error and re-run archive.`
+      );
+    }
+    console.log(`[finalize] ${feature} archived after CI green.`);
+  }
+
+  // 5. Close the loop that used to be a session-ending remark: converge the
   //    main checkout and name every leftover worktree explicitly.
   closeOut(base, feature);
 

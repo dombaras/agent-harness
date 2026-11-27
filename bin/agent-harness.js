@@ -634,6 +634,8 @@ const HARNESS_SCRIPTS = {
   orient: "node scripts/orient.js",
   wait: "node scripts/wait-for.js",
   serve: "node scripts/serve.js",
+  orchestrator: "node scripts/orchestrator.js",
+  "test:orchestrator": "node --test tests/orchestrator-lib.test.js tests/orchestrator-store.test.js tests/orchestrator-cli.test.js",
   search: "bash scripts/agent-search.sh",
   ramdisk: "bash scripts/setup-tmpfs.sh up",
   "ramdisk:down": "bash scripts/setup-tmpfs.sh down",
