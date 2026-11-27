@@ -8317,6 +8317,39 @@ test("test:prefix passes a clean deploy and fails a volatile value in an always-
   assert.strictEqual(dateOk.status, 0, dateOk.stdout + dateOk.stderr);
 });
 
+test("prefix audit reports the auto-loaded split and degrades without a session store", async () => {
+  const target = tmpdir();
+  await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
+  const home = path.join(target, "home");
+  fs.mkdirSync(path.join(home, ".config", "opencode"), { recursive: true });
+  const env = { ...process.env, HOME: home, OPENCODE_CONFIG_DIR: path.join(home, ".config", "opencode") };
+  const audit = (args = []) =>
+    spawnSync(process.execPath, ["scripts/qa/prefix-audit.js", "--root", target, "--no-store", ...args], {
+      cwd: target,
+      encoding: "utf8",
+      env,
+    });
+
+  const res = audit(["--json"]);
+  assert.strictEqual(res.status, 0, res.stdout + res.stderr);
+  const report = JSON.parse(res.stdout);
+  assert.strictEqual(report.schema, "prefix-audit/1");
+  assert.strictEqual(report.floor, null, "no store read in --no-store mode");
+  assert.ok(report.instructions.bytes > 0);
+  assert.deepStrictEqual(
+    report.instructions.files.filter((f) => f.budgeted).map((f) => f.rel),
+    ["AGENTS.md"],
+    "the root dispatcher is the only budgeted always-loaded project file"
+  );
+  assert.ok(report.tools.count >= 8, "harness plugin tools are counted");
+  assert.ok(report.tools.names.includes("orient"));
+  assert.match(audit().stdout, /fixed session-start prefix/);
+
+  // A budget cannot be enforced without an observed floor, so it must not fail CI.
+  const budgeted = audit(["--budget", "1"]);
+  assert.strictEqual(budgeted.status, 0, budgeted.stdout + budgeted.stderr);
+});
+
 test("test:opencode-compat passes a clean deploy and fails each V2 drift", async () => {
   const target = tmpdir();
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: false });
@@ -8614,11 +8647,13 @@ test("checkpoint CLI, tools, commands, and report:cost are deployed and stay har
     ".opencode/commands/checkpoint.md",
     ".opencode/commands/resume.md",
     "scripts/qa/check-prefix-stability.js",
+    "scripts/qa/prefix-audit.js",
   ]) {
     assert.ok(exists(path.join(target, ...rel.split("/"))), rel + " deployed");
   }
   const pkg = JSON.parse(read(path.join(target, "package.json")));
   assert.strictEqual(pkg.scripts.checkpoint, "node scripts/checkpoint.js");
+  assert.strictEqual(pkg.scripts["audit:prefix"], "node scripts/qa/prefix-audit.js");
 
   fs.writeFileSync(path.join(target, "scripts", "checkpoint.js"), "LOCAL EDIT", "utf8");
   await h.deploy(target, { name: "Demo", yes: true, isUpdate: true, acceptHarness: true });

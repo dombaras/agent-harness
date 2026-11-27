@@ -617,6 +617,7 @@ const HARNESS_SCRIPTS = {
   "test:ci-policy": "node scripts/qa/check-ci-policy.js",
   "test:opencode-compat": "node scripts/qa/check-opencode-compat.js",
   "test:prefix": "node scripts/qa/check-prefix-stability.js",
+  "audit:prefix": "node scripts/qa/prefix-audit.js",
   "ci-triage": "node scripts/qa/ci-triage.js",
   gates: "node scripts/qa/run-gates.js",
   where: "node scripts/qa/where.js",

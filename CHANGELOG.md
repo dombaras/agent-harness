@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.15 — 2026-11-27
+
+- Added `npm run audit:prefix` (`scripts/qa/prefix-audit.js`): it reads the first
+  assistant usage of the newest session in the current root and reports the fixed
+  session-start floor split into observed tokens, auto-loaded instruction bytes
+  and tokens, and the derived system + tool-schema remainder. In this repo the
+  floor is 11,238 tokens (9,318 input + 1,920 cache read) and ~71% is system +
+  tool schemas, so the next context-economy trim targets the real bucket instead
+  of a guess. It degrades to static mode without a store, so CI never depends on
+  machine-local data.
+- Trimmed the root `AGENTS.md` ~2 KB by pointing already-expanded mechanics at
+  `.agents/rules/00-operating.md` / `.agents/rulebook.md`, and lowered the
+  `test:prefix` ceiling from 12 KiB to 11 KiB (combined 72,704 -> 71,680 bytes) so
+  the detail cannot quietly return to the always-loaded prefix. (F-060)
+
 ## 0.5.14 — 2026-11-27
 
 - A feature no longer stops at the context ceiling when the fresh context lands

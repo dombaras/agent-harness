@@ -57,16 +57,19 @@ const strict = process.env.AGENT_PREFIX_STRICT !== "0";
  * 0.5.13 (F-057): split the old 28 KiB `.agents/AGENTS.md` rulebook ceiling into
  * a 1 KiB shim (auto-injected on every `.agents/**` read) plus the 28 KiB
  * `.agents/rulebook.md` itself (explicit read only), so the rulebook text cannot
- * silently return to the auto-injected path. */
+ * silently return to the auto-injected path.
+ * 0.5.15 (F-060): trimmed the root dispatcher ~2 KB by pointing already-expanded
+ * mechanics at `.agents/rules/00-operating.md`; the ceiling drops to 11 KiB so
+ * the detail cannot quietly return to the always-loaded path. */
 const SIZE_BUDGET = {
-  "AGENTS.md": 12288,
+  "AGENTS.md": 11264,
   ".agents/AGENTS.md": 1024,
   ".agents/rulebook.md": 28672,
   ".agents/rules/00-operating.md": 30720,
 };
 /* Combined harness-owned ceiling (the sum of the per-file ceilings);
  * `AGENT_PREFIX_MAX_BYTES` overrides. */
-const DEFAULT_TOTAL_BUDGET = 72704; // = 12 + 1 + 28 + 30 KiB
+const DEFAULT_TOTAL_BUDGET = 71680; // = 11 + 1 + 28 + 30 KiB
 const totalBudget = (() => {
   const n = Number(process.env.AGENT_PREFIX_MAX_BYTES);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_TOTAL_BUDGET;

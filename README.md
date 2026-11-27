@@ -76,6 +76,7 @@ npx opencode-agent-harness init --target . --dry-run
 | `scripts/checkpoint.js` | deterministic checkpoint write/replace/read for one session handoff (no timestamps, `unknown` for absent state) | harness (overwrite) |
 | `scripts/ship.js` | deterministic branch lander (`npm run ship`): rebase on `origin/main`, branch gates, direct fast-forward push of `HEAD:main`, then wait for green CI on the landed SHA | harness (overwrite) |
 | `scripts/qa/check-prefix-stability.js` | `test:prefix` gate — fails a volatile value (clock timestamp, machine path, session id) in the always-loaded prompt prefix | harness (overwrite) |
+| `scripts/qa/prefix-audit.js` | `audit:prefix` — observed session-start floor (input + cache read) plus auto-loaded instruction split and derived system/tool share (`prefix-audit/1`) | harness (overwrite) |
 | `.github/workflows/{ci,deploy-uat,uat-health}.yml` | CI gate, CI-triggered artifact deploy, health probe — the self-contained release cycle `ship` drives | **project** (create-if-missing) |
 | `.husky/pre-push` | pre-push battery (harness process gates + project test gates) | **project** (create-if-missing) |
 | `.vercelignore` | keeps worktree symlinks (`node_modules`, `prisma/generated`) out of the remote build | **project** (create-if-missing) |

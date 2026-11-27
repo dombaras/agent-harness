@@ -141,6 +141,16 @@ No volatile value (clock timestamp, machine path, session id) in an always-loade
 prefix file (root dispatcher, rulebook, operating rules, session-start memory).
 **Satisfy:** move per-run values into handoffs/state files.
 
+## `audit:prefix` — session-start prefix audit
+`node scripts/qa/prefix-audit.js [--root <dir>] [--session <id>] [--no-store] [--json] [--budget <tokens>]`
+Reports what a session pays before the first user token: the observed floor from
+the local store (first assistant message `input + cache.read`), the auto-loaded
+instruction files in bytes and estimated tokens (global + project `AGENTS.md` +
+`instructions` entries), and the derived system + tool-schema remainder with its
+share. `--no-store` keeps it usable in CI and fresh clones (static mode, exit 0);
+`--budget` fails only when an observed floor exceeds the budget. This is an audit,
+not a gate — `test:prefix` remains the deterministic byte/volatility gate.
+
 ---
 
 ## Non-test harness commands referenced by the rules

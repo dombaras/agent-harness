@@ -1,11 +1,11 @@
 {
-  "version": "0.5.14",
+  "version": "0.5.15",
   "projectName": "agent-harness",
   "projectDomain": "",
   "initializedAt": "2026-11-20T15:28:27.274Z",
-  "updatedAt": "2026-11-27T05:37:57.893Z",
+  "updatedAt": "2026-11-27T05:54:12.959Z",
   "files": {
-    "package.json": "df8eaa532e4175a99a32862fec29e612384d22eadde8146f48d2027aef9f43a2",
+    "package.json": "902f9c932b9d15d3d4c5a0b46b8f056872f43db53220e9bcaa9d93f7eafd20b4",
     ".gitattributes": "12c4d531af67b819a562126556e8fc3565594a3593f2db9e1640baa9a87a48f7",
     ".ignore": "fbe125871ea72e7ca387e954eefca50eec09a8ec1e9cd98b00e7cb488d486d2f",
     ".agents/AGENTS.md": "0cfc077f3cd8da8178d379343b59f08ffceb0ef01f8fe88ed867445e1e8cb034",
@@ -74,7 +74,7 @@
     ".opencode/skills/bounded-explore/SKILL.md": "0cdf39d9e77e3b6688550af561a433ca983bc02688e5cc1f7d80df1ab7301999",
     ".opencode/skills/dev-loop/SKILL.md": "e7f173990aaf0803f999e21e53c17beb0598bcec1dbdd67aa5edd8993b46e493",
     ".opencode/skills/diagnose/SKILL.md": "500c66475dd52e90c21e04d258ba9ba6f35a5b7f45c62cce2f554884a6ec0d4f",
-    "AGENTS.md": "f2f9350f77bc69a5855e7c74c71f4b4c7a81c46deb52af186f40d90e324732da",
+    "AGENTS.md": "dd65e1c6f734209a8a7e05be0da744e0ce6e4cc26b07475be32fd42725403a8e",
     "docs/gates.md": "c6eaf9287f43787cf0698221e9d7a27fc62f54a0d983abb287dd48e25e65a722",
     "docs/mcp-integrations.md": "6df890abc1289ea600d3ec3830b1551046b279f221fa434c9803f5c09ae4f458",
     "docs/mobile-testing.md": "8f403e10658e77dfff0d4d14c4cbf3e26c7c882a379c166880f99067bb795edb",
@@ -104,7 +104,7 @@
     "scripts/qa/check-integrate.js": "1e7cdb6dac590703c9ed80fd7185a9ed3798af626a750a92eca2f18c671edd5b",
     "scripts/qa/check-linger.js": "079e56eb349f947dfeb71ab0b0755874a4a76c52c113ec32bbcdbe8f19506827",
     "scripts/qa/check-opencode-compat.js": "6ece7c36f35d8786f26f738fad2daa37ee54cc949ca6f9b160148838e92728fd",
-    "scripts/qa/check-prefix-stability.js": "f62a7a6334b2f6e5679afc6443fa5689ccb1c3faea3d0cd16f03a919df61cd1f",
+    "scripts/qa/check-prefix-stability.js": "781aa6c84380608eb5a6442290d766fbe6bb11eb60196c822a983df2d701d710",
     "scripts/qa/check-product.js": "36d375fe0beeaa8711d687e094bc6c84ce4968a441869946328b2a6904183c68",
     "scripts/qa/check-qa-plan.js": "66bbeb93a2d20952a761502bd77b6cedb0d5f7144e5bc9bbd64678ce6b5fd180",
     "scripts/qa/check-qa-scripts.js": "3ed6ddc96568939906c962d277b64f44e6d8a17bfebc1e39ffe316fdba3bb278",
@@ -164,6 +164,7 @@
     "scripts/switch-reasoning-model.sh": "4e3306c6177718af70d7426dcccf7a36a2c4e78d6ba9e56df2952ea3b636bbef",
     "scripts/wait-for.js": "e808f854f313df46f184c8f86aa815c04c7dfd5a5ebd80ee1745c8828c3a937c",
     "scripts/wsl-gpu.sh": "f6dbbb31563aa13826c8416116cdd79462be5db298d64d4fb19dfc842ccc0f31",
-    "scripts/wsl-tune.sh": "77c6a5f0b4f3e5b05479aee8739811eaf3e9e74ca9087efa4754136957f585b5"
+    "scripts/wsl-tune.sh": "77c6a5f0b4f3e5b05479aee8739811eaf3e9e74ca9087efa4754136957f585b5",
+    "scripts/qa/prefix-audit.js": "79bd75efa1adc075be97b9ee9fa23494ea4561abc62815fd9dba54e2b9817de9"
   }
 }
