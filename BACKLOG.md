@@ -50,7 +50,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-068 | parallel-orchestration | Add a resource-aware parallel feature orchestrator: deterministic control plane (queue, admission, leases, single lander) over LLM workers. Workers commit+enqueue in isolated worktrees; one lander rebases/gates/FF-pushes/waits CI/deploys; admission from capacity-lib RAM/swap/PSI + heavy lock; conflict control via owned files/contracts/trial merge; rollout Phase 1 detached landing -> Phase 2 scout -> Phase 3 two builders. | .agents/handoffs/F-068.md (worktree: ../.worktrees/agent-harness/f-068; branch: f-068) |
-| F-072 | ? | chore(release): bump harness to 0.6.2 so the F-071 lease-release fix is a versioned build | .agents/handoffs/F-072.md (worktree: ../.worktrees/agent-harness/f-072; branch: f-072) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -156,6 +155,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | deferred (phase 2 complete/committed at 3b840b1; phases 3-4 remain) |
 | F-070 | ? | fix(context-resume): never duplicate an auto-resume — ignore subagent idles, add a live-sibling worktree lease gate, and pin the harness default model for the fresh session | shipped |
 | F-071 | ? | fix(context-resume): release a session's lease on every OBSERVED execution stop. The guard only clears leases on session.deleted, but V2 ends a run with session.execution.succeeded/failed/interrupted; the finished session's lease keeps the server pid + a fresh heartbeat for up to 4h. That stale 'live' lease makes writeMainContextResume skip the marker ('another live session shares the main checkout') and makes the TUI's per-worktree gate refuse the resume — the F-068 restart failed exactly this way after a session finished 7 minutes earlier. | shipped |
+| F-072 | ? | chore(release): bump harness to 0.6.2 so the F-071 lease-release fix is a versioned build | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

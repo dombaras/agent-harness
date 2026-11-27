@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.2 — 2026-11-27
+
+- Harness version bumped to 0.6.2 so the F-071 lease-release fix deploys as a versioned build (no additional behavior). (F-072)
 
 - Auto-resume no longer strands itself behind a finished session: an observed execution end (`succeeded`/`failed`/`interrupted`) now releases the session lease. V2 never emits `session.deleted` for a normal run, so the old code kept the finished session's lease "live" (the shared server pid plus a fresh heartbeat) for the 4h freshness window, and the next resume was skipped as "another live session shares the checkout". (F-071)
 
