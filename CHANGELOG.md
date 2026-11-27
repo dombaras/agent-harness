@@ -1,8 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The repo-hygiene version-bump guard now counts untracked harness files and compares a branch with `origin/main` (falling back to local `main`, then `HEAD`), so a brand-new `templates/` file or a stale base can no longer slip past it. The test entrypoints run under a scoped `TMPDIR` that is removed after the run, so leaked fixture directories can no longer fill `/tmp` and mask real gate failures with ENOSPC. (F-074)
+
 ## 0.6.3 — 2026-11-27
 
-- Resource-aware parallel feature orchestrator Phase 0+1: dry-run planner, detached landing queue, single-lander lock with heartbeat/TTL, durable journal with remote-truth reconcile, and `finalize --defer-archive`; the feature flag defaults off. (`14dfeae`, F-068)
+- Resource-aware parallel feature orchestrator Phase 0+1: dry-run planner, detached landing queue, single-lander lock with heartbeat/TTL, durable journal with remote-truth reconcile, and `finalize --defer-archive`; the feature flag defaults off. (`14dfeae`, `0d0ba1c`, F-068)
 
 ## 0.6.2 — 2026-11-27
 

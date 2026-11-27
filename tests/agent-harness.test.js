@@ -35,36 +35,133 @@ test("substitute replaces placeholders", () => {
   assert.strictEqual(h.substitute("{{A}}/{{B}}", { A: "x", B: "y" }), "x/y");
 });
 
-test("version is bumped whenever harness-owned files change (repo hygiene)", () => {
-  // This guard only has teeth locally (uncommitted harness changes). In CI it
-  // checks out a clean tree and is a no-op. It exists to catch the recurring
-  // "forgot to bump package.json" mistake — including the case where a version
-  // was already PUBLISHED from an uncommitted tree and more changes landed on
-  // top of it (the registry, not git HEAD, is the real "already released" marker).
-  let changed = [];
-  try {
-    changed = execFileSync("git", ["diff", "HEAD", "--name-only"], { encoding: "utf8" })
-      .split(/\r?\n/)
-      .filter(Boolean);
-  } catch {
-    return; // not a git repo or no HEAD — nothing to guard
-  }
-  const harnessOwned = changed.filter(
-    (f) => f.startsWith("bin/") || f.startsWith("templates/")
-  );
-  if (harnessOwned.length === 0) return;
+const HARNESS_PREFIXES = ["bin/", "templates/"];
 
-  let released = "";
+function isHarnessPath(file) {
+  return HARNESS_PREFIXES.some((prefix) => file.startsWith(prefix));
+}
+
+function splitLines(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function gitOut(cwd, args) {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+}
+
+function versionAt(cwd, ref) {
   try {
-    released = JSON.parse(
-      execFileSync("git", ["show", "HEAD:package.json"], { encoding: "utf8" })
-    ).version;
+    return JSON.parse(gitOut(cwd, ["show", `${ref}:package.json`])).version;
   } catch {
-    return; // can't determine the committed version — skip
+    return null;
   }
+}
+
+// Numeric semver compare (major.minor.patch), matching bin/agent-harness.js.
+function compareVersions(a, b) {
+  const pa = String(a || "0").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || "0").split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1;
+  }
+  return 0;
+}
+
+/* The harness-file change set for `cwd`, measured against origin/main when that
+ * ref exists: a branch cut from a stale local base must be compared with what
+ * actually landed upstream, not with its own last package.json commit. HEAD is
+ * the fallback for clones without a remote. Untracked files count — a brand-new
+ * templates/ script is a harness change before `git add` runs. Returns null when
+ * cwd is not a git checkout with a commit. */
+function harnessChangeSet(cwd) {
+  try {
+    gitOut(cwd, ["rev-parse", "--verify", "HEAD^{commit}"]);
+  } catch {
+    return null;
+  }
+  let baseRef = "HEAD";
+  for (const ref of ["origin/main", "main"]) {
+    try {
+      gitOut(cwd, ["rev-parse", "--verify", `${ref}^{commit}`]);
+      baseRef = ref;
+      break;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  const dirty = splitLines(gitOut(cwd, ["diff", "HEAD", "--name-only"])).filter(isHarnessPath);
+  const untracked = splitLines(
+    gitOut(cwd, ["ls-files", "--others", "--exclude-standard"])
+  ).filter(isHarnessPath);
+  const committed =
+    baseRef === "HEAD"
+      ? []
+      : splitLines(
+          gitOut(cwd, [
+            "log",
+            "--format=%h %s",
+            "--no-merges",
+            `${baseRef}..HEAD`,
+            "--",
+            "bin/",
+            "templates/",
+          ])
+        );
+  return { baseRef, baseVersion: versionAt(cwd, baseRef), dirty, untracked, committed };
+}
+
+function gitFixture() {
+  const root = tmpdir();
+  const git = (args) => gitOut(root, args);
+  git(["init", "-q", "-b", "trunk"]);
+  git(["config", "user.email", "qa@example.invalid"]);
+  git(["config", "user.name", "QA Fixture"]);
+  fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+  fs.mkdirSync(path.join(root, "templates"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "fixture", version: "1.0.0" }, null, 2)
+  );
+  fs.writeFileSync(path.join(root, "bin", "cli.js"), "// fixture\n");
+  fs.writeFileSync(path.join(root, "templates", "AGENTS.md"), "# fixture\n");
+  git(["add", "-A"]);
+  git(["commit", "-qm", "base"]);
+  return { root, git };
+}
+
+function writeFixtureVersion(root, version) {
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "fixture", version }, null, 2)
+  );
+}
+
+test("version is bumped whenever harness-owned files change (repo hygiene)", () => {
+  // This guard has teeth locally: CI checks out a clean tree and only sees the
+  // uncommitted diff, which is empty. It catches the recurring "forgot to bump
+  // package.json" mistake — including a version already PUBLISHED from an
+  // uncommitted tree with more changes landing on top (the registry, not git
+  // HEAD, is the real "already released" marker).
+  const changes = harnessChangeSet(process.cwd());
+  if (!changes) return; // not a git repo or no HEAD — nothing to guard
+  const changed = [
+    ...changes.dirty,
+    ...changes.untracked.map((f) => `${f} (untracked)`),
+    ...changes.committed,
+  ];
+  if (changed.length === 0) return;
 
   // Prefer the last PUBLISHED version (what users actually have). If offline or
-  // unpublished, fall back to git HEAD.
+  // unpublished, fall back to the ref the change set was measured against.
+  let released = changes.baseVersion || "";
   try {
     const p = spawnSync(
       "npm",
@@ -81,62 +178,95 @@ test("version is bumped whenever harness-owned files change (repo hygiene)", () 
       if (v) released = String(v);
     }
   } catch {
-    /* offline — fall back to git HEAD */
+    /* offline — fall back to the base ref */
   }
 
   assert.notStrictEqual(
     h.PKG.version,
     released,
-    `harness files changed (${harnessOwned.join(", ")}) but package.json version is still "${h.PKG.version}" (last released "${released}") — bump it`
+    `harness files changed (${changed.join(", ")}) but package.json version is still "${h.PKG.version}" (last released "${released}") — bump it`
   );
 
-  // Committed-history check: the diff check above only sees UNCOMMITTED work, so
-  // a harness change committed without a version bump passed silently (the
-  // recurring "forgot to bump package.json" miss). Walk history: since the last
-  // commit that changed package.json's version, no commit may touch bin/ or
-  // templates/ — the bump must ship in the same commit as (or after) the change.
-  let history = [];
-  try {
-    history = execFileSync("git", ["log", "--format=%H", "--", "package.json"], { encoding: "utf8" })
-      .split(/\r?\n/)
-      .filter(Boolean);
-  } catch {
-    history = [];
-  }
-  const versionAt = (ref) => {
-    try {
-      return JSON.parse(execFileSync("git", ["show", `${ref}:package.json`], { encoding: "utf8" })).version;
-    } catch {
-      return null;
-    }
-  };
-  let lastBump = null;
-  for (const sha of history) {
-    const v = versionAt(sha);
-    const prior = versionAt(`${sha}^`);
-    if (v && v !== prior) {
-      lastBump = sha;
-      break;
-    }
-  }
-  if (lastBump) {
-    let after = [];
-    try {
-      after = execFileSync("git", ["log", "--format=%H", "--no-merges", `${lastBump}..HEAD`, "--", "bin/", "templates/"], {
-        encoding: "utf8",
-      })
-        .split(/\r?\n/)
-        .filter(Boolean);
-    } catch {
-      after = [];
-    }
-    assert.strictEqual(
-      after.length,
-      0,
-      `${after.length} harness-file commit(s) landed after the last package.json version bump (${lastBump.slice(0, 7)}) — ` +
-        `bump package.json in the same change`
+  // The shipped version must be strictly newer than the base it will land on.
+  // Comparing numbers (not just "different") catches a branch that is behind
+  // origin/main and still carries the older version.
+  if (changes.baseVersion) {
+    assert.ok(
+      compareVersions(h.PKG.version, changes.baseVersion) > 0,
+      `harness files changed (${changed.join(", ")}) but package.json is "${h.PKG.version}", ` +
+        `not newer than ${changes.baseRef}'s "${changes.baseVersion}" — rebase and bump it`
     );
   }
+});
+
+test("version-bump guard counts untracked harness files", () => {
+  const { root } = gitFixture();
+  fs.writeFileSync(path.join(root, "templates", "new-script.js"), "// untracked\n");
+  const changes = harnessChangeSet(root);
+  assert.deepStrictEqual(changes.untracked, ["templates/new-script.js"]);
+  assert.strictEqual(changes.baseRef, "HEAD");
+  assert.ok(
+    compareVersions("1.0.0", changes.baseVersion) <= 0,
+    "an untracked harness file with no bump must fail the guard"
+  );
+});
+
+test("version-bump guard compares a branch with origin/main, not a stale local base", () => {
+  const { root, git } = gitFixture();
+  const base = git(["rev-parse", "HEAD"]).trim();
+
+  // origin/main moves ahead with a version bump the branch does not have.
+  writeFixtureVersion(root, "1.0.1");
+  git(["add", "-A"]);
+  git(["commit", "-qm", "release 1.0.1"]);
+  git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+  // The branch is cut from the stale base and adds a harness file without a bump.
+  git(["checkout", "-q", "-b", "feature", base]);
+  fs.writeFileSync(path.join(root, "templates", "feature.js"), "// feature\n");
+  git(["add", "-A"]);
+  git(["commit", "-qm", "feature harness change"]);
+
+  let changes = harnessChangeSet(root);
+  assert.strictEqual(changes.baseRef, "origin/main");
+  assert.strictEqual(changes.baseVersion, "1.0.1");
+  assert.strictEqual(changes.committed.length, 1);
+  assert.ok(
+    compareVersions("1.0.0", changes.baseVersion) < 0,
+    "a version behind origin/main must fail even though it matches stale local HEAD"
+  );
+
+  // Bumping past origin/main satisfies the guard.
+  writeFixtureVersion(root, "1.0.2");
+  git(["add", "-A"]);
+  git(["commit", "-qm", "bump 1.0.2"]);
+  changes = harnessChangeSet(root);
+  assert.ok(compareVersions("1.0.2", changes.baseVersion) > 0);
+});
+
+test("test runner scopes TMPDIR and removes it after the run", () => {
+  const root = tmpdir();
+  const fixture = path.join(root, "tmpdir.test.js");
+  const marker = path.join(root, "tmpdir.txt");
+  fs.writeFileSync(
+    fixture,
+    `"use strict";\n` +
+      `const test = require("node:test");\n` +
+      `const fs = require("fs");\n` +
+      `test("records its TMPDIR", () => {\n` +
+      `  fs.writeFileSync(process.env.AGENT_TESTS_TMPDIR_MARKER, process.env.TMPDIR);\n` +
+      `});\n`
+  );
+  const env = { ...process.env, AGENT_TESTS_TMPDIR_MARKER: marker };
+  delete env.NODE_TEST_CONTEXT;
+  const res = spawnSync(process.execPath, [path.join(__dirname, "run.js"), fixture], {
+    encoding: "utf8",
+    env,
+  });
+  assert.strictEqual(res.status, 0, res.stderr || res.stdout);
+  const scoped = fs.readFileSync(marker, "utf8").trim();
+  assert.notStrictEqual(scoped, os.tmpdir(), "the fixture ran under a scoped TMPDIR");
+  assert.strictEqual(fs.existsSync(scoped), false, "the scoped TMPDIR is removed after the run");
 });
 
 test("listFiles enumerates the full template tree", () => {
