@@ -179,7 +179,7 @@ makes board gates runnable now that the harness tree itself is gitignored in CI
 | Fold in | `templates/scripts/qa/check-backlog.js` validation → service; `test:backlog` becomes a service integrity query |
 | Rewrite | `templates/scripts/qa/check-concurrency.js` (service reads; drop the dirty-board branch) |
 | Delete | repo `BACKLOG.md`, `scripts/qa/board-sync.js`, `merge-backlog.js`, `withLock`, `--defer`/`sync`, merge-driver registration in `bin/agent-harness.js`, per-worktree board copies, `.gitattributes` `BACKLOG.md merge=` lines |
-| Update docs/templates | `templates/AGENTS.md`, `.agents/skills/**`, `.agents/rules/**`, `.agents/AGENTS.md`, `templates/docs/gates.md` |
+| Update docs/templates | `templates/AGENTS.md`, `.agents/skills/**`, `.agents/rules/**`, `.agents/AGENTS.md`, `.agents/rulebook.md`, `templates/docs/gates.md` |
 | New | `services/board/`, `migrate-board`, drift-guard tests |
 
 `worktree`/`archive` keep their local git/FS side effects; only the board

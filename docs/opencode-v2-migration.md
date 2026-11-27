@@ -307,7 +307,8 @@ Old files **deleted:** `templates/.opencode/tools/{backlog,checkpoint,gates,orie
 Because V2 ignores `instructions`, the deployed `AGENTS.md` is now the always-loaded
 project instructions. `templates/AGENTS.md` line 3 was reworded to say so and to point
 at the expanded rules (`.agents/rules/00-operating.md`) and the rulebook
-(`.agents/AGENTS.md`) — both of which V2 **auto-discovers** as it works under `.agents/`.
+(`.agents/rulebook.md`); the nested `.agents/AGENTS.md` is now only a tiny
+auto-injected shim pointing to that rulebook.
 The prefix size gate budget is unchanged (the file stays ≤ 10240 bytes).
 
 Also corrected V2 tool-name references in the rulebook/rules summary: `` `task` tool ``
@@ -364,7 +365,7 @@ guidance changed from the V1 `"tools": { "<server>*": false }` disable to a
 | Board/notify toasts gone | no TUI in a V2 server plugin | board mutations + E2E progress still go to the **log**; `job-notify` still wakes the session via `ctx.session.prompt` |
 | `doom_loop` mirror gone | V2 removed the permission action | the plugin's own loop detector still nudges; the built-in guard no longer adds a notice |
 | `temperature: 0.1` no-op removed | V2 preserves `request.body` but does not send it, so the value was dead config | the intent moved to a **model variant**: the mechanical/content personas pin `#low`, the engineering/debug and architect tiers pin `#high` (final routing, §20) |
-| `AGENTS.md` is now the always-loaded file | V2 ignores `instructions` | rules still loaded; `.agents/rules/00-operating.md` & `.agents/AGENTS.md` are auto-discovered as the agent works under `.agents/` |
+| `AGENTS.md` is now the always-loaded file | V2 ignores `instructions` | rules still loaded; the tiny `.agents/AGENTS.md` shim is auto-injected under `.agents/`, while `.agents/rules/00-operating.md` and `.agents/rulebook.md` are explicit reads |
 | `.agents/skills/*` now skills | V2 discovers `.agents/skills` | persona skills are also advertised via the `skill` tool (was read-only files) |
 | Legacy V1 files removed on update | avoid stale `command/` shadowing | project keeps only `.opencode/{agents,commands,plugins,skills}` |
 
@@ -654,8 +655,9 @@ infrastructure are called out as remaining.
   **does** expose `ctx.permission.hook("evaluate")` — only the built-in
   `doom_loop` action was removed. The source-contract test asserts both.
 - **G8 — `check-prefix-stability.js` premise.** The gate now explains that under
-  V2 only the root `AGENTS.md` is auto-loaded (`.agents/AGENTS.md` is discovered
-  lazily, `.agents/rules/00-operating.md` is linked, never auto-loaded), so its
+  V2 only the root `AGENTS.md` is auto-loaded; the nested `.agents/AGENTS.md` is
+  a tiny shim discovered lazily, while `.agents/rulebook.md` is explicit, and
+  `.agents/rules/00-operating.md` is linked, never auto-loaded, so its
   file set is a **budget proxy** for the deliberate context, not the literal live
   prefix. Behaviour is unchanged.
 - **G10 — no `opencode` version check.** `doctor` now reports the runtime and

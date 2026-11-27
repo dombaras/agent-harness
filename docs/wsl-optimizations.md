@@ -266,9 +266,10 @@ it to the vendor's WSL driver and `wsl --shutdown`.
 
 ## 5. Always-loaded prefix: size budget, orient digest, opt-in LSP
 
-The always-loaded leading context (root `AGENTS.md` + `.agents/AGENTS.md` +
-`.agents/rules/00-operating.md` + the session-start memory files) is the prompt
-prefix every turn is billed against. Three mechanisms keep it honest:
+The always-loaded leading context (root `AGENTS.md` + the tiny `.agents/AGENTS.md`
+shim + `.agents/rules/00-operating.md` + the session-start memory files) is the
+prompt prefix every turn is billed against; the full `.agents/rulebook.md` is an
+explicit read, not part of that injected prefix. Three mechanisms keep it honest:
 
 - **Size budget** — `test:prefix` (`scripts/qa/check-prefix-stability.js`) fails
   when a harness-owned prefix file, or their combined size, exceeds the budget

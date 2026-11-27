@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.13 — 2026-11-27
+
+- Moved the canonical rulebook to `.agents/rulebook.md` and reduced the
+  auto-injected `.agents/AGENTS.md` shim, avoiding the ~28 KB (~7.4K-token)
+  rulebook on every `.agents/` handoff, plan, or review read. The prefix gate
+  now budgets the shim at 1 KiB and the rulebook at 28 KiB (72,704 bytes
+  combined), with drift-guard coverage. (`967e5ce`, `35fab7b`)
+
 ## 0.5.12 — 2026-11-27
 
 - Resuming a large handoff no longer dumps the whole file into a fresh context.

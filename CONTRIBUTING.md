@@ -5,7 +5,7 @@ is deployed into other projects, so two rules matter more than anything else:
 
 1. **Fix harness-owned files in `templates/`, never in a deployed project.**
    `scripts/qa/**`, `scripts/*.js`, `.opencode/**`, `.agents/{skills,rules}`,
-   `.agents/AGENTS.md`, `AGENTS.md`, and the opencode config are overwritten by
+   `.agents/AGENTS.md`, `.agents/rulebook.md`, `AGENTS.md`, and the opencode config are overwritten by
    `update`. A project-side edit will be lost (and `update` fails closed on it).
 2. **Bump `package.json` in the same commit as any change under `bin/` or
    `templates/`.** A test enforces this.

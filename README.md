@@ -58,7 +58,8 @@ npx opencode-agent-harness init --target . --dry-run
 | `AGENTS.md` | always-loaded project instructions (OpenCode V2 reads `AGENTS.md`; the V1 `instructions` key is ignored) | harness (overwrite) |
 | `BACKLOG.md` | canonical task list (Open / In progress / Frozen / Archive / Not tracking) | **project** (create-if-missing) |
 | `.opencode/agents/*.md` | 15 persona subagent defs (native V2 frontmatter: `model: provider/model#variant`, `permissions`, `steps`, `hidden`) | harness (overwrite) |
-| `.agents/AGENTS.md` | full canonical operating rulebook (V2 auto-discovers it as you work under `.agents/`) | harness (overwrite) |
+| `.agents/AGENTS.md` | tiny auto-injected shim pointing to the canonical rulebook | harness (overwrite) |
+| `.agents/rulebook.md` | full canonical operating rulebook (read explicitly when needed) | harness (overwrite) |
 | `.agents/rules/00-operating.md` | expanded operating rules (referenced from `AGENTS.md`; V2 ignores the `instructions` config key) | harness (overwrite) |
 | `.agents/skills/*/SKILL.md` | persona instruction skills (V2 also discovers `.agents/skills/` as skills) | harness (overwrite) |
 | `.agents/features/INDEX.md` | pointer to `BACKLOG.md` (per-feature doc tree root) | **project** (create-if-missing) |
@@ -482,7 +483,8 @@ so agents see complete descriptions.
   (T1/T6/T9) — the measured bug where 22 tests finished in 76 ms but the process
   exited 60.4 s later. Tune with `--max-linger <sec>` / `--ratio <x>`.
 - `npm run test:prefix` — **cache-prefix stability gate**: the always-loaded
-  prefix (root `AGENTS.md`, the rulebook, `00-operating.md`, and the session-start
+   prefix (root `AGENTS.md`, the nested `.agents/AGENTS.md` shim, `00-operating.md`,
+   and the session-start
   memory reads) must carry no per-run content — clock timestamps, machine-specific
   absolute paths, or session ids — because one changing byte breaks prompt-cache
   locality for every later turn. Bare historical dates are fine; `BACKLOG.md`,
