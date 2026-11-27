@@ -20,3 +20,4 @@ not own the same file). Format: `- <ID>: <glob>[, <glob>...]`.
 - F-074: tests/agent-harness.test.js, tests/run.js, package.json
 - F-075: templates/docs/gates.md, package.json, CHANGELOG.md
 - F-077: templates/scripts/heal.js, templates/scripts/qa/heal-lib.js, templates/scripts/qa/heal-store.js, templates/scripts/qa/kpi-lib.js, templates/.agents/heal.json, tests/heal.test.js, docs/self-healing.md, .agents/qa-plans/F-077.md
+- F-078: templates/scripts/heal.js, templates/scripts/qa/heal-lib.js, templates/scripts/qa/heal-store.js, templates/scripts/qa/kpi-lib.js, templates/.agents/heal.json, templates/.agents/playbooks/**, tests/heal*.test.js, docs/self-healing.md, CHANGELOG.md, package.json, .harness.json
