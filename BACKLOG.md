@@ -49,7 +49,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-074 | ? | Harden the harness version-bump guard (count untracked files, base the check on origin/main) and stop the test-suite temp-dir leak with a scoped TMPDIR runner | .agents/handoffs/F-074.md |
+| F-074 | ? | Harden the harness version-bump guard (count untracked files, base the check on origin/main) and stop the test-suite temp-dir leak with a scoped TMPDIR runner | .agents/handoffs/F-074.md (worktree: ../.worktrees/agent-harness/f-074; branch: f-074) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
