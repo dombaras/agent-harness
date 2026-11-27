@@ -19,3 +19,4 @@ not own the same file). Format: `- <ID>: <glob>[, <glob>...]`.
 - F-067: scripts/qa/run-loop-core.mjs, scripts/qa/run-loop.js, scripts/qa/context-guard-core.js, .opencode/plugins/context-guard.ts, .opencode/plugins/context-resume/**, templates/scripts/qa/run-loop-core.mjs, templates/scripts/qa/run-loop.js, templates/scripts/qa/context-guard-core.js, templates/.opencode/plugins/context-guard.ts, templates/.opencode/plugins/context-resume/**, tests/context-resume.test.js, tests/agent-harness.test.js, .agents/qa-plans/F-067.md, CHANGELOG.md
 - F-074: tests/agent-harness.test.js, tests/run.js, package.json
 - F-075: templates/docs/gates.md, package.json, CHANGELOG.md
+- F-077: templates/scripts/heal.js, templates/scripts/qa/heal-lib.js, templates/scripts/qa/heal-store.js, templates/scripts/qa/kpi-lib.js, templates/.agents/heal.json, tests/heal.test.js, docs/self-healing.md, .agents/qa-plans/F-077.md
