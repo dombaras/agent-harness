@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.16 — 2026-11-27
+
+- Added the `outline` tool for bounded, fence-aware Markdown heading outlines with section line ranges and byte size, plus a pre-read guard for oversized `.agents/**` state documents. The guard can be tuned with `AGENT_GUARD_STATEDOC=0` or `AGENT_STATE_READ_BYTES`. (F-059)
+
 ## 0.5.15 — 2026-11-27
 
 - Added `npm run audit:prefix` (`scripts/qa/prefix-audit.js`): it reads the first

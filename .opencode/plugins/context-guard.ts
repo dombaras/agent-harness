@@ -965,6 +965,40 @@ export default {
           throw new Error(message)
         }
       }
+      // Oversized state-doc read guard (F-059). An UNRANGED read of a large
+      // `.agents/**` markdown doc bills the whole file into context — the
+      // measured case was a 52 KB findings register read whole when the first
+      // edit landed much later. Abort with a heading outline and the exact
+      // ranged call to make instead. Applies to child sessions too (a subagent's
+      // context is billed identically), so it lives OUTSIDE the isPrimary block.
+      //
+      // The core stays pure: `stat` + the file text are read here, and the
+      // decision is made by `stateDocReadDecision` (AGENT_GUARD_STATEDOC=0
+      // disables; AGENT_STATE_READ_BYTES overrides the threshold). MUST throw to
+      // abort the call, so it sits outside the swallow-everything loop-guard.
+      if (String(input?.tool || "").toLowerCase() === "read") {
+        let stateDocBlock: string | null = null
+        try {
+          const args = output?.args || {}
+          const root = rootOf(String(input?.sessionID || ""))
+          const rel = guard.stateDocPath(String(args.filePath || ""), root)
+          if (rel) {
+            const abs = path.resolve(root, rel)
+            const bytes = fs.statSync(abs).size
+            const decision = guard.stateDocReadDecision({ filePath: rel, root, args, bytes })
+            if (decision.block) {
+              stateDocBlock = guard.stateDocReadText(decision, fs.readFileSync(abs, "utf8"))
+            }
+          }
+        } catch {
+          /* a missing/unreadable file is the read tool's error, not ours */
+        }
+        if (stateDocBlock) {
+          logEvent({ kind: "tool-block", sessionID: input?.sessionID, tool: "read", stateDoc: true })
+          await report(stateDocBlock)
+          throw new Error(stateDocBlock)
+        }
+      }
       // Bash reroot (ALL sessions, best-effort, never blocks). A leading
       // `cd X && rest` becomes workdir=X, command=rest, so the tree is carried by
       // the tool's cwd parameter instead of a shell `cd` — the WSL `cd`-chaining

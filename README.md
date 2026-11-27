@@ -64,7 +64,7 @@ npx opencode-agent-harness init --target . --dry-run
 | `.agents/skills/*/SKILL.md` | persona instruction skills (V2 also discovers `.agents/skills/` as skills) | harness (overwrite) |
 | `.agents/features/INDEX.md` | pointer to `BACKLOG.md` (per-feature doc tree root) | **project** (create-if-missing) |
 | `opencode.json` | main model + `agents` defaults (small-model on `title`, opportunistic `explore`) + the `permissions` baseline | harness (**merged**, see below) |
-| `scripts/qa/*` | dispatch preflight/tier/log tooling plus `test:dispatch` / `test:governance` / `test:qa-plan` / `test:prefix` gates + QA-script wiring check | harness (overwrite) |
+| `scripts/qa/*` | dispatch preflight/tier/log tooling, the `outline` CLI, and `test:dispatch` / `test:governance` / `test:qa-plan` / `test:prefix` gates + QA-script wiring check | harness (overwrite) |
 | `scripts/backlog.js` | deterministic `BACKLOG.md` editor (list/add/take/archive/freeze) | harness (overwrite) |
 | `.opencode/plugins/backlog.ts` | `backlog_*` custom tools the LLM calls (V2 plugin registering the tools; shells out to the CLI) | harness (overwrite) |
 | `.opencode/plugins/backlog-notify.ts` | structured log whenever an agent mutates the board | harness (overwrite) |

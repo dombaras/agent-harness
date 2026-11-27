@@ -1,15 +1,21 @@
 "use strict";
 
-/* Context-guard core — pure, dependency-free state machine backing the
+/* Context-guard core — pure, IO-free state machine backing the
  * `.opencode/plugins/context-guard.ts` plugin. Kept separate from the plugin so
  * every rule is unit-testable with `node:test` (threshold parsing, band
- * transitions, loop counting, byte-stable injected text, guard-event JSONL).
+ * transitions, loop counting, byte-stable injected text, guard-event JSONL,
+ * oversized state-doc read decisions).
  *
- * The plugin owns all IO (files, opencode client); this module owns no globals
- * and mutates only the state object it is handed. Thresholds are never
+ * The plugin owns all IO (files, `stat`, opencode client); this module owns no
+ * globals and mutates only the state object it is handed. Thresholds are never
  * hardcoded here as runtime truth: `parseThresholds` reads the project-owned
  * `.agents/memory/orchestration.md` and falls back to the documented defaults.
+ *
+ * `outline-lib.js` is the sibling pure module for heading outlines; the guard
+ * re-exports its state-doc decision so the plugin has one import.
  */
+
+const outlineLib = require("./outline-lib.js");
 
 const DEFAULT_TURNS = Object.freeze({
   checkpoint_warning_turn: 50,
@@ -1491,6 +1497,11 @@ function toolBlockEnabled(env) {
 
 const READ_LARGE_BYTES = 20000;
 
+/* Pre-read guard for large `.agents/**` state docs (F-059): the post-hoc
+ * "whole file" nudge above is too late — the tokens are already billed. This
+ * constant is the threshold the plugin aborts an UNRANGED read at. */
+const STATE_DOC_READ_BYTES = outlineLib.DEFAULT_STATE_DOC_BYTES;
+
 /* First read of a path is silent; a second read of the SAME path in one session
  * arms the one-shot re-read nudge. `state.readSeen` is the session's read set. */
 function noteReadBefore(state, filePath) {
@@ -1869,6 +1880,10 @@ module.exports = {
   DEFAULT_INSPECT_REARM_EVERY,
   DEFAULT_GATE_RERUN_TURNS,
   READ_LARGE_BYTES,
+  STATE_DOC_READ_BYTES,
+  stateDocPath: outlineLib.isStateDocPath,
+  stateDocReadDecision: outlineLib.stateDocReadDecision,
+  stateDocReadText: outlineLib.stateDocReadText,
   SHELL_INSPECT_TOOLS,
   commandHead,
   inspectCommand,
