@@ -316,12 +316,14 @@ test("a restart-needed verdict written by a previous process is replaced on sess
   assert.strictEqual(doc.have, "9.9.9", "the current on-disk version is recorded");
 });
 
-test("only the newest live process owns a tree's verdict (multi-server trees)", () => {
+test("a live service's restart verdict survives the sweep and activity; dead or legacy verdicts are cleared (F-065)", () => {
   // One checkout is served by several opencode processes (shared service + ACP
-  // stdio servers). An older process that loaded the previous build kept
-  // rewriting `restart-needed` after a newer TUI was already current, so the
-  // badge said ↻restart forever (F-038). Newest live writer wins; an older one
-  // cannot clobber it.
+  // stdio servers). A TUI that restarted into the deployed build used to clear
+  // the old service's `restart-needed` verdict, so the footer stopped saying
+  // ↻restart while the service still ran the previous build (F-065). The verdict
+  // belongs to the live writer: only its death, a later deploy, or a legacy
+  // verdict without provenance resolves it. Both the startup sweep and session
+  // activity write through the same guard.
   const home = tmpdir();
   fs.writeFileSync(
     path.join(home, "package.json"),
@@ -330,81 +332,92 @@ test("only the newest live process owns a tree's verdict (multi-server trees)", 
   const tree = tmpdir();
   fs.mkdirSync(path.join(tree, ".serve"), { recursive: true });
   assert.strictEqual(spawnSync("git", ["-C", tree, "init", "-q", "-b", "main"]).status, 0);
-  fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.9.9" }));
+  const cfg = path.join(tree, ".harness.json");
+  fs.writeFileSync(cfg, JSON.stringify({ version: "9.9.9" }));
+  const wrote = fs.statSync(cfg).mtimeMs;
   const verdictPath = path.join(tree, ".serve", "harness-freshness.json");
 
-  const driver = path.join(tmpdir(), "freshness-owner.mjs");
+  const driver = path.join(tmpdir(), "freshness-ownership.mjs");
   fs.writeFileSync(
     driver,
     [
       'import { pathToFileURL } from "node:url";',
       'import fs from "node:fs";',
-      "const [pluginPath, tree] = process.argv.slice(2);",
+      "const [pluginPath, tree, mode] = process.argv.slice(2);",
       'const { default: plugin } = await import(pathToFileURL(pluginPath).href);',
       "async function* stream(signal) {",
-      '  yield { type: "message.updated", data: { sessionID: "ses_owner" }, location: { directory: tree } };',
+      '  if (mode === "activity") {',
+      '    yield { type: "message.updated", data: { sessionID: "ses_owner" }, location: { directory: tree } };',
+      "  }",
       "  await new Promise((resolve) => {",
       "    if (signal.aborted) return resolve();",
       '    signal.addEventListener("abort", resolve, { once: true });',
       "  });",
       "}",
-      "const ctx = {",
+      "const stop = await plugin.setup({",
       "  location: { directory: tree },",
       "  event: { subscribe: ({ signal }) => stream(signal) },",
       "  session: { hook: () => {} },",
-      "};",
-      "const stop = await plugin.setup(ctx);",
+      "});",
       "await new Promise((r) => setTimeout(r, 600));",
       "stop();",
       'console.log(JSON.stringify(JSON.parse(fs.readFileSync(`${tree}/.serve/harness-freshness.json`, "utf8"))));',
     ].join("\n")
   );
 
-  const env = {
-    ...process.env,
-    AGENT_HARNESS_HOME: home,
-    AGENT_HARNESS_NO_UPDATE_CHECK: "1",
-    AGENT_HARNESS_FRESHNESS: "",
-    // Keep the startup sweep away from the developer's real project registry.
-    XDG_STATE_HOME: tmpdir(),
-  };
-  const run = () =>
-    spawnSync(
+  const run = (mode, state) => {
+    const r = spawnSync(
       process.execPath,
-      ["--experimental-strip-types", driver, path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"), tree],
-      { encoding: "utf8", env, timeout: 30000 }
+      [
+        "--experimental-strip-types",
+        driver,
+        path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+        tree,
+        mode,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 30000,
+        env: {
+          ...process.env,
+          AGENT_HARNESS_HOME: home,
+          AGENT_HARNESS_NO_UPDATE_CHECK: "1",
+          AGENT_HARNESS_FRESHNESS: "",
+          XDG_STATE_HOME: state,
+        },
+      }
     );
-  const last = (r) => JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop());
+    assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+    return JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop());
+  };
+  const verdict = (extra) =>
+    fs.writeFileSync(
+      verdictPath,
+      JSON.stringify({ status: "restart-needed", have: "9.9.9", latest: "9.9.9", wrote, ...extra })
+    );
 
-  // A NEWER live process already wrote the verdict: this older one leaves it.
+  // The sweep (no session event; the isolated registry lists the tree).
+  const state = tmpdir();
+  fs.mkdirSync(path.join(state, "opencode-agent-harness"), { recursive: true });
   fs.writeFileSync(
-    verdictPath,
-    JSON.stringify({
-      status: "restart-needed",
-      have: "9.9.9",
-      latest: "9.9.9",
-      pid: process.pid,
-      startedAt: Date.now() + 60_000,
-    })
+    path.join(state, "opencode-agent-harness", "projects.json"),
+    JSON.stringify({ schema: "harness-projects/1", trees: [tree] })
   );
-  let r = run();
-  assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
-  assert.strictEqual(last(r).status, "restart-needed", "a newer live writer owns the verdict");
+  verdict({ pid: process.pid, startedAt: Date.now() - 60_000 });
+  assert.strictEqual(run("sweep", state).status, "restart-needed", "the sweep preserves a live service's verdict");
 
-  // The writer is now OLDER than this process: its stale verdict is replaced.
-  fs.writeFileSync(
-    verdictPath,
-    JSON.stringify({
-      status: "restart-needed",
-      have: "9.9.9",
-      latest: "9.9.9",
-      pid: process.pid,
-      startedAt: Date.now() - 60_000,
-    })
-  );
-  r = run();
-  assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
-  assert.strictEqual(last(r).status, "current", "the newer process clears an older writer's verdict");
+  // Session activity from a newer client.
+  verdict({ pid: process.pid, startedAt: Date.now() - 60_000 });
+  assert.strictEqual(run("activity", tmpdir()).status, "restart-needed", "activity preserves a live service's verdict");
+
+  // The writer is gone: the restart it asked for already happened.
+  const dead = spawnSync(process.execPath, ["-e", "0"]).pid;
+  verdict({ pid: dead, startedAt: Date.now() - 60_000 });
+  assert.strictEqual(run("activity", tmpdir()).status, "current", "a dead writer's verdict is cleared");
+
+  // Pre-F-038 verdicts have no provenance; they remain replaceable.
+  verdict({});
+  assert.strictEqual(run("activity", tmpdir()).status, "current", "a legacy verdict is cleared");
 });
 
 test("[drift-guard] every freshness verdict names the process that wrote it (F-038)", () => {
@@ -566,7 +579,7 @@ test("a metadata-only harness write needs no restart; a plugin write does, as ad
       "  await new Promise((r) => setTimeout(r, 25));",
       "}",
       'const messages = [{ role: "user", content: [{ type: "text", text: "resume f-331" }] }];',
-      'if (contextHook) contextHook({ sessionID: "ses_restart", messages });',
+      'if (contextHook) await contextHook({ sessionID: "ses_restart", messages });',
       "stop();",
       "const text = messages.length > 1 ? messages[messages.length - 1].content[0].text : \"\";",
       "console.log(JSON.stringify({ doc, text }));",
@@ -874,4 +887,298 @@ test("refresh re-reads the deploy before writing the cache (F-045)", () => {
   }
   const doc = JSON.parse(fs.readFileSync(path.join(dir, ".serve", "harness-update.json"), "utf8"));
   assert.strictEqual(doc.deployed, "0.4.6", "the cache cannot name a build `.harness.json` already moved past");
+});
+
+/* F-065: a reused registry sample was cached for 24h and published as `npm`
+ * even when the local checkout had moved past it, so a machine without a
+ * checkout could show a stale arrow (or none). The probe now ages out with the
+ * session recheck window and marks reused samples so a stale one is never
+ * published as fresh. */
+test("the npm probe cache expires with the recheck window and a stale reused sample is not published (F-065)", () => {
+  const driver = path.join(tmpdir(), "freshness-npm-probe.mjs");
+  fs.writeFileSync(
+    driver,
+    [
+      'import { pathToFileURL } from "node:url";',
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      "const [pluginPath, tree] = process.argv.slice(2);",
+      'const { default: plugin } = await import(pathToFileURL(pluginPath).href);',
+      "async function* stream(signal) {",
+      '  yield { type: "message.updated", data: { sessionID: "ses_npm" }, location: { directory: tree } };',
+      "  await new Promise((resolve) => {",
+      "    if (signal.aborted) return resolve();",
+      '    signal.addEventListener("abort", resolve, { once: true });',
+      "  });",
+      "}",
+      "const stop = await plugin.setup({",
+      "  location: { directory: tree },",
+      "  event: { subscribe: ({ signal }) => stream(signal) },",
+      "  session: { hook: () => {} },",
+      "});",
+      'const probePath = path.join(tree, ".serve", "harness-update.json");',
+      "const deadline = Date.now() + 8000;",
+      "let probe = null;",
+      "while (Date.now() < deadline) {",
+      "  try { probe = JSON.parse(fs.readFileSync(probePath, 'utf8')); } catch { probe = null; }",
+      "  if (probe) break;",
+      "  await new Promise((r) => setTimeout(r, 25));",
+      "}",
+      "stop();",
+      "console.log(JSON.stringify({ probe }));",
+      "process.exit(probe ? 0 : 1);",
+    ].join("\n")
+  );
+  const plugin = path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts");
+  const cacheFile = (cache) => path.join(cache, "opencode-agent-harness", "npm-latest.json");
+  const writeNpmCache = (cache, version, ageMs) => {
+    fs.mkdirSync(path.dirname(cacheFile(cache)), { recursive: true });
+    fs.writeFileSync(
+      cacheFile(cache),
+      JSON.stringify({ checkedAt: new Date(Date.now() - ageMs).toISOString(), version }) + "\n"
+    );
+  };
+  const npmStub = (version, marker) => {
+    const cli = path.join(tmpdir(), "npm-stub");
+    fs.writeFileSync(
+      cli,
+      `#!/usr/bin/env node\n` +
+        `require("fs").writeFileSync(${JSON.stringify(marker)}, "ran");` +
+        `process.stdout.write(${JSON.stringify(JSON.stringify(version))} + "\\n");`
+    );
+    fs.chmodSync(cli, 0o755);
+    return cli;
+  };
+  const gitTree = (version) => {
+    const dir = project(version);
+    assert.strictEqual(spawnSync("git", ["-C", dir, "init", "-q", "-b", "main"]).status, 0, "fixture is a git tree");
+    return dir;
+  };
+  const run = ({ home, tree, cache, npm, recheck = "900000" }) => {
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", driver, plugin, tree], {
+      encoding: "utf8",
+      timeout: 30000,
+      env: {
+        ...process.env,
+        AGENT_HARNESS_HOME: home,
+        AGENT_HARNESS_NO_UPDATE_CHECK: "",
+        AGENT_HARNESS_FRESHNESS: "dry",
+        AGENT_HARNESS_RECHECK_MS: recheck,
+        AGENT_HARNESS_NPM: npm,
+        XDG_CACHE_HOME: cache,
+        XDG_STATE_HOME: tmpdir(),
+      },
+    });
+    assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+    return JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop()).probe;
+  };
+  const noCheckout = tmpdir(); // no package.json: the registry is authoritative
+
+  // A 20-minute-old cache is past the 15-minute window: re-probe, and record
+  // the fresh sample for the next session start.
+  const staleCache = tmpdir();
+  writeNpmCache(staleCache, "9.8.0", 20 * 60 * 1000);
+  const staleMarker = path.join(tmpdir(), "npm-ran");
+  const expired = run({
+    home: noCheckout,
+    tree: gitTree("9.9.0"),
+    cache: staleCache,
+    npm: npmStub("9.9.10", staleMarker),
+  });
+  assert.ok(fs.existsSync(staleMarker), "a cache older than the 15-minute window pays one registry probe");
+  assert.strictEqual(expired.npm, "9.9.10", "the fresh registry sample is published");
+  assert.strictEqual(expired.latest, "9.9.10");
+  assert.strictEqual(
+    JSON.parse(fs.readFileSync(cacheFile(staleCache), "utf8")).version,
+    "9.9.10",
+    "the fresh sample replaces the day-old cache"
+  );
+
+  // Within the window the cached sample is reused without a network call.
+  const freshCache = tmpdir();
+  writeNpmCache(freshCache, "9.9.10", 1000);
+  const freshMarker = path.join(tmpdir(), "npm-ran");
+  const reused = run({
+    home: noCheckout,
+    tree: gitTree("9.9.0"),
+    cache: freshCache,
+    npm: npmStub("9.9.11", freshMarker),
+  });
+  assert.ok(!fs.existsSync(freshMarker), "a fresh cache skips the registry");
+  assert.strictEqual(reused.latest, "9.9.10", "the cached verdict is used");
+
+  // A reused sample older than the local checkout is never published as `npm`.
+  const checkout = tmpdir();
+  fs.writeFileSync(
+    path.join(checkout, "package.json"),
+    JSON.stringify({ name: "opencode-agent-harness", version: "9.9.9" })
+  );
+  const oldCache = tmpdir();
+  writeNpmCache(oldCache, "9.8.0", 1000);
+  const oldMarker = path.join(tmpdir(), "npm-ran");
+  const oldProbe = run({
+    home: checkout,
+    tree: gitTree("9.9.9"),
+    cache: oldCache,
+    npm: npmStub("9.8.0", oldMarker),
+  });
+  assert.strictEqual(oldProbe.latest, "9.9.9", "the checkout leads the stale registry sample");
+  assert.strictEqual(oldProbe.npm, null, "a reused sample older than the checkout is not published as fresh");
+  assert.strictEqual(oldProbe.checkout, "9.9.9");
+
+  // A reused sample that leads the checkout is still authoritative.
+  const aheadCache = tmpdir();
+  writeNpmCache(aheadCache, "9.9.10", 1000);
+  const aheadProbe = run({
+    home: checkout,
+    tree: gitTree("9.0.0"),
+    cache: aheadCache,
+    npm: npmStub("9.9.10", path.join(tmpdir(), "unused")),
+  });
+  assert.strictEqual(aheadProbe.latest, "9.9.10", "a newer cached registry verdict still advertises the update");
+  assert.strictEqual(aheadProbe.npm, "9.9.10");
+});
+
+/* F-065: the F-038 fix deleted the notice after the model saw it, so an apply
+ * that completed after the request was assembled (or a turn that aborted) lost
+ * the restart instruction. The notice is now persisted per tree and re-injected
+ * until the tree is current. */
+test("a persisted notice survives an aborted turn and is cleared once the tree is current (F-065)", () => {
+  const home = tmpdir();
+  fs.writeFileSync(
+    path.join(home, "package.json"),
+    JSON.stringify({ name: "opencode-agent-harness", version: "9.9.9" })
+  );
+  const tree = tmpdir();
+  fs.mkdirSync(path.join(tree, ".serve"), { recursive: true });
+  assert.strictEqual(spawnSync("git", ["-C", tree, "init", "-q", "-b", "main"]).status, 0);
+  fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.0.0" }));
+
+  const TEXT =
+    "HARNESS UPDATED — v9.9.9 in " + tree + ".\n\nRestart it with: opencode service restart";
+  const driver = path.join(tmpdir(), "freshness-notice-driver.mjs");
+  fs.writeFileSync(
+    driver,
+    [
+      'import { pathToFileURL } from "node:url";',
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      "const [pluginPath, tree, text] = process.argv.slice(2);",
+      'const { default: plugin } = await import(pathToFileURL(pluginPath).href);',
+      "async function* stream(signal) {",
+      '  yield { type: "message.updated", data: { sessionID: "ses_notice" }, location: { directory: tree } };',
+      "  await new Promise((resolve) => {",
+      "    if (signal.aborted) return resolve();",
+      '    signal.addEventListener("abort", resolve, { once: true });',
+      "  });",
+      "}",
+      "let contextHook = null;",
+      "const ctx = {",
+      "  location: { directory: tree },",
+      "  event: { subscribe: ({ signal }) => stream(signal) },",
+      '  session: { hook: (name, fn) => { if (name === "context") contextHook = fn; } },',
+      "};",
+      "const stop = await plugin.setup(ctx);",
+      'const verdictPath = path.join(tree, ".serve", "harness-freshness.json");',
+      'const probePath = path.join(tree, ".serve", "harness-update.json");',
+      'const noticePath = path.join(tree, ".serve", "harness-freshness-notice.json");',
+      "const deadline = Date.now() + 8000;",
+      "let probe = null;",
+      "let doc = null;",
+      "while (Date.now() < deadline) {",
+      "  try { probe = JSON.parse(fs.readFileSync(probePath, 'utf8')); } catch { probe = null; }",
+      "  try { doc = JSON.parse(fs.readFileSync(verdictPath, 'utf8')); } catch { doc = null; }",
+      '  if (probe && doc && doc.status === "stale-would-update") break;',
+      "  await new Promise((r) => setTimeout(r, 25));",
+      "}",
+      "if (!probe || !doc) {",
+      "  stop();",
+      "  console.log(JSON.stringify({ error: 'evaluation did not land' }));",
+      "  process.exit(1);",
+      "}",
+      "// The apply's async close lands after the aborted turn: the deploy is on",
+      "// disk, the verdict says restart, and the notice is persisted beside it.",
+      'fs.writeFileSync(path.join(tree, ".harness.json"), JSON.stringify({ version: "9.9.9" }) + "\\n");',
+      'const wrote = fs.statSync(path.join(tree, ".harness.json")).mtimeMs;',
+      "fs.writeFileSync(",
+      "  verdictPath,",
+      "  JSON.stringify({ status: 'restart-needed', have: '9.9.9', latest: '9.9.9', wrote, pid: process.pid, startedAt: Date.now() }) + '\\n'",
+      ");",
+      "fs.writeFileSync(",
+      "  noticePath,",
+      "  JSON.stringify({ schema: 'harness-notice/1', tree, status: 'restart-needed', have: '9.9.9', latest: '9.9.9', text, at: new Date().toISOString() }) + '\\n'",
+      ");",
+      "const first = [{ role: 'user', content: [{ type: 'text', text: 'continue' }] }];",
+      "await contextHook({ sessionID: 'ses_notice', messages: first });",
+      "const injected = first.length > 1 ? first[first.length - 1].content[0].text : '';",
+      "const durable = fs.existsSync(noticePath);",
+      "// A later evaluation resolves the tree: the persisted text must not repeat.",
+      "fs.writeFileSync(",
+      "  verdictPath,",
+      "  JSON.stringify({ status: 'current', have: '9.9.9', latest: '9.9.9', pid: process.pid, startedAt: Date.now() }) + '\\n'",
+      ");",
+      "const second = [{ role: 'user', content: [{ type: 'text', text: 'again' }] }];",
+      "await contextHook({ sessionID: 'ses_notice', messages: second });",
+      "const repeated = second.length > 1;",
+      "const cleared = !fs.existsSync(noticePath);",
+      "stop();",
+      "console.log(JSON.stringify({ injected, durable, repeated, cleared }));",
+      "process.exit(injected === text && durable && !repeated && cleared ? 0 : 1);",
+    ].join("\n")
+  );
+
+  const r = spawnSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      driver,
+      path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+      tree,
+      TEXT,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 30000,
+      env: {
+        ...process.env,
+        AGENT_HARNESS_HOME: home,
+        AGENT_HARNESS_NO_UPDATE_CHECK: "1",
+        AGENT_HARNESS_FRESHNESS: "dry",
+        AGENT_HARNESS_RECHECK_MS: "900000",
+        AGENT_HARNESS_NOTICE_WAIT_MS: "50",
+        XDG_STATE_HOME: tmpdir(),
+      },
+    }
+  );
+  assert.strictEqual(r.status, 0, (r.stdout || "") + (r.stderr || ""));
+  const out = JSON.parse((r.stdout || "").trim().split(/\r?\n/).pop());
+  assert.strictEqual(out.injected, TEXT, "the persisted notice rides the next assembled request");
+  assert.strictEqual(out.durable, true, "injection does not delete the durable notice");
+  assert.strictEqual(out.repeated, false, "a current verdict never repeats the notice");
+  assert.strictEqual(out.cleared, true, "the notice is cleared once the tree is current");
+});
+
+test("[drift-guard] F-065 keeps the ownership and notice contracts in the real plugin", () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "contrib", "global-plugins", "harness-freshness.ts"),
+    "utf8"
+  );
+  assert.match(src, /Math\.min\(RECHECK_MS, 15 \* 60 \* 1000\)/, "the npm cache shares the recheck window");
+  assert.doesNotMatch(src, /86400000/, "the day-long npm cache is gone");
+  assert.match(src, /return \{ version: cached\.version, cached: true \}/, "a reused sample is marked");
+  assert.match(src, /return \{ version, cached: false \}/, "a fresh sample is marked");
+  const write = src.slice(src.indexOf("const writeStatus ="), src.indexOf("/* Publish the project probe cache"));
+  assert.match(write, /status\.status === "current" &&/, "the central guard covers every current write");
+  assert.match(write, /prior\?\.status === "restart-needed"/, "it names the verdict it preserves");
+  assert.match(write, /writerAlive\(prior\.pid, prior\.pidBoot, prior\.pidStart\)/, "only a live foreign writer keeps it");
+  assert.match(src, /NOTICE_FILE = "harness-freshness-notice\.json"/, "the notice is persisted beside the verdict");
+  assert.match(src, /schema: "harness-notice\/1"/, "the persisted notice is schema-versioned");
+  assert.match(src, /await ctx\.session\.hook\("context", async \(event: any\)/, "the context hook is awaited");
+  assert.match(src, /await Promise\.race\(\[/, "a bounded head start");
+  assert.match(
+    src,
+    /notices\.get\(sid\) \|\| \(tree \? liveTreeNotice\(tree\) : null\)/,
+    "the durable notice is the fallback"
+  );
+  assert.doesNotMatch(src, /notices\.delete\(sid\) \/\/ one-shot/, "no one-shot delete of the notice");
 });

@@ -36,7 +36,6 @@ export default Plugin.define({
     // local evidence of the build in memory when a later deploy rewrote
     // `.harness.json`; `formatHarnessBadge` compares it with the on-disk read.
     const loaded = readHarnessVersion(setupDirectory)
-    const startedAt = Date.now()
     if (!loaded) return
     // Read the verdicts inside `badge`, not at setup: a new/cleared/compacted
     // session re-probes the registry and rewrites `.serve/harness-update.json`,
@@ -46,12 +45,10 @@ export default Plugin.define({
       const directory = resolveDirectory() || setupDirectory
       const current = readHarnessVersion(directory) || loaded
       const update = readHarnessUpdate(directory)
-      // Pass the loaded build only when the location has not moved: a worktree
-      // switch means `loaded` names another checkout's build.
-      const restart =
-        directory === setupDirectory
-          ? readHarnessRestart(directory, { loaded, startedAt })
-          : readHarnessRestart(directory)
+      // The verdict belongs to the serving process, not to this client: a TUI
+      // restart into the deployed build must not hide a service that is still
+      // old (F-065). The verdict's own deploy/writer checks guard its lifetime.
+      const restart = readHarnessRestart(directory)
       const blocked = readHarnessBlocked(directory)
       const text = formatHarnessBadge({ current, loaded, update, restart, blocked })
       if (!text) return null

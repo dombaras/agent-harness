@@ -201,12 +201,13 @@ test("a reused pid is not the writer (process identity, F-038)", { skip: !fs.exi
   assert.strictEqual(readHarnessRestart(dir), null, "pid reuse must not keep the writer alive");
 });
 
-test("a foreign restart verdict cannot outlive a newer client that loaded the deploy", async () => {
-  // One tree can be served by several opencode processes (shared service + ACP
-  // stdio servers). A stale server's verdict painted ↻restart in a TUI that had
-  // restarted after the deploy. A client that loaded the deployed build after
-  // the verdict was written ignores it; one still on the old build keeps it.
-  const { readHarnessRestart } = await loadHelper();
+test("a newer TUI client keeps a live service's restart verdict (F-065)", async () => {
+  // The reported failure: the shared service still ran 0.5.1 while the TUI had
+  // restarted into 0.5.4. The old reader compared the client's setup read/start
+  // with the writer's and hid the verdict, so the footer stopped saying
+  // ↻restart even though the service still owed one. restart-needed belongs to
+  // the SERVING process; only the verdict's own deploy/writer evidence drops it.
+  const { readHarnessRestart, formatHarnessBadge } = await loadHelper();
   const dir = tmpdir();
   fs.mkdirSync(path.join(dir, ".serve"), { recursive: true });
   const cfg = path.join(dir, ".harness.json");
@@ -226,17 +227,27 @@ test("a foreign restart verdict cannot outlive a newer client that loaded the de
     })
   );
 
-  assert.strictEqual(
-    readHarnessRestart(dir, { loaded: "0.5.4", startedAt: Date.now() }),
-    null,
-    "a newer client on the deployed build ignores another server's verdict"
-  );
   assert.deepStrictEqual(
-    readHarnessRestart(dir, { loaded: "0.5.1", startedAt: Date.now() }),
+    readHarnessRestart(dir),
     { have: "0.5.4", latest: "0.5.4", active: "0.5.1", writerStartedAt },
-    "a client still on the old build keeps the restart marker"
+    "the live service's verdict renders in a TUI that already loaded the deploy"
   );
-  assert.ok(readHarnessRestart(dir), "no client start keeps the legacy behaviour");
+  assert.strictEqual(
+    formatHarnessBadge({ current: "0.5.4", loaded: "0.5.4", restart: readHarnessRestart(dir) }),
+    "harness v0.5.1 → v0.5.4 ↻restart",
+    "the exact TUI-new/service-old case still paints ↻restart"
+  );
+  const helper = fs.readFileSync(path.join(PLUGIN_DIR, "version.mjs"), "utf8");
+  const reader = helper.slice(
+    helper.indexOf("export function readHarnessRestart"),
+    helper.indexOf("// `blocked` means")
+  );
+  assert.doesNotMatch(reader, /loaded|startedAt|writerStartedAt/, "the reader takes no client-build input");
+  assert.doesNotMatch(
+    fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8"),
+    /readHarnessRestart\(directory,\s*\{/,
+    "the TUI never passes client build/start options"
+  );
 });
 
 test("the badge renders the update arrow from the same cache", () => {

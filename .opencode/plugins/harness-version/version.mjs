@@ -151,19 +151,15 @@ function readFreshness(directory, status) {
 }
 
 // A tree can be served by more than one opencode process (the shared background
-// service plus per-client stdio servers). A `restart-needed` record written by
-// an OLDER process therefore cannot describe THIS process's build: when this
-// client loaded the deployed version after that record was written, the record
-// belongs to another, stale server and must not paint ↻restart in this window.
-// `loaded` is the build this process read at setup; `startedAt` is its start.
-export function readHarnessRestart(directory, { loaded, startedAt } = {}) {
-  const verdict = readFreshness(directory, "restart-needed")
-  if (!verdict) return null
-  const mine = Number(startedAt)
-  const theirs = Number(verdict.writerStartedAt)
-  const current = typeof loaded === "string" && loaded === verdict.have
-  if (current && Number.isFinite(mine) && Number.isFinite(theirs) && mine > theirs) return null
-  return verdict
+// service plus per-client stdio servers). `restart-needed` describes the
+// SERVING process that wrote it, not the client rendering the badge: a TUI can
+// restart into the deployed build while the shared service still runs the old
+// one. Comparing this client's loaded build/start against the writer therefore
+// hid a real restart the user still owed (F-065). Only the verdict's own
+// evidence may drop it: a later deploy, a verdict older than the deploy, or a
+// dead writer (F-038).
+export function readHarnessRestart(directory) {
+  return readFreshness(directory, "restart-needed")
 }
 
 // `blocked` means the global plugin refused or failed to apply a newer harness

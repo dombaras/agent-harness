@@ -111,6 +111,18 @@ const LOADED_AT_START = ["opencode.json", "AGENTS.md", ".opencode"]
 const UPDATE_SCHEMA = "harness-update/1"
 const UPDATE_COMMAND = "npx opencode-agent-harness@latest update"
 
+/* A notice is persisted beside the verdict so it survives the turn that
+ * triggered the update (the apply completes after the request was assembled)
+ * and a one-shot delete that lost the text when the turn aborted (F-065). The
+ * context hook gives a just-started evaluation this bounded head start before
+ * assembling the request; the file is the durable fallback. */
+const NOTICE_FILE = "harness-freshness-notice.json"
+const NOTICE_WAIT_ENV = process.env.AGENT_HARNESS_NOTICE_WAIT_MS
+const NOTICE_WAIT_MS =
+  NOTICE_WAIT_ENV !== undefined && Number.isFinite(Number(NOTICE_WAIT_ENV)) && Number(NOTICE_WAIT_ENV) >= 0
+    ? Number(NOTICE_WAIT_ENV)
+    : 2000
+
 function atomicWrite(file: string, body: string) {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
   fs.writeFileSync(tmp, body)
@@ -280,10 +292,18 @@ function cmpVer(a: string, b: string): number {
   return 0
 }
 
-/* The registry's latest, cached once a day in the user cache so a session start
- * never pays a network round-trip twice. Best-effort: offline / no npm / a
- * registry miss all return null and the local checkout remains authoritative. */
-function npmLatest(): string | null {
+/* The registry's latest, cached for at most one session recheck window (15 min).
+ * The old 24h cache could publish a day-old value while the registry had moved
+ * on, so a machine without a local checkout showed no ↑ arrow (F-065). Deriving
+ * the window from `RECHECK_MS` also gives tests a zero-TTL switch. `cached`
+ * tells the probe-cache publisher whether the value is a fresh registry sample
+ * or was reused. Best-effort: offline / no npm / a registry miss all return null
+ * and the local checkout remains authoritative. */
+const NPM_TTL_MS = Math.min(RECHECK_MS, 15 * 60 * 1000)
+
+type NpmProbe = { version: string; cached: boolean }
+
+function npmLatest(): NpmProbe | null {
   if (process.env.AGENT_HARNESS_NO_UPDATE_CHECK === "1") return null
   try {
     const root = path.join(
@@ -291,14 +311,16 @@ function npmLatest(): string | null {
       "opencode-agent-harness"
     )
     const file = path.join(root, "npm-latest.json")
-    try {
-      const cached = JSON.parse(fs.readFileSync(file, "utf8"))
-      const at = Date.parse(cached?.checkedAt)
-      if (typeof cached?.version === "string" && Number.isFinite(at) && Date.now() - at < 86400000) {
-        return cached.version
+    if (NPM_TTL_MS > 0) {
+      try {
+        const cached = JSON.parse(fs.readFileSync(file, "utf8"))
+        const at = Date.parse(cached?.checkedAt)
+        if (typeof cached?.version === "string" && Number.isFinite(at) && Date.now() - at < NPM_TTL_MS) {
+          return { version: cached.version, cached: true }
+        }
+      } catch {
+        /* cold cache */
       }
-    } catch {
-      /* cold cache */
     }
     const out = execFileSync(
       process.env.AGENT_HARNESS_NPM || "npm",
@@ -310,7 +332,7 @@ function npmLatest(): string | null {
     if (!version) return null
     fs.mkdirSync(root, { recursive: true })
     fs.writeFileSync(file, JSON.stringify({ checkedAt: new Date().toISOString(), version }) + "\n")
-    return version
+    return { version, cached: false }
   } catch {
     return null
   }
@@ -348,6 +370,7 @@ const HarnessFreshness: Plugin = {
     const notices = new Map<string, string>()
     const checked = new Map<string, number>()
     const roots = new Map<string, string>()
+    const sessionTrees = new Map<string, string>()
 
     // V1 called `client.app.log`; V2 server plugins log to the console.
     const report = (message: string, level: "info" | "warn" | "error" = "info") => {
@@ -357,25 +380,75 @@ const HarnessFreshness: Plugin = {
       else console.log(line)
     }
 
-    const block = async (sid: string, reason: string, advice: string) => {
+    /* A per-tree notice is the durable half of the context notice: the in-memory
+     * map only reaches the session that triggered the evaluation, and a turn can
+     * abort after the model saw the text but before the user did (F-065). */
+    const noticeFile = (tree: string) => path.join(tree, ".serve", NOTICE_FILE)
+    const writeTreeNotice = (
+      tree: string,
+      text: string,
+      status: "restart-needed" | "blocked",
+      have: string | null,
+      latest: string | null
+    ) => {
+      try {
+        const dir = path.join(tree, ".serve")
+        fs.mkdirSync(dir, { recursive: true })
+        atomicWrite(
+          noticeFile(tree),
+          JSON.stringify(
+            { schema: "harness-notice/1", tree, status, have, latest, text, at: new Date().toISOString() },
+            null,
+            2
+          ) + "\n"
+        )
+      } catch {
+        /* observability only */
+      }
+    }
+    const readTreeNotice = (tree: string): any => {
+      try {
+        const doc = JSON.parse(fs.readFileSync(noticeFile(tree), "utf8"))
+        return doc && typeof doc.text === "string" && doc.text.trim() ? doc : null
+      } catch {
+        return null
+      }
+    }
+    const clearTreeNotice = (tree: string) => {
+      try {
+        fs.rmSync(noticeFile(tree), { force: true })
+      } catch {
+        /* observability only */
+      }
+    }
+    /* Only render a persisted notice while the write it explains still holds:
+     * a later deploy (`.harness.json` moved) or a resolved verdict makes the
+     * message stale, so it is dropped rather than repeated forever. */
+    const liveTreeNotice = (tree: string): string | null => {
+      const doc = readTreeNotice(tree)
+      if (!doc) return null
+      const have = readVersion(path.join(tree, ".harness.json"))
+      if (!have || (typeof doc.have === "string" && doc.have !== have)) {
+        clearTreeNotice(tree)
+        return null
+      }
+      const verdict = readVerdict(tree)
+      const status = verdict?.status === "refreshed" ? "restart-needed" : verdict?.status
+      if (status !== doc.status) {
+        clearTreeNotice(tree)
+        return null
+      }
+      return doc.text
+    }
+
+    const block = async (sid: string, tree: string, reason: string, advice: string) => {
       const text =
         `HARNESS FRESHNESS — do NOT begin work yet.\n\n` +
         `${reason}\n\nNext steps:\n${advice}\n\n` +
         `Relay this to the user and wait for their instructions before continuing.`
       notices.set(sid, text)
+      writeTreeNotice(tree, text, "blocked", readVersion(path.join(tree, ".harness.json")), null)
       report(`blocked (${sid}): ${reason}`, "warn")
-    }
-
-    const advise = (sid: string, have: string, latest: string) => {
-      notices.set(
-        sid,
-        `HARNESS UPDATE AVAILABLE — v${have} -> v${latest} (npm).\n\n` +
-          `Run: npx opencode-agent-harness@latest update\n` +
-          `Then run: opencode service restart\n` +
-          `(restarting the TUI alone reconnects to the same service and reloads nothing).\n\n`
-          `This is advisory — continue the task; relay it to the user when convenient.`
-      )
-      report(`update available ${have} -> ${latest} (npm)`)
     }
 
     const writeStatus = (tree: string, status: Record<string, unknown>) => {
@@ -392,6 +465,21 @@ const HarnessFreshness: Plugin = {
           Number(prior.pid) !== PROCESS_PID &&
           Number.isFinite(priorAt) &&
           priorAt > PROCESS_START &&
+          writerAlive(prior.pid, prior.pidBoot, prior.pidStart)
+        ) {
+          return
+        }
+        /* `restart-needed` belongs to the live process that wrote it. A newer
+         * process (a TUI's stdio server, the startup sweep) must not erase it
+         * with `current`: the old service is still serving this tree and still
+         * owes the restart (F-065). Only that writer's own restart/death, a
+         * later deploy, or a legacy verdict without provenance resolves it. */
+        if (
+          status.status === "current" &&
+          prior?.status === "restart-needed" &&
+          prior.pid !== undefined &&
+          prior.pid !== null &&
+          Number(prior.pid) !== PROCESS_PID &&
           writerAlive(prior.pid, prior.pidBoot, prior.pidStart)
         ) {
           return
@@ -418,6 +506,7 @@ const HarnessFreshness: Plugin = {
             2
           ) + "\n"
         )
+        if (status.status === "current") clearTreeNotice(tree)
       } catch {
         /* observability only */
       }
@@ -426,12 +515,23 @@ const HarnessFreshness: Plugin = {
     /* Publish the project probe cache on every evaluate (current, blocked, or
      * applied). The value is read now, never from an earlier sample, so an
      * in-flight deploy cannot leave a stale `deployed` in a cache written after
-     * it (F-045). */
-    const publishProbe = (tree: string, latest: string | null, npm: string | null, checkout: string | null) => {
+     * it (F-045). A reused npm sample older than the local checkout is not
+     * published: the checkout is the authoritative "latest" on this machine,
+     * and a stale registry value must not look like a fresh one (F-065). */
+    const publishProbe = (
+      tree: string,
+      latest: string | null,
+      npmProbe: NpmProbe | null,
+      checkout: string | null
+    ) => {
       if (!latest) return
       try {
         const deployed = readVersion(path.join(tree, ".harness.json"))
         if (!deployed) return
+        const npm =
+          npmProbe && !(npmProbe.cached && checkout && cmpVer(npmProbe.version, checkout) < 0)
+            ? npmProbe.version
+            : null
         const dir = path.join(tree, ".serve")
         fs.mkdirSync(dir, { recursive: true })
         const doc = {
@@ -466,13 +566,13 @@ const HarnessFreshness: Plugin = {
      * loaded. A session-start apply is therefore real only after a restart, and the
      * session must say so rather than pretend the new behavior is active. */
     const announce = (sid: string, have: string | null, latest: string, tree: string) => {
-      notices.set(
-        sid,
+      const text =
         `HARNESS UPDATED — ${have ? `v${have} -> v${latest}` : `v${latest}`} in ${tree}.\n\n` +
-          `The files are current, but the opencode background service is still running the previous ones.\n` +
-          `Restart it with: opencode service restart\n` +
-          `(restarting the TUI alone reconnects to the same service and reloads nothing).`
-      )
+        `The files are current, but the opencode background service is still running the previous ones.\n` +
+        `Restart it with: opencode service restart\n` +
+        `(restarting the TUI alone reconnects to the same service and reloads nothing).`
+      notices.set(sid, text)
+      writeTreeNotice(tree, text, "restart-needed", latest, latest)
     }
 
     /* Files on disk do not change the plugins/config this process already
@@ -480,18 +580,18 @@ const HarnessFreshness: Plugin = {
      * the task itself does not depend on the new build — so this is advice, never
      * a gate: blocking here made a resumed session refuse to start over a restart
      * that had not happened yet. */
-    const adviseRestart = (sid: string, have: string, touched: string[]) => {
+    const adviseRestart = (sid: string, tree: string, have: string, touched: string[]) => {
       const what = touched.length
         ? ` (${touched.slice(0, 3).join(", ")}${touched.length > 3 ? ", …" : ""})`
         : ""
-      notices.set(
-        sid,
+      const text =
         `HARNESS UPDATED ON DISK${what} — v${have} is deployed, but the opencode background service started ` +
-          `before the write, so the plugins/config in effect are still the previous build.\n\n` +
-          `Restart it when convenient with: opencode service restart\n` +
-          `(restarting the TUI alone reconnects to the same service and reloads nothing).\n` +
-          `Continue the current task now — do not stop or wait for the restart.`
-      )
+        `before the write, so the plugins/config in effect are still the previous build.\n\n` +
+        `Restart it when convenient with: opencode service restart\n` +
+        `(restarting the TUI alone reconnects to the same service and reloads nothing).\n` +
+        `Continue the current task now — do not stop or wait for the restart.`
+      notices.set(sid, text)
+      writeTreeNotice(tree, text, "restart-needed", have, have)
       report(`restart pending: ${have}${what}`)
     }
 
@@ -499,18 +599,20 @@ const HarnessFreshness: Plugin = {
       // Newest harness this machine can see: a local checkout may lead the
       // registry (development), the registry may lead a machine with no checkout.
       const local = readVersion(LATEST_PKG)
-      const npm = npmLatest()
+      const npmProbe = npmLatest()
+      const npm = npmProbe?.version || null
       const latest = [local, npm].filter((v): v is string => !!v).sort(cmpVer).pop() || null
       if (!latest) return // no authoritative source here
       const source = npm && cmpVer(npm, local || "0") > 0 ? "npm" : "local"
       const top = git(dir, ["rev-parse", "--show-toplevel"])
       if (!top.ok) return // not a git tree
       const tree = top.out
+      sessionTrees.set(sid, tree)
       const cfg = path.join(tree, ".harness.json")
       if (!fs.existsSync(cfg)) return // not a harness project
       const have = readVersion(cfg)
       rememberTree(tree)
-      publishProbe(tree, latest, npm, local)
+      publishProbe(tree, latest, npmProbe, local)
       if (have && cmpVer(have, latest) >= 0) {
         // Version is current, but the RUNNING process may still predate the last
         // harness write (deploy != activate, F-19/H-44). That only matters for
@@ -532,11 +634,12 @@ const HarnessFreshness: Plugin = {
               touched: touched.slice(0, 8),
               at: new Date().toISOString(),
             })
-            adviseRestart(sid, have, touched)
+            adviseRestart(sid, tree, have, touched)
             return
           }
         }
         notices.delete(sid)
+        clearTreeNotice(tree)
         writeStatus(tree, { status: "current", have, latest, at: new Date().toISOString() })
         return
       }
@@ -553,6 +656,7 @@ const HarnessFreshness: Plugin = {
           writeStatus(tree, { ...base, status: "blocked", reason: "project main checkout stale" })
           return block(
             sid,
+            tree,
             `This worktree is on harness ${have} (latest ${latest}), but the project's MAIN checkout ` +
               `(${mainTop}) is itself stale${mainHave ? ` at ${mainHave}` : ""}.`,
             `  node ${CLI} update --target ${mainTop}\n  # then run opencode service restart; the worktree can then fast-forward.`
@@ -563,6 +667,7 @@ const HarnessFreshness: Plugin = {
           writeStatus(tree, { ...base, status: "blocked", reason: "branch has its own commits" })
           return block(
             sid,
+            tree,
             `This worktree's branch (${git(tree, ["rev-parse", "--abbrev-ref", "HEAD"]).out}) has commits of ` +
               `its own, so the harness refresh needs a merge/rebase, not a fast-forward.`,
             `  git -C ${tree} merge ${ref}      # or: git -C ${tree} rebase ${ref}\n  # then run opencode service restart.`
@@ -580,6 +685,7 @@ const HarnessFreshness: Plugin = {
           writeStatus(tree, { ...base, status: "blocked", reason: "overlapping local changes", overlap })
           return block(
             sid,
+            tree,
             `Local changes overlap the files a harness refresh would touch: ${overlap.join(", ")}.`,
             `  commit or stash them, then run opencode service restart to auto-refresh.`
           )
@@ -592,6 +698,7 @@ const HarnessFreshness: Plugin = {
         const m = git(tree, ["merge", "--ff-only", ref], 30000)
         if (m.ok) {
           notices.delete(sid)
+          clearTreeNotice(tree)
           // The deploy landed on disk; this process still runs the old build.
           // Record the activation gap so the footer says "restart", not "current"
           // (F-045). No version change means nothing to activate: stay current.
@@ -607,9 +714,9 @@ const HarnessFreshness: Plugin = {
               ref,
               at: new Date().toISOString(),
             })
-            publishProbe(tree, deployedNow, npm, local)
+            publishProbe(tree, deployedNow, npmProbe, local)
             report(`refreshed worktree ${tree}: ${active} -> ${deployedNow} (ff ${ref}) — restart to activate`)
-            adviseRestart(sid, deployedNow, [])
+            adviseRestart(sid, tree, deployedNow, [])
           } else {
             writeStatus(tree, {
               ...base,
@@ -623,7 +730,7 @@ const HarnessFreshness: Plugin = {
           }
         } else {
           writeStatus(tree, { ...base, status: "blocked", reason: "fast-forward failed", detail: m.err || m.out })
-          await block(sid, `Fast-forward refresh failed: ${(m.err || m.out || "unknown").split(/\r?\n/)[0]}`, `  git -C ${tree} merge ${ref}`)
+          await block(sid, tree, `Fast-forward refresh failed: ${(m.err || m.out || "unknown").split(/\r?\n/)[0]}`, `  git -C ${tree} merge ${ref}`)
         }
         return
       }
@@ -638,7 +745,7 @@ const HarnessFreshness: Plugin = {
         fs.existsSync(path.join(tree, ".git", "rebase-apply"))
       if (inProgress) {
         writeStatus(tree, { ...base, status: "blocked", reason: "git operation in progress" })
-        return block(sid, `A git merge/rebase is already in progress in the main checkout.`, `  finish or abort it, then run opencode service restart.`)
+        return block(sid, tree, `A git merge/rebase is already in progress in the main checkout.`, `  finish or abort it, then run opencode service restart.`)
       }
       if (DRY) {
         writeStatus(tree, { ...base, status: "stale-would-update" })
@@ -660,7 +767,7 @@ const HarnessFreshness: Plugin = {
         child.stdout?.on("data", (d) => (out += d))
         child.stderr?.on("data", (d) => (out += d))
         child.on("error", (e: any) =>
-          void block(sid, `Deploy could not start: ${e?.message || e}`, `  ${shown}`)
+          void block(sid, tree, `Deploy could not start: ${e?.message || e}`, `  ${shown}`)
         )
         child.on("close", (code) => {
           if (code === 0) {
@@ -680,7 +787,7 @@ const HarnessFreshness: Plugin = {
                 source,
                 at: new Date().toISOString(),
               })
-              publishProbe(tree, deployedNow, npm, local)
+              publishProbe(tree, deployedNow, npmProbe, local)
               report(`updated main checkout ${tree}: ${active} -> ${deployedNow} (${source}) — restart to activate`)
               announce(sid, active, deployedNow, tree)
             } else {
@@ -706,13 +813,14 @@ const HarnessFreshness: Plugin = {
             writeStatus(tree, { ...base, status: "blocked", reason: "update failed", source, detail })
             void block(
               sid,
+              tree,
               `The harness deploy failed (exit ${code}) — usually a locally-modified harness file (update fails closed):\n${detail}`,
               `  fix it upstream in templates/, or back up and re-run:\n  ${shown} --accept-harness`
             )
           }
         })
       } catch (e: any) {
-        await block(sid, `Deploy threw: ${e?.message || e}`, `  ${shown}`)
+        await block(sid, tree, `Deploy threw: ${e?.message || e}`, `  ${shown}`)
       }
     }
 
@@ -726,7 +834,8 @@ const HarnessFreshness: Plugin = {
       const trees = readRegistry()
       if (!trees.length) return
       const local = readVersion(LATEST_PKG)
-      const npm = npmLatest()
+      const npmProbe = npmLatest()
+      const npm = npmProbe?.version || null
       const latest = [local, npm].filter((v): v is string => !!v).sort(cmpVer).pop() || null
       if (!latest) return
       for (const known of trees) {
@@ -736,7 +845,7 @@ const HarnessFreshness: Plugin = {
           const cfg = path.join(tree, ".harness.json")
           const have = readVersion(cfg)
           if (!have) continue
-          publishProbe(tree, latest, npm, local)
+          publishProbe(tree, latest, npmProbe, local)
           const prior = readVerdict(tree)
           if (cmpVer(have, latest) >= 0) {
             writeStatus(tree, { status: "current", have, latest, at: new Date().toISOString() })
@@ -804,6 +913,7 @@ const HarnessFreshness: Plugin = {
                 notices.delete(sid)
                 checked.delete(sid)
                 roots.delete(sid)
+                sessionTrees.delete(sid)
                 childSessions.delete(sid)
               }
               continue
@@ -840,18 +950,21 @@ const HarnessFreshness: Plugin = {
 
     // V1 used `experimental.chat.messages.transform`; V2 surfaces the session
     // context hook, which carries the session id directly.
-    await ctx.session.hook("context", (event: any) => {
+    await ctx.session.hook("context", async (event: any) => {
       try {
         const sid = event?.sessionID
         if (typeof sid !== "string" || !sid) return
-        /* First activity of a session restored across an opencode service
-         * restart: re-evaluate here so the stale verdict is replaced before the
-         * reply (the badge re-reads the file every render). Fire-and-forget —
-         * never delay the request on git/npm. */
-        void consider(sid, roots.get(sid)).catch(() => {})
-        const text = notices.get(sid)
+        /* Give a just-started evaluation a bounded head start so a notice this
+         * turn produced can ride THIS request. An apply that outlives the bound
+         * is persisted per tree and delivered on the next turn — never lost to
+         * the async close or an aborted reply (F-065). */
+        await Promise.race([
+          consider(sid, roots.get(sid)).catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, NOTICE_WAIT_MS)),
+        ])
+        const tree = sessionTrees.get(sid)
+        const text = notices.get(sid) || (tree ? liveTreeNotice(tree) : null)
         if (!text) return
-        notices.delete(sid) // one-shot: the model already saw it and must wait
         const messages = event?.messages
         if (!Array.isArray(messages)) return
         const last = messages[messages.length - 1]
