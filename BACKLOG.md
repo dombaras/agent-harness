@@ -49,7 +49,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-070 | ? | fix(context-resume): never duplicate an auto-resume — ignore subagent idles, add a live-sibling worktree lease gate, and pin the harness default model for the fresh session | .agents/handoffs/F-070.md (worktree: ../.worktrees/agent-harness/f-070; branch: f-070) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -154,6 +153,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-066 | ? | Auto clear-resume must arm at the checkpoint band: write .agents/context-resume.json when a primary session reaches checkpoint (120K), not only intervene (160K), so a session that stops at the checkpoint boundary is resumed automatically instead of stalling. | verification-complete |
 | F-067 | ? | Always write a checkpoint before a session stops (observed succeeded/failed/interrupted/phase-exit; heartbeat for hard kills) and auto-resume every non-purely-technical stop. Exclude only infrastructure/environment failures: network/DNS/TLS/timeout, provider 5xx/429/overloaded, auth, OOM/kill/ENOSPC, process crash, power/machine loss; plus funds/quota (hard pause) and user interrupts (manual). Fallback checkpoint must preserve prior state, refresh files_changed, mark auto:true, never overwrite a newer model checkpoint. | checkpoint |
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | deferred (phase 2 complete/committed at 3b840b1; phases 3-4 remain) |
+| F-070 | ? | fix(context-resume): never duplicate an auto-resume — ignore subagent idles, add a live-sibling worktree lease gate, and pin the harness default model for the fresh session | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

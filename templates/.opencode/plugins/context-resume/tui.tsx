@@ -25,6 +25,7 @@
  */
 import { Plugin } from "@opencode/plugin/tui"
 import fs from "node:fs"
+import { homedir } from "node:os"
 import path from "node:path"
 import process from "node:process"
 import { importFresh } from "./hot-import.mjs"
@@ -44,6 +45,8 @@ type ResumePlan = {
   planResume: (input: any) => ResumeDecision
   resumeAfterIdle: (idleKind: string, decision: ResumeDecision, failureText: string) => boolean
   featureFromBranch: (branch: string | undefined) => string | null
+  modelFromConfigText: (text: string) => string | null
+  modelRef: (model: string) => { providerID: string; modelID: string } | null
 }
 
 /* F-067 fallback writer. Loaded fresh like the decision core, so a deploy is
@@ -83,6 +86,7 @@ type ResumeDecision = {
   resets?: number
   nextResets?: number
   landed?: boolean
+  model?: { providerID: string; modelID: string } | null
 }
 
 type LeaseRecord = {
@@ -99,6 +103,27 @@ const readText = (file: string): string => {
   } catch {
     return ""
   }
+}
+
+/* Resolved config order: the checkout's own files first, then the global config.
+ * The auto-resume session must use the harness default model, never whatever
+ * model the TUI currently has selected (the F-050 incident used the free
+ * `opencode/seaglass-alpha-free` fallback). */
+const modelConfigFiles = (directory: string): string[] => [
+  path.join(directory, "opencode.json"),
+  path.join(directory, "opencode.jsonc"),
+  path.join(directory, ".opencode", "opencode.json"),
+  path.join(directory, ".opencode", "opencode.jsonc"),
+  path.join(homedir(), ".config", "opencode", "opencode.json"),
+  path.join(homedir(), ".config", "opencode", "opencode.jsonc"),
+]
+
+const firstText = (files: string[]): string => {
+  for (const file of files) {
+    const text = readText(file)
+    if (text) return text
+  }
+  return ""
 }
 
 /* Main vs linked without git: a main worktree's `.git` is a directory, a linked
@@ -244,6 +269,7 @@ export default Plugin.define({
     ): Promise<string | undefined> => {
       const prompt = String(decision.prompt || "")
       if (!prompt) throw new Error("the runner produced no resume prompt")
+      const model = decision.model || null
       const created = await context.client.session.create({ location: { directory } })
       const sessionID = created?.id
       if (!sessionID) throw new Error("session.create returned no session id")
@@ -261,7 +287,14 @@ export default Plugin.define({
           /* tabs are optional */
         }
       }
-      await context.client.session.prompt({ sessionID, text: prompt })
+      // Never inherit the TUI's current model: an explicit harness default keeps
+      // auto-resume on the configured provider/model (F-050 incident).
+      const body: { sessionID: string; text: string; model?: { providerID: string; modelID: string } } = {
+        sessionID,
+        text: prompt,
+      }
+      if (model) body.model = model
+      await context.client.session.prompt(body)
       context.ui.toast.show({
         title: `${decision.feature || "Feature"} resumed`,
         message: navigate
@@ -287,6 +320,17 @@ export default Plugin.define({
         const fallback = await loadFallback()
         const directory = sessionDirectory(sessionID)
         if (!directory) return
+        // A child session (subagent, title agent, QA author, …) ending is a task
+        // completion, never the bounded context boundary of the work unit. F-050
+        // was re-finalized because a QA-plan subagent's idle event was consumed.
+        const ended = (() => {
+          try {
+            return context.data.session.get(sessionID)
+          } catch {
+            return undefined
+          }
+        })()
+        if (ended?.parentID) return
         // V2's event stream covers every session of this server. A session in
         // another checkout is still this TUI's: resume it in ITS directory and
         // only navigate/focus when that checkout is the one on screen (F-064).
@@ -357,9 +401,11 @@ export default Plugin.define({
           sessionCreatedAt: sessionCreatedAt(sessionID),
           branch,
           checkoutKind: kind,
-          // Only a main checkout needs the lease gate; a linked worktree marker
-          // keeps the F-051 path and does no extra IO.
-          leases: kind === "main" ? readLeases(directory) : [],
+          // The single-live-session gate applies to every checkout, not only
+          // main: two finalize sessions in one feature worktree is the F-050
+          // incident. The ended session's own lease is excluded by id.
+          leases: readLeases(directory),
+          idleSessionIsChild: !!ended?.parentID,
           isAlive: pidAlive,
           handoffText: featureFromMarker
             ? readText(path.join(directory, ".agents", "handoffs", featureFromMarker + ".md"))
@@ -407,6 +453,7 @@ export default Plugin.define({
           return
         }
 
+        decision.model = plan.modelRef(plan.modelFromConfigText(firstText(modelConfigFiles(directory))))
         await startFresh(decision, directory, here)
         await persist(directory, {
           feature,

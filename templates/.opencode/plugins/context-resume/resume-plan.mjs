@@ -92,6 +92,44 @@ export function contextOverflow(text) {
   return CONTEXT_OVERFLOW_RE.test(String(text || ""))
 }
 
+/* The harness default model, read from the resolved config text. `session.create`
+ * has no model field, and `session.prompt` without one inherits whatever model
+ * the TUI happens to be on — which is how an auto-resume once landed on the free
+ * `opencode/seaglass-alpha-free` fallback instead of the configured default.
+ * Returns a `provider/model` string or null. */
+export function modelFromConfigText(text) {
+  const raw = String(text || "")
+  const strip = (value) =>
+    value
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1")
+      .replace(/,(\s*[}\]])/g, "$1")
+  let parsed = null
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    try {
+      parsed = JSON.parse(strip(raw))
+    } catch {
+      parsed = null
+    }
+  }
+  if (parsed && typeof parsed.model === "string" && parsed.model.includes("/")) {
+    return parsed.model.trim()
+  }
+  const fallback = raw.match(/^ {0,2}"model"\s*:\s*"([^"/]+\/[^"]+)"/m)
+  return fallback ? fallback[1].trim() : null
+}
+
+/* `provider/model` -> the SDK's `{ providerID, modelID }`, or null when the
+ * value is not a fully-qualified model reference. */
+export function modelRef(model) {
+  const value = String(model || "").trim()
+  const slash = value.indexOf("/")
+  if (slash <= 0 || slash === value.length - 1) return null
+  return { providerID: value.slice(0, slash), modelID: value.slice(slash + 1) }
+}
+
 /* Which execution ends may relaunch a fresh context.
  *
  * F-067 policy: an observed `succeeded` end resumes (the fallback checkpoint
@@ -167,6 +205,12 @@ export function planResume(input) {
   if (!src.idleSessionID || marker.sessionID !== src.idleSessionID) {
     return ignore("marker names another session")
   }
+  // A subagent (child session) going idle is task completion, not a bounded
+  // context boundary. Treating it as one launched a second finalize session for
+  // F-050 while the parent was still running (2026-11-27 incident).
+  if (src.idleSessionIsChild === true) {
+    return ignore("idle session is a subagent, not a context boundary")
+  }
 
   const mainMarker = marker.main === true
   const branchKnown = typeof src.branch === "string" && src.branch.length > 0
@@ -205,6 +249,18 @@ export function planResume(input) {
       return ignore(`marker feature ${markerFeature} does not match branch feature ${branchFeature}`)
     }
     feature = branchFeature || markerFeature
+    // A feature worktree still needs the single-live-session gate: the F-050
+    // incident had one finalize session running while the guard spawned another
+    // from a subagent's idle event. Unlike the main checkout (F-061), the ended
+    // session's own lease is excluded by id, so the normal single-session resume
+    // is unaffected.
+    const others = otherLiveLeaseCount(src.leases, {
+      sessionID: src.idleSessionID,
+      now: src.now,
+      maxAgeMs: src.leaseMaxAgeMs,
+      isAlive: src.isAlive,
+    })
+    if (others > 0) return ignore("another live session owns this feature worktree")
   }
 
   const key = markerKey(marker)

@@ -187,6 +187,55 @@ test("uses the runner's finalize prompt when only the tail remains", async () =>
   assert.match(decision.prompt, /Finalize the bounded work unit F-052/);
 });
 
+test("a subagent idle is never a context boundary", async () => {
+  const decision = await plan({ idleSessionIsChild: true });
+  assert.strictEqual(decision.action, "ignore");
+  assert.match(decision.reason, /subagent/);
+});
+
+test("a live sibling in the feature worktree blocks a second auto-resume", async () => {
+  const now = Date.now();
+  const decision = await plan({
+    leases: [{ sessionID: "ses_parent", pid: 4242, heartbeatAt: now }],
+    isAlive: () => true,
+    now,
+  });
+  assert.strictEqual(decision.action, "ignore");
+  assert.match(decision.reason, /another live session/);
+});
+
+test("a stale sibling lease does not block the resume", async () => {
+  const now = Date.now();
+  const decision = await plan({
+    leases: [{ sessionID: "ses_parent", pid: 4242, heartbeatAt: now - 5 * 60 * 60_000 }],
+    isAlive: () => true,
+    now,
+  });
+  assert.strictEqual(decision.action, "resume");
+});
+
+test("the auto-resume model follows the harness default config", async () => {
+  const { modelFromConfigText, modelRef } = await helper();
+  assert.strictEqual(
+    modelFromConfigText('{\n  "model": "opencode-go/deepseek-v4.1-flash"\n}'),
+    "opencode-go/deepseek-v4.1-flash"
+  );
+  assert.strictEqual(
+    modelFromConfigText('{\n  // default\n  "model": "opencode-go/deepseek-v4.1-flash",\n}'),
+    "opencode-go/deepseek-v4.1-flash"
+  );
+  assert.strictEqual(
+    modelFromConfigText('{\n  "agents": { "build": { "model": "opencode-go/glm-5.3-flash" } }\n}'),
+    null,
+    "a per-agent model is not the harness default"
+  );
+  assert.deepStrictEqual(modelRef("opencode-go/deepseek-v4.1-flash"), {
+    providerID: "opencode-go",
+    modelID: "deepseek-v4.1-flash",
+  });
+  assert.strictEqual(modelRef("seaglass-alpha-free"), null);
+});
+
 test("ignores a marker for another session, schema, or worktree", async () => {
   assert.strictEqual((await plan({ idleSessionID: "ses_other" })).action, "ignore");
   assert.strictEqual((await plan({ marker: marker({ schema: 2 }) })).action, "ignore");

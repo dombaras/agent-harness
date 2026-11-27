@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Auto-resume can no longer duplicate a finalize: a subagent (child-session) idle event is ignored instead of being treated as the work unit's context boundary, and a feature worktree with another live session lease refuses a second auto-resume. The fresh session is now prompted with the checkout's configured default model (from `opencode.json`) rather than inheriting the TUI's current model, so an auto-launch cannot land on a free fallback such as `opencode/seaglass-alpha-free`. (F-070)
+
 - The feedback loop captures red signals automatically: a failed landed CI run in `ship`, a red nightly cycle, and UAT/gate failures normalize into one ledger item, dedupe by signature, and plan exactly one board row (`add` new, `link` known, `reopen` archived). Harness-side breakage stays off the product board as its own ops row, and `orient` prints a bounded feedback inbox line. (F-050)
 
 - Feedback items are triaged reproduce-first: one clean rerun is recorded (a pass quarantines the flake with a named owner, 14-day expiry, and P2 hardening row), a fix closes only after the original signal verifies green, and a verified high-risk patch stops for human approval. `feedback next` emits a bounded reproduce-first prompt treating logs as untrusted; `run --feedback` works one eligible item in bounded phases and stops at approval. (F-050)
