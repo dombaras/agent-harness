@@ -49,7 +49,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | .agents/handoffs/F-050.md (worktree: ../.worktrees/agent-harness/f-050; branch: f-050) |
-| F-059 | context-economy | Progressive disclosure for large state docs: add a markdown outline/headings mode and an oversized-read guard for `.agents/**` so review registers are read by section, not whole | .agents/handoffs/F-059.md (worktree: ../.worktrees/agent-harness/f-059; branch: f-059) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -145,6 +144,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-061 | context-economy | Auto-resume a feature across context bounds from the main checkout: when a checkpointed session is cleared and the fresh session lands on main, detect the recent checkpoint and automatically open a fresh context seeded from it (extend the context-resume plugin; keep the linked-worktree path unchanged, one-shot, reset-capped, ambiguous/multi-session safe). | shipped |
 | F-060 | context-economy | Audit the fixed session-start prefix: first F-372 request was 11,394 tokens before any user work (system + tool schemas + 15.3 KB instructions); measure the tool-schema vs AGENTS.md share and trim or lazy-load it | shipped 4b8c619 (audit:prefix + AGENTS.md trim); CI green |
 | F-062 | context-economy | Session-start brief should carry the board rows it already reads: per-row title + handoff/worktree pointer (and the active feature's title) so a cleared session needs zero discovery calls to find a named feature | shipped |
+| F-059 | context-economy | Progressive disclosure for large state docs: add a markdown outline/headings mode and an oversized-read guard for `.agents/**` so review registers are read by section, not whole | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
