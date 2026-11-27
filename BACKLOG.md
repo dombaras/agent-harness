@@ -50,6 +50,7 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-068 | parallel-orchestration | Add a resource-aware parallel feature orchestrator: deterministic control plane (queue, admission, leases, single lander) over LLM workers. Workers commit+enqueue in isolated worktrees; one lander rebases/gates/FF-pushes/waits CI/deploys; admission from capacity-lib RAM/swap/PSI + heavy lock; conflict control via owned files/contracts/trial merge; rollout Phase 1 detached landing -> Phase 2 scout -> Phase 3 two builders. | .agents/handoffs/F-068.md (worktree: ../.worktrees/agent-harness/f-068; branch: f-068) |
+| F-072 | ? | chore(release): bump harness to 0.6.2 so the F-071 lease-release fix is a versioned build | .agents/handoffs/F-072.md (worktree: ../.worktrees/agent-harness/f-072; branch: f-072) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -69,7 +70,6 @@ Sorted by priority (P1 → P4).
 
 | ID | P | Epic | Task | Evidence | Depends on |
 |---|---|---|---|---|---|
-| F-072 | P1 | ? | chore(release): bump harness to 0.6.2 so the F-071 lease-release fix is a versioned build | F-071 landed 5cc4e0f; package.json and .harness.json are still 0.6.1 | ? |
 | F-041 | P2 | ? | Prune the feature worktree automatically at task completion: after finalize archives the landed row and CI is green, remove the shipped worktree (or schedule worktree-prune) instead of printing "feature worktree left in place — clean up when this session ends". Never prune an unmerged or dirty worktree, or the session's own checkout; report what was kept and why. | F-040 finalize/ship output: "[ship] feature worktree left in place. Clean up when this session ends"; /home/ronen/develop/.worktrees/agent-harness/f-040 remains after a green-CI landing; scripts/ship.js tail; scripts/finalize.js archive step; docs: .agents/AGENTS.md §7.6 | ? |
 | F-069 | P2 | ? | F-050 Phase 4 — learn & measure: curated reviewed playbook, lesson capture tied to a regression test, eval fixtures that fail on a triage regression, and bounded loop health in orient/doctor | .agents/features/feedback-loop/plan.md §Phase 4; phase4-plan.md | ? |
 | F-055 | P3 | ? | Extend the TUI ESM-only graph guard to every plugin TUI entry (harness-version/tui.tsx too), not just context-resume | tests/context-resume.test.js::the TUI plugin graph is ESM-only lists only context-resume entries; templates/.opencode/plugins/harness-version/tui.tsx imports ./version.mjs (clean today) | ? |
