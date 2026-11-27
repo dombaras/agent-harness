@@ -34,6 +34,7 @@ in-file; no code change needed.
 |---|---|---|
 | inquiry-capability | Inquiry capability | Reliable root-cause discovery, independent falsification, outcome-based done, and attempt memory for future work. |
 | context-economy | Context economy | Cut the repeated token cost of session orientation and state loading: static prefix, rulebook auto-injection, checkpoint size, and progressive disclosure for large state docs. |
+| parallel-orchestration | Parallel orchestration | Run independent feature pipelines concurrently under a deterministic, resource-aware control plane: queue, admission, leases, one lander, conflict control, and crash recovery. |
 
 ## Active / next
 
