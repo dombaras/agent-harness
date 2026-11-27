@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Self-healing loop Phase 0 (observe): `heal status` answers "is the harness healthy / what is red / what is blocked" in one bounded call; `heal run` records KPI samples from nightly/feedback/gate/doctor artifacts; `heal report` writes a 14-day-baseline HHI report and names the top burn driver; `pause`/`resume` engage the kill switch. The pure decision core (risk tiers T0–T3, eligibility, budgets, breaker, state machine) ships read-only, with `watch` (phase 1) and `improve` (phase 4) refusing loudly. (F-076)
+
 - The repo-hygiene version-bump guard now counts untracked harness files and compares a branch with `origin/main` (falling back to local `main`, then `HEAD`), so a brand-new `templates/` file or a stale base can no longer slip past it. The test entrypoints run under a scoped `TMPDIR` that is removed after the run, so leaked fixture directories can no longer fill `/tmp` and mask real gate failures with ENOSPC. (F-074)
 
 ## 0.6.3 — 2026-11-27

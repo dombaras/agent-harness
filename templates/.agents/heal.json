@@ -1,0 +1,38 @@
+{
+  "schema": "heal/1",
+  "mode": "observe",
+  "sources": ["ci", "nightly", "uat", "gate", "doctor", "drift", "session"],
+  "poll_interval_sec": 300,
+  "window_days": 14,
+  "slo": {
+    "gate_pass_rate": 0.95,
+    "ci_first_attempt": 0.9,
+    "change_failure_rate": 0.1,
+    "mttr_min": 30,
+    "cost_per_feature_usd": 5,
+    "pass_k": 0.8
+  },
+  "error_budget": { "burn_rate_freeze": 2, "burn_window_days": 7, "freeze_auto_land": true },
+  "risk": {
+    "auto_tiers": ["T0"],
+    "max_files": 5,
+    "max_diff_lines": 200,
+    "deny_paths": ["auth/", "**/migrations/**", ".github/workflows/**", "**/secrets/**", "**/payments/**", "**/billing/**"],
+    "require_test_for_code": true
+  },
+  "budgets": {
+    "max_attempts_per_signature": 2,
+    "max_attempts_per_day": 4,
+    "max_active": 1,
+    "max_cost_per_item_usd": 5,
+    "max_cost_per_day_usd": 20,
+    "cooldown_min": 30,
+    "no_progress_limit": 2
+  },
+  "breaker": { "consecutive_failures": 2, "failure_rate_threshold": 0.5, "failure_rate_window": 10, "cooldown_min": 120, "freeze_on_red_main": true },
+  "verification": { "window_min": 120, "observe_after_land_min": 60, "require_independent_signal": true, "canary_repos": [] },
+  "landing": { "strategy": "pr", "require_ci": true, "require_uat": false, "auto_merge_tiers": [], "rollback": "git_revert" },
+  "telemetry": { "publish": "none", "endpoint": "", "include_paths": false, "redact": true, "opt_in": false },
+  "retention": { "days": 90, "keep_reports": 30 },
+  "kill_switch": false
+}
