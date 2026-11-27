@@ -33,6 +33,7 @@ in-file; no code change needed.
 | Key | Label | Goal |
 |---|---|---|
 | inquiry-capability | Inquiry capability | Reliable root-cause discovery, independent falsification, outcome-based done, and attempt memory for future work. |
+| context-economy | Context economy | Cut the repeated token cost of session orientation and state loading: static prefix, rulebook auto-injection, checkpoint size, and progressive disclosure for large state docs. |
 
 ## Active / next
 
