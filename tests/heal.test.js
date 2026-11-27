@@ -189,7 +189,7 @@ test("observe mode records samples only; report computes HHI + top driver", () =
   }
 });
 
-test("pause/resume write the kill switch; status reflects it; watch/improve refuse", () => {
+test("pause/resume write the kill switch; status reflects it; watch runs once; improve refuses", () => {
   const ctx = tempProject();
   try {
     const pause = runCli(ctx, ["pause"]);
@@ -203,9 +203,113 @@ test("pause/resume write the kill switch; status reflects it; watch/improve refu
     assert.equal(runCli(ctx, ["resume"]).status, 0);
     assert.equal(JSON.parse(fs.readFileSync(path.join(ctx.root, ".agents", "heal.json"), "utf8")).kill_switch, false);
 
-    assert.equal(runCli(ctx, ["watch"]).status, 2);
+    const watch = runCli(ctx, ["watch", "--once", "--no-board"]);
+    assert.equal(watch.status, 0, watch.stdout);
     assert.equal(runCli(ctx, ["improve"]).status, 2);
     assert.equal(runCli(ctx, ["nope"]).status, 2);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+function seedNightly(ctx, failures, at = NOW) {
+  const dir = path.join(ctx.root, ".agents", "qa-runs", "nightly");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "latest.json"),
+    JSON.stringify({ stamp: new Date(at).toISOString(), failures })
+  );
+}
+
+function seedGates(ctx, events) {
+  const dir = path.join(ctx.root, ".agents", "qa-runs", "gates");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "ledger.jsonl"), events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+}
+
+test("watch detects nightly/gate once, dedupes, and routes a bounded repro", () => {
+  const ctx = tempProject();
+  try {
+    seedNightly(ctx, [{ flow: "checkout", phase: "e2e", reason: "cart total wrong" }]);
+    seedGates(ctx, [
+      { at: new Date(NOW - 2000).toISOString(), phase: "quick", result: "fail", error: "lint failed" },
+      { at: new Date(NOW - 1000).toISOString(), phase: "quick", result: "pass" },
+      { at: new Date(NOW - 1000).toISOString(), phase: "api", result: "fail", error: "route 500" },
+    ]);
+
+    const first = runCli(ctx, ["watch", "--once", "--json", "--no-board"]);
+    assert.equal(first.status, 1, first.stderr);
+    const summary = JSON.parse(first.stdout);
+    assert.equal(summary.signals, 2, first.stdout);
+    assert.equal(summary.created, 2);
+    const items = summary.events[0].items;
+    assert.ok(items.every((i) => i.state === "classified"));
+    assert.ok(items.every((i) => /reproduce first/.test(i.repro)));
+    assert.ok(items.some((i) => i.source === "nightly"));
+    assert.ok(items.some((i) => i.test === "gate:api"));
+    assert.equal(items.some((i) => i.test === "gate:quick"), false, "the later green quick run wins");
+
+    const second = runCli(ctx, ["watch", "--once", "--json", "--no-board"]);
+    assert.equal(second.status, 1);
+    assert.equal(JSON.parse(second.stdout).created, 0);
+    const state = STORE.readState(ctx.root, { healDir: ctx.store });
+    assert.equal(state.items.length, 2);
+    assert.ok(state.items.every((i) => i.occurrences === 2));
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("watch files exactly one board row per signature and links on repeat", () => {
+  const ctx = tempProject();
+  try {
+    fs.copyFileSync(path.join(ROOT, "templates", "BACKLOG.md"), path.join(ctx.root, "BACKLOG.md"));
+    seedNightly(ctx, [{ flow: "checkout", phase: "e2e", reason: "cart total wrong" }]);
+    const first = runCli(ctx, ["watch", "--once", "--json"]);
+    assert.equal(first.status, 1, first.stderr);
+    const board1 = JSON.parse(first.stdout).events[0].board;
+    assert.equal(board1.length, 1, JSON.stringify(board1));
+    assert.equal(board1[0].action, "add");
+    assert.equal(board1[0].ok, true, JSON.stringify(board1));
+    const marker = "[heal:nightly:";
+    const boardFile = path.join(ctx.root, "BACKLOG.md");
+    assert.equal(fs.readFileSync(boardFile, "utf8").split(marker).length - 1, 1);
+
+    const second = runCli(ctx, ["watch", "--once", "--json"]);
+    assert.equal(second.status, 1);
+    assert.equal(JSON.parse(second.stdout).events[0].board[0].action, "link");
+    assert.equal(fs.readFileSync(boardFile, "utf8").split(marker).length - 1, 1, "no duplicate row");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("watch refuses under the kill switch and records nothing", () => {
+  const ctx = tempProject();
+  try {
+    assert.equal(runCli(ctx, ["pause"]).status, 0);
+    seedNightly(ctx, [{ flow: "checkout", phase: "e2e", reason: "boom" }]);
+    const res = runCli(ctx, ["watch", "--once"]);
+    assert.equal(res.status, 2);
+    assert.match(res.stdout, /kill switch/);
+    assert.equal(STORE.readState(ctx.root, { healDir: ctx.store }).items.length, 0);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("watch tolerates missing or malformed source artifacts", () => {
+  const ctx = tempProject();
+  try {
+    const nightly = path.join(ctx.root, ".agents", "qa-runs", "nightly");
+    fs.mkdirSync(nightly, { recursive: true });
+    fs.writeFileSync(path.join(nightly, "latest.json"), "{nope");
+    const gates = path.join(ctx.root, ".agents", "qa-runs", "gates");
+    fs.mkdirSync(gates, { recursive: true });
+    fs.writeFileSync(path.join(gates, "ledger.jsonl"), "{not json}\n");
+    const res = runCli(ctx, ["watch", "--once", "--json", "--no-board"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).signals, 0);
   } finally {
     ctx.cleanup();
   }

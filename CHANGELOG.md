@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Self-healing loop Phase 1 (detect & route): `heal watch` (and one pass of `heal run`) reads the nightly report, gate ledger, and doctor/drift facts, normalizes and dedupes by source+environment+signature, classifies and routes one deterministic playbook or `escalate`, and writes a bounded reproduce-first prompt. Exactly one board row per signature (`[heal:<source>:<sig8>]`, link on repeat, reopen an archived signature), `--no-board` for ledger-only, and the kill switch is checked before every poll. Still read-only: no repair, no auto-land, no product-code write. (F-077)
+
 - Self-healing loop Phase 0 (observe): `heal status` answers "is the harness healthy / what is red / what is blocked" in one bounded call; `heal run` records KPI samples from nightly/feedback/gate/doctor artifacts; `heal report` writes a 14-day-baseline HHI report and names the top burn driver; `pause`/`resume` engage the kill switch. The pure decision core (risk tiers T0–T3, eligibility, budgets, breaker, state machine) ships read-only, with `watch` (phase 1) and `improve` (phase 4) refusing loudly. (F-076)
 
 - The repo-hygiene version-bump guard now counts untracked harness files and compares a branch with `origin/main` (falling back to local `main`, then `HEAD`), so a brand-new `templates/` file or a stale base can no longer slip past it. The test entrypoints run under a scoped `TMPDIR` that is removed after the run, so leaked fixture directories can no longer fill `/tmp` and mask real gate failures with ENOSPC. (F-074)
