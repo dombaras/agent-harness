@@ -1,5 +1,7 @@
 "use strict";
 /* F-052: the TUI auto clear-resume decision core + source contract.
+ * F-061 adds the main-checkout variant: the selector proves one recent
+ * checkpoint and the TUI resumes it in the SAME checkout behind the lease gate.
  *
  * The TUI part needs opencode's runtime, so the pure gates are kept in
  * `resume-plan.mjs` and proven here: a marker resumes ONLY when it names this
@@ -91,6 +93,33 @@ async function plan(overrides = {}) {
   });
 }
 
+const core = () => require(path.join(REPO, "templates", "scripts", "qa", "context-guard-core.js"));
+const MAIN_NOW = Date.parse(MARKER_AT) + 5 * 60_000;
+
+function mainMarker(overrides = {}) {
+  return marker({ main: true, ...overrides });
+}
+
+async function planMain(overrides = {}) {
+  const { planResume } = await helper();
+  return planResume({
+    marker: mainMarker(),
+    idleSessionID: "ses_alpha",
+    sessionCreatedAt: SESSION_START,
+    branch: "main",
+    checkoutKind: "main",
+    leases: [],
+    now: MAIN_NOW,
+    isAlive: () => true,
+    handoffText: handoff(),
+    backlogText: backlog(),
+    handled: null,
+    resets: 0,
+    maxResets: 3,
+    ...overrides,
+  });
+}
+
 test("resumes a fresh, progressed crossing in a feature worktree", async () => {
   const decision = await plan();
   assert.strictEqual(decision.action, "resume");
@@ -153,6 +182,143 @@ test("a landed feature is a stop with landed=true and the cap is reset", async (
   assert.strictEqual(shipped.landed, true);
 });
 
+/* F-061: the main checkout has no branch to name its feature, so the guard's
+ * selector must prove exactly ONE recent checkpoint. These cases are the whole
+ * bounded acceptance rule: session match, recency, strict-newest margin, landed
+ * skip, and the ambiguity/stale stops that leave the advisory nudge alone. */
+test("selectMainResumeCandidate picks one recent checkpoint and refuses ambiguity (F-061)", () => {
+  const CG = core();
+  const at = (feature, minsAgo, extra = {}) => ({
+    feature,
+    checkpointCount: 2,
+    updated: MAIN_NOW - minsAgo * 60_000,
+    ...extra,
+  });
+
+  const unique = CG.selectMainResumeCandidate({
+    sessionID: "ses_alpha",
+    now: MAIN_NOW,
+    candidates: [at("F-061", 5)],
+  });
+  assert.strictEqual(unique.feature, "F-061");
+  assert.strictEqual(unique.checkpointCount, 2);
+
+  const own = CG.selectMainResumeCandidate({
+    sessionID: "ses_alpha",
+    sessionStartedAt: MAIN_NOW - 60 * 60_000,
+    now: MAIN_NOW,
+    candidates: [at("F-058", 90, { session: "ses_alpha" }), at("F-061", 5)],
+  });
+  assert.strictEqual(own.feature, "F-058", "a checkpoint naming this session outranks recency");
+  assert.match(own.reason, /records this session/);
+
+  const newest = CG.selectMainResumeCandidate({
+    sessionID: "ses_alpha",
+    now: MAIN_NOW,
+    candidates: [at("F-061", 5), at("F-058", 20)],
+  });
+  assert.strictEqual(newest.feature, "F-061", "a strict newest-by-margin wins");
+
+  const ambiguous = CG.selectMainResumeCandidate({
+    sessionID: "ses_alpha",
+    now: MAIN_NOW,
+    candidates: [at("F-061", 5), at("F-058", 5.5)],
+  });
+  assert.strictEqual(ambiguous.feature, null, "two equally recent checkpoints never guess");
+  assert.strictEqual(ambiguous.ambiguous, true);
+  assert.match(ambiguous.reason, /ambiguous/);
+
+  const stale = CG.selectMainResumeCandidate({
+    sessionID: "ses_alpha",
+    now: MAIN_NOW,
+    candidates: [at("F-061", 180)],
+  });
+  assert.strictEqual(stale.feature, null, "outside the 2h window is not provable");
+
+  const landed = CG.selectMainResumeCandidate({
+    sessionID: "ses_alpha",
+    now: MAIN_NOW,
+    candidates: [at("F-061", 5, { landed: true })],
+  });
+  assert.strictEqual(landed.feature, null, "a landed checkpoint is never resumed");
+});
+
+test("a main marker resumes in the main checkout with the safety line (F-061)", async () => {
+  const decision = await planMain();
+  assert.strictEqual(decision.action, "resume");
+  assert.strictEqual(decision.feature, "F-052");
+  assert.strictEqual(decision.nextResets, 1);
+  assert.match(decision.prompt, /Resume the bounded work unit F-052 from its checkpoint only/);
+  assert.match(decision.prompt, /Main-checkout safety/);
+  assert.match(decision.prompt, /never move the session or switch branches/);
+});
+
+test("a main marker is rejected outside main, on a feature branch, or with no feature", async () => {
+  assert.strictEqual((await planMain({ checkoutKind: "linked" })).action, "ignore");
+  assert.strictEqual((await planMain({ checkoutKind: null })).action, "ignore");
+  assert.strictEqual((await planMain({ branch: "f-052" })).action, "ignore");
+  assert.strictEqual((await planMain({ marker: mainMarker({ feature: null }) })).action, "ignore");
+  assert.strictEqual((await planMain({ marker: null })).action, "ignore", "a consumed marker is no marker");
+});
+
+test("a main marker is ignored while another live primary shares the checkout", async () => {
+  const live = [{ sessionID: "ses_other", pid: 4242, heartbeatAt: MAIN_NOW - 1000 }];
+  assert.strictEqual((await planMain({ leases: live })).action, "ignore");
+
+  // The session's own lease, a dead pid, and a stale heartbeat never block.
+  const own = [{ sessionID: "ses_alpha", pid: 4243, heartbeatAt: MAIN_NOW }];
+  const dead = [{ sessionID: "ses_dead", pid: 4244, heartbeatAt: MAIN_NOW - 4 * 60 * 60_000 }];
+  assert.strictEqual((await planMain({ leases: [...own, ...dead] })).action, "resume");
+
+  const { otherLiveLeaseCount, DEFAULT_LEASE_MAX_AGE_MS } = await helper();
+  const lease = require(path.join(REPO, "scripts", "qa", "lease-lib.js"));
+  assert.strictEqual(DEFAULT_LEASE_MAX_AGE_MS, lease.DEFAULT_MAX_AGE_MS, "the mirrored window matches");
+  assert.strictEqual(
+    otherLiveLeaseCount(live, { sessionID: "ses_alpha", now: MAIN_NOW, isAlive: () => true }),
+    1
+  );
+  assert.strictEqual(
+    otherLiveLeaseCount(live, { sessionID: "ses_alpha", now: MAIN_NOW, isAlive: () => false }),
+    0,
+    "a dead pid is not live"
+  );
+  assert.strictEqual(
+    otherLiveLeaseCount(live, { sessionID: "ses_other", now: MAIN_NOW, isAlive: () => true }),
+    0,
+    "this session's own lease is excluded"
+  );
+});
+
+test("a stale main marker never resumes", async () => {
+  const decision = await planMain({ sessionCreatedAt: Date.parse(MARKER_AT) + 60_000 });
+  assert.strictEqual(decision.action, "ignore");
+});
+
+test("main marker stops on flat, cap, landed, and consumed", async () => {
+  const flat = await planMain({
+    marker: mainMarker({ checkpoint_count: 5 }),
+    handoffText: handoff({ count: 5, next: "" }),
+  });
+  assert.strictEqual(flat.action, "stop");
+  assert.match(flat.reason, /did not advance the checkpoint/);
+
+  const cap = await planMain({ resets: 3 });
+  assert.strictEqual(cap.action, "stop");
+  assert.match(cap.reason, /context reset cap reached \(3\)/);
+
+  const archived = await planMain({ backlogText: backlog({ archive: true }), resets: 2 });
+  assert.strictEqual(archived.action, "stop");
+  assert.strictEqual(archived.landed, true);
+  assert.strictEqual(archived.resets, 0);
+
+  const shipped = await planMain({ handoffText: handoff({ outcome: "shipped" }) });
+  assert.strictEqual(shipped.action, "stop");
+  assert.strictEqual(shipped.landed, true);
+
+  const first = await planMain();
+  assert.strictEqual((await planMain({ handled: first.key })).action, "ignore");
+});
+
 test("a malformed marker file is no marker, never a throw", async () => {
   const { parseMarker, markerKey } = await helper();
   for (const body of ["", "not json", "null", "[]", "{}", JSON.stringify({ at: MARKER_AT })]) {
@@ -192,6 +358,30 @@ test("the TUI source consumes only clean execution ends and the shared gates", (
     assert.ok(src.includes(call), `${call} used`);
   }
   assert.ok(src.includes("idleKind !== \"succeeded\""), "a failed execution never relaunches");
+});
+
+test("the TUI consumes a main marker in the SAME checkout behind the lease gate (F-061)", () => {
+  const src = fs.readFileSync(path.join(PLUGIN_DIR, "tui.tsx"), "utf8");
+  assert.match(
+    src,
+    /context\.client\.session\.create\(\{ location: \{ directory \} \}\)/,
+    "the fresh session opens in the same directory"
+  );
+  assert.ok(!src.includes("session.move"), "the session is never moved");
+  assert.ok(
+    src.indexOf("consumeMarker(directory)") < src.indexOf("await startFresh("),
+    "the marker is consumed before the side effects"
+  );
+  assert.match(src, /\.serve/, "the checkout leases are read");
+  assert.match(src, /readLeases\(directory\)/, "main passes the lease records to the plan");
+  assert.match(src, /checkoutKind\(directory\)/, "the checkout kind is read");
+  assert.match(src, /checkoutKind: kind/, "the plan sees the checkout kind");
+  assert.match(src, /leases:/, "the plan sees the leases");
+  assert.match(src, /isAlive: pidAlive/, "liveness is proven with process.kill(pid, 0)");
+  assert.match(src, /process\.kill\(pid, 0\)/, "the pid probe is real");
+  assert.ok(src.includes('idleKind !== "succeeded"'), "a failed execution keeps the manual path");
+  assert.match(src, /maxResets: DEFAULT_MAX_CONTEXT_RESETS/, "the 3-reset cap is unchanged");
+  assert.ok(!src.includes("lease-lib.js"), "the CJS lease lib never enters the TUI ESM graph");
 });
 
 test("the plugin is registered for the TUI loader in both configs", () => {

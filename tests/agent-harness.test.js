@@ -11158,6 +11158,16 @@ test("context-guard describes the auto clear-resume marker (F-051)", () => {
   assert.strictEqual(thin.tokens, null);
   assert.strictEqual(thin.checkpoint_count, 0);
   assert.match(thin.at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.ok(!("main" in thin), "the linked-worktree marker shape is unchanged");
+
+  const main = CG.contextResumeMarker({
+    feature: "F-061",
+    sessionID: "ses_test",
+    checkpointCount: 4,
+    main: true,
+  });
+  assert.strictEqual(main.main, true);
+  assert.strictEqual(main.feature, "F-061");
 });
 
 test("context-guard plugin writes the context-resume marker only from a feature worktree (F-051)", () => {
@@ -11165,7 +11175,19 @@ test("context-guard plugin writes the context-resume marker only from a feature 
   assert.match(src, /writeContextResume/, "the primary crossing records the marker");
   assert.match(src, /guard\.contextResumeMarker/, "the payload shape lives in the pure core");
   assert.match(src, /featureFromBranch/, "the feature comes from the worktree branch");
-  assert.match(src, /checkoutKind\(root\) !== "linked"/, "a main checkout never writes one (the interactive TUI keeps the advisory nudge)");
+  assert.match(src, /checkoutKind\(root\)/, "the checkout kind decides the marker path");
+  assert.match(src, /kind === "linked"/, "a linked worktree keeps the branch-named marker");
+  assert.match(src, /kind === "main"/, "a main checkout is a separate, gated path");
+  assert.match(
+    src,
+    /liveLeasesIn\(root, \{ resolveDir: storeLib\.sessionDirectory \}\)/,
+    "the main path gates on live leases for this checkout"
+  );
+  assert.match(src, /selectMainResumeCandidate/, "main needs exactly one provable checkpoint");
+  assert.match(src, /checkpoint\.splitCheckpoint/, "the main path parses real checkpoints");
+  assert.match(src, /checkpoint\.parseBlock/, "the main path reads the checkpoint state");
+  assert.match(src, /inProgressHandoffStems/, "a slug handoff maps through the LOCAL board");
+  assert.match(src, /main: true/, "the main marker is explicitly flagged");
   assert.match(src, /note\.requestLevel === "intervene"/, "only an intervene crossing arms it");
   assert.match(src, /CONTEXT_RESUME_REL/, "the runner and the guard share one marker path");
 });

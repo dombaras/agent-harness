@@ -1633,15 +1633,28 @@ function resetGateRuns(state) {
 /* ------------------------------------------------- auto clear-resume (F-051)
  *
  * The guard cannot relaunch a session, and the runner cannot see a session's
- * request context. The handshake is a small marker file in the feature
- * worktree: when a PRIMARY session crosses the `intervene` request level, the
- * plugin writes `.agents/context-resume.json`; `agent-harness run` reads it
- * after the phase and decides (in run-loop.js) whether the exit was a genuine
- * context boundary with recorded progress. A main checkout never writes one, so
- * an interactive TUI session keeps the advisory nudge and is never killed.
+ * request context. The handshake is a small marker file: when a PRIMARY session
+ * crosses the `intervene` request level, the plugin writes
+ * `.agents/context-resume.json`; `agent-harness run` / the TUI read it after the
+ * phase and decide (in run-loop-core.mjs) whether the exit was a genuine
+ * context boundary with recorded progress.
+ *
+ * A linked feature worktree names its feature on the branch. A MAIN checkout
+ * does not, so F-061 allows a main marker only when exactly ONE recent
+ * checkpoint is provable (the bounded selector below). Everything else keeps
+ * the advisory nudge: no marker means no auto-resume.
  */
 const CONTEXT_RESUME_SCHEMA = 1;
 const CONTEXT_RESUME_REL = ".agents/context-resume.json";
+
+/* How far back a main-checkout checkpoint may have been written when the
+ * plugin did not observe this session's start (a plugin reload). A checkpoint
+ * written DURING the session is accepted regardless of age, because its
+ * `session:` field is the stronger identity signal. */
+const MAIN_RESUME_WINDOW_MS = 2 * 60 * 60 * 1000;
+/* Two checkpoints closer than this are "equally recent" -> ambiguous, no
+ * marker. A visible ordering is required, never a coin flip. */
+const MAIN_RESUME_AMBIGUITY_MS = 60 * 1000;
 
 /* Harness worktree branch -> feature id (`f-051` -> `F-051`), or null. Only the
  * harness's own branch shape counts, so a docs branch (`docs/f-239-...`) never
@@ -1658,7 +1671,7 @@ function contextResumeMarker(fields) {
   const f = fields || {};
   const tokens = Number(f.tokens);
   const count = Number(f.checkpointCount);
-  return {
+  const marker = {
     schema: CONTEXT_RESUME_SCHEMA,
     feature: f.feature ? String(f.feature) : null,
     sessionID: f.sessionID ? String(f.sessionID) : null,
@@ -1666,13 +1679,115 @@ function contextResumeMarker(fields) {
     at: f.at ? String(f.at) : new Date().toISOString(),
     checkpoint_count: Number.isFinite(count) ? count : 0,
   };
+  /* Only a positive main flag is emitted: the linked-worktree marker shape must
+   * stay byte-compatible with the runner's F-051 contract. */
+  if (f.main === true) marker.main = true;
+  return marker;
+}
+
+/* Pick the ONE feature a main-checkout context boundary may resume. Inputs are
+ * facts the plugin already read (file text is parsed by checkpoint.js):
+ *
+ *   sessionID         the primary session that crossed the ceiling
+ *   sessionStartedAt  when this plugin saw that session start (ms, optional)
+ *   candidates        [{ feature, checkpointCount, session, updated, landed }]
+ *   now / windowMs / ambiguityMs  injectable for deterministic tests
+ *
+ * Precedence:
+ *   1. candidates whose checkpoint records THIS session id (strongest);
+ *   2. otherwise checkpoints written during this session, or — when the start
+ *      is unknown — within the bounded recency window.
+ * A landed candidate is never selected. Among the pool, the newest wins only
+ * when it is strictly newer than the runner-up by `ambiguityMs`; otherwise the
+ * result is an explicit ambiguity stop (no marker, never a guess).
+ */
+function selectMainResumeCandidate(input) {
+  const src = input || {};
+  const nowRaw = Number(src.now);
+  const now = Number.isFinite(nowRaw) ? nowRaw : Date.now();
+  const windowRaw = Number(src.windowMs);
+  const windowMs = Number.isFinite(windowRaw) && windowRaw > 0 ? windowRaw : MAIN_RESUME_WINDOW_MS;
+  const ambiguityRaw = Number(src.ambiguityMs);
+  const ambiguityMs =
+    Number.isFinite(ambiguityRaw) && ambiguityRaw >= 0 ? ambiguityRaw : MAIN_RESUME_AMBIGUITY_MS;
+  const sessionID = src.sessionID ? String(src.sessionID) : "";
+  const startedRaw = Number(src.sessionStartedAt);
+  const started = Number.isFinite(startedRaw) && startedRaw > 0 ? startedRaw : null;
+  const floor = started ? Math.max(started, now - windowMs) : now - windowMs;
+
+  /* One row per feature: two handoff files can name the same board row (a
+   * declared slug and an id-shaped file). Keep the newest, never double-count. */
+  const byFeature = new Map();
+  for (const raw of Array.isArray(src.candidates) ? src.candidates : []) {
+    if (!raw || typeof raw !== "object") continue;
+    const feature = raw.feature ? String(raw.feature) : "";
+    const checkpointCount = Number(raw.checkpointCount) || 0;
+    const updated = Number(raw.updated) || 0;
+    if (!feature || checkpointCount <= 0 || updated <= 0 || raw.landed === true) continue;
+    const candidate = {
+      feature,
+      checkpointCount,
+      session: raw.session ? String(raw.session) : null,
+      updated,
+    };
+    const key = feature.toUpperCase();
+    const prior = byFeature.get(key);
+    if (!prior || candidate.updated > prior.updated) byFeature.set(key, candidate);
+  }
+  const all = [...byFeature.values()];
+  if (!all.length) return { feature: null, reason: "no checkpointed feature in this checkout", candidates: 0 };
+
+  const own = sessionID ? all.filter((c) => c.session === sessionID) : [];
+  const pool = own.length ? own : all.filter((c) => c.updated >= floor);
+  if (!pool.length) {
+    return {
+      feature: null,
+      reason: `no checkpoint written during this session or within ${Math.round(windowMs / 60000)}m`,
+      candidates: all.length,
+    };
+  }
+  const sorted = pool
+    .slice()
+    .sort((a, b) => b.updated - a.updated || a.feature.localeCompare(b.feature));
+  const top = sorted[0];
+  if (sorted.length === 1) {
+    return {
+      feature: top.feature,
+      checkpointCount: top.checkpointCount,
+      reason: own.length
+        ? `checkpoint for ${top.feature} records this session`
+        : `only recent checkpoint is ${top.feature}`,
+      candidates: 1,
+    };
+  }
+  const second = sorted[1];
+  if (top.updated - second.updated >= ambiguityMs) {
+    return {
+      feature: top.feature,
+      checkpointCount: top.checkpointCount,
+      reason: `most recent of ${sorted.length} checkpoints is ${top.feature}`,
+      candidates: sorted.length,
+    };
+  }
+  return {
+    feature: null,
+    reason:
+      `ambiguous: ${sorted.length} checkpoints are equally recent (` +
+      sorted.map((c) => c.feature).join(", ") +
+      `)`,
+    candidates: sorted.length,
+    ambiguous: true,
+  };
 }
 
 module.exports = {
   CONTEXT_RESUME_SCHEMA,
   CONTEXT_RESUME_REL,
+  MAIN_RESUME_WINDOW_MS,
+  MAIN_RESUME_AMBIGUITY_MS,
   featureFromBranch,
   contextResumeMarker,
+  selectMainResumeCandidate,
   DEFAULT_TURNS,
   DEFAULT_STUCK,
   DEFAULT_REQUEST,

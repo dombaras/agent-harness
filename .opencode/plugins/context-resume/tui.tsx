@@ -16,10 +16,17 @@
  * (durable via `storage.store`, reset once the row lands). A flat checkpoint or
  * a cap stop surfaces a toast instead of relaunching. The server guard and the
  * runner are untouched.
+ *
+ * F-061 extends the same consumer to a MAIN checkout: the guard writes a
+ * `main: true` marker only when one recent checkpoint is provable, and this
+ * plugin accepts it only in a main checkout, with no other live lease in the
+ * tree, and still creates the fresh session in the SAME directory (never a
+ * session move or branch switch).
  */
 import { Plugin } from "@opencode/plugin/tui"
 import fs from "node:fs"
 import path from "node:path"
+import process from "node:process"
 import {
   DEFAULT_MAX_CONTEXT_RESETS,
   RESUME_MARKER_REL,
@@ -45,11 +52,73 @@ type ResumeDecision = {
   landed?: boolean
 }
 
+type LeaseRecord = {
+  sessionID?: string
+  pid?: number
+  heartbeatAt?: number
+  startedAt?: number
+  name?: string
+}
+
 const readText = (file: string): string => {
   try {
     return fs.readFileSync(file, "utf8")
   } catch {
     return ""
+  }
+}
+
+/* Main vs linked without git: a main worktree's `.git` is a directory, a linked
+ * worktree's is a file (`gitdir: ...`), so the nearest `.git` is enough. The TUI
+ * plugin loader has no synchronous git dependency and must stay ESM-only, so no
+ * CJS helper can be imported here. */
+const checkoutKind = (directory: string): "main" | "linked" | null => {
+  let dir = path.resolve(directory)
+  while (dir !== path.dirname(dir) && !fs.existsSync(dir)) dir = path.dirname(dir)
+  for (let i = 0; i < 64; i++) {
+    try {
+      return fs.statSync(path.join(dir, ".git")).isDirectory() ? "main" : "linked"
+    } catch {
+      /* no .git here — keep walking up */
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+  return null
+}
+
+/* This checkout's `.serve/sessions/*.json` leases, read for the same
+ * another-live-session gate the server guard applies (F-061). Parsing mirrors
+ * lease-lib; an unreadable record keeps only its name so it can never be
+ * mistaken for this session. */
+const readLeases = (directory: string): LeaseRecord[] => {
+  const dir = path.join(directory, ".serve", "sessions")
+  let names: string[] = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+  const out: LeaseRecord[] = []
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue
+    try {
+      const rec = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"))
+      if (rec && typeof rec === "object") out.push({ ...rec, name })
+    } catch {
+      out.push({ name })
+    }
+  }
+  return out
+}
+
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error: any) {
+    return error?.code === "EPERM"
   }
 }
 
@@ -169,6 +238,7 @@ export default Plugin.define({
         const marker = parseMarker(readText(path.join(directory, RESUME_MARKER_REL)))
         if (!marker || marker.sessionID !== sessionID) return
 
+        const kind = checkoutKind(directory)
         const featureFromMarker = marker.feature ? String(marker.feature).toUpperCase() : null
         const entry = entryFor(directory, featureFromMarker)
         const decision: ResumeDecision = planResume({
@@ -176,6 +246,11 @@ export default Plugin.define({
           idleSessionID: sessionID,
           sessionCreatedAt: sessionCreatedAt(sessionID),
           branch: branchAt(directory),
+          checkoutKind: kind,
+          // Only a main checkout needs the lease gate; a linked worktree marker
+          // keeps the F-051 path and does no extra IO.
+          leases: kind === "main" ? readLeases(directory) : [],
+          isAlive: pidAlive,
           handoffText: featureFromMarker
             ? readText(path.join(directory, ".agents", "handoffs", featureFromMarker + ".md"))
             : "",

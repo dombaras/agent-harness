@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.14 — 2026-11-27
+
+- A feature no longer stops at the context ceiling when the fresh context lands
+  in the main checkout. When a primary session in main crosses the limit and
+  exactly one recent checkpointed feature exists, the guard records a main
+  resume marker; after the session ends, the TUI opens a fresh session in the
+  same checkout seeded from the bounded checkpoint. It is one-shot,
+  reset-capped, and refuses a stale, ambiguous, landed, or flat checkpoint. It
+  also refuses while another live primary session shares the checkout. The
+  linked-worktree path is unchanged. (F-061)
+
 ## 0.5.13 — 2026-11-27
 
 - Moved the canonical rulebook to `.agents/rulebook.md` and reduced the

@@ -5,6 +5,8 @@ import path from "node:path"
 import { execFileSync, spawn } from "node:child_process"
 import guard from "../../scripts/qa/context-guard-core.js"
 import runLoop from "../../scripts/qa/run-loop.js"
+import checkpoint from "../../scripts/checkpoint.js"
+import featureResolver from "../../scripts/qa/feature-resolver.js"
 import capacity from "../../scripts/qa/capacity-lib.js"
 import leases from "../../scripts/qa/lease-lib.js"
 import toolLib from "../../scripts/qa/tool-lib.js"
@@ -68,6 +70,10 @@ export default {
   const normDir = (p: unknown) => guard.normalizeRootPath(p)
   const ourRoot = normDir(directory)
   const sessionRoots = new Map<string, string>()
+  /* When this plugin observed each primary session start. The main-checkout
+   * resume selector uses it to accept a checkpoint written during THIS session
+   * even when the plugin missed the session's earlier turns (a reload). */
+  const sessionStarts = new Map<string, number>()
   const rootOf = (sessionID: string) => sessionRoots.get(sessionID) || directory
   /* Both sides known -> strict (normalized) comparison, with the Windows
    * case-insensitive rule; `guard.ownsLocation` is the one home for that rule. */
@@ -357,43 +363,183 @@ export default {
     }
   }
 
-  /* ------------------------------------------------- auto clear-resume (F-051)
+  /* ------------------------------------------------- auto clear-resume (F-051/F-061)
    * The runner (`agent-harness run`) relaunches a fresh bounded context instead
    * of stopping mid-feature, but it cannot see this session's request context.
-   * The guard records the crossing: a marker in the feature worktree carries the
-   * feature id and the checkpoint count a fresh context would resume from. Only
-   * a linked (feature) worktree writes one — an interactive session on main
-   * keeps the advisory nudge and is never killed — and the runner deletes the
-   * marker once it has consumed it. */
+   * The guard records the crossing: a marker carries the feature id and the
+   * checkpoint count a fresh context would resume from.
+   *
+   * A linked feature worktree names its feature on the branch and keeps the
+   * original F-051 path. A MAIN checkout does not, so F-061 writes a marker only
+   * when the pure selector proves exactly ONE recent checkpoint (the lease gate
+   * and the 2h/60s rules refuse everything else). No marker means the TUI keeps
+   * the advisory nudge and no session is relaunched. */
+  const writeLinkedContextResume = (sessionID: string, tokens: number | null, root: string) => {
+    const feature = guard.featureFromBranch(gitOut(root, ["branch", "--show-current"]))
+    if (!feature) return
+    let handoff = ""
+    try {
+      handoff = fs.readFileSync(path.join(root, ".agents", "handoffs", feature + ".md"), "utf8")
+    } catch {
+      /* no checkpoint yet — the crossing is still recorded */
+    }
+    const marker = guard.contextResumeMarker({
+      feature,
+      sessionID,
+      tokens,
+      checkpointCount: runLoop.checkpointCount(handoff),
+      at: new Date().toISOString(),
+    })
+    const file = path.join(root, guard.CONTEXT_RESUME_REL)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify(marker, null, 2) + "\n", "utf8")
+    logEvent({
+      kind: "context-resume",
+      sessionID,
+      feature,
+      tokens: marker.tokens,
+      checkpointCount: marker.checkpoint_count,
+    })
+  }
+
+  /* In-progress board rows that declare a handoff, stem -> row id. The LOCAL
+   * BACKLOG.md only: this runs inside the synchronous crossing hook, so it must
+   * never wait on the shared board service (the plugin has no client and a
+   * blocking read would stall the event loop). */
+  const inProgressHandoffStems = (root: string): Map<string, string> => {
+    const map = new Map<string, string>()
+    let text = ""
+    try {
+      text = fs.readFileSync(path.join(root, "BACKLOG.md"), "utf8")
+    } catch {
+      return map
+    }
+    const section = (text.split(/^##\s*In progress\s*$/m)[1] || "").split(/^##\s/m)[0]
+    for (const raw of section.split(/\r?\n/)) {
+      const line = raw.trim()
+      if (!/^\|.*\|$/.test(line)) continue
+      if (/^\|(\s*:?-+:?\s*\|)+\s*$/.test(line)) continue
+      const cells = line.slice(1, -1).split("|").map((cell) => cell.trim())
+      const id = cells[0] || ""
+      if (!/^[A-Za-z]+-\d+$/.test(id)) continue
+      const stem = featureResolver.handoffStem(cells[3] || "")
+      if (stem) map.set(stem.toLowerCase(), id.toUpperCase())
+    }
+    return map
+  }
+
+  /* Checkpoints a MAIN checkout may resume. Only THIS checkout's handoffs are
+   * scanned: resuming worktree-owned state from main would force a session
+   * move, which the TUI deliberately never does. A slug-named handoff is mapped
+   * to its In-progress row; an id-named handoff names its own feature. Landed
+   * outcomes are skipped here, and the selector refuses any ambiguity. */
+  const mainResumeCandidates = (root: string): any[] => {
+    const stems = inProgressHandoffStems(root)
+    const dir = path.join(root, ".agents", "handoffs")
+    let names: string[] = []
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      return []
+    }
+    const out: any[] = []
+    for (const name of names) {
+      if (!name.toLowerCase().endsWith(".md") || name.toLowerCase() === "readme.md") continue
+      const file = path.join(dir, name)
+      let text = ""
+      try {
+        text = fs.readFileSync(file, "utf8")
+      } catch {
+        continue
+      }
+      const parts = checkpoint.splitCheckpoint(text)
+      if (!parts.body) continue
+      const state = checkpoint.parseBlock(parts.body)
+      const checkpointCount = Number(state.checkpoint_count) || 0
+      if (checkpointCount <= 0) continue
+      const meta = checkpoint.parseBlock((parts.before || "") + "\n" + (parts.after || ""))
+      const outcome = meta.outcome ? String(meta.outcome).trim().toLowerCase() : ""
+      if (outcome === "shipped" || outcome === "resolved") continue
+      const stem = name.slice(0, -3)
+      const feature = guard.featureFromBranch(stem) || stems.get(stem.toLowerCase()) || null
+      if (!feature) continue
+      let updated = 0
+      try {
+        updated = fs.statSync(file).mtimeMs
+      } catch {
+        continue
+      }
+      out.push({
+        feature,
+        checkpointCount,
+        session: state.session ? String(state.session) : null,
+        updated,
+        landed: false,
+      })
+    }
+    return out
+  }
+
+  const writeMainContextResume = (sessionID: string, tokens: number | null, root: string) => {
+    /* One live primary per checkout. A second session here must never race this
+     * one into the same main-checkout resume; the same leases the branch-switch
+     * guard reads decide it. */
+    let others: any[] = []
+    try {
+      others = leases
+        .liveLeasesIn(root, { resolveDir: storeLib.sessionDirectory })
+        .filter((rec: any) => rec.sessionID !== sessionID)
+    } catch {
+      others = []
+    }
+    if (others.length > 0) {
+      logEvent({
+        kind: "context-resume-skip",
+        sessionID,
+        reason: "another live session shares the main checkout",
+        others: others.map((rec: any) => rec.sessionID),
+      })
+      return
+    }
+    const candidate = guard.selectMainResumeCandidate({
+      sessionID,
+      sessionStartedAt: sessionStarts.get(sessionID),
+      candidates: mainResumeCandidates(root),
+    })
+    if (!candidate.feature) {
+      logEvent({ kind: "context-resume-skip", sessionID, reason: candidate.reason })
+      return
+    }
+    const marker = guard.contextResumeMarker({
+      feature: candidate.feature,
+      sessionID,
+      tokens,
+      checkpointCount: candidate.checkpointCount,
+      at: new Date().toISOString(),
+      main: true,
+    })
+    const file = path.join(root, guard.CONTEXT_RESUME_REL)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify(marker, null, 2) + "\n", "utf8")
+    logEvent({
+      kind: "context-resume",
+      sessionID,
+      feature: candidate.feature,
+      tokens: marker.tokens,
+      checkpointCount: marker.checkpoint_count,
+      main: true,
+    })
+  }
+
   const writeContextResume = (sessionID: string, tokens: number | null) => {
     try {
       const root = rootOf(sessionID)
-      if (checkoutKind(root) !== "linked") return
-      const feature = guard.featureFromBranch(gitOut(root, ["branch", "--show-current"]))
-      if (!feature) return
-      let handoff = ""
-      try {
-        handoff = fs.readFileSync(path.join(root, ".agents", "handoffs", feature + ".md"), "utf8")
-      } catch {
-        /* no checkpoint yet — the crossing is still recorded */
+      const kind = checkoutKind(root)
+      if (kind === "linked") {
+        writeLinkedContextResume(sessionID, tokens, root)
+        return
       }
-      const marker = guard.contextResumeMarker({
-        feature,
-        sessionID,
-        tokens,
-        checkpointCount: runLoop.checkpointCount(handoff),
-        at: new Date().toISOString(),
-      })
-      const file = path.join(root, guard.CONTEXT_RESUME_REL)
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(file, JSON.stringify(marker, null, 2) + "\n", "utf8")
-      logEvent({
-        kind: "context-resume",
-        sessionID,
-        feature,
-        tokens: marker.tokens,
-        checkpointCount: marker.checkpoint_count,
-      })
+      if (kind === "main") writeMainContextResume(sessionID, tokens, repoRootOf(root) || root)
     } catch {
       /* best-effort handshake — the runner stops when no marker exists */
     }
@@ -627,6 +773,7 @@ export default {
           }
           const label = guard.modelLabel(modelFields(d.model))
           if (label) sessionModel.set(sid, label)
+          sessionStarts.set(sid, Date.now())
           writeLease(sid)
           syncBoard()
           const root =
@@ -678,6 +825,7 @@ export default {
             sessionModel.delete(id)
             sessions.delete(id)
             sessionRoots.delete(id)
+            sessionStarts.delete(id)
             storeDirs.delete(id)
             // Auto-close this session's long-lived serves (dev server/emulator):
             // the harness must not leave them orphaned after the session ends.
@@ -730,7 +878,9 @@ export default {
               tokens: note.requestTokens,
             })
             // Auto clear-resume handshake: record the crossing for `agent-harness
-            // run` (feature worktrees only; pure decision in run-loop.js).
+            // run` / the TUI (feature worktrees always; main only when the
+            // selector proves one recent checkpoint — pure decision in
+            // run-loop-core.mjs).
             if (note.requestLevel === "intervene") writeContextResume(sid, note.requestTokens)
           }
           if (note.noStateChanged) {
