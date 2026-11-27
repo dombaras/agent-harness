@@ -234,7 +234,7 @@ export default Plugin.define({
     }
 
     const loadFallback = async (): Promise<FallbackPlan> => {
-      return (await importFresh("../../scripts/qa/checkpoint-fallback.mjs", import.meta.url)) as FallbackPlan
+      return (await importFresh("../../../scripts/qa/checkpoint-fallback.mjs", import.meta.url)) as FallbackPlan
     }
 
     const startFresh = async (

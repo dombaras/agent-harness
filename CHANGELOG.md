@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1 — 2026-11-27
+
+- Fixed the F-067 deploy so the plugins load again: the fallback checkpoint writer now ships in the live `scripts/qa/` tree (not only `templates/`), and the TUI dynamic import points at `../../../scripts/qa/checkpoint-fallback.mjs`. Without both, `context-guard.ts` failed to load after a service restart because its static import resolved to a missing module (`plugin operation failed`). A deploy drift-guard test now pins deployed/template parity and both import resolutions.
+
+## 0.6.0 — 2026-11-27
+
+- Every observed session stop now writes a deterministic fallback checkpoint before the session is treated as idle — preserving the prior objective/progress/decisions/risks, refreshing changed files, recording the stop reason, incrementing the count, staying idempotent per session and never overwriting a newer model checkpoint (F-067).
+- Auto-resume now covers every non-technical stop (context band, early clean stop, context overflow, logical/work failures) under the existing freshness/progress/3-reset/landed gates, while network, provider, auth, resource, funds/quota and user-interrupt stops still hard-pause. A file-backed heartbeat lets `orient` flag an unobserved prior session.
+
 ## 0.5.19 — 2026-11-27
 
 - Auto clear-resume now arms at the **checkpoint** band (F-066): the context guard writes `.agents/context-resume.json` when a primary session reaches the 120K checkpoint request level, not only the 160K intervene level. The checkpoint nudge already tells a compliant session to stop at the phase boundary; the marker now exists so the TUI/`agent-harness run` can resume it instead of leaving the work to a manual `/resume`. The existing freshness, checkpoint-progress and reset-cap gates are unchanged.

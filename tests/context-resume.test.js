@@ -737,6 +737,37 @@ test("orient surfaces only an unclean heartbeat (F-067 drift-guard)", async () =
   }
 });
 
+test("the deployed fallback module and both plugin import paths exist (F-067 deploy drift-guard)", () => {
+  // F-067 landed the writer under templates/ only: the guard's static import and
+  // the TUI's dynamic import then failed in the live checkout. Pin both halves.
+  for (const rel of ["checkpoint-fallback.mjs", "checkpoint-fallback.js"]) {
+    const deployed = path.join(REPO, "scripts", "qa", rel);
+    const template = path.join(REPO, "templates", "scripts", "qa", rel);
+    assert.ok(fs.existsSync(deployed), `deployed scripts/qa/${rel} must exist — a plugin imports it`);
+    assert.strictEqual(
+      fs.readFileSync(deployed, "utf8"),
+      fs.readFileSync(template, "utf8"),
+      `deployed scripts/qa/${rel} must equal its template copy`
+    );
+  }
+
+  const guardSource = fs.readFileSync(path.join(REPO, ".opencode", "plugins", "context-guard.ts"), "utf8");
+  const guardSpec = guardSource.match(/import fallback from "([^"]*checkpoint-fallback\.js)"/);
+  assert.ok(guardSpec, "the guard imports the CJS bridge");
+  const guardPath = path.resolve(REPO, ".opencode", "plugins", guardSpec[1]);
+  assert.ok(fs.existsSync(guardPath), `the guard import resolves to a file: ${guardPath}`);
+
+  for (const [surface, tuiPath] of [
+    ["deployed", path.join(REPO, ".opencode", "plugins", "context-resume", "tui.tsx")],
+    ["template", path.join(PLUGIN_DIR, "tui.tsx")],
+  ]) {
+    const spec = fs.readFileSync(tuiPath, "utf8").match(/importFresh\("([^"]*checkpoint-fallback\.mjs)", import\.meta\.url\)/);
+    assert.ok(spec, `the ${surface} TUI loads the fallback ESM through importFresh`);
+    const resolved = path.resolve(path.dirname(tuiPath), spec[1]);
+    assert.ok(fs.existsSync(resolved), `the ${surface} TUI import resolves to a file: ${resolved}`);
+  }
+});
+
 test("every observed stop reaches the fallback writer before idle (F-067)", () => {
   const guard = fs.readFileSync(path.join(PLUGIN_DIR, "..", "context-guard.ts"), "utf8");
   assert.match(guard, /import fallback from "\.\.\/\.\.\/scripts\/qa\/checkpoint-fallback\.js"/);
