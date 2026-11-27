@@ -1,0 +1,49 @@
+{
+  "schema": "feedback-policy/1",
+  "mode": "auto",
+  "sources": [
+    "ci",
+    "nightly",
+    "uat",
+    "gate",
+    "human"
+  ],
+  "max_attempts_per_signature": 2,
+  "max_attempts_per_day": 4,
+  "max_active_attempts": 1,
+  "cooldown_min": 30,
+  "flake_rerun_limit": 1,
+  "quarantine_days": 14,
+  "recurrence_window": {
+    "default_days": 14,
+    "ci": "landed-sha",
+    "nightly": "next-nightly",
+    "uat": "two-consecutive-probes",
+    "gate": "same-command",
+    "human": "manual-confirmation"
+  },
+  "high_risk_paths": [
+    "auth/",
+    "**/auth/**",
+    "**/migrations/**",
+    "prisma/migrations/**",
+    "**/schema.prisma",
+    "**/openapi/**",
+    "**/swagger/**",
+    ".github/workflows/**",
+    "**/deploy/**",
+    "**/secrets/**",
+    "**/*secret*",
+    "**/payments/**",
+    "**/billing/**"
+  ],
+  "auto_fix_classes": [
+    "product"
+  ],
+  "max_cost_per_item": 5,
+  "max_cost_per_day": 20,
+  "kill_switch": false,
+  "verification_window_min": 120,
+  "no_progress_limit": 2,
+  "auto_max_attempts": 2
+}

@@ -75,7 +75,8 @@
     "ramdisk:down": "bash scripts/setup-tmpfs.sh down",
     "wsl-tune": "bash scripts/wsl-tune.sh",
     "gpu": "bash scripts/wsl-gpu.sh",
-    "test:orchestrator": "node --test tests/orchestrator-lib.test.js tests/orchestrator-store.test.js tests/orchestrator-cli.test.js"
+    "test:orchestrator": "node --test tests/orchestrator-lib.test.js tests/orchestrator-store.test.js tests/orchestrator-cli.test.js",
+    "orchestrator": "node scripts/orchestrator.js"
   },
   "keywords": [
     "opencode",
