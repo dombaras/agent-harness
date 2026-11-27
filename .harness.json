@@ -1,11 +1,11 @@
 {
-  "version": "0.6.0",
+  "version": "0.6.1",
   "projectName": "agent-harness",
   "projectDomain": "",
   "initializedAt": "2026-11-20T15:28:27.274Z",
-  "updatedAt": "2026-11-27T13:07:15.332Z",
+  "updatedAt": "2026-11-27T13:14:50.617Z",
   "files": {
-    "package.json": "8f42dce98dd2576a4f3c4ba53597271fd837ea639b109c9d5c7703784198f629",
+    "package.json": "17d1cbbc6acf118d35d7069aba9b21bedeba4ab4a8a75166b88ac247b3bbc6c5",
     ".gitattributes": "12c4d531af67b819a562126556e8fc3565594a3593f2db9e1640baa9a87a48f7",
     ".ignore": "fbe125871ea72e7ca387e954eefca50eec09a8ec1e9cd98b00e7cb488d486d2f",
     ".agents/AGENTS.md": "0cfc077f3cd8da8178d379343b59f08ffceb0ef01f8fe88ed867445e1e8cb034",
@@ -60,7 +60,7 @@
     ".opencode/plugins/context-resume/hot-import.mjs": "5b1563ebbcd04d918a8ce1c52be5a07404294823cf9ae54049b545869d4be20d",
     ".opencode/plugins/context-resume/index.ts": "e35691a2c1fcd6fa2ccb41ff49ed97e329682a279181f21718231a6d4d681915",
     ".opencode/plugins/context-resume/resume-plan.mjs": "db3ab0b8eb0217cc2ccaeb7a16b9e4dc8153b11fb073e8d487424d3cd9c42eac",
-    ".opencode/plugins/context-resume/tui.tsx": "e81a05821f5c9e5094367ba305e32e860ded209369a7c926107010f71124fa09",
+    ".opencode/plugins/context-resume/tui.tsx": "1972e5e726fc9158575814275736cb1f133a0c9a332f0d115635d2826ba6157c",
     ".opencode/plugins/diff.ts": "96a84188226d53118edf2c484260a2c442dd24a869a90808a90d38f84c1872c6",
     ".opencode/plugins/dispatch.ts": "3e0029f8a926ffe93f7ab65f9c642774c6891064a2de25286e4d1a217ae6e220",
     ".opencode/plugins/gates.ts": "d4e6601f5d7df8f5f4378ac6e760143914d0a8d7065b67d92e862c3847819d2f",
