@@ -272,6 +272,57 @@ function ownedFor(root, feature) {
   return m ? m[1].trim() : null;
 }
 
+/* The active feature's doc chain (F-063). A cleared session otherwise globs for
+ * `.agents/features/<dir>/{intent,scope,plan,tests}.md` after orient. Locate the
+ * dir by its own name (f-063, f-063-*) or by the `id` in its meta.json, then
+ * report each expected doc present/missing. Read-only and bounded. */
+const FEATURE_DOC_FILES = ["intent", "scope", "plan", "tests"];
+
+function featureDocs(root, feature) {
+  if (!feature) return null;
+  const base = path.join(root, ".agents", "features");
+  const want = normalizeId(feature);
+  if (!want) return null;
+  const entries = safe(
+    () =>
+      fs
+        .readdirSync(base, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+        .sort(),
+    null
+  );
+  if (!entries) return { id: feature, dir: null, present: [], missing: FEATURE_DOC_FILES.slice(), none: true };
+  // `f-063` matches `f-063-*` but not `f-0630` (a different feature id).
+  const prefix = new RegExp(`^${want}([^0-9]|$)`);
+  let name = entries.find((n) => normalizeId(n) === want) || entries.find((n) => prefix.test(normalizeId(n)));
+  if (!name) {
+    name =
+      entries.find((n) => {
+        const meta = safe(() => JSON.parse(fs.readFileSync(path.join(base, n, "meta.json"), "utf8")), null);
+        return meta && normalizeId(meta.id) === want;
+      }) || null;
+  }
+  if (!name) return { id: feature, dir: null, present: [], missing: FEATURE_DOC_FILES.slice(), none: true };
+  const dir = path.join(base, name);
+  const present = [];
+  const missing = [];
+  for (const doc of FEATURE_DOC_FILES) {
+    if (fs.existsSync(path.join(dir, `${doc}.md`))) present.push(doc);
+    else missing.push(doc);
+  }
+  return { id: feature, dir: path.relative(root, dir), present, missing, none: false };
+}
+
+/* One bounded line: where the chain lives and which docs exist. */
+function renderFeatureDocs(d) {
+  if (!d) return [];
+  if (d.none || !d.dir) return [`docs:    none (no .agents/features dir for ${d.id})`];
+  const present = d.present.length ? d.present.join(",") : "none";
+  const missing = d.missing.length ? d.missing.join(",") : "none";
+  return [`docs:    ${d.dir} · present ${present} · missing ${missing}`];
+}
+
 /* The memory files the operating rules name as session-start reads. Their
  * content is project-owned and open-ended, so orient does not attempt to
  * summarize prose — it extracts the stable, machine-shaped facts (the `##`
@@ -625,6 +676,7 @@ function collectOrient(opts = {}) {
   const feature = inferred.id;
   const featureSource = inferred.source;
   const owned = ownedFor(root, feature);
+  const featureDocChain = feature ? featureDocs(root, feature) : null;
   // The feature may live in a linked worktree while this session is rooted in
   // the main checkout. Surface it — a green main `tsc` is not the feature's.
   const worktree = feature && checkoutKind(root) !== "linked" ? featureWorktree(feature, root, runGit) : null;
@@ -716,6 +768,7 @@ function collectOrient(opts = {}) {
         }
       : null,
     ownedFiles: owned,
+    featureDocs: featureDocChain,
     checkpoint: checkpointState,
     checkpointCandidates,
     diagnosis,
@@ -773,6 +826,7 @@ function printHuman(o) {
   lines.push(`dirty:   ${o.repo.dirty == null ? "unavailable" : o.repo.dirty + " file(s)"}`);
   lines.push(`feature: ${o.feature ? `${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}` : "(none inferred — pass --feature <id>)"}`);
   lines.push(`owned:   ${o.ownedFiles || "unavailable"}`);
+  lines.push(...renderFeatureDocs(o.featureDocs));
   if (o.checkpoint) {
     const noBlock = o.checkpoint.hasBlock === false ? " · no ## Checkpoint block (best-effort excerpt)" : "";
     lines.push(
@@ -861,6 +915,7 @@ function printBrief(o) {
       `feature ${o.feature}${o.featureSource ? ` (from ${o.featureSource})` : ""}${o.featureSource === "board" ? " — pass --feature <id> to override" : ""}${task ? ` · ${clipText(task, 120)}` : ""}${o.ownedFiles ? ` · owns ${o.ownedFiles}` : ""}`
     );
   }
+  lines.push(...renderFeatureDocs(o.featureDocs));
   if (o.checkpoint)
     lines.push(
       `checkpoint ${o.checkpoint.phase || "?"} · next: ${clipText(o.checkpoint.nextAction || "?", 400)}` +
@@ -961,6 +1016,9 @@ module.exports = {
   harnessBlocked,
   harnessStatus,
   ownedFor,
+  featureDocs,
+  renderFeatureDocs,
+  FEATURE_DOC_FILES,
   diagnosisState,
   diagnosisFacts,
   renderDiagnosisLines,

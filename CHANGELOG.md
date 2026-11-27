@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.17 — 2026-11-27
+
+- Session-start `orient` and `orient --brief` now name the active feature's doc chain: they locate `.agents/features/<dir>/` by directory name or the `id` in `meta.json` and render one bounded `docs:` line listing intent/scope/plan/tests present versus missing (or `none` when no feature directory exists), so a cleared session reads the docs instead of globbing for them. (F-063)
+- Ported the `audit:prefix` section into `templates/docs/gates.md` so the template and deployed `docs/gates.md` bytes match and the next deploy does not revert it. (`1c9208f`, F-063)
+- Tracked the deployed `outline` plugin and library copies so a clean checkout resolves them instead of relying on a locally deployed tree. (`5356c04`, F-059)
+
 ## 0.5.16 — 2026-11-27
 
 - Added the `outline` tool for bounded, fence-aware Markdown heading outlines with section line ranges and byte size, plus a pre-read guard for oversized `.agents/**` state documents. The guard can be tuned with `AGENT_GUARD_STATEDOC=0` or `AGENT_STATE_READ_BYTES`. (F-059)
