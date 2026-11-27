@@ -1791,6 +1791,16 @@ function selectMainResumeCandidate(input) {
   };
 }
 
+/* Auto clear-resume arms at the checkpoint band, not only at intervene. The
+ * checkpoint nudge tells a compliant orchestrator to STOP at the phase
+ * boundary; that stop commonly lands between the checkpoint (120K) and
+ * intervene (160K) thresholds. Writing the marker only at intervene left those
+ * sessions with no fresh-context handshake (F-066). Pure so the arm rule is
+ * unit-tested independently of the plugin's event loop. */
+function shouldWriteContextResume(level) {
+  return level === "checkpoint" || level === "intervene";
+}
+
 module.exports = {
   CONTEXT_RESUME_SCHEMA,
   CONTEXT_RESUME_REL,
@@ -1798,6 +1808,7 @@ module.exports = {
   MAIN_RESUME_AMBIGUITY_MS,
   featureFromBranch,
   contextResumeMarker,
+  shouldWriteContextResume,
   selectMainResumeCandidate,
   DEFAULT_TURNS,
   DEFAULT_STUCK,

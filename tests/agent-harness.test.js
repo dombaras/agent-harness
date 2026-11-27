@@ -11172,6 +11172,10 @@ test("context-guard describes the auto clear-resume marker (F-051)", () => {
   assert.strictEqual(CG.featureFromBranch(""), null);
   assert.strictEqual(CG.featureFromBranch("docs/f-239-record-landing"), null, "a docs branch is not a feature worktree");
   assert.strictEqual(CG.CONTEXT_RESUME_REL, ".agents/context-resume.json");
+  assert.strictEqual(CG.shouldWriteContextResume("warn"), false, "warn alone does not arm a fresh context");
+  assert.strictEqual(CG.shouldWriteContextResume("checkpoint"), true, "a checkpoint-band stop is resumable");
+  assert.strictEqual(CG.shouldWriteContextResume("intervene"), true, "intervene stays armed");
+  assert.strictEqual(CG.shouldWriteContextResume(null), false);
 
   const m = CG.contextResumeMarker({
     feature: "F-051",
@@ -11223,7 +11227,11 @@ test("context-guard plugin writes the context-resume marker only from a feature 
   assert.match(src, /checkpoint\.parseBlock/, "the main path reads the checkpoint state");
   assert.match(src, /inProgressHandoffStems/, "a slug handoff maps through the LOCAL board");
   assert.match(src, /main: true/, "the main marker is explicitly flagged");
-  assert.match(src, /note\.requestLevel === "intervene"/, "only an intervene crossing arms it");
+  assert.match(
+    src,
+    /guard\.shouldWriteContextResume\(note\.requestLevel\)/,
+    "checkpoint and intervene crossings arm it (F-066)"
+  );
   assert.match(src, /CONTEXT_RESUME_REL/, "the runner and the guard share one marker path");
 });
 

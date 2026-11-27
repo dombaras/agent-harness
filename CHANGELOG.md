@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.19 — 2026-11-27
+
+- Auto clear-resume now arms at the **checkpoint** band (F-066): the context guard writes `.agents/context-resume.json` when a primary session reaches the 120K checkpoint request level, not only the 160K intervene level. The checkpoint nudge already tells a compliant session to stop at the phase boundary; the marker now exists so the TUI/`agent-harness run` can resume it instead of leaving the work to a manual `/resume`. The existing freshness, checkpoint-progress and reset-cap gates are unchanged.
+
 ## 0.5.18 — 2026-11-27
 
 - TUI auto clear-resume now survives a deploy and fires on the context-fill path (F-064): the plugin entry no longer statically imports its decision module (a stale CJS hop made opencode log `plugin operation failed` and never retry, so the marker was never consumed); it evaluates `resume-plan.mjs` through a cache-busted dynamic import on every execution end. A context-window `failed` execution now resumes through the same fresh/progressed/cap gates instead of only `succeeded`, a marker for a background worktree/tab resumes in its own directory without stealing focus, and the guard no longer writes a linked marker when the handoff has no resumable checkpoint.

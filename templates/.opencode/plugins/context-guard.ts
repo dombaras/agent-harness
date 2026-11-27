@@ -893,8 +893,10 @@ export default {
             // Auto clear-resume handshake: record the crossing for `agent-harness
             // run` / the TUI (feature worktrees always; main only when the
             // selector proves one recent checkpoint — pure decision in
-            // run-loop-core.mjs).
-            if (note.requestLevel === "intervene") writeContextResume(sid, note.requestTokens)
+            // run-loop-core.mjs). Arm at checkpoint AND intervene: the
+            // checkpoint band already asks a compliant session to stop at the
+            // phase boundary, so the marker must exist then (F-066).
+            if (guard.shouldWriteContextResume(note.requestLevel)) writeContextResume(sid, note.requestTokens)
           }
           if (note.noStateChanged) {
             logEvent({
