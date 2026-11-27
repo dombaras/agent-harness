@@ -49,7 +49,7 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-075 | ? | Sync templates/docs/gates.md with the deployed test:feedback gate section and ship it as 0.6.4 | .agents/handoffs/F-075.md |
+| F-075 | ? | Sync templates/docs/gates.md with the deployed test:feedback gate section and ship it as 0.6.4 | .agents/handoffs/F-075.md (worktree: ../.worktrees/agent-harness/f-075; branch: f-075) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
