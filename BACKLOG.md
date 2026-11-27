@@ -49,7 +49,6 @@ back to `Open` if it stalls.
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
 | F-050 | ? | Close the agentic SDLC loop: ingest CI/nightly/UAT/deploy failures, dedupe + classify, run bounded diagnose→fix→verify attempts, escalate with evidence, and record loop metrics/lessons. | .agents/handoffs/F-050.md (worktree: ../.worktrees/agent-harness/f-050; branch: f-050) |
-| F-061 | context-economy | Auto-resume a feature across context bounds from the main checkout: when a checkpointed session is cleared and the fresh session lands on main, detect the recent checkpoint and automatically open a fresh context seeded from it (extend the context-resume plugin; keep the linked-worktree path unchanged, one-shot, reset-capped, ambiguous/multi-session safe). | .agents/handoffs/F-061.md (worktree: ../.worktrees/agent-harness/f-061; branch: f-061) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -144,6 +143,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-056 | ? | Resume discovery loses the checkpoint when the board row declares a slug handoff or several rows are In progress — resolver must honor the Handoff cell, and orient/checkpoint_resume must list resumable checkpoints instead of `none` | shipped |
 | F-058 | context-economy | Bound resume/checkpoint reads: honor the board Handoff slug (F-056) and make orient/checkpoint_resume return a <=3 KB excerpt (phase + next + headings) instead of `none` or the whole file | shipped |
 | F-057 | context-economy | Nested `.agents/AGENTS.md` is auto-injected (28 KB) whenever any `.agents/**` file is read — rename the rulebook to `.agents/rulebook.md` (keep a small shim) so reading handoffs/reviews does not pull the whole rulebook into context | shipped |
+| F-061 | context-economy | Auto-resume a feature across context bounds from the main checkout: when a checkpointed session is cleared and the fresh session lands on main, detect the recent checkpoint and automatically open a fresh context seeded from it (extend the context-resume plugin; keep the linked-worktree path unchanged, one-shot, reset-capped, ambiguous/multi-session safe). | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 
