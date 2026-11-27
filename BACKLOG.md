@@ -49,7 +49,6 @@ back to `Open` if it stalls.
 
 | ID | Epic | Task | Handoff |
 |---|---|---|---|
-| F-075 | ? | Sync templates/docs/gates.md with the deployed test:feedback gate section and ship it as 0.6.4 | .agents/handoffs/F-075.md (worktree: ../.worktrees/agent-harness/f-075; branch: f-075) |
 
 _Rows: `| F-004 | epic-key | short desc | .agents/handoffs/F-004.md (or \`?\`) |`_
 
@@ -159,6 +158,7 @@ _Rows: `| F-002 | epic-key | short desc | why + reopen condition (required) |`_
 | F-068 | parallel-orchestration | Add a resource-aware parallel feature orchestrator: deterministic control plane (queue, admission, leases, single lander) over LLM workers. Workers commit+enqueue in isolated worktrees; one lander rebases/gates/FF-pushes/waits CI/deploys; admission from capacity-lib RAM/swap/PSI + heavy lock; conflict control via owned files/contracts/trial merge; rollout Phase 1 detached landing -> Phase 2 scout -> Phase 3 two builders. | shipped |
 | F-041 | ? | Prune the feature worktree automatically at task completion: after finalize archives the landed row and CI is green, remove the shipped worktree (or schedule worktree-prune) instead of printing "feature worktree left in place — clean up when this session ends". Never prune an unmerged or dirty worktree, or the session's own checkout; report what was kept and why. | superseded by F-026 (0.4.9): ship self-prunes the landed worktree after CI green; verified 2026-11-27 — tests/agent-harness.test.js 5/5 (worktree-prune --self x4 + ship drift guard), f-040 worktree already gone |
 | F-074 | ? | Harden the harness version-bump guard (count untracked files, base the check on origin/main) and stop the test-suite temp-dir leak with a scoped TMPDIR runner | shipped |
+| F-075 | ? | Sync templates/docs/gates.md with the deployed test:feedback gate section and ship it as 0.6.4 | shipped |
 
 _Rows: `| F-003 | epic-key | short desc | shipped/done + date/commit |`_
 

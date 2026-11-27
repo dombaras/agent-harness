@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.4 — 2026-11-27
+
+- Deployed `docs/gates.md` and the shipped template now agree: the `test:feedback` gate reference (policy/fixtures/ledger contract) is in `templates/docs/gates.md`, so a deployed project documents the gate it ships. (F-075)
+
 ## Unreleased
 
 - The repo-hygiene version-bump guard now counts untracked harness files and compares a branch with `origin/main` (falling back to local `main`, then `HEAD`), so a brand-new `templates/` file or a stale base can no longer slip past it. The test entrypoints run under a scoped `TMPDIR` that is removed after the run, so leaked fixture directories can no longer fill `/tmp` and mask real gate failures with ENOSPC. (F-074)
